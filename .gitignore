@@ -1,0 +1,33 @@
+# Secrets — NEVER commit these
+.env
+.env.*
+*.key
+*.pem
+secrets.json
+**/shoonya_session.json
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+logs/
+*.log
+
+# Data / scratch / caches
+data/scratch/
+*.json.bak
+**/option_quotes_cache.json
+*.parquet
+
+# Archives
+*.tar.gz
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
