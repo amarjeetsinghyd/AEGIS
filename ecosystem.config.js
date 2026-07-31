@@ -1,0 +1,33 @@
+module.exports = {
+  apps: [
+    {
+      name: "astra-bot",
+      script: "astra_bot/main.py",
+      interpreter: "/home/opc/astra_bot/venv/bin/python3",
+      cwd: "/home/opc/astra_bot",
+      watch: false,
+      autorestart: true,
+      max_restarts: 10,
+      restart_delay: 5000,
+      time: true,
+      kill_timeout: 15000,
+      env: {
+        PYTHONPATH: "/home/opc/astra_bot"
+      }
+    },
+    {
+      name: "astra-dashboard",
+      script: "astra_bot/dashboard.py",
+      interpreter: "/home/opc/astra_bot/venv/bin/python3",
+      cwd: "/home/opc/astra_bot",
+      watch: false,
+      autorestart: true,
+      max_restarts: 10,
+      restart_delay: 5000,
+      time: true,
+      env: {
+        PYTHONPATH: "/home/opc/astra_bot"
+      }
+    }
+  ]
+};

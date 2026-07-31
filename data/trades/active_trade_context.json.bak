@@ -1,0 +1,47 @@
+{
+    "context_id": "2a74607a-14db-4315-821f-585abe9ec131",
+    "signal_type": "PUT",
+    "strategy": "KRONOS_AI",
+    "index_entry": 24187.85,
+    "index_exit": null,
+    "highest_index_price": 24187.85,
+    "lowest_index_price": 24187.85,
+    "highest_profit": 0.0,
+    "lowest_profit": 0.0,
+    "status": "OPEN",
+    "entry_time": "2026-07-18T13:04:19.245220",
+    "exit_time": null,
+    "total_pnl": 0.0,
+    "hwm_profit_pct": 0.0,
+    "active_phase": "PHASE_1_CONSERVATIVE",
+    "decision_payload": {
+        "predicted_close": 24118.72265625,
+        "predicted_change_pct": -0.002857936681019543,
+        "strategy": "KRONOS_AI",
+        "lifecycle_stage": "EXECUTED"
+    },
+    "legs": [
+        {
+            "leg_id": "ff2d311d-1074-4b5a-be36-fe41f1aaed97",
+            "token": "50004",
+            "symbol": "NIFTY_ATM_PE",
+            "strike": 24200.0,
+            "option_type": "PUT",
+            "quantity": 3,
+            "entry_price": 25.0,
+            "current_price": 25.0,
+            "broker_order_id": null,
+            "paper_order_id": "PAPER_0AA3A765",
+            "status": "OPEN",
+            "entry_time": "2026-07-18T13:04:19.245513",
+            "exit_time": null,
+            "exit_price": null,
+            "exit_reason": null,
+            "pnl": 0.0,
+            "sl_orderno": null,
+            "sl_trigger_price": 0.0,
+            "sl_limit_price": 0.0,
+            "highest_price": 25.0
+        }
+    ]
+}

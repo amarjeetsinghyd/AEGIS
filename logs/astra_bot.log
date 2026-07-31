@@ -1,0 +1,16 @@
+2026-07-28 23:54:05 - astra_bot_main - INFO - ==============================================
+2026-07-28 23:54:05 - astra_bot_main - INFO - STARTING KINETIC DELTA ORDERFLOW (KDO) BOT
+2026-07-28 23:54:05 - astra_bot_main - INFO - ==============================================
+2026-07-28 23:54:05 - execution_manager - INFO - [ExecutionManager] Configured for PAPER TRADING via PaperOrderLifecycle.
+2026-07-28 23:54:05 - astra_bot_main - INFO - Market is currently closed. Will enter deep sleep until pre-market.
+2026-07-28 23:54:05 - astra_bot_main - INFO - KDO Bot is ready and running!
+2026-07-28 23:54:05 - astra_bot_main - INFO - Bot active runtime closed at 23:54:05. Entering deep sleep...
+2026-07-28 23:54:05 - market_calendar - INFO - Market is closed for trading. Deep sleeping for 9.02 hours until next pre-market at 2026-07-29 08:55:00 IST...
+2026-07-29 08:43:12 - astra_bot_main - INFO - Keyboard interrupt received. Shutting down gracefully...
+2026-07-29 10:07:32 - execution_manager - INFO - [ExecutionManager] Configured for PAPER TRADING via PaperOrderLifecycle.
+2026-07-29 10:08:00 - execution_manager - INFO - [ExecutionManager] Configured for PAPER TRADING via PaperOrderLifecycle.
+2026-07-29 10:08:00 - execution_manager - INFO - Closed Leg SENSEX78000CE: Entry Rs100.00 -> Exit Rs85.00 | PnL: Rs-300.00
+2026-07-29 10:08:00 - execution_manager - INFO - === TRADE CLOSED (Hard SL Hit (-10% Premium Loss: -15.0%)) | Total PnL: Rs-300.00 ===
+2026-07-29 10:14:50 - execution_manager - INFO - [ExecutionManager] Configured for PAPER TRADING via PaperOrderLifecycle.
+2026-07-29 10:14:50 - execution_manager - INFO - Closed Leg SENSEX78000CE: Entry Rs100.00 -> Exit Rs85.00 | PnL: Rs-300.00
+2026-07-29 10:14:50 - execution_manager - INFO - === TRADE CLOSED (Hard SL Hit (-10% Premium Loss: -15.0%)) | Total PnL: Rs-300.00 ===
