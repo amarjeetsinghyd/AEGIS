@@ -6,11 +6,11 @@ import pandas as pd
 from datetime import datetime, timedelta
 from typing import Tuple, List, Dict, Any
 
-from kronos_bot.core.logger import get_logger
-from kronos_bot.config.settings import DATA_DIR, ACTIVE_BROKER, UNDERLYING_PARQUET_FILE
+from common.logger import get_logger
+from astra_bot.config.settings import DATA_DIR, ACTIVE_BROKER, UNDERLYING_PARQUET_FILE
+from common.ipc import SHARED_TICK_FILE
 
 logger = get_logger("data_fetcher")
-SHARED_TICK_FILE = "/dev/shm/shoonya_live_ticks.json"
 
 class DataFetcher:
     def __init__(self, broker_gateway, instrument_repo=None):

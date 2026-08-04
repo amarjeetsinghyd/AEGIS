@@ -10,14 +10,18 @@ BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-from astra_bot.core.logger import get_logger
-from astra_bot.core.data_fetcher import DataFetcher
-from astra_bot.execution.execution_manager import ExecutionManager
-from astra_bot.core.microstructure_engine import KineticMicrostructureEngine, bsm_vectorized_gex
-from astra_bot.dashboard import update_kdo_live_state
-from astra_bot.config.settings import BROKER, COOLDOWN_MINUTES
+# Bind astra runtime paths before other common imports
+import astra_bot.config.settings  # noqa: F401
 
-from astra_bot.config.market_calendar import (
+from common.logger import get_logger
+from astra_bot.core.data_fetcher import DataFetcher
+from common.execution import ExecutionManager
+from astra_bot.core.microstructure_engine import KineticMicrostructureEngine, bsm_vectorized_gex
+from common.ipc import update_kdo_live_state, is_kill_switch_active
+from common.broker import ShoonyaAdapter
+from astra_bot.config.settings import BROKER, COOLDOWN_MINUTES, DATA_DIR
+
+from common.market.market_calendar import (
     is_market_open,
     is_bot_active_hours,
     can_enter_new_trades,
@@ -80,10 +84,8 @@ def main():
     # 1. Initialize broker, execution manager & microstructure engine
     try:
         if BROKER.upper() == "SHOONYA":
-            from astra_bot.core.shoonya_adapter import ShoonyaAdapter
             broker = ShoonyaAdapter()
         else:
-            from astra_bot.core.shoonya_adapter import ShoonyaAdapter
             broker = ShoonyaAdapter()
         fetcher = DataFetcher(broker)
         trader = ExecutionManager(broker, fetcher)
@@ -174,7 +176,7 @@ def main():
                 rollover_pause = rollover_transition or (not buffer_ready)
 
                 # 3. Translate signal into human readable text for Bloomberg UI
-                kill_active = os.path.exists("/dev/shm/KILL_SWITCH_ACTIVE") or os.path.exists(os.path.join(os.path.dirname(__file__), "data", "KILL_SWITCH_ACTIVE"))
+                kill_active = is_kill_switch_active(DATA_DIR)
                 if kill_active:
                     status_str = "🛑 EMERGENCY KILL SWITCH ACTIVATED"
                     reason_str = "Emergency Mobile Kill Switch triggered via Web Dashboard. Trading operations halted."

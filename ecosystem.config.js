@@ -1,32 +1,62 @@
 module.exports = {
   apps: [
     {
-      name: "astra-bot",
-      script: "astra_bot/main.py",
-      interpreter: "/home/opc/astra_bot/venv/bin/python3",
-      cwd: "/home/opc/astra_bot",
-      watch: false,
+      name: "shoonya-data-hub",
+      script: "shoonya_data_hub/main.py",
+      cwd: "/home/opc",
+      interpreter: "python3",
       autorestart: true,
-      max_restarts: 10,
+      watch: false,
+      max_memory_restart: "500M",
+      max_restarts: 20,
       restart_delay: 5000,
-      time: true,
-      kill_timeout: 15000,
       env: {
-        PYTHONPATH: "/home/opc/astra_bot"
+        PYTHONPATH: "/home/opc",
+        BOT_RUNTIME: "hub"
       }
     },
     {
-      name: "astra-dashboard",
-      script: "astra_bot/dashboard.py",
-      interpreter: "/home/opc/astra_bot/venv/bin/python3",
-      cwd: "/home/opc/astra_bot",
-      watch: false,
+      name: "astra-bot",
+      script: "astra_bot/main.py",
+      cwd: "/home/opc",
+      interpreter: "python3",
       autorestart: true,
-      max_restarts: 10,
+      watch: false,
+      max_memory_restart: "1G",
+      max_restarts: 20,
       restart_delay: 5000,
-      time: true,
       env: {
-        PYTHONPATH: "/home/opc/astra_bot"
+        PYTHONPATH: "/home/opc",
+        BOT_RUNTIME: "astra"
+      }
+    },
+    {
+      name: "kronos-bot",
+      script: "kronos_bot/main.py",
+      cwd: "/home/opc",
+      interpreter: "python3",
+      autorestart: true,
+      watch: false,
+      max_memory_restart: "1G",
+      max_restarts: 20,
+      restart_delay: 5000,
+      env: {
+        PYTHONPATH: "/home/opc",
+        BOT_RUNTIME: "kronos"
+      }
+    },
+    {
+      name: "unified-dashboard",
+      script: "unified_dashboard/dashboard.py",
+      cwd: "/home/opc",
+      interpreter: "python3",
+      autorestart: true,
+      watch: false,
+      max_memory_restart: "400M",
+      max_restarts: 10,
+      restart_delay: 3000,
+      env: {
+        PYTHONPATH: "/home/opc"
       }
     }
   ]

@@ -2,9 +2,11 @@
 .env
 .env.*
 *.key
+*.key.pub
 *.pem
 secrets.json
 **/shoonya_session.json
+Oracle SSH keys/
 
 # Python
 venv/
@@ -22,6 +24,7 @@ data/scratch/
 *.json.bak
 **/option_quotes_cache.json
 *.parquet
+*.db
 
 # Archives
 *.tar.gz
@@ -31,3 +34,6 @@ data/scratch/
 Thumbs.db
 .vscode/
 .idea/
+
+# Vendor SDK clone (use upstream; do not embed nested .git)
+shoonya_data_hub/reference/ShoonyaApi-py/
