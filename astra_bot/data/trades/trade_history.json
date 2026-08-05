@@ -1,20 +1,60 @@
 [
-    {
-        "id": 1,
-        "date": "24 Jul 10:55:12",
-        "entry_time": "24 Jul 10:55:12",
-        "exit_time": "11:04:59",
-        "duration": "587s",
-        "symbol": "NIFTY28JUL26C24000",
-        "strategy": "KRONOS_CALL_MOMENTUM",
-        "entry_price": 27.3,
-        "exit_price": 26.7,
-        "opt_pct": -2.2,
-        "idx_pts": 0,
-        "net_pl": -39.0,
-        "capital_used": 1774.5,
-        "chart": "",
-        "reason": "Theta Decay Abort (<5% after 3 mins, P&L: 0.0%)",
-        "result": "MIN LOSS"
+  {
+    "date": "29 Jul 10:08:00",
+    "signal_type": "CALL",
+    "strategy": "KDO",
+    "symbol": "SENSEX78000CE",
+    "quantity": 1,
+    "entry_price": 100.0,
+    "exit_price": 85.0,
+    "net_pl": -300.0,
+    "reason": "Hard SL Hit (-10% Premium Loss: -15.0%)",
+    "feature_vector": {
+      "velocity": 15911.28,
+      "acceleration": 1130.98,
+      "zscore": 4.25,
+      "flowdurationsec": 10,
+      "tradesigner": "PUT_BUILDUP"
+    },
+    "post_trade_attribution": {
+      "outcome": "LOSER",
+      "pnl_rs": -300.0,
+      "trade_duration_sec": 5,
+      "exit_reason": "Hard SL Hit (-10% Premium Loss: -15.0%)",
+      "entry_z_score": 0.0,
+      "entry_flow_duration": 0,
+      "entry_trade_signer": "NEUTRAL",
+      "primary_driver": "SHORT_BURST",
+      "diagnostic_summary": "UNPROFITABLE CALL trade (5s) exited via Hard SL Hit (-10% Premium Loss: -15.0%). Entry Z-Score was 0.0 with NEUTRAL flow."
     }
+  },
+  {
+    "date": "29 Jul 10:14:50",
+    "signal_type": "CALL",
+    "strategy": "KDO",
+    "symbol": "SENSEX78000CE",
+    "quantity": 1,
+    "entry_price": 100.0,
+    "exit_price": 85.0,
+    "net_pl": -300.0,
+    "reason": "Hard SL Hit (-10% Premium Loss: -15.0%)",
+    "feature_vector": {
+      "velocity": 15911.28,
+      "acceleration": 1130.98,
+      "zscore": 4.25,
+      "flowdurationsec": 10,
+      "tradesigner": "PUTBUILDUP"
+    },
+    "post_trade_attribution": {
+      "outcome": "LOSER",
+      "pnl_rs": -300.0,
+      "trade_duration_sec": 5,
+      "exit_reason": "Hard SL Hit (-10% Premium Loss: -15.0%)",
+      "entry_z_score": 0.0,
+      "entry_flow_duration": 0,
+      "entry_trade_signer": "NEUTRAL",
+      "primary_driver": "SHORT_BURST",
+      "diagnostic_summary": "UNPROFITABLE CALL trade (5s) exited via Hard SL Hit (-10% Premium Loss: -15.0%). Entry Z-Score was 0.0 with NEUTRAL flow."
+    }
+  }
 ]
