@@ -260,6 +260,8 @@ def main():
                             q = broker._api.get_quotes(exchange=exch_seg, token=ce_tok)
                             if isinstance(q, dict) and q.get("stat") == "Ok" and "oi" in q:
                                 ce_oi = float(q["oi"])
+                                if ring_buf:
+                                    ring_buf.latest_oi[ce_tok] = ce_oi
                         except Exception:
                             pass
 
@@ -268,6 +270,8 @@ def main():
                             q = broker._api.get_quotes(exchange=exch_seg, token=pe_tok)
                             if isinstance(q, dict) and q.get("stat") == "Ok" and "oi" in q:
                                 pe_oi = float(q["oi"])
+                                if ring_buf:
+                                    ring_buf.latest_oi[pe_tok] = pe_oi
                         except Exception:
                             pass
 
