@@ -1,6 +1,6 @@
 import os
 import json
-from datetime import datetime
+from datetime import datetime, time
 from common.logger import get_logger
 from common.config import get_data_dir
 from common.execution.capital_engine import CapitalEngine
@@ -25,6 +25,11 @@ class StockExecutionManager:
         self.capital_engine = CapitalEngine(mode="PAPER")
 
     def execute_entry(self, signal, symbol, spot_price, reason):
+        now_time = datetime.now().time()
+        if now_time < time(9, 15) or now_time >= time(15, 0):
+            logger.debug(f"Skipping entry for {symbol}: outside 09:15-15:00 window")
+            return
+
         if symbol in self.open_trades:
             logger.info(f"Skipping entry for {symbol}, trade already open.")
             return
@@ -55,6 +60,9 @@ class StockExecutionManager:
     def manage_open_trades(self, current_prices):
         self._manage_post_trades(current_prices)
         """Manage Take Profit (0.5%) and Stop Loss (0.5%)"""
+        now_time = datetime.now().time()
+        is_eod_flatten = now_time >= time(15, 10)
+
         for symbol, trade in list(self.open_trades.items()):
             if symbol not in current_prices:
                 continue
@@ -69,7 +77,9 @@ class StockExecutionManager:
                 pnl_pct = (entry - current_price) / entry
                 
             exit_reason = None
-            if pnl_pct >= 0.005:
+            if is_eod_flatten:
+                exit_reason = "EOD_FLATTEN"
+            elif pnl_pct >= 0.005:
                 exit_reason = "TAKE_PROFIT"
             elif pnl_pct <= -0.0050:
                 exit_reason = "STOP_LOSS"
