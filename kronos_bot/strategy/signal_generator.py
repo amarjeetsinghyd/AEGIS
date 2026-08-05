@@ -25,7 +25,11 @@ import numpy as np
 import pandas as pd
 
 from kronos_bot.core.logger import get_logger
-from kronos_bot.strategy.supertrend import latest_supertrend, filter_entry_signal
+from kronos_bot.strategy.supertrend import (
+    latest_supertrend,
+    filter_entry_signal,
+    supertrend_bias,
+)
 
 logger = get_logger("signal_generator")
 
@@ -84,8 +88,13 @@ class KronosSignalGenerator:
         dict: signal, pred_close, return_pct, supertrend, reason
         """
         neutral = {
-            "signal": "NEUTRAL", "pred_close": 0.0,
-            "return_pct": 0.0, "supertrend": None, "reason": "",
+            "signal": "NEUTRAL",
+            "pred_close": 0.0,
+            "return_pct": 0.0,
+            "supertrend": None,
+            "supertrend_bias": "UNKNOWN",
+            "raw_signal": "NEUTRAL",
+            "reason": "",
         }
 
         # 1. Validate
@@ -161,10 +170,28 @@ class KronosSignalGenerator:
         # 8. Return %
         return_pct = (pred_close - current_close) / current_close
 
-        # 9. Supertrend (5-min, period=10, mult=3.0)
+        # 9. Supertrend (5-min, period=10, mult=3.0) — same idea as TradingView ST
         supertrend_value = latest_supertrend(df, period=_SUPERTREND_PERIOD, multiplier=_SUPERTREND_MULT)
+        st_bias = (
+            supertrend_bias(current_close, supertrend_value)
+            if supertrend_value is not None
+            else "UNKNOWN"
+        )
+        st_display = f"{supertrend_value:.2f}" if supertrend_value is not None else "N/A"
+        if st_bias == "UPTREND":
+            st_relation = f"Close {current_close:.2f} > ST {st_display} (green / bullish regime)"
+        elif st_bias == "DOWNTREND":
+            st_relation = f"Close {current_close:.2f} < ST {st_display} (red / bearish regime)"
+        else:
+            st_relation = f"Close {current_close:.2f} | ST {st_display}"
 
-        # 10. Raw directional decision
+        # Logged first so every 5m boundary shows the filter regime clearly
+        logger.info(
+            f"[SUPERTREND] {st_bias} | period={_SUPERTREND_PERIOD} mult={_SUPERTREND_MULT} | "
+            f"{st_relation}"
+        )
+
+        # 10. Raw Kronos directional decision (before Supertrend filter)
         if return_pct >= threshold:
             raw_signal = "CALL"
         elif return_pct <= -threshold:
@@ -172,54 +199,51 @@ class KronosSignalGenerator:
         else:
             raw_signal = "NEUTRAL"
 
-        # 11. Supertrend gate
+        # 11. Supertrend gate — CALL only in UPTREND, PUT only in DOWNTREND
         if raw_signal == "NEUTRAL":
             final_signal = "NEUTRAL"
             reason = (
                 f"NEUTRAL: Kronos delta={return_pct*100:+.3f}% < threshold "
-                f"+-{threshold*100:.2f}%. ({current_close:.2f} -> {pred_close:.2f})"
+                f"+-{threshold*100:.2f}%. ({current_close:.2f} -> {pred_close:.2f}) | ST={st_bias}"
             )
         elif supertrend_value is None:
             final_signal = "NEUTRAL"
             reason = f"NEUTRAL: Supertrend not computable (need >= {_SUPERTREND_PERIOD + 5} candles)."
         else:
             final_signal, gate_reason = filter_entry_signal(raw_signal, current_close, supertrend_value)
-            st_str = f"{supertrend_value:.2f}"
             if final_signal in ("CALL", "PUT"):
                 reason = (
                     f"{final_signal}: Kronos delta={return_pct*100:+.3f}% >= {threshold*100:.2f}% | "
-                    f"Close={current_close:.2f} | Supertrend={st_str} | {gate_reason}"
+                    f"{gate_reason} | Close={current_close:.2f} ST={st_display}"
                 )
             else:
                 reason = (
-                    f"NEUTRAL (Supertrend gate): Kronos={raw_signal} "
+                    f"NEUTRAL (Supertrend gate): Kronos raw={raw_signal} "
                     f"delta={return_pct*100:+.3f}% but {gate_reason}. "
-                    f"Supertrend={st_str} | Close={current_close:.2f}"
+                    f"Close={current_close:.2f} ST={st_display}"
                 )
 
-        st_display = f"{supertrend_value:.2f}" if supertrend_value is not None else "N/A"
         logger.info(
-            f"[SIGNAL] {final_signal} | delta={return_pct*100:+.3f}% | "
-            f"Current={current_close:.2f} -> Pred={pred_close:.2f} | ST={st_display}"
+            f"[SIGNAL] final={final_signal} | kronos_raw={raw_signal} | "
+            f"delta={return_pct*100:+.3f}% | Current={current_close:.2f} -> Pred={pred_close:.2f} | "
+            f"ST={st_bias} ({st_display})"
         )
 
         return {
-            "signal":     final_signal,
+            "signal": final_signal,
             "pred_close": pred_close,
             "return_pct": return_pct,
             "supertrend": supertrend_value,
-            "reason":     reason,
+            "supertrend_bias": st_bias,
+            "raw_signal": raw_signal,
+            "reason": reason,
         }
 
 
 @contextlib.contextmanager
 def _no_grad_ctx():
-    """No-grad context compatible with PyTorch >= 1.9."""
-    try:
-        import torch
-        with torch.inference_mode():
-            yield
-    except AttributeError:
-        import torch
-        with torch.no_grad():
-            yield
+    """No-grad context compatible with older PyTorch (do NOT swallow body AttributeErrors)."""
+    import torch
+    ctx = torch.inference_mode if hasattr(torch, "inference_mode") else torch.no_grad
+    with ctx():
+        yield

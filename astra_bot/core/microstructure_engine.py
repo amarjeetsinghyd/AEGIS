@@ -79,6 +79,25 @@ class EmpiricalTail:
             self.values.append(float(x))
 
 
+class AdaptiveNoiseFloor:
+    def __init__(self, window=60, min_floor=1000.0):
+        self.history = collections.deque(maxlen=window)
+        self.min_floor = min_floor
+
+    def update(self, raw_tick_value):
+        if np.isfinite(raw_tick_value):
+            self.history.append(float(raw_tick_value))
+
+    def get_floor(self):
+        if len(self.history) < 10:
+            return float(self.min_floor)
+        arr = np.array(self.history, dtype=np.float64)
+        median = np.median(arr)
+        mad = np.median(np.abs(arr - median))
+        robust_std = 1.4826 * mad
+        return float(max(robust_std, self.min_floor))
+
+
 class KineticMicrostructureEngine:
     """
     Full replacement architecture:
@@ -102,6 +121,8 @@ class KineticMicrostructureEngine:
         self.resid_tail = EmpiricalTail(tail_memory)
         self.breadth_tail = EmpiricalTail(tail_memory)
         self.flow_tail = EmpiricalTail(tail_memory)
+        
+        self.vel_noise = AdaptiveNoiseFloor(window=60, min_floor=1000.0)
 
         self.acceleration_threshold = 0.0
 
@@ -229,6 +250,7 @@ class KineticMicrostructureEngine:
             "velocity_path": state["velocity_path"],
             "acceleration_path": state["acceleration_path"],
             "residuals": state["residuals"],
+            "velocity_noise_floor": self.vel_noise.get_floor(),
         }
 
     def analyze_trade_signing(self, snapshots: list) -> dict:
@@ -483,5 +505,8 @@ class KineticMicrostructureEngine:
         self.resid_tail.update(resid_tail_value)
         self.breadth_tail.update(max(breadth, 0.0))
         self.flow_tail.update(max(flowdurationsec, 0.0))
+        
+        # Continuously update the background noise tracker
+        self.vel_noise.update(k.get("raw_velocity", 0.0))
 
         return result

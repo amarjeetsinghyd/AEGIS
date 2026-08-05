@@ -47,15 +47,33 @@ def latest_supertrend(candles: pd.DataFrame, period: int = 10, multiplier: float
     return value if np.isfinite(value) else None
 
 
+def supertrend_bias(current_price: float, supertrend_value: float) -> str:
+    """
+    TradingView-style regime label for the latest completed bar.
+
+    UPTREND  = close above Supertrend (green line below price)
+    DOWNTREND = close below Supertrend (red line above price)
+    """
+    if current_price is None or supertrend_value is None:
+        return "UNKNOWN"
+    if float(current_price) > float(supertrend_value):
+        return "UPTREND"
+    if float(current_price) < float(supertrend_value):
+        return "DOWNTREND"
+    # Exact touch: treat as continuation of prior is unavailable; call neutral-friendly UNKNOWN
+    return "UNKNOWN"
+
+
 def filter_entry_signal(signal: str, current_price: float, supertrend_value: float):
     """Block counter-trend option entry signals while preserving other signals."""
     signal_text = str(signal).upper().replace("_", " ").strip()
     signal_text = signal_text.replace("BUY", "").replace("SELL", "").strip()
+    bias = supertrend_bias(current_price, supertrend_value)
 
-    if signal_text == "PUT" and current_price > supertrend_value:
-        return "NEUTRAL", "PUT blocked: price above 5-minute Supertrend"
-    if signal_text == "CALL" and current_price < supertrend_value:
-        return "NEUTRAL", "CALL blocked: price below 5-minute Supertrend"
+    if signal_text == "PUT" and bias == "UPTREND":
+        return "NEUTRAL", f"PUT blocked: Supertrend {bias} (price above ST)"
+    if signal_text == "CALL" and bias == "DOWNTREND":
+        return "NEUTRAL", f"CALL blocked: Supertrend {bias} (price below ST)"
     if signal_text in {"CALL", "PUT"}:
-        return signal_text, "Supertrend aligned"
-    return signal_text or str(signal).upper(), "Supertrend aligned"
+        return signal_text, f"Supertrend aligned ({bias})"
+    return signal_text or str(signal).upper(), f"Supertrend {bias}"

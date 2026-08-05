@@ -1,24 +1,26 @@
 # Quant-Bot System Architecture (Canonical)
 
 **Status:** Active source of truth — read this before changing code  
-**Updated:** 2026-08-04 (night IST — long-form AI handoff)  
+**Updated:** 2026-08-05 (IST — WS synth vol, inference, −25% SL, semantic map)  
 **Scope:** Local monorepo + Oracle VPS (`opc@137.23.41.38`, user `opc`)  
 **Companion living log:** [`AI_CHANGELOG.md`](AI_CHANGELOG.md) (append after non-trivial work)  
+**Code navigation map:** [`SEMANTIC_MAP.md`](SEMANTIC_MAP.md) (folder → file → function)  
 **Broker quick rules:** [`shoonya_data_hub/docs/SHOONYA_ORDER_RULES.md`](shoonya_data_hub/docs/SHOONYA_ORDER_RULES.md)
 
-All previous architecture / KDO-v2 / ASTRA-v3 / `ai_guide` / `future_roadmap` / old `changelog` markdown files were deleted. **This file wins** over chat memory when they conflict.
+All previous architecture / KDO-v2 / ASTRA-v3 / `ai_guide` / `future_roadmap` / old `changelog` markdown files were deleted. **This file wins** over chat memory when they conflict. For “where is the code?”, use [`SEMANTIC_MAP.md`](SEMANTIC_MAP.md).
 
 ---
 
 ## 0. Instructions for any AI / engineer opening this repo
 
 1. Read **§1 (mission + Friday incident)** and **§12 (never again)** first.
-2. Kronos is the **priority engine** until paper-stable. Do **not** refactor Astra exits while Kronos gaps remain.
-3. Shoonya API is **VPS-only** (IP whitelist). Never run broker login/WS/orders from a local laptop.
-4. After any non-trivial change: update **this file** and append [`AI_CHANGELOG.md`](AI_CHANGELOG.md).
-5. Restart PM2 **only for processes whose code changed**, preferably **once at end of a batch** — not after every micro-edit. Do not needlessly restart Astra when only Kronos/hub changed.
-6. Default capital mode is **paper**: `ENABLE_LIVE_BROKERAGE_EXECUTION=False`.
-7. Do not invent GTC orders. Do not put Kronos on KDO `ExecutionManager`. Do not fake volume as `10_000_000`.
+2. For file/folder/function lookup, open [`SEMANTIC_MAP.md`](SEMANTIC_MAP.md) (symptom → file triage at bottom).
+3. Kronos is the **priority engine** until paper-stable. Do **not** refactor Astra exits while Kronos gaps remain.
+4. Shoonya API is **VPS-only** (IP whitelist). Never run broker login/WS/orders from a local laptop.
+5. After any non-trivial change: update **this file**, append [`AI_CHANGELOG.md`](AI_CHANGELOG.md), and refresh [`SEMANTIC_MAP.md`](SEMANTIC_MAP.md) if ownership/paths moved.
+6. Restart PM2 **only for processes whose code changed**, preferably **once at end of a batch** — not after every micro-edit. Do not needlessly restart Astra when only Kronos/hub changed.
+7. Default capital mode is **paper**: `ENABLE_LIVE_BROKERAGE_EXECUTION=False`.
+8. Do not invent GTC orders. Do not put Kronos on KDO `ExecutionManager`. Do not fake volume as `10_000_000`.
 
 ---
 
@@ -57,8 +59,8 @@ A Kronos PUT was entered **late session** (~after 15:00). Operator expected a **
 
 - Dedicated **KronosExecutionManager**
 - Resting **+10% DAY LMT TP** on entry
-- Exit: **5m underlying Chandelier** + **600s time stop** + **force flatten ≥ 15:10**
-- **No premium hard SL**
+- Exit: **5m underlying Chandelier** + **−25% premium hard SL (fallback)** + **600s time stop** + **force flatten ≥ 15:10**
+- Premium hard SL is **only** the −25% fallback (not KDO trailing / flow exits)
 - **No KDO flow / OI exits** on Kronos
 - Entry window **09:20–14:50**
 - Real **synthetic constituent volume** (never fake 10M)
@@ -70,9 +72,10 @@ A Kronos PUT was entered **late session** (~after 15:00). Operator expected a **
 
 ```text
 quant-bot/
-  ARCHITECTURE.md                 # THIS FILE (canonical)
+  ARCHITECTURE.md                 # THIS FILE (canonical policy/design)
+  SEMANTIC_MAP.md                 # Folder → file → function navigation
   AI_CHANGELOG.md                 # Agent living memory (append-only dated notes)
-  README.md                       # Short pointer to the two docs above
+  README.md                       # Short pointer to the docs above
   ecosystem.config.js             # PM2: hub + astra + kronos + dashboard
   requirements.txt
   institutional_memory/
@@ -312,9 +315,9 @@ From `common/execution/execution_manager.py` (order of evaluation):
 
 1. **Premium hard SL** — e.g. −25% on option premium (KDO path).
 2. **Premium trailing** / related premium risk.
-3. **Time cap** (KDO hold limit — not the same as Kronos 600s Chandelier stack).
+3. **Time cap** (120-second / 2-minute hard scalp cap).
 4. **OI reversal** (optional; gated by `OI_REVERSAL_EXIT_ENABLED`, threshold 50k, min hold 60s).
-5. **Flow-decay hysteresis** (Schmitt-trigger style): min hold 15s, velocity thresholds, confirm-check counts (`FLOW_EXIT_*` constants).
+5. **Dynamic Flow-decay hysteresis** (MAD-based Adaptive Noise Floor): Exits trigger only if the velocity drops a 1.0x multiple below the live background noise floor measured continuously by `KineticMicrostructureEngine`. Removes microscopic flickering exits.
 
 Strategy tag on trades: `KINETIC_DELTA_ORDERFLOW`.
 
@@ -432,9 +435,10 @@ Pipeline:
    - `return_pct ≤ −0.10%` → raw **PUT**
    - else **NEUTRAL**
 5. Supertrend gate on **same 5m** OHLC — period **10**, multiplier **3.0**, Wilder ATR (`kronos_bot/strategy/supertrend.py`):
-   - CALL only if `close > Supertrend`
-   - PUT only if `close < Supertrend`
-   - else force **NEUTRAL**
+   - **UPTREND** = close > Supertrend (TradingView green line below price) → CALL allowed
+   - **DOWNTREND** = close < Supertrend (TradingView red line above price) → PUT allowed
+   - Counter-trend raw Kronos signal → force **NEUTRAL**
+   - Every 5m logs: `[SUPERTREND] UPTREND|DOWNTREND`, then `[SIGNAL] final=… | kronos_raw=…`, then `[5m DECISION] …`
 6. **1-minute Net Delta OI is SHADOW ONLY** — logged / saved in decision payload; **never blocks entry**.
 
 Entry proceeds only if final signal ∈ {CALL, PUT} **and** `KronosExecutionManager.can_enter(now)`.
@@ -459,9 +463,9 @@ File: `kronos_bot/execution/kronos_execution_manager.py`
 |---|---|---|
 | 0 | Force flatten | `now.time() ≥ 15:10` |
 | 1 | +10% TP | Resting DAY LMT sell at `round_tick(entry × 1.10)` |
-| 2 | Chandelier | 5m underlying, period 10, mult **2.0**; ratchet favorable only |
-| 3 | Time stop | **600 seconds** from entry |
-| — | No premium hard SL | Explicit |
+| 2 | **−25% premium hard SL** | Fallback when Chandelier is unreliable (both lines above price, etc.) |
+| 3 | Chandelier | 5m underlying, period 10, mult **2.0**; ratchet favorable only |
+| 4 | Time stop | **600 seconds** from entry |
 | — | No KDO flow/OI exits | Explicit |
 
 Chandelier formulas:
@@ -499,6 +503,7 @@ Deps: `torch`, `huggingface_hub`. Weights via HuggingFace hub cache on VPS under
 | Supertrend | period 10, mult 3.0 | `signal_generator.py` / `supertrend.py` |
 | Chandelier | period 10, mult 2.0 | `kronos_execution_manager.py` |
 | TP | +10% | `kronos_execution_manager.py` |
+| Premium hard SL | −25% (fallback) | `kronos_execution_manager.py` |
 | Max hold | 600s | `kronos_execution_manager.py` |
 | Entry cutoff | 14:50 | `KRONOS_ENTRY_CUTOFF` |
 | Force flatten | 15:10 | `KRONOS_FORCE_FLATTEN` |
@@ -520,7 +525,7 @@ Deps: `torch`, `huggingface_hub`. Weights via HuggingFace hub cache on VPS under
 | Candles | `underlying_candles_{NIFTY,SENSEX}.parquet` | ML window |
 | Live metrics | `/dev/shm/kronos_live_state.json` | Dashboard only (ephemeral) |
 
-On EM init, if active context is OPEN, restore and continue enforcing TP / Chandelier / 15:10 / 600s — do not orphan NRML risk after a restart.
+On EM init, if active context is OPEN, restore and continue enforcing TP / −25% SL / Chandelier / 15:10 / 600s — do not orphan NRML risk after a restart.
 
 ---
 
@@ -686,7 +691,7 @@ Entry limit buffer (marketable LMT): `ENTRY_LIMIT_BUFFER_PCT=0.025`, floor `ENTR
 ## 13. Agent operating rules
 
 1. Prefer editing Kronos path until paper-stable; leave Astra alone unless asked.
-2. Update `ARCHITECTURE.md` + append `AI_CHANGELOG.md` after non-trivial work.
+2. Update `ARCHITECTURE.md` + append `AI_CHANGELOG.md` after non-trivial work; refresh `SEMANTIC_MAP.md` if ownership/paths moved.
 3. Restart PM2 selectively at **end of batch**.
 4. Never commit secrets (`.env`, session JSON, SSH private keys).
 5. Never invent broker features Shoonya does not support (GTC, etc.).
@@ -694,36 +699,41 @@ Entry limit buffer (marketable LMT): `ENTRY_LIMIT_BUFFER_PCT=0.025`, floor `ENTR
 
 ---
 
-## 14. Implementation status snapshot (2026-08-04 night)
+## 14. Implementation status snapshot (2026-08-05)
 
 | Item | Status |
 |---|---|
 | Modular `common/` + hub + dual engines + light dashboard | Done |
 | Kronos local model load (no `transformers`) | Done |
-| Separate Kronos EM (TP + Chandelier + 600s + **15:10** flatten) | Done (paper) |
-| Per-index 512-bar windows | Done |
-| Live WS synthetic constituent volume (hub) | Done (subscribed; validate live at open) |
-| EOD/backfill REST **5m** constituent volumes | Done (SENSEX+NIFTY rebuilt) |
-| Dashboard Kronos-left + trade history disk + no kill UI | Done |
+| Separate Kronos EM (TP + **−25% hard SL** + Chandelier + 600s + **15:10** flatten) | Done (paper) |
+| Per-index 512-bar windows + REST candle repair | Done |
+| Live WS synthetic constituent volume (hub touchline + tick map) | Done (verified climbing Aug 5) |
+| Kronos REST synth-vol fallback when hub=0 | Done |
+| Inference timestamp / `_no_grad_ctx` mask fix | Done (verified NEUTRAL) |
+| Premarket sleep to 09:14:30 + active-index refresh | Done |
+| EOD/backfill REST **5m** constituent volumes | Done |
+| Dashboard Kronos-left + CALL/PUT colors + trade history | Done |
+| `SEMANTIC_MAP.md` code navigation | Done |
 | Shoonya IP whitelist documented | Done |
-| Official SDK under data hub | Done |
 | Product code `M` vs `N` confirmation | **Open** — before live capital |
-| First paper day on SENSEX with new EM + synth vol | **Pending** next session |
+| Full paper entry → TP/SL/Chandelier/15:10 on clean SENSEX day | **Pending** observe |
 | Astra deep work | **Deferred** until Kronos paper-stable |
 
 ---
 
 ## 15. Quick file map (where to edit what)
 
+**Full semantic map (folder → class → function → symptom triage):** [`SEMANTIC_MAP.md`](SEMANTIC_MAP.md)
+
 | Concern | Primary file(s) |
 |---|---|
-| Kronos loop / EOD | `kronos_bot/main.py` |
-| Candle OHLC+vol backfill | `kronos_bot/core/data_fetcher.py` |
+| Kronos loop / EOD / candle logs | `kronos_bot/main.py` |
+| Candle OHLC+vol + REST repair | `kronos_bot/core/data_fetcher.py` |
 | Signal + Supertrend | `kronos_bot/strategy/signal_generator.py`, `supertrend.py` |
-| Entries/exits | `kronos_bot/execution/kronos_execution_manager.py` |
-| Model | `kronos_bot/model/` |
+| Entries/exits (TP / −25% SL / Chandelier) | `kronos_bot/execution/kronos_execution_manager.py` |
+| Model / timestamps | `kronos_bot/model/kronos.py` |
 | Hub ticks + WS synth vol | `shoonya_data_hub/main.py` |
-| WS accumulator | `common/broker/shoonya_adapter.py` |
+| WS accumulator / tick map | `common/broker/shoonya_adapter.py` |
 | Constituents | `institutional_memory/constituents.json` |
 | Calendar / CAS times | `common/market/market_calendar.py` |
 | Dashboard | `unified_dashboard/dashboard.py` |
@@ -925,11 +935,11 @@ Paper mode may arm `PAPER_TP_*` synthetic ids when live resting place is skipped
 
 ## 24. Open items / next session checklist
 
-1. **Paper-test next session** (if Wed/Thu → SENSEX): live WS synth vol → entry → TP or Chandelier or **15:10** flatten.
+1. **Paper-test** next session (Wed/Thu → SENSEX): clean candles → entry → +10% TP **or** −25% hard SL **or** Chandelier **or** 15:10 flatten.
 2. Confirm product code **`M` vs `N`** vs account `prarr` before any live capital.
 3. Watch late-session volume quirks (CAS flat bars / occasional spikes) — log, don’t silently fake.
 4. Keep Astra deferred until Kronos paper-stable.
-5. After each non-trivial change: update **this file** + append **`AI_CHANGELOG.md`**; sync both to VPS `/home/opc/`.
+5. After each non-trivial change: update **this file** + append **`AI_CHANGELOG.md`** + refresh **`SEMANTIC_MAP.md`** if paths moved; sync docs to VPS `/home/opc/`.
 
 ---
 
@@ -938,11 +948,12 @@ Paper mode may arm `PAPER_TP_*` synthetic ids when live resting place is skipped
 1. §0 agent instructions  
 2. §1 mission + Friday incident  
 3. §12 never-again list  
-4. §6 Kronos full detail + §16 dataflow  
-5. §3 Shoonya rules + §18 VPS ops  
-6. §7 hub schemas + §19 failure modes  
-7. §14 status snapshot + §24 open checklist  
-8. Skim §5 Astra only enough to avoid contaminating Kronos  
-9. Append outcomes to `AI_CHANGELOG.md`
+4. [`SEMANTIC_MAP.md`](SEMANTIC_MAP.md) — where code lives / symptom → file  
+5. §6 Kronos full detail + §16 dataflow  
+6. §3 Shoonya rules + §18 VPS ops  
+7. §7 hub schemas + §19 failure modes  
+8. §14 status snapshot + §24 open checklist  
+9. Skim §5 Astra only enough to avoid contaminating Kronos  
+10. Append outcomes to `AI_CHANGELOG.md`
 
-**End of canonical architecture.** If you need a shorter map, use §15 file map; if you need living history, use `AI_CHANGELOG.md`.
+**End of canonical architecture.** Navigation → [`SEMANTIC_MAP.md`](SEMANTIC_MAP.md); living history → [`AI_CHANGELOG.md`](AI_CHANGELOG.md).

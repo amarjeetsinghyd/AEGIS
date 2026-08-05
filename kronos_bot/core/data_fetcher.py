@@ -108,6 +108,46 @@ class DataFetcher:
         except Exception:
             return 0
 
+    def rest_synthetic_volume_for_latest_bar(self, target_index: str = None) -> int:
+        """
+        Fallback when hub WS accum is 0: sum constituent REST 5m volumes for the
+        most recent completed 5-minute bar (last ~20 minutes lookback).
+        """
+        name = (target_index or self.get_active_instrument()[0]).upper()
+        now = datetime.now()
+        # Align to last closed 5m boundary (e.g. at 09:25:02 → bar 09:20)
+        closed_minute = now.minute - (now.minute % 5)
+        bar_end = now.replace(minute=closed_minute, second=0, microsecond=0)
+        if now.second < 2 and closed_minute == now.minute:
+            bar_end = bar_end - timedelta(minutes=5)
+        bar_start = bar_end - timedelta(minutes=5)
+        series = self._fetch_constituent_volume_5m(
+            name, fromdate=now - timedelta(minutes=25), todate=now
+        )
+        if series is None or series.empty:
+            logger.warning(f"[REST SynthVol] No constituent 5m volumes for {name}")
+            return 0
+        # Match bar by timestamp (normalize tz-naive)
+        try:
+            idx = pd.to_datetime(series.index)
+            # Prefer exact bar_start label if present; else nearest <= bar_end
+            target = pd.Timestamp(bar_start)
+            if target in idx:
+                vol = int(float(series.loc[target]))
+            else:
+                eligible = series[idx <= pd.Timestamp(bar_end)]
+                if eligible.empty:
+                    return 0
+                vol = int(float(eligible.iloc[-1]))
+            if vol > 0:
+                logger.info(
+                    f"[REST SynthVol] Fallback {name} bar~{bar_start.strftime('%H:%M')} vol={vol:,}"
+                )
+            return max(vol, 0)
+        except Exception as e:
+            logger.warning(f"[REST SynthVol] fallback failed for {name}: {e}")
+            return 0
+
     def get_weekly_option_tokens(self, target_index: str = None) -> pd.DataFrame:
         name = target_index if target_index else self.get_active_instrument()[0]
         exch_seg = "BFO" if name == "SENSEX" else "NFO"
@@ -341,7 +381,7 @@ class DataFetcher:
                 try:
                     df = pd.read_parquet(candidate)
                     if len(df) > 0:
-                        logger.info(
+                        logger.debug(
                             f"Bootstrapped {len(df)} candles from {os.path.basename(candidate)}"
                         )
                         return df

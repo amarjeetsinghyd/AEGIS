@@ -468,12 +468,20 @@ def auto_regressive_inference(tokenizer, model, x, x_stamp, y_stamp, max_context
 
 
 def calc_time_stamps(x_timestamp):
-    time_df = pd.DataFrame()
-    time_df['minute'] = x_timestamp.dt.minute
-    time_df['hour'] = x_timestamp.dt.hour
-    time_df['weekday'] = x_timestamp.dt.weekday
-    time_df['day'] = x_timestamp.dt.day
-    time_df['month'] = x_timestamp.dt.month
+    """Build Kronos time features from a DatetimeIndex or datetime Series."""
+    if isinstance(x_timestamp, pd.DatetimeIndex):
+        ts = x_timestamp
+    else:
+        ts = pd.DatetimeIndex(pd.to_datetime(x_timestamp))
+    time_df = pd.DataFrame(
+        {
+            "minute": ts.minute,
+            "hour": ts.hour,
+            "weekday": ts.weekday,
+            "day": ts.day,
+            "month": ts.month,
+        }
+    )
     return time_df
 
 

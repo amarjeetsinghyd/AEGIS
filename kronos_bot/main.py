@@ -24,13 +24,38 @@ from common.market.market_calendar import (
     is_market_open,
     is_bot_active_hours,
     is_pre_market,
-    sleep_until_next_premarket
+    sleep_until_next_premarket,
+    MARKET_OPEN_TIME,
 )
 
 logger = get_logger("kronos_bot_main")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
+DECISION_JOURNAL_DIR = os.path.join(DATA_DIR, "decisions")
+DECISION_JOURNAL_PATH = os.path.join(DECISION_JOURNAL_DIR, "decision_journal.jsonl")
+os.makedirs(DECISION_JOURNAL_DIR, exist_ok=True)
+
+
+def _append_decision_journal(row: dict) -> None:
+    """Append one 5m prediction row for EOD Supertrend / Kronos paper analysis."""
+    try:
+        with open(DECISION_JOURNAL_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(row, default=str) + "\n")
+    except Exception as exc:
+        logger.warning(f"[DECISION JOURNAL] write failed: {exc}")
+
+# Wake from pre-market deep sleep 30s before continuous open (09:14:30).
+PREMARKET_WAKE_TIME = dt_time(9, 14, 30)
+
+
+def _chunked_sleep_until(target: datetime, chunk_sec: float = 30.0) -> None:
+    """Sleep until target in small chunks so SIGTERM/SIGINT can land cleanly."""
+    while True:
+        remaining = (target - datetime.now()).total_seconds()
+        if remaining <= 0:
+            return
+        time.sleep(min(chunk_sec, remaining))
 
 
 def get_shared_oi_delta_details() -> dict:
@@ -73,15 +98,24 @@ def main():
     last_oi_log_minute = None
     eod_backfill_done = False
     opening_trade_evaluated = False
-    last_premarket_log_time = 0
-    
+    premarket_handshake_done_for = None  # date of last 08:55 handshake
+
     name, exch_seg = fetcher.get_active_instrument()
-    logger.info(f"08:55 AM PRE-MARKET HANDSHAKE: Active Index = {name} ({exch_seg}). Pre-market setup complete.")
+    logger.info(f"PRE-MARKET HANDSHAKE: Active Index = {name} ({exch_seg}).")
+    update_kronos_live_state({
+        "active_index": name,
+        "spot_price": fetcher.get_index_ltp(name),
+        "signal": "Waiting",
+        "signal_status": "Waiting",
+        "reasoning": f"Handshake complete — {name} day. Sleeping until 09:14:30 IST.",
+    })
 
     while True:
         try:
             now = datetime.now()
-            
+            # Always refresh weekday rotation (fixes overnight NIFTY→SENSEX stale label)
+            name, exch_seg = fetcher.get_active_instrument()
+
             # 1. Check active bot runtime
             if not is_bot_active_hours(now):
                 if not eod_backfill_done and now.time() >= dt_time(15, 31):
@@ -96,17 +130,56 @@ def main():
                 sleep_until_next_premarket()
                 eod_backfill_done = False
                 opening_trade_evaluated = False
+                premarket_handshake_done_for = None
+                name, exch_seg = fetcher.get_active_instrument()
+                logger.info(f"PRE-MARKET HANDSHAKE (wake): Active Index = {name} ({exch_seg}).")
+                update_kronos_live_state({
+                    "active_index": name,
+                    "spot_price": fetcher.get_index_ltp(name),
+                    "signal": "Waiting",
+                    "signal_status": "Waiting",
+                    "reasoning": f"Handshake complete — {name} day. Sleeping until 09:14:30 IST.",
+                })
                 continue
 
-            # 2. Pre-market logging heartbeat (08:55 AM to 09:15 AM IST)
+            # 2. Pre-market: handshake once, then sleep until 09:14:30 (no 30s spam)
             if is_pre_market(now):
-                if time.time() - last_premarket_log_time >= 30:
-                    last_premarket_log_time = time.time()
-                    spot_price = fetcher.get_index_ltp()
-                    target_time = datetime.combine(now.date(), dt_time(9, 15, 0))
-                    secs_to_open = (target_time - now).total_seconds()
-                    logger.info(f"[PRE-MARKET STANDBY] Active Index: {name} (LTP: {spot_price:.2f}). Standing by until 09:15:00 AM IST market open ({int(secs_to_open)}s remaining)...")
-                time.sleep(2)
+                if premarket_handshake_done_for != now.date():
+                    spot_price = fetcher.get_index_ltp(name)
+                    logger.info(
+                        f"[PRE-MARKET] Active Index={name} ({exch_seg}) LTP={spot_price:.2f}. "
+                        f"Sleeping until {PREMARKET_WAKE_TIME.strftime('%H:%M:%S')} IST (no polling)."
+                    )
+                    update_kronos_live_state({
+                        "active_index": name,
+                        "spot_price": spot_price,
+                        "signal": "Waiting",
+                        "signal_status": "Waiting",
+                        "reasoning": f"{name} pre-market — wake at 09:14:30 IST.",
+                    })
+                    premarket_handshake_done_for = now.date()
+
+                wake_at = datetime.combine(now.date(), PREMARKET_WAKE_TIME)
+                if now < wake_at:
+                    _chunked_sleep_until(wake_at)
+                    continue
+
+                # 09:14:30 → 09:15:00: short standby, then enter session loop
+                open_at = datetime.combine(now.date(), MARKET_OPEN_TIME)
+                if now < open_at:
+                    spot_price = fetcher.get_index_ltp(name)
+                    logger.info(
+                        f"[PRE-MARKET WAKE] Active Index={name} LTP={spot_price:.2f}. "
+                        f"Market opens in {max(0, int((open_at - now).total_seconds()))}s."
+                    )
+                    update_kronos_live_state({
+                        "active_index": name,
+                        "spot_price": spot_price,
+                        "signal": "Waiting",
+                        "signal_status": "Waiting",
+                        "reasoning": f"{name} — final standby before 09:15 open.",
+                    })
+                    _chunked_sleep_until(open_at, chunk_sec=1.0)
                 continue
 
             # 3. Transparent 1-Minute Net Delta OI Periodic Log
@@ -129,42 +202,101 @@ def main():
             
             if is_boundary and candle_time_str != last_processed_candle_time:
                 last_processed_candle_time = candle_time_str
-                
-                spot_price = fetcher.get_index_ltp()
+                closed_time_short = now.strftime("%H:%M:00")
+                logger.info(
+                    f"========== CANDLE BOUNDARY {candle_time_str} | {name} =========="
+                )
+
+                spot_price = fetcher.get_index_ltp(name)
                 if spot_price <= 0:
                     logger.warning("Could not fetch spot index price. Retrying...")
                     time.sleep(2)
                     continue
 
+                # --- Step 1: synthetic volume (hub WS first, REST fallback) ---
+                vol_source = "hub_ws"
                 synth_vol = fetcher.get_hub_synthetic_volume(name)
                 if synth_vol <= 0:
                     logger.warning(
-                        f"[SYNTHETIC VOLUME] Hub reported 0 for {name} — "
+                        f"[1/4 SYNTHETIC VOLUME] Hub WS reported 0 for {name} — "
+                        "trying REST 5m constituent fallback"
+                    )
+                    try:
+                        synth_vol = int(fetcher.rest_synthetic_volume_for_latest_bar(name) or 0)
+                        vol_source = "rest_5m_constituents" if synth_vol > 0 else "none"
+                    except Exception as e:
+                        logger.warning(f"[1/4 SYNTHETIC VOLUME] REST fallback error: {e}")
+                        synth_vol = 0
+                        vol_source = "none"
+                if synth_vol <= 0:
+                    logger.warning(
+                        f"[1/4 SYNTHETIC VOLUME] Still 0 for {name} — "
                         "check data-hub constituent WS subscription"
                     )
-
-                closed_time_short = now.strftime("%H:%M:00")
-                logger.info(f"[SYNTHETIC VOLUME] Compiled live 5-minute volume for closed candle [{closed_time_short}]: {synth_vol:,} shares.")
-                logger.info(f"Combining Price & Volume into sliding window for candle [{candle_time_str}] (Close: {spot_price:.2f} | Vol: {synth_vol:,})...")
-
-                # Fetch true completed 5-min REST candle to replace provisional opening candle
-                target_token, _, target_exch = fetcher.get_cash_index_token()
-                open_p, high_p, low_p, close_p = spot_price, spot_price, spot_price, spot_price
-                try:
-                    rest_series = fetcher.broker.historical_provider.get_historical_candles(
-                        exchange=target_exch, token=target_token, timeframe="5", start_time=now - timedelta(minutes=15), end_time=now
+                else:
+                    logger.info(
+                        f"[1/4 SYNTHETIC VOLUME] Closed candle [{closed_time_short}] "
+                        f"source={vol_source} | compiled_vol={synth_vol:,} shares "
+                        f"(sum of active-index constituents)"
                     )
-                    if isinstance(rest_series, list) and len(rest_series) > 0:
-                        latest_c = rest_series[0]
-                        open_p = float(latest_c.get('into', spot_price))
-                        high_p = float(latest_c.get('inth', spot_price))
-                        low_p = float(latest_c.get('intl', spot_price))
-                        close_p = float(latest_c.get('intc', spot_price))
-                except Exception:
-                    pass
 
+                # --- Step 2: REST 5m index OHLC ---
+                target_token, _, target_exch = fetcher.get_cash_index_token(name)
+                open_p = high_p = low_p = close_p = float(spot_price)
+                ohlc_source = "spot_ltp_fallback"
+                try:
+                    hist = getattr(fetcher.broker, "historical_provider", None)
+                    rest_df = None
+                    if hist is not None:
+                        rest_df = hist.get_historical(
+                            exchange=target_exch,
+                            token=str(target_token),
+                            interval="FIVE_MINUTE",
+                            start_time=now - timedelta(minutes=25),
+                            end_time=now,
+                        )
+                    matched_row = None
+                    if rest_df is not None and not rest_df.empty:
+                        rdf = rest_df.copy()
+                        rdf["timestamp"] = pd.to_datetime(rdf["timestamp"])
+                        target_ts = pd.to_datetime(candle_time_str)
+                        exact = rdf[rdf["timestamp"] == target_ts]
+                        if not exact.empty:
+                            matched_row = exact.iloc[-1]
+                        else:
+                            # Closed boundary bar is usually the previous completed 5m label
+                            prior = rdf[rdf["timestamp"] <= target_ts]
+                            matched_row = prior.iloc[-1] if not prior.empty else rdf.iloc[-1]
+                        open_p = float(matched_row["open"])
+                        high_p = float(matched_row["high"])
+                        low_p = float(matched_row["low"])
+                        close_p = float(matched_row["close"])
+                        ohlc_source = "rest_5m"
+                        logger.info(
+                            f"[2/4 REST OHLC] {target_exch}:{target_token} 5m bar "
+                            f"time={matched_row['timestamp']} | "
+                            f"O={open_p:.2f} H={high_p:.2f} L={low_p:.2f} C={close_p:.2f}"
+                        )
+                    else:
+                        logger.warning(
+                            f"[2/4 REST OHLC] Empty REST series for {target_exch}:{target_token} — "
+                            f"using spot LTP fallback {spot_price:.2f} for O=H=L=C"
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"[2/4 REST OHLC] Fetch failed ({e}) — "
+                        f"using spot LTP fallback {spot_price:.2f} for O=H=L=C"
+                    )
+
+                if ohlc_source == "spot_ltp_fallback":
+                    logger.warning(
+                        f"[2/4 REST OHLC] FALLBACK flat candle O=H=L=C={spot_price:.2f} "
+                        f"(this is NOT true 5m OHLC — investigate REST)"
+                    )
+
+                # --- Step 3: amount + assembled candle ---
                 mean_price = (open_p + high_p + low_p + close_p) / 4.0
-                amount = synth_vol * mean_price
+                amount = float(synth_vol) * float(mean_price)
                 new_candle = {
                     "timestamp": pd.to_datetime(candle_time_str),
                     "open": open_p,
@@ -172,21 +304,48 @@ def main():
                     "low": low_p,
                     "close": close_p,
                     "volume": synth_vol,
-                    "amount": amount
+                    "amount": amount,
                 }
+                logger.info(
+                    f"[3/4 AMOUNT] mean_price=(O+H+L+C)/4={mean_price:.2f} | "
+                    f"amount=mean×vol={mean_price:.2f}×{synth_vol:,}={amount:,.2f}"
+                )
+                logger.info(
+                    f"[3/4 CANDLE READY] {candle_time_str} | "
+                    f"O={open_p:.2f} H={high_p:.2f} L={low_p:.2f} C={close_p:.2f} | "
+                    f"V={synth_vol:,} | A={amount:,.2f} | "
+                    f"ohlc_src={ohlc_source} vol_src={vol_source}"
+                )
+
+                # --- Step 4: sliding window ---
                 fetcher.append_live_candle(new_candle)
-                
-                # Kronos Prediction
                 window_df = fetcher.get_window_df()
+                try:
+                    last = window_df.iloc[-1]
+                    logger.info(
+                        f"[4/4 SLIDING WINDOW] size={len(window_df)}/512 | last_bar="
+                        f"ts={last.get('timestamp', candle_time_str)} "
+                        f"O={float(last['open']):.2f} H={float(last['high']):.2f} "
+                        f"L={float(last['low']):.2f} C={float(last['close']):.2f} "
+                        f"V={float(last['volume']):,.0f} A={float(last['amount']):,.2f}"
+                    )
+                except Exception:
+                    logger.info(f"[4/4 SLIDING WINDOW] size={len(window_df) if window_df is not None else 0}/512")
+
+                # Kronos Prediction
                 pred_res = signal_gen.predict(window_df, pred_len=1, threshold=PREDICTION_THRESHOLD)
                 
                 ml_sig = pred_res["signal"]
                 pred_close = pred_res["pred_close"]
                 ret_pct = pred_res["return_pct"]
-                
+                st_bias = pred_res.get("supertrend_bias", "UNKNOWN")
+                st_value = pred_res.get("supertrend")
+                raw_sig = pred_res.get("raw_signal", ml_sig)
+                st_str = f"{float(st_value):.2f}" if st_value is not None else "N/A"
+
                 oi_meta = get_shared_oi_delta_details()
                 net_delta_oi = oi_meta["net_delta_oi"]
-                
+
                 final_sig = ml_sig
                 oi_alignment = "NEUTRAL"
                 if ml_sig == "CALL":
@@ -197,8 +356,40 @@ def main():
                 if ml_sig in ["CALL", "PUT"]:
                     logger.info(f"🔬 [SHADOW OI RESEARCH] {ml_sig} Signal Generated! 1-Min Net Delta OI: {net_delta_oi:+,} | Orderflow Alignment: {oi_alignment}")
 
-                logger.info(f"Signal is {final_sig} ({ret_pct*100:+.3f}% | Current: {spot_price:.2f} -> Pred: {pred_close:.2f}). Standing by.")
-                
+                logger.info(
+                    f"[5m DECISION] Supertrend={st_bias} (ST={st_str}) | "
+                    f"Kronos raw={raw_sig} -> final={final_sig} | "
+                    f"delta={ret_pct*100:+.3f}% | {spot_price:.2f} -> {pred_close:.2f}"
+                )
+
+                try:
+                    bar_close = float(window_df.iloc[-1]["close"])
+                except Exception:
+                    bar_close = float(spot_price)
+
+                will_enter = final_sig in ["CALL", "PUT"] and KronosExecutionManager.can_enter(now)
+                st_blocked = raw_sig in ("CALL", "PUT") and final_sig == "NEUTRAL"
+                _append_decision_journal(
+                    {
+                        "ts": now.strftime("%Y-%m-%d %H:%M:%S"),
+                        "candle": candle_time_str,
+                        "index": name,
+                        "close": bar_close,
+                        "spot": float(spot_price),
+                        "pred_close": float(pred_close),
+                        "delta_pct": float(ret_pct * 100.0),
+                        "threshold_pct": float(PREDICTION_THRESHOLD * 100.0),
+                        "kronos_raw": raw_sig,
+                        "final_signal": final_sig,
+                        "supertrend": float(st_value) if st_value is not None else None,
+                        "supertrend_bias": st_bias,
+                        "st_blocked": st_blocked,
+                        "will_enter": will_enter,
+                        "net_delta_oi": float(net_delta_oi),
+                        "reason": pred_res.get("reason", ""),
+                    }
+                )
+
                 update_kronos_live_state({
                     "active_index": name,
                     "spot_price": spot_price,
@@ -206,11 +397,14 @@ def main():
                     "predicted_return_pct": ret_pct * 100.0,
                     "signal": final_sig,
                     "signal_status": final_sig,
+                    "kronos_raw_signal": raw_sig,
+                    "supertrend": st_value,
+                    "supertrend_bias": st_bias,
                     "net_delta_oi": net_delta_oi,
                     "last_candle": candle_time_str
                 })
 
-                if final_sig in ["CALL", "PUT"] and KronosExecutionManager.can_enter(now):
+                if will_enter:
                     logger.info(f"🔥 EXECUTING KRONOS ENTRY FOR {final_sig} SIGNAL 🔥")
                     trader.execute_entry(
                         final_sig,
@@ -218,6 +412,9 @@ def main():
                         decision_payload={
                             "pred_close": pred_close,
                             "return_pct": ret_pct,
+                            "supertrend": st_value,
+                            "supertrend_bias": st_bias,
+                            "kronos_raw_signal": raw_sig,
                             "net_delta_oi": net_delta_oi,
                             "oi_alignment": oi_alignment,
                         },
@@ -227,16 +424,24 @@ def main():
                 logger.info(f"Sleeping for {max(sleep_sec, 1.0):.2f}s until next candle boundary...")
 
             # Always manage open risk every second (TP / Chandelier / time / force-flatten)
-            try:
-                window_df = fetcher.get_window_df()
-            except Exception:
-                window_df = None
+            window_df = None
+            if trader.has_open_trade():
+                try:
+                    window_df = fetcher.get_window_df()
+                except Exception:
+                    window_df = None
             spot_now = 0.0
             try:
-                spot_now = float(fetcher.get_index_ltp() or 0)
+                spot_now = float(fetcher.get_index_ltp(name) or 0)
             except Exception:
                 spot_now = 0.0
             trader.manage_open_trade(underlying_df=window_df, spot_price=spot_now)
+            # Keep dashboard index label fresh between candle boundaries
+            if spot_now > 0:
+                update_kronos_live_state({
+                    "active_index": name,
+                    "spot_price": spot_now,
+                })
             time.sleep(1)
 
         except KeyboardInterrupt:

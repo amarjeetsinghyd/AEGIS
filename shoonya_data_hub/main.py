@@ -99,7 +99,15 @@ class VolumeBucket:
         return self.closed_nifty, self.closed_sensex
 
 
-def _build_payload(broker, name: str, exch_seg: str, opt_tokens: list[str], vol_bucket: VolumeBucket) -> dict:
+def _build_payload(
+    broker,
+    name: str,
+    exch_seg: str,
+    opt_tokens: list[str],
+    vol_bucket: VolumeBucket,
+    *,
+    refresh_spot_rest: bool = False,
+) -> dict:
     spot_token, spot_exch = _cash_token(name)
     mdp = getattr(broker, "market_data_provider", None)
     quotes: dict = {}
@@ -120,7 +128,15 @@ def _build_payload(broker, name: str, exch_seg: str, opt_tokens: list[str], vol_
         except Exception:
             pass
 
-    _pull(spot_token, spot_exch)
+    # Unstick cash index LTP when WS cache is stale (REST is authoritative).
+    if refresh_spot_rest and mdp and hasattr(mdp, "force_rest_quote"):
+        try:
+            quotes[str(spot_token)] = mdp.force_rest_quote(spot_exch, spot_token)
+        except Exception:
+            _pull(spot_token, spot_exch)
+    else:
+        _pull(spot_token, spot_exch)
+
     for tok in opt_tokens:
         _pull(tok, exch_seg)
 
@@ -157,6 +173,26 @@ def _build_payload(broker, name: str, exch_seg: str, opt_tokens: list[str], vol_
     }
 
 
+def _subscribe_cash_book(broker, name: str) -> list[str]:
+    """Register + touchline-subscribe spot + constituents for synthetic volume."""
+    mdp = broker.market_data_provider
+    spot_token, spot_exch = _cash_token(name)
+    mdp.subscribe([spot_token], spot_exch, feed_type="t")
+    constituents = _load_constituents(name)
+    const_tokens = [str(t) for t in constituents.values() if str(t).strip()]
+    if const_tokens:
+        cash_exch = "NSE" if name == "NIFTY" else "BSE"
+        broker.register_constituent_tokens(const_tokens)
+        mdp.subscribe(const_tokens, cash_exch, feed_type="t")
+        logger.info(
+            f"Subscribed {len(const_tokens)} {name} constituents on {cash_exch} "
+            f"for synthetic volume WS feed (touchline)"
+        )
+    else:
+        logger.warning(f"No constituents loaded for {name} — synthetic volume will stay 0")
+    return const_tokens
+
+
 def main():
     logger.info("==================================================")
     logger.info("STARTING SHOONYA DATA HUB (shared tick bus)")
@@ -174,31 +210,20 @@ def main():
     spot_token, spot_exch = _cash_token(name)
     opt_tokens: list[str] = []
     vol_bucket = VolumeBucket()
+    const_tokens: list[str] = []
+    last_cash_resub = 0.0
+    loop_i = 0
 
     try:
         mdp = broker.market_data_provider
         mdp._ensure_ws_started()
-        mdp.subscribe([spot_token], spot_exch)
-
-        # --- Constituents for synthetic volume (WS LTQ accumulator) ---
-        constituents = _load_constituents(name)
-        const_tokens = [str(t) for t in constituents.values() if str(t).strip()]
-        if const_tokens:
-            cash_exch = "NSE" if name == "NIFTY" else "BSE"
-            broker.register_constituent_tokens(const_tokens)
-            mdp.subscribe(const_tokens, cash_exch)
-            logger.info(
-                f"Subscribed {len(const_tokens)} {name} constituents on {cash_exch} "
-                f"for synthetic volume WS feed"
-            )
-        else:
-            logger.warning(f"No constituents loaded for {name} — synthetic volume will stay 0")
+        const_tokens = _subscribe_cash_book(broker, name)
 
         # Weekly options around ATM (for quote bus / OI consumers)
         api = getattr(broker.session_provider, "_api", None)
         spot_ltp = 0.0
         try:
-            q = mdp.get_quote(spot_exch, spot_token) or {}
+            q = mdp.force_rest_quote(spot_exch, spot_token) if hasattr(mdp, "force_rest_quote") else (mdp.get_quote(spot_exch, spot_token) or {})
             spot_ltp = float(q.get("ltp") or 0)
         except Exception:
             spot_ltp = 0.0
@@ -208,20 +233,32 @@ def main():
         atm = round(spot_ltp / step) * step
 
         if api and hasattr(api, "searchscrip"):
-            for offset in range(-10, 11):
+            # Keep option WS light — Shoonya WS has a practical subscription ceiling;
+            # cash/constituents must win those slots for synthetic volume.
+            for offset in range(-5, 6):
                 strike = int(atm + offset * step)
                 try:
                     res = api.searchscrip(exchange=exch_seg, searchtext=f"{name} {strike}")
                     vals = res.get("values", []) if isinstance(res, dict) else []
                     for row in vals:
                         tok = str(row.get("token") or "")
-                        if tok and tok not in opt_tokens:
+                        tsym = str(row.get("tsym") or "")
+                        optt = str(row.get("optt") or "").upper()
+                        if not tok:
+                            continue
+                        if optt not in ("CE", "PE") and "CE" not in tsym and "PE" not in tsym:
+                            continue
+                        if tok not in opt_tokens:
                             opt_tokens.append(tok)
+                        if len(opt_tokens) >= 80:
+                            break
                 except Exception:
                     continue
+                if len(opt_tokens) >= 80:
+                    break
             if opt_tokens:
-                mdp.subscribe(opt_tokens, exch_seg)
-                logger.info(f"Subscribed spot + {len(opt_tokens)} option tokens for {name}")
+                mdp.subscribe(opt_tokens, exch_seg, feed_type="t")
+                logger.info(f"Subscribed spot + {len(opt_tokens)} option tokens for {name} (capped)")
     except Exception as e:
         logger.error(f"Subscription warning: {e}")
 
@@ -229,19 +266,43 @@ def main():
     last_name = name
     while True:
         try:
+            now = datetime.now()
             name, exch_seg = _active_index()
             if name != last_name:
                 logger.info(f"Active index rotated {last_name} -> {name}; re-subscribing constituents")
-                constituents = _load_constituents(name)
-                const_tokens = [str(t) for t in constituents.values() if str(t).strip()]
-                if const_tokens:
-                    cash_exch = "NSE" if name == "NIFTY" else "BSE"
-                    broker.register_constituent_tokens(const_tokens)
-                    mdp = broker.market_data_provider
-                    mdp.subscribe(const_tokens, cash_exch)
-                    logger.info(f"Re-subscribed {len(const_tokens)} {name} constituents on {cash_exch}")
+                const_tokens = _subscribe_cash_book(broker, name)
                 last_name = name
-            payload = _build_payload(broker, name, exch_seg, opt_tokens, vol_bucket)
+                last_cash_resub = time.time()
+
+            # During cash session, if WS synth accum stays dead, re-subscribe touchline cash book.
+            in_cash_session = (now.hour > 9 or (now.hour == 9 and now.minute >= 15)) and (
+                now.hour < 15 or (now.hour == 15 and now.minute < 30)
+            )
+            try:
+                live_acc = int(broker.peek_synthetic_volume())
+            except Exception:
+                live_acc = 0
+            if (
+                in_cash_session
+                and live_acc <= 0
+                and const_tokens
+                and (time.time() - last_cash_resub) >= 120
+            ):
+                logger.warning(
+                    "[SynthVol] live_accum=0 during session — re-subscribing cash touchline feed"
+                )
+                const_tokens = _subscribe_cash_book(broker, name)
+                last_cash_resub = time.time()
+
+            loop_i += 1
+            payload = _build_payload(
+                broker,
+                name,
+                exch_seg,
+                opt_tokens,
+                vol_bucket,
+                refresh_spot_rest=(loop_i % 5 == 0),  # REST spot every ~5s
+            )
             _atomic_write(SHARED_TICK_FILE, payload)
             time.sleep(1.0)
         except KeyboardInterrupt:

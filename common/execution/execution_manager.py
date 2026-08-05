@@ -244,8 +244,10 @@ class ExecutionManager:
         v_entry = ctx.entry_velocity
 
         # 2. Compute Negative Hysteresis Threshold for CALL / Positive for PUT
-        abs_v_entry = abs(v_entry)
-        threshold_mag = max(FLOW_EXIT_MIN_ABS_VELOCITY, FLOW_EXIT_ENTRY_VELOCITY_FRACTION * abs_v_entry)
+        # Adaptive Noise Floor Exit: use dynamic MAD-based background noise
+        noise_floor = float(kdo_state.get("velocity_noise_floor", 1000.0))
+        K_EXIT = 1.0
+        threshold_mag = noise_floor * K_EXIT
 
         if sig == "CALL":
             v_exit_threshold = -threshold_mag
@@ -368,9 +370,9 @@ class ExecutionManager:
                 self._close_all_legs(f"Trailing SL Hit (Peak +{hwm_pct*100:.1f}%, Retraced to +{profit_pct*100:.1f}%)")
                 return
 
-        # Exit Branch 3: 600-Second (10-Min) Hard Cap Time Limit Exit (Updated from 300s)
-        if hold_sec >= 600.0:
-            self._close_all_legs(f"10-Minute Hard Cap Max Hold Duration Reached ({int(hold_sec)}s)")
+        # Exit Branch 3: 120-Second (2-Min) Hard Cap Time Limit Exit
+        if hold_sec >= 120.0:
+            self._close_all_legs(f"2-Minute Scalp Cap Max Hold Duration Reached ({int(hold_sec)}s)")
             return
 
         # Prepare payload dictionary for flow decay evaluation

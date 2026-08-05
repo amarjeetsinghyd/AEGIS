@@ -144,6 +144,13 @@ def main():
                 logger.info(f"Bot active runtime closed at {now.strftime('%H:%M:%S')}. Entering deep sleep...")
                 sleep_until_next_premarket()
                 perform_premarket_handshake(broker, fetcher)
+                name, exch_seg = fetcher.get_active_instrument()
+                step = 100.0 if "SENSEX" in name else 50.0
+                try:
+                    weekly_opts = fetcher.get_weekly_option_tokens(target_index=name)
+                except Exception as e:
+                    logger.error(f"Post-wake weekly options refresh failed: {e}")
+                    weekly_opts = pd.DataFrame()
                 continue
 
             # If pre-market (08:55 AM to 09:15 AM IST), wait for market open (09:15:02 AM IST)

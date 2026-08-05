@@ -6,6 +6,7 @@ Dual paper/live stack: **Astra** (KDO microstructure) + **Kronos** (foundation m
 | Doc | Purpose |
 |---|---|
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Full system design, calendars, Kronos exits, IPC, VPS |
+| [`SEMANTIC_MAP.md`](SEMANTIC_MAP.md) | Folder → file → function map + symptom triage |
 | [`AI_CHANGELOG.md`](AI_CHANGELOG.md) | Agent-maintained change history (append after work) |
 | [`shoonya_data_hub/docs/SHOONYA_ORDER_RULES.md`](shoonya_data_hub/docs/SHOONYA_ORDER_RULES.md) | Broker order product / DAY retention rules |
 

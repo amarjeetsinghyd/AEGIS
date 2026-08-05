@@ -205,15 +205,24 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                 token = message.get("tk")
                 if not token:
                     return
-                v_total = int(message.get("v", 0) or 0)
-                ltq = int(message.get("ltq", 0) or 0)
+                try:
+                    v_total = int(float(message.get("v", 0) or 0))
+                except (ValueError, TypeError):
+                    v_total = 0
+                try:
+                    ltq = int(float(message.get("ltq", 0) or 0))
+                except (ValueError, TypeError):
+                    ltq = 0
                 if ltq == 0 and v_total > 0:
                     if not hasattr(self, "_last_vol"):
                         self._last_vol = {}
-                    prev_v = self._last_vol.get(token, 0)
+                    prev_v = self._last_vol.get(str(token), 0)
                     if prev_v > 0 and v_total > prev_v:
                         ltq = v_total - prev_v
-                    self._last_vol[token] = v_total
+                    elif prev_v == 0:
+                        # First observation: cannot infer incremental LTQ; seed only.
+                        ltq = 0
+                    self._last_vol[str(token)] = v_total
 
                 if str(token) in self._constituent_tokens and ltq > 0:
                     self._accumulated_synthetic_vol += ltq
@@ -399,25 +408,33 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
 
         return net_delta_oi, float(pe_delta), float(ce_delta)
 
-    def subscribe(self, tokens: list, exchange: str) -> None:
-        if not tokens: return
+    def subscribe(self, tokens: list, exchange: str, feed_type: str = "t") -> None:
+        """Subscribe tokens. Default feed_type='t' (touchline) so lp/ltq/v arrive for cash volume."""
+        if not tokens:
+            return
         self._ensure_ws_started()
         for t in tokens:
             st = str(t)
             if st in ["26000", "1", "99926000", "99919000"]:
                 self._index_token = st
+            self._subscribed_tokens.add(st)
         clean_tokens = [str(t).strip() for t in tokens if str(t).strip()]
         if not clean_tokens:
             logger.warning(f"Skipped Shoonya subscribe: no valid tokens for exchange {exchange}")
             return
         shoonya_tokens = [f"{exchange}|{t}" for t in clean_tokens]
-        self._api.subscribe(shoonya_tokens, feed_type='d')
-        logger.info(f"Subscribed {len(shoonya_tokens)} {exchange} tokens to Shoonya WebSocket feed")
-        
-    def unsubscribe(self, tokens: list, exchange: str) -> None:
-        if not tokens: return
+        # Touchline carries LTP + LTQ + day volume; depth alone often omits trade qty.
+        ft = (feed_type or "t").lower()
+        self._api.subscribe(shoonya_tokens, feed_type=ft)
+        logger.info(
+            f"Subscribed {len(shoonya_tokens)} {exchange} tokens to Shoonya WebSocket feed (feed_type={ft})"
+        )
+
+    def unsubscribe(self, tokens: list, exchange: str, feed_type: str = "t") -> None:
+        if not tokens:
+            return
         shoonya_tokens = [f"{exchange}|{t}" for t in tokens]
-        self._api.unsubscribe(shoonya_tokens, feed_type='d')
+        self._api.unsubscribe(shoonya_tokens, feed_type=(feed_type or "t"))
 
     def _ensure_ws_started(self):
         if not self._ws_started:
@@ -430,50 +447,95 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                 self._ws_started = False
 
     def _on_ws_tick(self, tick_data: dict):
+        """Update quote cache from WS ticks (accepts raw Shoonya keys OR normalized adapter keys)."""
         raw_token = str(tick_data.get("token") or tick_data.get("tk") or "").strip()
         token = raw_token.split("|")[-1].strip() if "|" in raw_token else raw_token
-        if token:
-            q_dict = self._live_quotes.setdefault(token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0})
-            if not isinstance(q_dict, dict):
-                q_dict = {"ltp": float(q_dict) if isinstance(q_dict, (int, float)) else 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0}
-                self._live_quotes[token] = q_dict
+        if not token:
+            return
+        q_dict = self._live_quotes.setdefault(
+            token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0}
+        )
+        if not isinstance(q_dict, dict):
+            q_dict = {
+                "ltp": float(q_dict) if isinstance(q_dict, (int, float)) else 0.0,
+                "bid": 0.0,
+                "ask": 0.0,
+                "oi": 0.0,
+                "volume": 0.0,
+            }
+            self._live_quotes[token] = q_dict
 
-            if "lp" in tick_data:
-                try: q_dict["ltp"] = float(tick_data["lp"])
-                except (ValueError, TypeError): pass
-            if "bp1" in tick_data or "b" in tick_data:
-                try: q_dict["bid"] = float(tick_data.get("bp1") or tick_data.get("b", 0.0))
-                except (ValueError, TypeError): pass
-            if "sp1" in tick_data or "a" in tick_data:
-                try: q_dict["ask"] = float(tick_data.get("sp1") or tick_data.get("a", 0.0))
-                except (ValueError, TypeError): pass
-            oi_v = tick_data.get("oi") or tick_data.get("poi") or tick_data.get("oiv")
-            if oi_v is not None:
-                try: q_dict["oi"] = float(oi_v)
-                except (ValueError, TypeError): pass
-            if "v" in tick_data:
-                try: q_dict["volume"] = float(tick_data["v"])
-                except (ValueError, TypeError): pass
+        def _f(*keys, default=None):
+            for k in keys:
+                if k in tick_data and tick_data.get(k) is not None:
+                    try:
+                        return float(tick_data.get(k))
+                    except (ValueError, TypeError):
+                        continue
+            return default
+
+        ltp = _f("last_traded_price", "lp")
+        if ltp is not None and ltp > 0:
+            q_dict["ltp"] = ltp
+        bid = _f("bid", "bp1", "b")
+        if bid is not None:
+            q_dict["bid"] = bid
+        ask = _f("ask", "sp1", "a")
+        if ask is not None:
+            q_dict["ask"] = ask
+        oi = _f("oi", "poi", "oiv")
+        if oi is not None:
+            q_dict["oi"] = oi
+        vol = _f("volume_trade_for_the_day", "v", "volume")
+        if vol is not None:
+            q_dict["volume"] = vol
 
     def get_quote(self, exchange: str, token: str) -> dict:
         self._ensure_ws_started()
+        token = str(token)
         if token not in self._subscribed_tokens:
             self._subscribed_tokens.add(token)
             try:
-                self.subscribe([token], exchange)
+                self.subscribe([token], exchange, feed_type="t")
             except Exception:
                 pass
             try:
                 res = self._api.get_quotes(exchange=exchange, token=token)
-                if isinstance(res, dict) and 'lp' in res:
-                    q_dict = self._live_quotes.setdefault(token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0})
-                    q_dict["ltp"] = float(res.get('lp', 0.0))
-                    q_dict["bid"] = float(res.get('bp1', 0.0))
-                    q_dict["ask"] = float(res.get('sp1', 0.0))
+                if isinstance(res, dict) and res.get("lp") is not None:
+                    q_dict = self._live_quotes.setdefault(
+                        token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0}
+                    )
+                    q_dict["ltp"] = float(res.get("lp", 0.0) or 0.0)
+                    q_dict["bid"] = float(res.get("bp1", 0.0) or 0.0)
+                    q_dict["ask"] = float(res.get("sp1", 0.0) or 0.0)
+                    if res.get("v") is not None:
+                        q_dict["volume"] = float(res.get("v") or 0.0)
             except Exception:
                 pass
-        return self._live_quotes.get(token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0})
+        return self._live_quotes.get(
+            token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0}
+        )
 
+    def force_rest_quote(self, exchange: str, token: str) -> dict:
+        """Always REST-refresh one quote into the WS cache (unstick stale LTP)."""
+        token = str(token)
+        try:
+            res = self._api.get_quotes(exchange=exchange, token=token)
+            if isinstance(res, dict) and res.get("lp") is not None:
+                q_dict = self._live_quotes.setdefault(
+                    token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0}
+                )
+                q_dict["ltp"] = float(res.get("lp", 0.0) or 0.0)
+                q_dict["bid"] = float(res.get("bp1", 0.0) or 0.0)
+                q_dict["ask"] = float(res.get("sp1", 0.0) or 0.0)
+                if res.get("v") is not None:
+                    q_dict["volume"] = float(res.get("v") or 0.0)
+                return dict(q_dict)
+        except Exception as e:
+            logger.debug(f"force_rest_quote {exchange}|{token} failed: {e}")
+        return self._live_quotes.get(
+            token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0}
+        )
 
 class ShoonyaPortfolioProvider(IPortfolioProvider):
     def __init__(self, api: NorenApiPy):

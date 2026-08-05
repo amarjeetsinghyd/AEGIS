@@ -1,12 +1,13 @@
 """
 Kronos-only execution manager.
 
-MUST NOT use KDO flow-decay / premium hard-SL / OI-reversal exits.
-Exit policy (ARCHITECTURE.md §6.2):
-  0) Force flatten at session flatten time
+MUST NOT use KDO flow-decay / OI-reversal exits.
+Exit policy:
+  0) Force flatten at session flatten time (≥ 15:10)
   1) +10% premium DAY limit TP (resting)
-  2) 5m underlying Chandelier break → marketable LMT exit
-  3) 10-minute hard time stop
+  2) −25% premium hard SL (fallback when Chandelier is unreliable)
+  3) 5m underlying Chandelier break → marketable LMT exit
+  4) 10-minute hard time stop
 """
 
 from __future__ import annotations
@@ -45,6 +46,7 @@ logger = get_logger("kronos_execution_manager")
 
 # Locked Kronos risk parameters
 TP_PCT = 0.10
+HARD_SL_PCT = 0.25  # premium hard floor — fallback when Chandelier is messy
 MAX_HOLD_SEC = 600.0
 CHANDELIER_PERIOD = 10
 CHANDELIER_MULT = 2.0
@@ -298,6 +300,21 @@ class KronosExecutionManager:
             self._close_all_legs(f"Force Flatten (session >= {KRONOS_FORCE_FLATTEN.strftime('%H:%M')})")
             return
 
+        # 1b) Premium hard SL (−25%) — fallback when Chandelier is unreliable
+        for leg in self.trade_context.legs:
+            if leg.status != "OPEN":
+                continue
+            if leg.entry_price <= 0 or leg.current_price <= 0:
+                continue
+            dd = (leg.current_price - leg.entry_price) / leg.entry_price
+            if dd <= -HARD_SL_PCT:
+                self._cancel_tp()
+                self._close_all_legs(
+                    f"Premium Hard SL (−{HARD_SL_PCT*100:.0f}% @ {leg.current_price:.2f}; "
+                    f"entry {leg.entry_price:.2f}, dd={dd*100:.1f}%)"
+                )
+                return
+
         # 2) Chandelier on 5m underlying
         df = underlying_df
         if df is None:
@@ -377,16 +394,26 @@ class KronosExecutionManager:
             except Exception:
                 hist = []
         leg0 = self.trade_context.legs[0] if self.trade_context and self.trade_context.legs else None
+        fill = 0.0
+        if leg0:
+            fill = float(leg0.exit_price or leg0.current_price or 0.0)
+            leg0.exit_reason = reason
+            if not leg0.exit_price:
+                leg0.exit_price = fill
+        # Dual keys: Kronos uses pnl/exit_reason; dashboard also reads net_pl/reason
         hist.append(
             {
                 "date": datetime.now().strftime("%d %b %Y %H:%M:%S"),
                 "strategy": "KRONOS_AI",
                 "signal": self.trade_context.signal_type if self.trade_context else "",
+                "signal_type": self.trade_context.signal_type if self.trade_context else "",
                 "symbol": leg0.symbol if leg0 else "",
                 "entry_price": leg0.entry_price if leg0 else 0,
-                "exit_price": leg0.exit_price if leg0 else 0,
+                "exit_price": fill if leg0 else 0,
                 "pnl": total_pnl,
+                "net_pl": total_pnl,
                 "exit_reason": reason,
+                "reason": reason,
             }
         )
         try:
@@ -414,7 +441,9 @@ class KronosExecutionManager:
                         "token": leg.token,
                         "symbol": leg.symbol,
                         "strike": leg.strike,
-                        "signal_type": leg.signal_type,
+                        # TradeLeg uses option_type (CALL/PUT), not signal_type
+                        "option_type": getattr(leg, "option_type", None)
+                        or self.trade_context.signal_type,
                         "quantity": leg.quantity,
                         "entry_price": leg.entry_price,
                         "current_price": leg.current_price,
@@ -447,11 +476,17 @@ class KronosExecutionManager:
             self.tp_order_id = data.get("tp_order_id")
             self.chandelier_stop = data.get("chandelier_stop")
             for ld in data.get("legs") or []:
+                opt_type = (
+                    ld.get("option_type")
+                    or ld.get("signal_type")
+                    or data.get("signal_type")
+                    or "CALL"
+                )
                 leg = TradeLeg(
                     ld["token"],
                     ld["symbol"],
                     float(ld["strike"]),
-                    ld.get("signal_type", "CALL"),
+                    opt_type,
                     int(ld.get("quantity") or 1),
                     float(ld.get("entry_price") or 0),
                 )

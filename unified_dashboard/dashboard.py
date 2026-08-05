@@ -55,9 +55,18 @@ def _normalize_trade(row: dict) -> dict:
     """Flatten mixed Kronos / Astra history schemas into one dashboard row."""
     if not isinstance(row, dict):
         return {}
+    # Kronos EM writes pnl/exit_reason; older Astra rows use net_pl/reason
     pnl = row.get("net_pl")
     if pnl is None:
+        pnl = row.get("pnl")
+    if pnl is None:
         pnl = (row.get("post_trade_attribution") or {}).get("pnl_rs")
+    reason = (
+        row.get("reason")
+        or row.get("exit_reason")
+        or (row.get("post_trade_attribution") or {}).get("exit_reason")
+        or "—"
+    )
     return {
         "date": row.get("date") or row.get("entry_time") or "—",
         "exit_time": row.get("exit_time") or "",
@@ -67,9 +76,7 @@ def _normalize_trade(row: dict) -> dict:
         "entry_price": row.get("entry_price"),
         "exit_price": row.get("exit_price"),
         "net_pl": pnl,
-        "reason": row.get("reason")
-        or (row.get("post_trade_attribution") or {}).get("exit_reason")
-        or "—",
+        "reason": reason,
         "result": row.get("result")
         or (row.get("post_trade_attribution") or {}).get("outcome")
         or "",
