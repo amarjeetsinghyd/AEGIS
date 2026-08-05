@@ -11,9 +11,22 @@ Order/broker rules: [`shoonya_data_hub/docs/SHOONYA_ORDER_RULES.md`](shoonya_dat
 
 ## 2026-08-05 (full day precision updates)
 
-### Idea parked: Kronos Supertrend on 1m (EOD only)
-- Operator compared TV 1m vs 5m ST(10,3): 1m flips earlier / less lag on turns. Proposal: keep Kronos **5m** prediction; gate with **1m** ST from index WS LTP → 1m OHLC (hub/Astra tick path already exists).
-- **Do not implement mid-session.** Queued in [`IDEAS.md`](IDEAS.md) **K-ST-1m** + ARCHITECTURE §24. Revisit after 16:00 / next premarket; validate with `decision_journal.jsonl` before live money.
+### Shadow OI fix (hub was hardcoding zeros)
+- Root cause: `shoonya_data_hub/main.py` published `net_delta_oi_1min=0.0` always; option tokens were subscribed but **never** `register_option_tokens(CE, PE)`, so OI trackers stayed empty. WS `std_msg` also dropped `oi`.
+- Fix: register CE/PE, REST-seed + round-robin OI refresh, `OiMinuteBucket` publishes real 1m PEΔ−CEΔ into shm. Kronos reader unchanged (still shadow-only).
+
+### Paper recharge + hard SL −15%
+- Reset Kronos `capital_state.json` → **₹2,500** (starting paper wallet).
+- `HARD_SL_PCT` **0.25 → 0.15** (−15% premium hard floor). TP +10% / Chandelier / 15:10 flatten unchanged.
+
+### K-ENTRY-1500 shipped (last entry 15:00)
+- Kronos `KRONOS_ENTRY_CUTOFF` **14:50 → 15:00**. Force flatten still **≥15:10**. Aligns with operator: afternoon entries allowed through 3 PM.
+
+### K-ST-FINAL shipped (1m Supertrend gate + morning bypass)
+- **Before 09:45:** `ST_BYPASS` — Kronos raw CALL/PUT is final (no Supertrend).
+- **From 09:45:** `ST_1M` — gate with Supertrend(10,3) on completed 1m bars from hub LTP (`kronos_bot/core/minute_bars.py`); REST seed + `underlying_1m_*.parquet` persist.
+- Kronos model / 5m parquet unchanged. Journal + live_state: `gate_mode`, `supertrend_tf`.
+- Docs: IDEAS **K-ST-FINAL** → IMPLEMENTED; ARCHITECTURE §6.5 updated. Deploy Kronos only.
 
 ### Adaptive Noise Floor & Hybrid Exits (Astra Bot)
 - **Problem**: The Astra bot was experiencing rapid "flickering" exits due to microscopic pullbacks treating zero-crossings of the noisy ABG-filtered signal as valid exit events. Furthermore, momentum trades were being killed due to a blind 30-second pause upon strike rollovers.
@@ -132,3 +145,11 @@ Session focus: Wednesday = **SENSEX**, paper mode. Docs + live path hardened so 
 - Files / VPS impact
 - Safety notes (paper/live, flatten rules, etc.)
 ```
+
+## 2026-08-05
+### Engine 3: Stock Order Flow Footprint Engine added
+- Designed and implemented stock_order_flow (Engine 3) dedicated to High-Frequency Intraday Footprints on equity stocks (RELIANCE, HDFCBANK, INFY, LT, TATAMOTORS).
+- Deployed on PM2 as a standalone paper engine running beside Astra and Kronos.
+- Engine uses CapitalEngine for its own 2500 INR paper funds and ExecutionManager for MFE/MAE trade potential tracking in post_trade_tracking.json using a 1:1 Risk-to-Reward (0.5% SL and 0.5% TP).
+- Fixed unified_dashboard to support all 3 lanes, decoupling logger paths to ensure telemetry separation.
+

@@ -28,12 +28,13 @@ All previous architecture / KDO-v2 / ASTRA-v3 / `ai_guide` / `future_roadmap` / 
 
 ### 1.1 Mission
 
-Run two independent Indian **index options** engines on one VPS:
+Run three independent Indian options/stocks engines on one VPS:
 
 | Engine | Role | Signal TF | Execution module |
 |---|---|---|---|
 | **Astra** | Kinetic Delta Orderflow (KDO) microstructure | tick / sub-second | `common/execution/execution_manager.py` (KDO exits) |
 | **Kronos** | Kronos foundation-model directional + Supertrend | **5-minute** | `kronos_bot/execution/kronos_execution_manager.py` **only** |
+| **Stock Order Flow** | High-Frequency Intraday Footprints (Engine 3) | **5-minute** | `stock_order_flow/execution_manager.py` (MFE/MAE tracking) |
 
 Shared infrastructure:
 
@@ -59,10 +60,10 @@ A Kronos PUT was entered **late session** (~after 15:00). Operator expected a **
 
 - Dedicated **KronosExecutionManager**
 - Resting **+10% DAY LMT TP** on entry
-- Exit: **5m underlying Chandelier** + **−25% premium hard SL (fallback)** + **600s time stop** + **force flatten ≥ 15:10**
-- Premium hard SL is **only** the −25% fallback (not KDO trailing / flow exits)
+- Exit: **5m underlying Chandelier** + **−15% premium hard SL (fallback)** + **600s time stop** + **force flatten ≥ 15:10**
+- Premium hard SL is **only** the −15% fallback (not KDO trailing / flow exits)
 - **No KDO flow / OI exits** on Kronos
-- Entry window **09:20–14:50**
+- Entry window **09:20–15:00**
 - Real **synthetic constituent volume** (never fake 10M)
 - Never overnight weekly options in this strategy
 
@@ -76,7 +77,7 @@ quant-bot/
   SEMANTIC_MAP.md                 # Folder → file → function navigation
   AI_CHANGELOG.md                 # Agent living memory (append-only dated notes)
   README.md                       # Short pointer to the docs above
-  ecosystem.config.js             # PM2: hub + astra + kronos + dashboard
+  ecosystem.config.js             # PM2: hub + astra + kronos + order-flow + dashboard
   requirements.txt
   institutional_memory/
     constituents.json             # nifty_50 (50) + sensex_30 (30) Shoonya tokens
@@ -418,8 +419,8 @@ Triggered:
 | 08:55 | Pre-market standby (handshake, LTP heartbeat) |
 | 09:15 | Market open; **no** first-trade until 09:20 full candle |
 | 09:20, 09:25, … | At `:02` of each 5m boundary: synth vol + REST OHLC + append + predict |
-| 09:20–14:50 | New entries allowed if CALL/PUT and no open trade |
-| After 14:50 | No new entries; manage open risk only |
+| 09:20–15:00 | New entries allowed if CALL/PUT and no open trade |
+| After 15:00 | No new entries; manage open risk only |
 | ≥ 15:10 | **Force flatten** any open Kronos option |
 | ~15:31 | EOD REST backfill **both** indices (OHLC + 5m synth vol) |
 | Else | Deep sleep until next 08:55 |
@@ -438,11 +439,11 @@ Pipeline:
    - `return_pct ≥ +0.10%` → raw **CALL**
    - `return_pct ≤ −0.10%` → raw **PUT**
    - else **NEUTRAL**
-5. Supertrend gate on **same 5m** OHLC — period **10**, multiplier **3.0**, Wilder ATR (`kronos_bot/strategy/supertrend.py`):
-   - **UPTREND** = close > Supertrend (TradingView green line below price) → CALL allowed
-   - **DOWNTREND** = close < Supertrend (TradingView red line above price) → PUT allowed
-   - Counter-trend raw Kronos signal → force **NEUTRAL**
-   - Every 5m logs: `[SUPERTREND] UPTREND|DOWNTREND`, then `[SIGNAL] final=… | kronos_raw=…`, then `[5m DECISION] …`
+5. **K-ST-FINAL gate** (not 5m ST for live entry):
+   - **Before 09:45 IST** → `gate_mode=ST_BYPASS`: final = Kronos raw (1m ST off). Hard SL −15% is the safety net.
+   - **From 09:45** → `gate_mode=ST_1M`: Supertrend(10, 3) on **completed 1m** OHLC from hub index LTP (`MinuteBarAggregator` + REST seed). CALL only if 1m **UPTREND**; PUT only if 1m **DOWNTREND**; else NEUTRAL. Missing warm-up bars → NEUTRAL.
+   - Journal / live_state include `gate_mode`, `supertrend_tf` (`bypass`|`1m`).
+   - Every 5m logs: `[SUPERTREND] BYPASS|UPTREND|DOWNTREND`, then `[SIGNAL] …`, then `[5m DECISION] gate=…`
 6. **1-minute Net Delta OI is SHADOW ONLY** — logged / saved in decision payload; **never blocks entry**.
 
 Entry proceeds only if final signal ∈ {CALL, PUT} **and** `KronosExecutionManager.can_enter(now)`.
@@ -456,7 +457,7 @@ File: `kronos_bot/execution/kronos_execution_manager.py`
 | Gate | Rule |
 |---|---|
 | Calendar | Trading day |
-| Clock | **09:20 ≤ t ≤ 14:50** |
+| Clock | **09:20 ≤ t ≤ 15:00** (K-ENTRY-1500) |
 | Position | No OPEN trade already |
 | Strike | Weekly CE/PE, ATM→OTM, **1 lot**, cost ≤ paper funds |
 | Cooldown | Symbol not in strike cooldown |
@@ -467,7 +468,7 @@ File: `kronos_bot/execution/kronos_execution_manager.py`
 |---|---|---|
 | 0 | Force flatten | `now.time() ≥ 15:10` |
 | 1 | +10% TP | Resting DAY LMT sell at `round_tick(entry × 1.10)` |
-| 2 | **−25% premium hard SL** | Fallback when Chandelier is unreliable (both lines above price, etc.) |
+| 2 | **−15% premium hard SL** | Fallback when Chandelier is unreliable (both lines above price, etc.) |
 | 3 | Chandelier | 5m underlying, period 10, mult **2.0**; ratchet favorable only |
 | 4 | Time stop | **600 seconds** from entry |
 | — | No KDO flow/OI exits | Explicit |
@@ -507,9 +508,9 @@ Deps: `torch`, `huggingface_hub`. Weights via HuggingFace hub cache on VPS under
 | Supertrend | period 10, mult 3.0 | `signal_generator.py` / `supertrend.py` |
 | Chandelier | period 10, mult 2.0 | `kronos_execution_manager.py` |
 | TP | +10% | `kronos_execution_manager.py` |
-| Premium hard SL | −25% (fallback) | `kronos_execution_manager.py` |
+| Premium hard SL | −15% (fallback) | `kronos_execution_manager.py` |
 | Max hold | 600s | `kronos_execution_manager.py` |
-| Entry cutoff | 14:50 | `KRONOS_ENTRY_CUTOFF` |
+| Entry cutoff | 15:00 | `KRONOS_ENTRY_CUTOFF` (K-ENTRY-1500) |
 | Force flatten | 15:10 | `KRONOS_FORCE_FLATTEN` |
 | Context | 512 bars | model + parquet trim |
 | Paper start | ₹2500 | `common.config.INITIAL_PAPER_CAPITAL` |
@@ -567,7 +568,7 @@ If hub is down / ticks stale: dashboard shows tick age; engines must not pretend
 | `synthetic_volume_bucket` | Current open 5m bucket id |
 | `synthetic_volume_last_closed_bucket` | Previous closed bucket id |
 | `total_call_oi` / `total_put_oi` | Aggregates from option quotes (hub-side) |
-| `delta_*_oi_1min` / `net_delta_oi_1min` | May be stubbed/zero on hub; Kronos treats Net Delta OI as **shadow only** |
+| `delta_*_oi_1min` / `net_delta_oi_1min` | Hub `OiMinuteBucket` (PEΔ−CEΔ per completed minute); Kronos Shadow OI only — never blocks entry |
 
 Kronos reads closed synth vol via `get_hub_synthetic_volume` in `kronos_bot/core/data_fetcher.py` — prefer **closed** bucket fields, not live accum, when assembling a completed 5m candle.
 
@@ -613,7 +614,7 @@ File: `common/market/market_calendar.py`
 |---|---|---|
 | `PRE_MARKET_TIME` | 08:55 | Bot wakeup / handshake |
 | `MARKET_OPEN_TIME` | 09:15 | Continuous open |
-| `KRONOS_ENTRY_CUTOFF_TIME` | 14:50 | Kronos last new entry (see also IDEAS K-ENTRY-1500) |
+| `KRONOS_ENTRY_CUTOFF_TIME` | 15:00 | Kronos last new entry (K-ENTRY-1500) |
 | `KRONOS_FORCE_FLATTEN_TIME` | 15:10 | Flatten at start of last continuous 5m bar |
 | `TRADE_ENTRY_CUTOFF_TIME` | 15:00 | Shared helper (Astra/CAS); Kronos uses EM gates |
 | `MARKET_CLOSE_TIME` | **15:15** | Continuous cash close (CAS-era house standard) |
@@ -772,7 +773,7 @@ Kronos @ :02 boundary            Astra microstructure loop
         │
         ▼
 KronosExecutionManager
-  entry 09:20–14:50 → 1 lot CE/PE
+  entry 09:20–15:00 → 1 lot CE/PE
   resting DAY LMT TP +10%
   manage_open_trade every ~1s:
     TP fill | ≥15:10 flatten | Chandelier | 600s
@@ -866,7 +867,7 @@ python3 -c "import json;print(json.load(open('/dev/shm/shoonya_live_ticks.json')
 | Predictions weird / flat volume | Fake `10_000_000` or hub synth=0 | parquet `volume` column; hub `synthetic_*` fields |
 | No synth vol at open | Hub not subscribed / wrong constituents / rotation not reset | hub logs `[SynthVol]`; `constituents.json` |
 | TP vanished overnight / weekend loss | DAY retention + no flatten | Never again — force flatten ≥15:10; no Friday late entries |
-| Entry after 14:50 | Wrong EM / old cutoff | `KronosExecutionManager.can_enter` |
+| Entry after 15:00 | Wrong EM / old cutoff | `KronosExecutionManager.can_enter` |
 | Still in trade after 15:10 | Flatten not wired / EM not Kronos | Confirm `kronos_execution_manager.py` in `main.py` |
 | Dashboard funds ≠ expectation | Reading wrong `capital_state.json` | Per-engine path under `astra_bot/data` vs `kronos_bot/data` |
 | Local API errors | IP not whitelisted | Stop; use VPS only |
@@ -943,7 +944,7 @@ Paper mode may arm `PAPER_TP_*` synthetic ids when live resting place is skipped
 2. Confirm product code **`M` vs `N`** vs account `prarr` before any live capital.
 3. Watch late-session volume quirks (CAS flat bars / occasional spikes) — log, don’t silently fake.
 4. Keep Astra deferred until Kronos paper-stable.
-5. **EOD / peer-review ideas:** [`IDEAS.md`](IDEAS.md) **K-ST-1m**; **K-ST-GAP** (open/gap ST challenge — problem only until operator submits a design). Do not change mid-session.
+5. **EOD / peer-review ideas:** [`IDEAS.md`](IDEAS.md) **K-ST-FINAL** + **K-ENTRY-1500** both implemented. Do not change mid-session unless asked.
 6. After each non-trivial change: update **this file** + append **`AI_CHANGELOG.md`** + refresh **`SEMANTIC_MAP.md`** if paths moved; sync docs to VPS `/home/opc/`.
 
 ---

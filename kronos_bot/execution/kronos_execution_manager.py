@@ -46,11 +46,11 @@ logger = get_logger("kronos_execution_manager")
 
 # Locked Kronos risk parameters
 TP_PCT = 0.10
-HARD_SL_PCT = 0.25  # premium hard floor — fallback when Chandelier is messy
+HARD_SL_PCT = 0.15  # premium hard floor (−15%); tighter than prior −25%
 MAX_HOLD_SEC = 600.0
 CHANDELIER_PERIOD = 10
 CHANDELIER_MULT = 2.0
-KRONOS_ENTRY_CUTOFF = dt_time(14, 50, 0)
+KRONOS_ENTRY_CUTOFF = dt_time(15, 0, 0)  # K-ENTRY-1500: last new entry at 15:00; flatten ≥15:10
 # CAS era: continuous cash for F&O underlyings ends 15:15; force-exit options by 15:10.
 KRONOS_FORCE_FLATTEN = dt_time(15, 10, 0)
 

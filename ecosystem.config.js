@@ -46,6 +46,21 @@ module.exports = {
       }
     },
     {
+      name: "stock-order-flow",
+      script: "stock_order_flow/main.py",
+      cwd: "/home/opc",
+      interpreter: "python3",
+      autorestart: true,
+      watch: false,
+      max_memory_restart: "1G",
+      max_restarts: 20,
+      restart_delay: 5000,
+      env: {
+        PYTHONPATH: "/home/opc",
+        BOT_RUNTIME: "stock_order_flow"
+      }
+    },
+    {
       name: "unified-dashboard",
       script: "unified_dashboard/dashboard.py",
       cwd: "/home/opc",

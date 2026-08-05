@@ -14,6 +14,7 @@ import kronos_bot.config.settings  # noqa: F401
 
 from common.logger import get_logger
 from kronos_bot.core.data_fetcher import DataFetcher
+from kronos_bot.core.minute_bars import MinuteBarAggregator, seed_minute_bars_from_rest
 from kronos_bot.execution.kronos_execution_manager import KronosExecutionManager
 from kronos_bot.strategy.signal_generator import KronosSignalGenerator
 from common.ipc import update_kronos_live_state, SHARED_TICK_FILE
@@ -58,6 +59,20 @@ def _chunked_sleep_until(target: datetime, chunk_sec: float = 30.0) -> None:
         time.sleep(min(chunk_sec, remaining))
 
 
+def _seed_1m_aggregator(agg: MinuteBarAggregator, fetcher: DataFetcher, broker, index_name: str) -> None:
+    """REST-seed today's 1m cash bars for Supertrend gate; fall back to empty/live ticks."""
+    try:
+        agg.set_index(index_name)
+        token, _, exch = fetcher.get_cash_index_token(index_name)
+        df = seed_minute_bars_from_rest(broker, index_name, token, exch)
+        if df is not None and len(df) > 0:
+            agg.seed(df)
+        else:
+            logger.warning(f"[1m BARS] No REST seed for {index_name} — will build from live LTP ticks")
+    except Exception as exc:
+        logger.warning(f"[1m BARS] seed error: {exc}")
+
+
 def get_shared_oi_delta_details() -> dict:
     if os.path.exists(SHARED_TICK_FILE):
         try:
@@ -93,14 +108,18 @@ def main():
         
     logger.info("Running reboot gap-fill / bootstrap service...")
     fetcher.bootstrap_candle_window()
+
+    name, exch_seg = fetcher.get_active_instrument()
+    minute_agg = MinuteBarAggregator(DATA_DIR, name)
+    _seed_1m_aggregator(minute_agg, fetcher, broker, name)
     
     last_processed_candle_time = ''
     last_oi_log_minute = None
     eod_backfill_done = False
     opening_trade_evaluated = False
     premarket_handshake_done_for = None  # date of last 08:55 handshake
+    last_1m_seed_date = None
 
-    name, exch_seg = fetcher.get_active_instrument()
     logger.info(f"PRE-MARKET HANDSHAKE: Active Index = {name} ({exch_seg}).")
     update_kronos_live_state({
         "active_index": name,
@@ -131,7 +150,10 @@ def main():
                 eod_backfill_done = False
                 opening_trade_evaluated = False
                 premarket_handshake_done_for = None
+                last_1m_seed_date = None
                 name, exch_seg = fetcher.get_active_instrument()
+                minute_agg.reset_for_session(datetime.now().date(), name)
+                _seed_1m_aggregator(minute_agg, fetcher, broker, name)
                 logger.info(f"PRE-MARKET HANDSHAKE (wake): Active Index = {name} ({exch_seg}).")
                 update_kronos_live_state({
                     "active_index": name,
@@ -194,6 +216,12 @@ def main():
 
             # 4. Market Open (09:15 AM): Disabled per strategy (First trade starts at 09:20 AM after full candle completes)
             opening_trade_evaluated = True
+
+            # Ensure 1m series matches active index / today's seed once per session day
+            minute_agg.set_index(name)
+            if last_1m_seed_date != now.date() and now.time() >= MARKET_OPEN_TIME:
+                _seed_1m_aggregator(minute_agg, fetcher, broker, name)
+                last_1m_seed_date = now.date()
 
             # 5. Standard 5-Minute Candle Boundaries (09:20, 09:25, 09:30...)
             curr_minute = now.minute
@@ -332,8 +360,15 @@ def main():
                 except Exception:
                     logger.info(f"[4/4 SLIDING WINDOW] size={len(window_df) if window_df is not None else 0}/512")
 
-                # Kronos Prediction
-                pred_res = signal_gen.predict(window_df, pred_len=1, threshold=PREDICTION_THRESHOLD)
+                # Kronos Prediction (5m model + K-ST-FINAL 1m/bypass gate)
+                minute_df = minute_agg.completed_df()
+                pred_res = signal_gen.predict(
+                    window_df,
+                    pred_len=1,
+                    threshold=PREDICTION_THRESHOLD,
+                    minute_df=minute_df,
+                    now=now,
+                )
                 
                 ml_sig = pred_res["signal"]
                 pred_close = pred_res["pred_close"]
@@ -341,6 +376,8 @@ def main():
                 st_bias = pred_res.get("supertrend_bias", "UNKNOWN")
                 st_value = pred_res.get("supertrend")
                 raw_sig = pred_res.get("raw_signal", ml_sig)
+                gate_mode = pred_res.get("gate_mode", "ST_1M")
+                supertrend_tf = pred_res.get("supertrend_tf", "1m")
                 st_str = f"{float(st_value):.2f}" if st_value is not None else "N/A"
 
                 oi_meta = get_shared_oi_delta_details()
@@ -357,7 +394,13 @@ def main():
                     logger.info(f"🔬 [SHADOW OI RESEARCH] {ml_sig} Signal Generated! 1-Min Net Delta OI: {net_delta_oi:+,} | Orderflow Alignment: {oi_alignment}")
 
                 logger.info(
-                    f"[5m DECISION] Supertrend={st_bias} (ST={st_str}) | "
+                    f"🔬 [SHADOW TSF] 5m Pred={pred_res.get('tsf_5m_pred')} | 1m Pred={pred_res.get('tsf_1m_pred')} | "
+                    f"Slope={pred_res.get('slope_5m')} | ADX={pred_res.get('adx_5m')} | CMF={pred_res.get('cmf_5m')}"
+                )
+
+                logger.info(
+                    f"[5m DECISION] gate={gate_mode} tf={supertrend_tf} ST={st_bias} ({st_str}) | "
+                    f"1m_bars={minute_agg.completed_count()} | "
                     f"Kronos raw={raw_sig} -> final={final_sig} | "
                     f"delta={ret_pct*100:+.3f}% | {spot_price:.2f} -> {pred_close:.2f}"
                 )
@@ -383,9 +426,18 @@ def main():
                         "final_signal": final_sig,
                         "supertrend": float(st_value) if st_value is not None else None,
                         "supertrend_bias": st_bias,
+                        "gate_mode": gate_mode,
+                        "supertrend_tf": supertrend_tf,
                         "st_blocked": st_blocked,
                         "will_enter": will_enter,
                         "net_delta_oi": float(net_delta_oi),
+                        "tsf_1m_pred": pred_res.get("tsf_1m_pred"),
+                        "tsf_5m_pred": pred_res.get("tsf_5m_pred"),
+                        "tsf_5m_delta_pct": float(pred_res.get("tsf_5m_delta_pct", 0) * 100) if pred_res.get("tsf_5m_delta_pct") else None,
+                        "slope_5m": pred_res.get("slope_5m"),
+                        "adx_5m": pred_res.get("adx_5m"),
+                        "atr_5m": pred_res.get("atr_5m"),
+                        "cmf_5m": pred_res.get("cmf_5m"),
                         "reason": pred_res.get("reason", ""),
                     }
                 )
@@ -400,6 +452,8 @@ def main():
                     "kronos_raw_signal": raw_sig,
                     "supertrend": st_value,
                     "supertrend_bias": st_bias,
+                    "gate_mode": gate_mode,
+                    "supertrend_tf": supertrend_tf,
                     "net_delta_oi": net_delta_oi,
                     "last_candle": candle_time_str
                 })
@@ -414,6 +468,8 @@ def main():
                             "return_pct": ret_pct,
                             "supertrend": st_value,
                             "supertrend_bias": st_bias,
+                            "gate_mode": gate_mode,
+                            "supertrend_tf": supertrend_tf,
                             "kronos_raw_signal": raw_sig,
                             "net_delta_oi": net_delta_oi,
                             "oi_alignment": oi_alignment,
@@ -435,6 +491,13 @@ def main():
                 spot_now = float(fetcher.get_index_ltp(name) or 0)
             except Exception:
                 spot_now = 0.0
+            # Feed hub/REST spot LTP into 1m OHLC aggregator every second
+            if spot_now > 0:
+                try:
+                    minute_agg.set_index(name)
+                    minute_agg.on_tick(spot_now, now)
+                except Exception as exc:
+                    logger.debug(f"[1m BARS] tick error: {exc}")
             trader.manage_open_trade(underlying_df=window_df, spot_price=spot_now)
             # Keep dashboard index label fresh between candle boundaries
             if spot_now > 0:

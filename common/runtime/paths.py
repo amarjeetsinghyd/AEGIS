@@ -8,8 +8,8 @@ def get_project_root() -> Path:
 def get_runtime_paths(runtime_name: str) -> dict:
     runtime_name = (runtime_name or "").strip().lower()
 
-    if runtime_name in {"astra", "kronos"}:
-        root_dir = get_project_root() / f"{runtime_name}_bot"
+    if runtime_name in {"astra", "kronos", "stock_order_flow"}:
+        root_dir = get_project_root() / f"{runtime_name}_bot" if runtime_name != "stock_order_flow" else get_project_root() / runtime_name
     elif runtime_name == "dashboard":
         root_dir = get_project_root() / "unified_dashboard"
     elif runtime_name in {"hub", "shoonya_data_hub", "data_hub"}:

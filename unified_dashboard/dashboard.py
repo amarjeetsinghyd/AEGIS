@@ -27,6 +27,9 @@ ASTRA_DATA = ASTRA_PATHS["data_dir"]
 KRONOS_DATA = KRONOS_PATHS["data_dir"]
 ASTRA_LOGS = ASTRA_PATHS["logs_dir"]
 KRONOS_LOGS = KRONOS_PATHS["logs_dir"]
+ORDERFLOW_PATHS = get_runtime_paths("stock_order_flow")
+ORDERFLOW_DATA = ORDERFLOW_PATHS["data_dir"]
+ORDERFLOW_LOGS = ORDERFLOW_PATHS["logs_dir"]
 
 
 def _read_json(path, default=None):
@@ -136,6 +139,8 @@ CONSOLE_HTML = r"""<!DOCTYPE html>
   --astra-soft: #e6f4ef;
   --kronos: #1f5f8b;
   --kronos-soft: #e8f1f8;
+  --of: #6e0b4f;
+  --of-soft: #f4e6ef;
   --ok: #1f7a4c;
   --warn: #a15c00;
   --bad: #b42318;
@@ -175,7 +180,7 @@ body {
 .meta strong { color: var(--ink); font-weight: 600; }
 .grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 18px;
   margin-bottom: 18px;
 }
@@ -189,12 +194,14 @@ body {
   min-height: 320px;
 }
 .lane.astra { border-top: 4px solid var(--astra); }
+.lane.of { border-top: 4px solid var(--of); }
 .lane.kronos { border-top: 4px solid var(--kronos); }
 .lane-head {
   display: flex; justify-content: space-between; align-items: center;
   padding: 16px 18px 12px;
 }
 .lane.astra .lane-head { background: linear-gradient(180deg, var(--astra-soft), transparent); }
+.lane.of .lane-head { background: linear-gradient(180deg, var(--of-soft), transparent); }
 .lane.kronos .lane-head { background: linear-gradient(180deg, var(--kronos-soft), transparent); }
 .lane-title {
   font-family: "Fraunces", serif;
@@ -202,6 +209,7 @@ body {
   font-weight: 700;
 }
 .lane.astra .lane-title { color: var(--astra); }
+.lane.of .lane-title { color: var(--of); }
 .lane.kronos .lane-title { color: var(--kronos); }
 .pill {
   font-family: "IBM Plex Mono", monospace;
@@ -321,6 +329,10 @@ body {
   background: var(--astra-soft);
   color: var(--astra);
 }
+.engine-switch button.active.of {
+  background: var(--of-soft);
+  color: var(--of);
+}
 .logs-body {
   max-height: 360px;
   overflow: auto;
@@ -333,6 +345,7 @@ body {
 }
 .log-line { white-space: pre-wrap; word-break: break-word; margin: 0 0 4px; }
 .log-line.astra { border-left: 3px solid var(--astra); padding-left: 8px; }
+.log-line.of { border-left: 3px solid var(--of); padding-left: 8px; }
 .log-line.kronos { border-left: 3px solid var(--kronos); padding-left: 8px; }
 .trades-body { max-height: 420px; overflow: auto; }
 .trades-table {
@@ -438,6 +451,24 @@ body {
           <div class="reason" id="astraReason">Waiting for live state…</div>
         </div>
       </section>
+
+      <section class="lane of">
+        <div class="lane-head">
+          <div class="lane-title">Order Flow</div>
+          <div id="ofPill" class="pill">—</div>
+        </div>
+        <div class="lane-body">
+          <div class="metrics">
+            <div class="metric"><div class="label">Signal</div><div class="value" id="ofSignal">—</div></div>
+            <div class="metric">
+              <div class="label">Paper funds</div>
+              <div class="value" id="ofFunds">—</div>
+              <div class="hint">Disk wallet for OF trades</div>
+            </div>
+          </div>
+          <div class="reason" id="ofReason">See Trade History/Logs below</div>
+        </div>
+      </section>
     </div>
 
     <section class="panel">
@@ -447,6 +478,7 @@ body {
           <div class="engine-switch" role="tablist" aria-label="Engine logs">
             <button type="button" id="logTabKronos" class="active kronos" data-engine="kronos">Kronos</button>
             <button type="button" id="logTabAstra" class="astra" data-engine="astra">Astra</button>
+            <button type="button" id="logTabOF" class="of" data-engine="of">Order Flow</button>
           </div>
           <div class="pill" id="logCount">0 lines</div>
         </div>
@@ -461,6 +493,7 @@ body {
           <div class="engine-switch" role="tablist" aria-label="Trade history engine">
             <button type="button" id="histTabKronos" class="active kronos" data-engine="kronos">Kronos</button>
             <button type="button" id="histTabAstra" class="astra" data-engine="astra">Astra</button>
+            <button type="button" id="histTabOF" class="of" data-engine="of">Order Flow</button>
           </div>
           <div class="pill" id="histCount">0 trades · disk</div>
         </div>
@@ -475,8 +508,8 @@ const money = (n) => (n === null || n === undefined) ? '—' : '₹' + fmt(n, 2)
 
 let activeLogEngine = 'kronos';
 let activeHistEngine = 'kronos';
-let latestLogs = { kronos: [], astra: [] };
-let latestHistory = { kronos: [], astra: [] };
+let latestLogs = { kronos: [], astra: [], of: [] };
+let latestHistory = { kronos: [], astra: [], of: [] };
 
 function signalLabel(raw) {
   const t = String(raw || '').toUpperCase();
@@ -520,9 +553,10 @@ function renderLogs() {
 }
 
 function setLogEngine(engine) {
-  activeLogEngine = engine === 'astra' ? 'astra' : 'kronos';
+  activeLogEngine = engine;
   document.getElementById('logTabKronos').className = activeLogEngine === 'kronos' ? 'active kronos' : 'kronos';
   document.getElementById('logTabAstra').className = activeLogEngine === 'astra' ? 'active astra' : 'astra';
+  document.getElementById('logTabOF').className = activeLogEngine === 'of' ? 'active of' : 'of';
   renderLogs();
 }
 
@@ -562,9 +596,10 @@ function renderHistory() {
 }
 
 function setHistEngine(engine) {
-  activeHistEngine = engine === 'astra' ? 'astra' : 'kronos';
+  activeHistEngine = engine;
   document.getElementById('histTabKronos').className = activeHistEngine === 'kronos' ? 'active kronos' : 'kronos';
   document.getElementById('histTabAstra').className = activeHistEngine === 'astra' ? 'active astra' : 'astra';
+  document.getElementById('histTabOF').className = activeHistEngine === 'of' ? 'active of' : 'of';
   renderHistory();
 }
 
@@ -579,6 +614,8 @@ async function refresh() {
   }
 
   const a = data.astra || {};
+  const o = data.of || {};
+  document.getElementById('ofFunds').textContent = money(o.available_funds);
   const k = data.kronos || {};
 
   const kSig = signalLabel(k.signal || k.signal_status);
@@ -609,10 +646,12 @@ async function refresh() {
   ap.className = pillClass(aSig);
 
   latestLogs = {
+    of: data.of_logs || [],
     kronos: data.kronos_logs || [],
     astra: data.astra_logs || [],
   };
   latestHistory = {
+    of: data.of_trade_history || [],
     kronos: data.kronos_trade_history || [],
     astra: data.astra_trade_history || [],
   };
@@ -622,8 +661,10 @@ async function refresh() {
 
 document.getElementById('logTabKronos').addEventListener('click', () => setLogEngine('kronos'));
 document.getElementById('logTabAstra').addEventListener('click', () => setLogEngine('astra'));
+document.getElementById('logTabOF').addEventListener('click', () => setLogEngine('of'));
 document.getElementById('histTabKronos').addEventListener('click', () => setHistEngine('kronos'));
 document.getElementById('histTabAstra').addEventListener('click', () => setHistEngine('astra'));
+document.getElementById('histTabOF').addEventListener('click', () => setHistEngine('of'));
 
 setLogEngine('kronos');
 setHistEngine('kronos');
@@ -656,8 +697,14 @@ def health():
 def live_state():
     astra = get_astra_live_state()
     kronos = get_kronos_live_state()
+    
     astra["available_funds"] = _capital(ASTRA_DATA)
     kronos["available_funds"] = _capital(KRONOS_DATA)
+    of_funds = _capital(ORDERFLOW_DATA)
+    
+    of_logs = [html.escape(line) for line in _tail_log(os.path.join(ORDERFLOW_LOGS, "stock_order_flow.log"), 80)]
+    of_hist = _trade_history(ORDERFLOW_DATA)
+
     astra["active_trade"] = _active_trade(ASTRA_DATA)
     kronos["active_trade"] = _active_trade(KRONOS_DATA)
 
@@ -667,7 +714,7 @@ def live_state():
     astra_hist = _trade_history(ASTRA_DATA)
     kronos_hist = _trade_history(KRONOS_DATA)
     # Escape free-text fields for safe HTML embedding via JSON → DOM text/innerHTML table
-    for rows in (astra_hist, kronos_hist):
+    for rows in (astra_hist, kronos_hist, of_hist):
         for row in rows:
             for key in ("date", "exit_time", "signal", "symbol", "strategy", "reason", "result"):
                 if key in row and row[key] is not None:
@@ -679,10 +726,13 @@ def live_state():
             "tick_age_sec": _tick_age_seconds(),
             "initial_paper_capital": INITIAL_PAPER_CAPITAL,
             "astra": astra,
+            "of": {"available_funds": of_funds},
             "kronos": kronos,
             "astra_logs": astra_logs,
+            "of_logs": of_logs,
             "kronos_logs": kronos_logs,
             "astra_trade_history": astra_hist,
+            "of_trade_history": of_hist,
             "kronos_trade_history": kronos_hist,
             "default_log_engine": "kronos",
         }

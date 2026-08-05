@@ -44,7 +44,8 @@
 | Active index Mon–Fri rotation | `kronos_bot/core/data_fetcher.py` + hub `_active_index` | `DataFetcher.get_active_instrument` |
 | Live / EOD candles + synth vol join | `kronos_bot/core/data_fetcher.py` | `get_hub_synthetic_volume`, `rest_synthetic_volume_for_latest_bar`, `rest_backfill_today_candles`, `append_live_candle`, `get_window_df` |
 | Kronos CALL/PUT signal | `kronos_bot/strategy/signal_generator.py` | `KronosSignalGenerator.predict`, `_load_predictor`, `_no_grad_ctx` |
-| Supertrend gate | `kronos_bot/strategy/supertrend.py` | `latest_supertrend`, `supertrend_bias`, `filter_entry_signal` |
+| 1m OHLC for ST gate | `kronos_bot/core/minute_bars.py` | `MinuteBarAggregator`, `seed_minute_bars_from_rest` |
+| Supertrend gate (1m / bypass) | `kronos_bot/strategy/supertrend.py` | `latest_supertrend`, `supertrend_bias`, `filter_entry_signal` |
 | Kronos entries/exits (TP/SL/Chandelier/flatten) | `kronos_bot/execution/kronos_execution_manager.py` | `KronosExecutionManager`, `manage_open_trade`, `execute_entry`, `compute_chandelier_stops` |
 | Model math / timestamps | `kronos_bot/model/kronos.py` | `KronosPredictor.predict`, `calc_time_stamps`, `auto_regressive_inference` |
 | Model modules | `kronos_bot/model/module.py` | tokenizer / transformer blocks |
@@ -138,7 +139,7 @@ kronos_bot/main.py   astra_bot/main.py   unified_dashboard/
 ### 5.4 `kronos_bot/execution/kronos_execution_manager.py`
 | Method | Role |
 |---|---|
-| `can_enter` / `must_force_flatten` | 09:20–14:50 / ≥15:10 |
+| `can_enter` / `must_force_flatten` | 09:20–15:00 / ≥15:10 |
 | `execute_entry` | 1-lot CE/PE + resting +10% DAY TP |
 | `manage_open_trade` | TP → flatten → **−25% hard SL** → Chandelier → 600s |
 | `compute_chandelier_stops` | 5m underlying period 10 mult 2.0 |

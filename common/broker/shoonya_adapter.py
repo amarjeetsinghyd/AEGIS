@@ -237,16 +237,8 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
 
                 s_token = str(token)
                 oi_val = message.get("oi") or message.get("poi") or message.get("oiv")
-                if oi_val is not None and hasattr(self, "_option_ce_tokens"):
-                    if s_token in self._option_ce_tokens or s_token in self._option_pe_tokens:
-                        try:
-                            oi_int = int(float(oi_val))
-                            if oi_int > 0:
-                                if s_token not in self._option_oi_start:
-                                    self._option_oi_start[s_token] = oi_int
-                                self._option_oi_latest[s_token] = oi_int
-                        except (ValueError, TypeError):
-                            pass
+                if oi_val is not None:
+                    self._ingest_option_oi(s_token, oi_val)
 
                 std_msg = {
                     "token": str(token),
@@ -261,12 +253,17 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                     "close": float(message.get("c", 0) or 0),
                     "percent_change": float(message.get("pc", 0) or 0),
                 }
+                if oi_val is not None:
+                    try:
+                        std_msg["oi"] = float(oi_val)
+                    except (ValueError, TypeError):
+                        pass
                 if "bp1" in message:
                     std_msg["bid"] = float(message["bp1"])
                 if "sp1" in message:
                     std_msg["ask"] = float(message["sp1"])
 
-                std_msg = {k: v for k, v in std_msg.items() if v != 0 or k in ["last_traded_price"]}
+                std_msg = {k: v for k, v in std_msg.items() if v != 0 or k in ["last_traded_price", "oi"]}
                 on_tick_callback(std_msg)
 
         def event_handler_order_update(message):
@@ -510,11 +507,35 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                     q_dict["ask"] = float(res.get("sp1", 0.0) or 0.0)
                     if res.get("v") is not None:
                         q_dict["volume"] = float(res.get("v") or 0.0)
+                    if res.get("oi") is not None:
+                        try:
+                            oi_f = float(res.get("oi") or 0.0)
+                            q_dict["oi"] = oi_f
+                            self._ingest_option_oi(token, oi_f)
+                        except (ValueError, TypeError):
+                            pass
             except Exception:
                 pass
         return self._live_quotes.get(
             token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0}
         )
+
+    def _ingest_option_oi(self, token: str, oi_val: float) -> None:
+        """Update CE/PE OI trackers when a positive OI reading arrives (WS or REST)."""
+        s_token = str(token)
+        if s_token not in getattr(self, "_option_ce_tokens", set()) and s_token not in getattr(
+            self, "_option_pe_tokens", set()
+        ):
+            return
+        try:
+            oi_int = int(float(oi_val))
+        except (ValueError, TypeError):
+            return
+        if oi_int <= 0:
+            return
+        if s_token not in self._option_oi_start:
+            self._option_oi_start[s_token] = oi_int
+        self._option_oi_latest[s_token] = oi_int
 
     def force_rest_quote(self, exchange: str, token: str) -> dict:
         """Always REST-refresh one quote into the WS cache (unstick stale LTP)."""
@@ -530,6 +551,13 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                 q_dict["ask"] = float(res.get("sp1", 0.0) or 0.0)
                 if res.get("v") is not None:
                     q_dict["volume"] = float(res.get("v") or 0.0)
+                if res.get("oi") is not None:
+                    try:
+                        oi_f = float(res.get("oi") or 0.0)
+                        q_dict["oi"] = oi_f
+                        self._ingest_option_oi(token, oi_f)
+                    except (ValueError, TypeError):
+                        pass
                 return dict(q_dict)
         except Exception as e:
             logger.debug(f"force_rest_quote {exchange}|{token} failed: {e}")
