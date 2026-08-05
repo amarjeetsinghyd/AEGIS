@@ -157,6 +157,12 @@ class DataFetcher:
 
                     if records:
                         df_backfill = pd.DataFrame(records).drop_duplicates(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+                        
+                        # --- SEBI CAS FILTER: Ignore fake auction spikes after 15:10 ---
+                        from datetime import time as dt_time
+                        cutoff_time = dt_time(15, 10, 0)
+                        df_backfill = df_backfill[df_backfill["timestamp"].dt.time <= cutoff_time].copy()
+                        
                         if len(df_backfill) > 512:
                             df_backfill = df_backfill.iloc[-512:].reset_index(drop=True)
                             
@@ -190,6 +196,16 @@ class DataFetcher:
         return df
 
     def append_live_candle(self, candle_dict: dict):
+        # --- SEBI CAS FILTER: Ignore fake auction spikes after 15:10 ---
+        from datetime import time as dt_time
+        try:
+            c_ts = pd.to_datetime(candle_dict.get('timestamp'))
+            if c_ts and hasattr(c_ts, 'time') and c_ts.time() > dt_time(15, 10, 0):
+                logger.warning(f"Ignoring live candle at {c_ts.time()} (SEBI CAS spike filter)")
+                return
+        except Exception:
+            pass
+
         df = self.bootstrap_candle_window()
         # Ensure timestamp column in existing df is datetime64
         if "timestamp" in df.columns and not pd.api.types.is_datetime64_any_dtype(df["timestamp"]):

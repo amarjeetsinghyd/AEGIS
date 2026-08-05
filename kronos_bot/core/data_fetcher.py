@@ -341,6 +341,13 @@ class DataFetcher:
                 .reset_index(drop=True)
             )
 
+            # --- SEBI CAS FILTER: Ignore fake auction spikes after 15:10 ---
+            from datetime import time as dt_time
+            cutoff_time = dt_time(15, 10, 0)
+            df = df[df["timestamp"].dt.time <= cutoff_time].copy()
+            if df.empty:
+                return self.bootstrap_candle_window(name)
+
             vol_from = df["timestamp"].min().to_pydatetime() - timedelta(minutes=5)
             vol_5m = self._fetch_constituent_volume_5m(name, vol_from, datetime.now())
             if vol_5m is not None and len(vol_5m) > 0:
@@ -409,6 +416,17 @@ class DataFetcher:
     def append_live_candle(self, candle_dict: dict):
         name = self.get_active_instrument()[0]
         path = self._parquet_path_for(name)
+        
+        # --- SEBI CAS FILTER: Ignore fake auction spikes after 15:10 ---
+        from datetime import time as dt_time
+        try:
+            c_ts = pd.to_datetime(candle_dict.get('timestamp'))
+            if c_ts and hasattr(c_ts, 'time') and c_ts.time() > dt_time(15, 10, 0):
+                logger.warning(f"Ignoring live candle at {c_ts.time()} (SEBI CAS spike filter)")
+                return
+        except Exception:
+            pass
+
         df = self.bootstrap_candle_window(name)
         if "timestamp" in df.columns and not pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
             df["timestamp"] = pd.to_datetime(df["timestamp"])

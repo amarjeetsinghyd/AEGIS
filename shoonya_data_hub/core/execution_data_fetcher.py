@@ -161,6 +161,16 @@ class DataFetcher:
         return True
 
     def append_live_candle(self, candle_dict: dict):
+        # --- SEBI CAS FILTER: Ignore fake auction spikes after 15:10 ---
+        from datetime import time as dt_time
+        try:
+            c_ts = pd.to_datetime(candle_dict.get('timestamp'))
+            if c_ts and hasattr(c_ts, 'time') and c_ts.time() > dt_time(15, 10, 0):
+                logger.warning(f"Ignoring live candle at {c_ts.time()} (SEBI CAS spike filter)")
+                return
+        except Exception:
+            pass
+            
         self.candle_window.append(candle_dict)
         ts = candle_dict.get('timestamp', 'N/A')
         o = float(candle_dict.get('open', 0.0))
