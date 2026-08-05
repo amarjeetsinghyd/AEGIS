@@ -50,16 +50,16 @@ class FootprintEvaluator:
         # If Order Flow is strongly buying (Delta > +10%)
         if delta_pct > 0.10:
             if avg_l2_ask > avg_l2_bid * 2.0 and avg_l2_ask > 0:
-                reason = f"L2 Absorption Filtered BUY: Massive Ask wall (Asks={avg_l2_ask:.0f} vs Bids={avg_l2_bid:.0f}) | OF Delta +{delta_pct*100:.1f}%"
-                return "NEUTRAL", reason
+                reason = f"ABSORPTION SELL: Buyers trapped by massive Ask wall (Asks={avg_l2_ask:.0f} vs Bids={avg_l2_bid:.0f}) | OF Delta +{delta_pct*100:.1f}%"
+                return "SELL", reason
             reason = f"Confluence BUY: OF Delta +{delta_pct*100:.1f}% | POC @ {poc_price} | (Shadow TSF {tsf_delta*100:.2f}%)"
             return "BUY", reason
             
         # If Order Flow is strongly selling (Delta < -10%)
         elif delta_pct < -0.10:
             if avg_l2_bid > avg_l2_ask * 2.0 and avg_l2_bid > 0:
-                reason = f"L2 Absorption Filtered SELL: Massive Bid wall (Bids={avg_l2_bid:.0f} vs Asks={avg_l2_ask:.0f}) | OF Delta {delta_pct*100:.1f}%"
-                return "NEUTRAL", reason
+                reason = f"ABSORPTION BUY: Sellers trapped by massive Bid wall (Bids={avg_l2_bid:.0f} vs Asks={avg_l2_ask:.0f}) | OF Delta {delta_pct*100:.1f}%"
+                return "BUY", reason
             reason = f"Confluence SELL: OF Delta {delta_pct*100:.1f}% | POC @ {poc_price} | (Shadow TSF {tsf_delta*100:.2f}%)"
             return "SELL", reason
             
