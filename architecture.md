@@ -223,15 +223,19 @@ place_order(buy_or_sell, product_type, exchange, tradingsymbol, quantity,
 
 ### 3.6 Closing Auction Session (CAS) — market timing context (from Aug 2026)
 
-Relevant for underlyings with F&O:
+**House continuous session for Kronos/data:** **09:15 → 15:15 IST**. After 15:15, cash enters auction (CAS); we do **not** treat auction prints as normal 5m ML bars.
 
 | Time (IST) | What happens |
 |---|---|
-| 15:15 | Continuous trading in CAS-eligible cash stocks ends; transition to auction |
-| 15:20–15:35-ish | Closing auction phases (cash) |
-| **15:40** | Index / stock **F&O** still trade until here |
+| 09:15–15:15 | Continuous cash (CAS-eligible underlyings) |
+| **15:10–15:15** | Last Kronos 5m bar (**timestamp label 15:10**, closes at **15:15**). Hub WS synth vol still accrues for this bar. |
+| **≥15:15 / 15:17** | Continuous done → EOD REST backfill for NIFTY+SENSEX (buffer before auction spike) |
+| ~15:20–15:35 | Closing auction phases (cash) — flat/zero-vol then spike on charts |
+| **15:40** | Index / stock **F&O** may still trade — **not** a Kronos hold license |
 
-**House rule for Kronos options:** force-flatten **≥ 15:10** so exits complete before cash CAS chaos and with buffer before late session. Index F&O remaining open to 15:40 is **not** a license to hold Kronos trades that late.
+**Candle naming (important):** a bar stamped `15:10:00` is the interval **[15:10, 15:15)**. Keeping “last bar = 15:10” in parquet **includes** continuous trading through **15:15**. Rejecting stamps `> 15:10` drops CAS buckets (15:15 / 15:20 / 15:25), not the last continuous interval.
+
+**House rule for Kronos options:** force-flatten **≥ 15:10** (start of that last bar / before late chaos). Next morning **09:15–09:20** first candle → natural gap vs prior **15:10-labeled** close for Kronos.
 
 ---
 
@@ -608,12 +612,12 @@ File: `common/market/market_calendar.py`
 | Constant | Time IST | Notes |
 |---|---|---|
 | `PRE_MARKET_TIME` | 08:55 | Bot wakeup / handshake |
-| `MARKET_OPEN_TIME` | 09:15 | NSE/BSE continuous open |
-| `KRONOS_ENTRY_CUTOFF_TIME` | 14:50 | Kronos last new entry |
-| `KRONOS_FORCE_FLATTEN_TIME` | 15:10 | Kronos hard flatten (CAS house rule) |
-| `TRADE_ENTRY_CUTOFF_TIME` | 15:20 | Shared helper (looser; Kronos ignores for entries) |
-| `MARKET_CLOSE_TIME` | 15:30 | Legacy cash close marker |
-| `POST_MARKET_TIME` | **15:17** | EOD NIFTY+SENSEX REST backfill (after last 15:10 bar; before CAS spike) |
+| `MARKET_OPEN_TIME` | 09:15 | Continuous open |
+| `KRONOS_ENTRY_CUTOFF_TIME` | 14:50 | Kronos last new entry (see also IDEAS K-ENTRY-1500) |
+| `KRONOS_FORCE_FLATTEN_TIME` | 15:10 | Flatten at start of last continuous 5m bar |
+| `TRADE_ENTRY_CUTOFF_TIME` | 15:00 | Shared helper (Astra/CAS); Kronos uses EM gates |
+| `MARKET_CLOSE_TIME` | **15:15** | Continuous cash close (CAS-era house standard) |
+| `POST_MARKET_TIME` | **15:17** | EOD REST after last bar **closes** at 15:15 (label 15:10) |
 | F&O session (exchange) | → 15:40 | Do not use as Kronos hold license |
 
 Also: NSE/BSE holiday set 2026; weekend skip; deep sleep until next pre-market.

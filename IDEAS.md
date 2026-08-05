@@ -85,19 +85,13 @@ We are completely dropping VWAP and complex gap-percentage calculations. Instead
 #### Cursor lean (not locked)
 - Agree with operator: **Kronos continuous series ends at 15:10**. Drop flat zero-vol and CAS-spike bars from the ML window. Let tomorrow’s open gap vs 15:10 be natural. Aligns with flatten rule and avoids teaching the model auction artifacts.
 
-#### Implementation audit (Anti-Gravity, 2026-08-05 ~15:48) — Cursor review
-- **Verdict:** Intent **correct**; VPS data **clean**; AG prose had one factual error.
-- **Code OK:**
-  - `append_live_candle` / `rest_backfill_today_candles` discard `timestamp.time() > 15:10` (keep **15:10**).
-  - EOD trigger moved **15:31 → 15:17** (`POST_MARKET_TIME` + `kronos_bot/main.py`).
-  - Both NIFTY and SENSEX backfilled on that path.
-- **VPS check (post-deploy):** SENSEX + NIFTY parquets for today end at **15:10**; **0** bars after 15:10.
-- **AG error:** write-up said tomorrow starts from data ending at **15:15** — **wrong**. Last kept bar is **15:10**. Continuous ends ~15:15 on exchange, but we intentionally cut the ML series at flatten time.
-- **Comment nit:** “pre-CAS” at 15:17 is slightly misleading (cash continuous already ended 15:15); real goal is **before the ~15:25 auction spike**.
-- **Side effect:** `is_bot_active_hours` now ends at **15:17** (tied to `POST_MARKET_TIME`) — OK; after that bot deep-sleeps until premarket.
-- **Ops:** Restarting hub+astra for candle filter was heavier than needed (Kronos path is what matters); fine after close.
-- **Hardening added by Cursor:** `get_window_df()` also drops post-15:10 bars so a dirty parquet cannot poison inference.
-- **Status:** K-CAS-CUT effectively **implemented**; keep monitoring first 15:17 EOD tomorrow.
+#### Implementation audit (Anti-Gravity, 2026-08-05) — clarified
+- **Verdict:** AG timing is **correct** once candle labeling is understood.
+- **Candle semantics (operator clarification):** bar stamped **15:10** = wall-clock **15:10 → 15:15**. WS synth vol still fills that bar until **15:15**. REST/EOD at **15:17** runs **after** that bar has closed. Rejecting parquet stamps `> 15:10` drops CAS buckets only, **not** the last continuous interval.
+- **House continuous session:** **09:15 open → 15:15 close**. After 15:15 = auction / next day 09:15. Kronos ML series last bar label = 15:10 (closes 15:15). Next day 09:15–09:20 first candle → natural open gap.
+- **Cursor earlier nit was wrong** in calling AG’s “ends at 15:15” false — that is the **close time** of the 15:10-labeled candle.
+- **Code OK:** CAS filter keep `<= 15:10` stamp; EOD **15:17**; both indices; VPS parquets end at 15:10 label.
+- **Status:** K-CAS-CUT implemented; calendar/docs aligned to 09:15–15:15 continuous standard.
 
 #### Copy-paste for Anti-Gravity
 

@@ -22,13 +22,16 @@ NSE_HOLIDAYS_2026 = {
 }
 
 MARKET_OPEN_TIME = dt_time(9, 15, 0)
-# Cash continuous close historically 15:30; CAS (from Aug 2026) ends continuous
-# trading in F&O-eligible stocks at 15:15, then auction. Index/stock F&O stay open to 15:40.
-MARKET_CLOSE_TIME = dt_time(15, 30, 0)
-TRADE_ENTRY_CUTOFF_TIME = dt_time(15, 20, 0)  # Shared helper; Kronos uses its own tighter gates
+# CAS era (from Aug 2026): continuous cash for F&O-eligible underlyings is 09:15–15:15.
+# House standard for Kronos/data: treat continuous session as 09:15 open → 15:15 close.
+# (Index/stock F&O may still quote later; we do not use post-15:15 auction prints in the ML series.)
+MARKET_CLOSE_TIME = dt_time(15, 15, 0)
+TRADE_ENTRY_CUTOFF_TIME = dt_time(15, 00, 0)  # Shared helper; Kronos uses its own tighter gates (14:50 / idea 15:00)
 PRE_MARKET_TIME = dt_time(8, 55, 0)
-POST_MARKET_TIME = dt_time(15, 17, 0)  # EOD REST backfill after last 15:10 bar; before CAS spike (~15:25)
-# House rule (Kronos): plan final option flatten by 15:10 (before CAS / late-session chaos).
+# Last Kronos 5m bar is labeled 15:10 but covers wall-clock 15:10→15:15 (WS synth vol still accrues).
+# Fire EOD REST only after that bar has closed (≥15:15); 15:17 gives a small buffer before auction spike ~15:25.
+POST_MARKET_TIME = dt_time(15, 17, 0)
+# House rule (Kronos): flatten options by 15:10 (start of last continuous 5m bar / before late chaos).
 KRONOS_FORCE_FLATTEN_TIME = dt_time(15, 10, 0)
 KRONOS_ENTRY_CUTOFF_TIME = dt_time(14, 50, 0)
 
@@ -43,7 +46,7 @@ def is_trading_day(d: date = None) -> bool:
     return True
 
 def is_market_open(now_dt: datetime = None) -> bool:
-    """Returns True if current time is within Indian Market Trading Hours (09:15 - 15:30 IST)."""
+    """Returns True during continuous cash hours (09:15–15:15 IST, CAS-era house standard)."""
     if now_dt is None:
         now_dt = datetime.now()
     if not is_trading_day(now_dt.date()):
@@ -51,7 +54,7 @@ def is_market_open(now_dt: datetime = None) -> bool:
     return MARKET_OPEN_TIME <= now_dt.time() <= MARKET_CLOSE_TIME
 
 def can_enter_new_trades(now_dt: datetime = None) -> bool:
-    """Returns True if current time is within valid trade entry window (09:15 - 15:20 IST) and Kill Switch is inactive."""
+    """Shared entry helper (09:15–TRADE_ENTRY_CUTOFF). Kronos uses its own EM gates."""
     if now_dt is None:
         now_dt = datetime.now()
     if not is_trading_day(now_dt.date()):
@@ -65,7 +68,7 @@ def can_enter_new_trades(now_dt: datetime = None) -> bool:
     return MARKET_OPEN_TIME <= now_dt.time() <= TRADE_ENTRY_CUTOFF_TIME
 
 def is_bot_active_hours(now_dt: datetime = None) -> bool:
-    """Returns True if current time is within active bot runtime (08:55 - 15:31 IST), allowing pre-market setup and post-market EOD processing."""
+    """Bot runtime 08:55 → 15:17 (includes EOD backfill), then deep sleep until next premarket."""
     if now_dt is None:
         now_dt = datetime.now()
     if not is_trading_day(now_dt.date()):
