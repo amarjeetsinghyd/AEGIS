@@ -2,7 +2,7 @@ import time
 import os
 import csv
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time
 import pandas as pd
 from common.logger import get_logger
 from common.execution.decision_lifecycle import DecisionLifecycle
@@ -168,6 +168,11 @@ class ExecutionManager:
         """Executes a KDO entry using Marketable Limit orders."""
         self.reset_daily()
         now = datetime.now()
+        
+        # SEBI CAS Rule: No entries after 15:00
+        if now.time() >= dt_time(15, 0, 0):
+            logger.warning("KDO Entry Aborted: Intraday entry cutoff (15:00) reached due to SEBI CAS rules.")
+            return
         
         if self.has_open_trade():
             return
@@ -337,6 +342,12 @@ class ExecutionManager:
         name, exch_seg = self.data_fetcher.get_active_instrument()
         params = self.get_instrument_params()
         now = datetime.now()
+        
+        # Exit Branch 0: Intraday Flatten (SEBI CAS 15:10)
+        if now.time() >= dt_time(15, 10, 0):
+            self._close_all_legs(f"Intraday Flatten (SEBI CAS Time Limit 15:10)")
+            return
+            
         hold_sec = (now - self.trade_context.entry_time).total_seconds() if self.trade_context.entry_time else 0.0
 
         for leg in self.trade_context.legs:
