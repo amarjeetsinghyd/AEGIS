@@ -58,10 +58,36 @@ Obsidian tip: you can symlink or copy this file into your vault, or keep ideas h
 - **Clock (A):** **09:20–09:45** (not 09:35) — more 5m bars for ATR(10) to stabilize; full ST after 09:45.
 - **Paper plan (A):** shadow backfill on past `|gap|≥0.30%` days via journal; track blocked vs shadow winners/losers; min ~15–20 gap days before live; EOD promote only.
 - **A explicitly rejects:** gap⇒direction bias; 1m into Kronos; global threshold raise; extending window past 09:45; shipping without shadow evidence.
-- **Operator note:** awaiting **Review B** (second AI/person) before choosing / implementing.
+- **Operator note:** Review B received (below). **Operator must pick locked design before any code.**
+
+#### Peer review B (submitted 2026-08-05) — summary, not yet locked
+- **Gap define:** same `% of prev_close`, but prefer **volatility-relative**: `|gap_pct| ≥ k × ATR_pct(14, daily)` with `k≈0.5` (≈ half daily ATR). On NIFTY ~24k / ATR ~120–150 → roughly **0.30–0.35%**; flat fallback **|gap| ≥ 0.40%** if ATR not wired. Noise gaps → normal ST from 09:20. Gap sign never sets CALL/PUT bias — only which gate regime runs.
+- **Ranked open-window options** (only if `meaningful_gap` AND clock in window):
+  1. **VWAP-relative gate (B’s recommended):** replace ST with session VWAP — CALL iff `close > VWAP`, PUT iff `close < VWAP`. Fresh each session, direction-neutral vs gap. Guard early VWAP whipsaw (min bars / volume).
+  2. **Pure delay / skip-til-warm:** suppress entries until ST warmed; resume normal ST. Safest but **forfeits early Kronos** (the trades you wanted to keep).
+  3. **Opening-range confirmation:** first 15m high/low; allow only close beyond range **in Kronos’s direction** (not gap’s). Strictest / fewest fills.
+- **B’s ranking:** Option 1 (VWAP) > 2 (delay) > 3 (ORB). Explicitly **no raw bypass** (“let Kronos through on gap”) — alternate gate or delay only.
+- **Clock (B):** **09:20–09:45** (same as A). At 09:35 ATR still ~prior-day heavy; at 09:45 majority session-weighted. 09:35 = floor if more aggressive; optional soft VWAP bridge 09:35–09:45.
+- **Paper plan (B):** journal counterfactual on early `st_blocked` gap rows; score realized delta; ≥20 gap-day early samples; confirm mid-day ST (e.g. 12:30) still blocked; add `gate_mode: ST|VWAP|SKIP`; paper 2–3 weeks of gap days before live capital.
+- **B explicitly rejects:** gap⇒direction; 1m into Kronos; raising ±0.10% globally; weakening ST params all day; full gate hole; exception past 09:45.
+
+#### A vs B — quick compare (for operator lock)
+| Topic | Review A | Review B |
+|---|---|---|
+| Gap threshold | Fixed **≥0.30%** | Prefer **0.5× daily ATR%** (~0.30–0.35%); fallback **≥0.40%** |
+| Preferred open gate | **Delay ST** + stricter Kronos confirm (2 closes) | **Session VWAP** gate (direction-neutral) |
+| Delay / skip | A’s #1 | B’s #2 (safe but misses early trades) |
+| Higher Kronos bar in window | A’s #3 (~0.16–0.18%) | Not preferred |
+| Clock | **09:20–09:45** | **09:20–09:45** (aligned) |
+| Gap ≠ trade direction | Yes | Yes |
+| No full bypass | A uses confirm instead of hole | B forbids hole; VWAP or delay only |
+
+**Shared consensus already:** exception only on meaningful gap days; **09:45** hand-back to normal ST(10,3); never gap-chase CALL/PUT; shadow/`decision_journal` before live; don’t touch mid-day ST.
+
+**Main fork to decide:** open window = **delay + Kronos confirm (A)** vs **VWAP alternate gate (B)**.
 
 #### Pending
-- Collect Review B → operator picks locked design → EOD implementation + shadow first.
+- Operator locks design (A / B / hybrid) → EOD shadow implement first → paper weeks → only then live capital discussion.
 
 #### Copy-paste prompt for other AIs / reviewers
 
