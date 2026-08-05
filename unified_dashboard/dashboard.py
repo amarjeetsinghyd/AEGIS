@@ -433,6 +433,7 @@ body {
             </div>
             <div class="metric"><div class="label">GEX</div><div class="value" id="astraGex">—</div></div>
             <div class="metric"><div class="label">Velocity</div><div class="value" id="astraVel">—</div></div>
+            <div class="metric"><div class="label">Accel</div><div class="value" id="astraAcc">—</div></div>
           </div>
           <div class="reason" id="astraReason">Waiting for live state…</div>
         </div>
@@ -601,6 +602,7 @@ async function refresh() {
   document.getElementById('astraFunds').textContent = money(a.available_funds);
   document.getElementById('astraGex').textContent = fmt(a.gex_net, 0);
   document.getElementById('astraVel').textContent = fmt(a.velocity, 0);
+  document.getElementById('astraAcc').textContent = fmt(a.acceleration, 0);
   document.getElementById('astraReason').textContent = a.reasoning || '—';
   const ap = document.getElementById('astraPill');
   ap.textContent = aSig;
