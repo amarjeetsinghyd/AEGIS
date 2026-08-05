@@ -118,9 +118,9 @@ def main():
 
             # 1. Check active bot runtime
             if not is_bot_active_hours(now):
-                if not eod_backfill_done and now.time() >= dt_time(15, 31):
+                if not eod_backfill_done and now.time() >= dt_time(15, 17):
                     logger.info("==========================================================")
-                    logger.info("03:31 PM IST POST-MARKET EOD BACKFILL SERVICE INITIATING")
+                    logger.info("03:17 PM IST POST-MARKET EOD BACKFILL SERVICE INITIATING")
                     logger.info("==========================================================")
                     fetcher.rest_backfill_today_candles("NIFTY")
                     fetcher.rest_backfill_today_candles("SENSEX")

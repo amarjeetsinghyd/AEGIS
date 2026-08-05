@@ -27,7 +27,7 @@ MARKET_OPEN_TIME = dt_time(9, 15, 0)
 MARKET_CLOSE_TIME = dt_time(15, 30, 0)
 TRADE_ENTRY_CUTOFF_TIME = dt_time(15, 20, 0)  # Shared helper; Kronos uses its own tighter gates
 PRE_MARKET_TIME = dt_time(8, 55, 0)
-POST_MARKET_TIME = dt_time(15, 31, 0)  # Post-market EOD backfill trigger at 03:31 PM IST
+POST_MARKET_TIME = dt_time(15, 17, 0)  # Post-market EOD backfill trigger at 15:17 IST (pre-CAS)
 # House rule (Kronos): plan final option flatten by 15:10 (before CAS / late-session chaos).
 KRONOS_FORCE_FLATTEN_TIME = dt_time(15, 10, 0)
 KRONOS_ENTRY_CUTOFF_TIME = dt_time(14, 50, 0)
