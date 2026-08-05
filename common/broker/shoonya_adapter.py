@@ -263,6 +263,13 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                 if "sp1" in message:
                     std_msg["ask"] = float(message["sp1"])
 
+                # Parse full Top 5 Depth if present
+                for i in range(1, 6):
+                    if f"bp{i}" in message: std_msg[f"bp{i}"] = float(message[f"bp{i}"])
+                    if f"bq{i}" in message: std_msg[f"bq{i}"] = int(message[f"bq{i}"])
+                    if f"sp{i}" in message: std_msg[f"sp{i}"] = float(message[f"sp{i}"])
+                    if f"sq{i}" in message: std_msg[f"sq{i}"] = int(message[f"sq{i}"])
+
                 std_msg = {k: v for k, v in std_msg.items() if v != 0 or k in ["last_traded_price", "oi"]}
                 on_tick_callback(std_msg)
 
