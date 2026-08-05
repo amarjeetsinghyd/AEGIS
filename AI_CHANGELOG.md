@@ -11,6 +11,10 @@ Order/broker rules: [`shoonya_data_hub/docs/SHOONYA_ORDER_RULES.md`](shoonya_dat
 
 ## 2026-08-05 (full day precision updates)
 
+### Idea parked: Kronos Supertrend on 1m (EOD only)
+- Operator compared TV 1m vs 5m ST(10,3): 1m flips earlier / less lag on turns. Proposal: keep Kronos **5m** prediction; gate with **1m** ST from index WS LTP → 1m OHLC (hub/Astra tick path already exists).
+- **Do not implement mid-session.** Queued in [`IDEAS.md`](IDEAS.md) **K-ST-1m** + ARCHITECTURE §24. Revisit after 16:00 / next premarket; validate with `decision_journal.jsonl` before live money.
+
 ### Adaptive Noise Floor & Hybrid Exits (Astra Bot)
 - **Problem**: The Astra bot was experiencing rapid "flickering" exits due to microscopic pullbacks treating zero-crossings of the noisy ABG-filtered signal as valid exit events. Furthermore, momentum trades were being killed due to a blind 30-second pause upon strike rollovers.
 - **Solution (Noise Floor)**: Replaced static exit thresholds with a dynamic `AdaptiveNoiseFloor` using Median Absolute Deviation (MAD) of raw tick velocity over a 60-tick rolling window. Exits now require the signal to pierce a `1.0x` multiple of the live noise floor (Dynamic Hysteresis).

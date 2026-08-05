@@ -935,11 +935,12 @@ Paper mode may arm `PAPER_TP_*` synthetic ids when live resting place is skipped
 
 ## 24. Open items / next session checklist
 
-1. **Paper-test** next session (Wed/Thu → SENSEX): clean candles → entry → +10% TP **or** −25% hard SL **or** Chandelier **or** 15:10 flatten.
+1. **Paper-test** remaining session + next 1–2 days: clean candles → entry → +10% TP **or** −25% hard SL **or** Chandelier **or** 15:10 flatten. Review `decision_journal.jsonl` before live capital.
 2. Confirm product code **`M` vs `N`** vs account `prarr` before any live capital.
 3. Watch late-session volume quirks (CAS flat bars / occasional spikes) — log, don’t silently fake.
 4. Keep Astra deferred until Kronos paper-stable.
-5. After each non-trivial change: update **this file** + append **`AI_CHANGELOG.md`** + refresh **`SEMANTIC_MAP.md`** if paths moved; sync docs to VPS `/home/opc/`.
+5. **EOD / peer-review ideas:** [`IDEAS.md`](IDEAS.md) **K-ST-1m**; **K-ST-GAP** (open/gap ST challenge — problem only until operator submits a design). Do not change mid-session.
+6. After each non-trivial change: update **this file** + append **`AI_CHANGELOG.md`** + refresh **`SEMANTIC_MAP.md`** if paths moved; sync docs to VPS `/home/opc/`.
 
 ---
 
