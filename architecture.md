@@ -613,7 +613,7 @@ File: `common/market/market_calendar.py`
 | `KRONOS_FORCE_FLATTEN_TIME` | 15:10 | Kronos hard flatten (CAS house rule) |
 | `TRADE_ENTRY_CUTOFF_TIME` | 15:20 | Shared helper (looser; Kronos ignores for entries) |
 | `MARKET_CLOSE_TIME` | 15:30 | Legacy cash close marker |
-| `POST_MARKET_TIME` | 15:31 | EOD backfill trigger |
+| `POST_MARKET_TIME` | **15:17** | EOD NIFTY+SENSEX REST backfill (after last 15:10 bar; before CAS spike) |
 | F&O session (exchange) | → 15:40 | Do not use as Kronos hold license |
 
 Also: NSE/BSE holiday set 2026; weekend skip; deep sleep until next pre-market.

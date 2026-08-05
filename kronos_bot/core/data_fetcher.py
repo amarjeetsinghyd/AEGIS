@@ -399,6 +399,12 @@ class DataFetcher:
     def get_window_df(self) -> pd.DataFrame:
         name = self.get_active_instrument()[0]
         df = self.bootstrap_candle_window(name)
+        # Defense-in-depth: never feed post-15:10 CAS bars into Kronos even if parquet is dirty
+        if df is not None and len(df) and "timestamp" in df.columns:
+            from datetime import time as dt_time
+            ts = pd.to_datetime(df["timestamp"])
+            df = df.loc[ts.dt.time <= dt_time(15, 10, 0)].copy()
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
         needs_backfill = len(df) < 512
         if not needs_backfill and "volume" in df.columns:
             # Re-backfill if window is still fake 10M filler
