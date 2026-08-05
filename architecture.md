@@ -34,7 +34,7 @@ Run three independent Indian options/stocks engines on one VPS:
 |---|---|---|---|
 | **Astra** | Kinetic Delta Orderflow (KDO) microstructure | tick / sub-second | `common/execution/execution_manager.py` (KDO exits) |
 | **Kronos** | Kronos foundation-model directional + Supertrend | **5-minute** | `kronos_bot/execution/kronos_execution_manager.py` **only** |
-| **Stock Order Flow** | High-Frequency Intraday Footprints (Engine 3) | **5-minute** | `stock_order_flow/execution_manager.py` (MFE/MAE tracking) |
+| **Stock Order Flow** | Engine 3: L1 Footprint + L2 Absorption Counter-Trade | **5-minute** | `stock_order_flow/execution_manager.py` (MFE/MAE tracking) |
 
 Shared infrastructure:
 
@@ -66,6 +66,13 @@ A Kronos PUT was entered **late session** (~after 15:00). Operator expected a **
 - Entry window **09:20–15:00**
 - Real **synthetic constituent volume** (never fake 10M)
 - Never overnight weekly options in this strategy
+
+### 1.3 Engine 3 (Stock Order Flow)
+- Focuses on 5 highly liquid equities (RELIANCE, HDFCBANK, INFY, LT, TATAMOTORS).
+- Utilizes **L1 Tick-by-Tick** data to build a 5-minute Footprint Matrix.
+- Fuses **L2 Market Depth** directly into the `evaluator.py`.
+- **Absorption Counter-Trade Strategy:** If L1 Footprint says BUY (+10% Delta) but L2 Depth shows a 2x massive Ask wall, it traps the retail flow and executes an aggressive **SELL (Short)**.
+- Strictly adheres to intraday timing (09:15-15:00 entry block, 15:10 force flatten).
 
 ---
 
