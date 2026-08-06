@@ -55,13 +55,18 @@ def _active_trade(data_dir: str):
 
 
 def _normalize_trade(row: dict) -> dict:
-    """Flatten mixed Kronos / Astra history schemas into one dashboard row."""
+    """Flatten mixed Kronos / Astra / Order Flow history schemas into one dashboard row."""
     if not isinstance(row, dict):
         return {}
-    # Kronos EM writes pnl/exit_reason; older Astra rows use net_pl/reason
+    # Prefer explicit rupee fields; ignore legacy SOF fractional `pnl` when net_pl missing
     pnl = row.get("net_pl")
     if pnl is None:
-        pnl = row.get("pnl")
+        raw_pnl = row.get("pnl")
+        # Old Order Flow wrote pnl as a fraction (e.g. 0.005); do not treat as rupees
+        if isinstance(raw_pnl, (int, float)) and abs(float(raw_pnl)) < 1 and row.get("strategy") == "order_flow":
+            pnl = None
+        else:
+            pnl = raw_pnl
     if pnl is None:
         pnl = (row.get("post_trade_attribution") or {}).get("pnl_rs")
     reason = (
@@ -233,19 +238,35 @@ body {
 .metric.signal-call {
   border-color: var(--call-border);
   background: var(--call-bg);
+  box-shadow: inset 0 0 0 1px var(--call-border);
 }
 .metric.signal-put {
   border-color: var(--put-border);
   background: var(--put-bg);
+  box-shadow: inset 0 0 0 1px var(--put-border);
 }
-.metric.signal-call .value { color: var(--call); }
-.metric.signal-put .value { color: var(--put); }
+.metric.signal-call .value { color: var(--call); font-size: 22px; font-weight: 700; letter-spacing: 0.04em; }
+.metric.signal-put .value { color: var(--put); font-size: 22px; font-weight: 700; letter-spacing: 0.04em; }
 .metric.signal-call .label,
 .metric.signal-call .hint { color: #2f6b4a; }
 .metric.signal-put .label,
 .metric.signal-put .hint { color: #8a3a34; }
-.sig-call { color: var(--call); font-weight: 600; }
-.sig-put { color: var(--put); font-weight: 600; }
+.sig-call {
+  color: var(--call);
+  font-weight: 700;
+  background: var(--call-bg);
+  border: 1px solid var(--call-border);
+  border-radius: 6px;
+  padding: 2px 8px;
+}
+.sig-put {
+  color: var(--put);
+  font-weight: 700;
+  background: var(--put-bg);
+  border: 1px solid var(--put-border);
+  border-radius: 6px;
+  padding: 2px 8px;
+}
 .metric {
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -411,7 +432,7 @@ body {
             <div class="metric" id="kronosSignalMetric">
               <div class="label">Signal</div>
               <div class="value" id="kronosSignal">—</div>
-              <div class="hint">Waiting = no CALL/PUT yet this bar</div>
+              <div class="hint" id="kronosSignalHint">Green CALL / red PUT when live</div>
             </div>
             <div class="metric">
               <div class="label">Paper funds</div>
@@ -571,7 +592,10 @@ function renderHistory() {
   const box = document.getElementById('trades');
   document.getElementById('histCount').textContent = rows.length + ' trades · disk · ' + activeHistEngine.toUpperCase();
   if (!rows.length) {
-    box.innerHTML = `<div class="empty">No closed ${activeHistEngine} trades on disk yet (<code>${activeHistEngine}_bot/data/trades/trade_history.json</code>).</div>`;
+    const histPath = activeHistEngine === 'of'
+      ? 'stock_order_flow/data/trades/trade_history.json'
+      : `${activeHistEngine}_bot/data/trades/trade_history.json`;
+    box.innerHTML = `<div class="empty">No closed ${activeHistEngine} trades on disk yet (<code>${histPath}</code>).</div>`;
     return;
   }
   const body = rows.map(t => `

@@ -170,6 +170,7 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
         self._option_pe_tokens = set()
         self._option_oi_start = {}
         self._option_oi_latest = {}
+        self._tick_listeners = []  # extra consumers (e.g. Stock Order Flow) — do not start a 2nd WS
 
     def get_quotes(self, instrument_ids: list) -> dict:
         res = {}
@@ -184,7 +185,9 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
             lambda: self._api.searchscrip(exchange="NSE", searchtext=query),
             limiter=self.QUOTE_LIMITER
         )
-        return resp.get("values", []) if isinstance(resp, dict) else resp
+        if isinstance(resp, dict):
+            return resp.get("values", []) or []
+        return resp if isinstance(resp, list) else []
 
     def get_historical(self, exchange: str, token: str, starttime=None, endtime=None, interval=1) -> dict:
         if starttime is not None:
@@ -272,6 +275,11 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
 
                 std_msg = {k: v for k, v in std_msg.items() if v != 0 or k in ["last_traded_price", "oi"]}
                 on_tick_callback(std_msg)
+                for listener in list(getattr(self, "_tick_listeners", []) or []):
+                    try:
+                        listener(std_msg)
+                    except Exception as exc:
+                        logger.debug(f"tick listener error: {exc}")
 
         def event_handler_order_update(message):
             pass
@@ -439,6 +447,23 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
             return
         shoonya_tokens = [f"{exchange}|{t}" for t in tokens]
         self._api.unsubscribe(shoonya_tokens, feed_type=(feed_type or "t"))
+
+    def add_tick_listener(self, callback) -> None:
+        """Register an extra tick consumer without opening another WebSocket."""
+        if callback is None:
+            return
+        if not hasattr(self, "_tick_listeners") or self._tick_listeners is None:
+            self._tick_listeners = []
+        if callback not in self._tick_listeners:
+            self._tick_listeners.append(callback)
+
+    def remove_tick_listener(self, callback) -> None:
+        if not hasattr(self, "_tick_listeners"):
+            return
+        try:
+            self._tick_listeners.remove(callback)
+        except ValueError:
+            pass
 
     def _ensure_ws_started(self):
         if not self._ws_started:

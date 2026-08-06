@@ -410,7 +410,26 @@ def main():
                 except Exception:
                     bar_close = float(spot_price)
 
-                will_enter = final_sig in ["CALL", "PUT"] and KronosExecutionManager.can_enter(now)
+                # Refresh wall clock after slow Kronos inference (can take minutes).
+                # Entry gate must use NOW, not the stale loop timestamp from candle open.
+                now = datetime.now()
+                candle_hhmm = datetime.strptime(candle_time_str, "%Y-%m-%d %H:%M:%S")
+                # First actionable bar is 09:20 (09:15 is warmup / incomplete session bar).
+                candle_ok_for_entry = candle_hhmm.time() >= dt_time(9, 20, 0)
+                window_ok = KronosExecutionManager.can_enter(now)
+                will_enter = (
+                    final_sig in ["CALL", "PUT"]
+                    and candle_ok_for_entry
+                    and window_ok
+                )
+                if final_sig in ["CALL", "PUT"] and not will_enter:
+                    why = []
+                    if not candle_ok_for_entry:
+                        why.append(f"candle {candle_hhmm.strftime('%H:%M')} < 09:20")
+                    if not window_ok:
+                        why.append(f"wall {now.strftime('%H:%M:%S')} outside entry window")
+                    logger.info(f"[ENTRY SKIP] final={final_sig} but not entering — {', '.join(why) or 'blocked'}")
+
                 st_blocked = raw_sig in ("CALL", "PUT") and final_sig == "NEUTRAL"
                 _append_decision_journal(
                     {
@@ -455,7 +474,12 @@ def main():
                     "gate_mode": gate_mode,
                     "supertrend_tf": supertrend_tf,
                     "net_delta_oi": net_delta_oi,
-                    "last_candle": candle_time_str
+                    "last_candle": candle_time_str,
+                    "will_enter": will_enter,
+                    "reasoning": (
+                        f"{final_sig} | gate={gate_mode} | delta={ret_pct*100:+.3f}% | "
+                        + ("entering…" if will_enter else "signal only (no entry this bar)")
+                    ),
                 })
 
                 if will_enter:

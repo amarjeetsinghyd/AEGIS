@@ -34,7 +34,7 @@ Run three independent Indian options/stocks engines on one VPS:
 |---|---|---|---|
 | **Astra** | Kinetic Delta Orderflow (KDO) microstructure | tick / sub-second | `common/execution/execution_manager.py` (KDO exits) |
 | **Kronos** | Kronos foundation-model directional + Supertrend | **5-minute** | `kronos_bot/execution/kronos_execution_manager.py` **only** |
-| **Stock Order Flow** | Engine 3: L1 Footprint + L2 Absorption Counter-Trade | **5-minute** | `stock_order_flow/execution_manager.py` (MFE/MAE tracking) |
+| **Stock Order Flow** | Engine 3: L1 Footprint + L2 Absorption Counter-Trade | **3-minute** | `stock_order_flow/execution_manager.py` (MFE/MAE tracking) |
 
 Shared infrastructure:
 
@@ -68,11 +68,15 @@ A Kronos PUT was entered **late session** (~after 15:00). Operator expected a **
 - Never overnight weekly options in this strategy
 
 ### 1.3 Engine 3 (Stock Order Flow)
-- Focuses on 5 highly liquid equities (RELIANCE, HDFCBANK, INFY, LT, TATAMOTORS).
-- Utilizes **L1 Tick-by-Tick** data to build a 5-minute Footprint Matrix.
-- Fuses **L2 Market Depth** directly into the `evaluator.py`.
-- **Absorption Counter-Trade Strategy:** If L1 Footprint says BUY (+10% Delta) but L2 Depth shows a 2x massive Ask wall, it traps the retail flow and executes an aggressive **SELL (Short)**.
-- Strictly adheres to intraday timing (09:15-15:00 entry block, 15:10 force flatten).
+- Focuses on 5 highly liquid equities (RELIANCE, HDFCBANK, INFY, LT, **TMPV** as TATAMOTORS successor).
+- **Clock: 3-minute** boundaries on the 09:15 grid (09:15 / 09:18 / 09:21 …).
+- **Canonical 3m OHLCV** built from WebSocket LTP + volume (`stock_order_flow/bar_book.py`); REST `THREE_MINUTE` is warmup seed only.
+- L1 footprint + L2 depth fused each 3m bar; **shadow TSF** computed on the same WS 3m closes (does not block entries).
+- **ABSORB_CONFLICT → T+1 resolution** on the next 3m bar (late breakout vs absorption hold).
+- Entry 09:15–15:00; flatten ≥15:10; idle outside continuous session.
+- Process-local Shoonya WS via `add_tick_listener` — no second `start_websocket`.
+- Paper EM: MIS-style **5x** (free cash = margin; notional = margin × 5; max 5 names; equal-split remaining cash per new entry — not all-in). Opposite signal closes/flips. Opens in `data/trades/open_positions.json`. History: rupee `net_pl` + entry/exit for dashboard. 0.5% TP/SL + MFE/MAE post-track.
+- Logs only under `stock_order_flow/logs/stock_order_flow.log`.
 
 ---
 

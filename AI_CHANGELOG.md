@@ -9,6 +9,37 @@ Order/broker rules: [`shoonya_data_hub/docs/SHOONYA_ORDER_RULES.md`](shoonya_dat
 
 ---
 
+## 2026-08-06 — SOF RoM clarity + Kronos entry misses
+
+### Order Flow P&L (5x MIS)
+- ₹58 / ₹60 **is already leveraged P&L**: qty was sized with 5x notional (9 RELIANCE), so spot +0.5% → ~+2.5% return on margin.
+- History `result` now shows `spot % | RoM % (5x) | ₹` so the MIS effect is visible; `net_pl` stays cash P&L credited to the wallet.
+
+### Kronos CALL not taken
+- **09:21 log**: was the slow **09:15** candle finishing late (~6m inference). `will_enter=false` because entry starts at **09:20** candle (by design). Now logs `[ENTRY SKIP]` with reason; refreshes wall clock after inference.
+- **09:33**: real entry attempt → **no affordable strike**. Chain has cheap OTM (probe: ₹27–₹2,261/lot on ₹2,500). Selector hardened: ATM→OTM + full-chain fallback, premium band preference, clearer abort reason on dashboard.
+- Dashboard CALL/PUT styling made louder (green/red badge + larger signal).
+
+---
+
+## 2026-08-06 — Stock Order Flow: MIS 5x realism + trade history
+
+### Problems (from live logs / dashboard)
+- Signals worked, but **Order Flow history** looked empty/wrong: rows had fractional `pnl` (0.005) and **no** `entry_price` / `exit_price` / rupee `net_pl`.
+- Sizing was **all-in**: `qty = int((all_funds × 5) / price)` → first RELIANCE ate ~₹2.3k margin; INFY/LT/TATA hit **Insufficient buying power**; free cash fell to ~₹62 with 3 opens.
+- Opposite signal while open was **skipped** (“trade already open”) instead of reverse/close.
+- Open positions lived only in memory → PM2 restart dropped them (margin stayed deducted).
+
+### Fixes (`stock_order_flow/execution_manager.py`)
+- **MIS mimic:** free cash = margin; notional = margin × **5**; max **5** concurrent names; each new entry gets **equal share of remaining free cash** as margin budget (not 100% wallet).
+- History writes dashboard fields: `entry_price`, `exit_price`, `net_pl` (₹), `qty`, `margin`, `leverage`.
+- Opposite signal → close (`REVERSE_TO_*`) then allow flip.
+- Persist opens to `data/trades/open_positions.json`; restore on boot.
+- Dashboard empty-path text + normalizer ignore legacy fractional SOF `pnl`.
+- VPS: backfilled today’s 2 closed RELIANCE rows; restored HDFCBANK / TATAMOTORS / RELIANCE opens; restarted `stock-order-flow` + `unified-dashboard` only.
+
+---
+
 ## 2026-08-05 (full day precision updates)
 
 ### Shadow OI fix (hub was hardcoding zeros)
@@ -145,6 +176,32 @@ Session focus: Wednesday = **SENSEX**, paper mode. Docs + live path hardened so 
 - Files / VPS impact
 - Safety notes (paper/live, flatten rules, etc.)
 ```
+
+## 2026-08-06
+### SOF clock → 3m WS candles (TSF shadow on same series)
+- Engine boundary **5m → 3m** (09:15 grid).
+- Canonical **3m OHLCV** from WebSocket (`bar_book.py`); REST `THREE_MINUTE` warmup only.
+- Shadow TSF uses WS 3m closes and **does not block** entries if series still warming.
+- ABSORB_CONFLICT T+1 now resolves on the next **3m** bar (~6m worst case vs ~10m before).
+
+### SOF ABSORB_CONFLICT → T+1 breakout/absorption resolution
+- On L1/L2 conflict (strong delta vs 2× opposite wall): **NEUTRAL** + stash one-bar memory (do not blind-fade).
+- Next 5m: late **BREAKOUT** if price clears ref and wall thins; **ABSORPTION** if wall holds and price fails; else clear and fall through.
+- File: `stock_order_flow/evaluator.py`.
+
+### Stock Order Flow hygiene + premarket fixes
+- Root of Kronos-tab OF spam: SOF briefly logged into `kronos_bot.log` (cleaned earlier).
+- SOF fixes before open:
+  - 5m history lookback **3 days** (75m overnight window was empty).
+  - **TATAMOTORS → TMPV-EQ (3456)** (NSE rename/split) + hardcoded token map fallback.
+  - No second `start_websocket` — `add_tick_listener` + `_ensure_ws_started`; subscribe touchline+depth.
+  - Session gate: idle pre-09:15 / after 15:15; entries only to 15:00; flatten ≥15:10.
+  - CapitalEngine bound to `stock_order_flow/data`.
+
+### Hygiene: Kronos dashboard log contamination from Stock Order Flow
+- Symptom: Kronos telemetry tab showed `stock_main` / RELIANCE / footprint lines — SOF briefly wrote into `kronos_bot/logs/kronos_bot.log` before path fix.
+- Action: rotated contaminated file → `kronos_bot.log.contam_sof_.bak`; cleaned live `kronos_bot.log`. Dashboard wiring itself was already correct (separate `of_logs` vs `kronos_logs`).
+- Note: Kronos deep-sleep until ~08:55; fresh Kronos lines resume after wake.
 
 ## 2026-08-05
 ### Engine 3: Stock Order Flow Footprint Engine added

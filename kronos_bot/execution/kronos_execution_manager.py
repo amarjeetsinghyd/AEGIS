@@ -179,9 +179,29 @@ class KronosExecutionManager:
             available_funds=self.capital_engine.get_available_funds(),
             lot_size=params["lot_size"],
             market_data_provider=getattr(self.broker, "market_data_provider", None),
+            premium_min=params.get("premium_min"),
+            premium_max=params.get("premium_max"),
         )
         if not allocations:
-            logger.warning("[KronosEM] Entry aborted — no affordable strike")
+            logger.warning(
+                f"[KronosEM] Entry aborted — no affordable strike "
+                f"({params['index_name']} funds=₹{self.capital_engine.get_available_funds():.2f} "
+                f"lot={params['lot_size']} max_ltp≈₹{self.capital_engine.get_available_funds()/max(params['lot_size'],1):.2f})"
+            )
+            try:
+                from common.ipc import update_kronos_live_state
+                update_kronos_live_state({
+                    "signal": signal_type,
+                    "signal_status": signal_type,
+                    "reasoning": (
+                        f"{signal_type} signal but NO AFFORDABLE STRIKE "
+                        f"(funds ₹{self.capital_engine.get_available_funds():.0f}, "
+                        f"lot {params['lot_size']} → need premium ≤ "
+                        f"₹{self.capital_engine.get_available_funds()/max(params['lot_size'],1):.0f})"
+                    ),
+                })
+            except Exception:
+                pass
             return
 
         opt_row, quantity, ltp = allocations[0]

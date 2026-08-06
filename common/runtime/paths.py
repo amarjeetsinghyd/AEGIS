@@ -15,7 +15,9 @@ def get_runtime_paths(runtime_name: str) -> dict:
     elif runtime_name in {"hub", "shoonya_data_hub", "data_hub"}:
         root_dir = get_project_root() / "shoonya_data_hub"
     else:
-        raise ValueError("runtime_name must be 'astra', 'kronos', 'dashboard', or 'hub'")
+        raise ValueError(
+            "runtime_name must be 'astra', 'kronos', 'stock_order_flow', 'dashboard', or 'hub'"
+        )
 
     data_dir = root_dir / "data"
     logs_dir = root_dir / "logs"
