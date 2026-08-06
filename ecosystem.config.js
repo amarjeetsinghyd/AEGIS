@@ -30,6 +30,7 @@ module.exports = {
         BOT_RUNTIME: "astra"
       }
     },
+    /* 
     {
       name: "kronos-bot",
       script: "kronos_bot/main.py",
@@ -45,6 +46,7 @@ module.exports = {
         BOT_RUNTIME: "kronos"
       }
     },
+    */
     {
       name: "stock-order-flow",
       script: "stock_order_flow/main.py",
