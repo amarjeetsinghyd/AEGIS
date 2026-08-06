@@ -420,10 +420,15 @@ class KronosExecutionManager:
             leg0.exit_reason = reason
             if not leg0.exit_price:
                 leg0.exit_price = fill
+        entry_dt_str = self.trade_context.entry_time.strftime("%d %b %Y %H:%M:%S") if self.trade_context and self.trade_context.entry_time else datetime.now().strftime("%d %b %Y %H:%M:%S")
+        exit_dt_str = datetime.now().strftime("%d %b %Y %H:%M:%S")
+
         # Dual keys: Kronos uses pnl/exit_reason; dashboard also reads net_pl/reason
         hist.append(
             {
-                "date": datetime.now().strftime("%d %b %Y %H:%M:%S"),
+                "date": entry_dt_str,
+                "entry_time": entry_dt_str,
+                "exit_time": exit_dt_str,
                 "strategy": "KRONOS_AI",
                 "signal": self.trade_context.signal_type if self.trade_context else "",
                 "signal_type": self.trade_context.signal_type if self.trade_context else "",
@@ -434,6 +439,7 @@ class KronosExecutionManager:
                 "net_pl": total_pnl,
                 "exit_reason": reason,
                 "reason": reason,
+                "decision_payload": self.trade_context.decision_payload if self.trade_context else None
             }
         )
         try:
