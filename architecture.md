@@ -94,7 +94,7 @@ quant-bot/
     constituents.json             # nifty_50 (50) + sensex_30 (30) Shoonya tokens
 
   common/                         # Shared kernel ONLY
-    broker/                       # Shoonya/Angel adapters, auth, interfaces, ring buffer
+    broker/                       # Shoonya/Angel adapters, auth, interfaces, footprint compiler
                                   # WS LTQ → synthetic vol accumulator (constituent tokens)
     execution/                    # CapitalEngine, StrikeSelector, TradeContext,
                                   # Paper/Shoonya OrderLifecycle, Astra/KDO ExecutionManager
@@ -318,24 +318,23 @@ Astra is the **Kinetic Delta Orderflow (KDO)** engine: tick/sub-second microstru
 |---|---|
 | Loop | `astra_bot/main.py` |
 | Config / runtime | `astra_bot/config/settings.py` → `configure_runtime("astra")` |
-| Signal engine | `astra_bot/core/microstructure_engine.py` (`KineticMicrostructureEngine`) |
-| Ring buffer | `astra_bot/core/ring_buffer.py` (or shared broker ring) |
-| Exits / entries | **`common/execution/execution_manager.py`** (KDO EM — Astra only) |
+| Signal engine | `astra_bot/strategy/evaluator.py` (`ChainFootprintEvaluator`) |
+| Ring buffer | `astra_bot/core/footprint_compiler.py` |
+| Exits / entries | `astra_bot/execution/astra_execution_manager.py` (Astra V2 EM) |
 | Live state | `/dev/shm/kdo_live_state.json` via `common.ipc.update_astra_live_state` |
 | Paper capital | `astra_bot/data/capital_state.json` |
 | Trade history | `astra_bot/data/trades/trade_history.json` |
 
-### 5.3 KDO exit stack (Astra only — never copy to Kronos)
+### 5.3 V2 Exit stack (Astra only — never copy to Kronos)
 
-From `common/execution/execution_manager.py` (order of evaluation):
+From `astra_bot/execution/astra_execution_manager.py` (order of evaluation):
 
-1. **Premium hard SL** — e.g. −25% on option premium (KDO path).
-2. **Premium trailing** / related premium risk.
+1. **V2 Logic (1-Minute Footprint Strategy)**: The bot calculates Bid/Ask walls on Option Level-2 depth.
+2. **Stop Loss (Premium)**: e.g. −10% or similar dynamic stop-losses (based on L2 depth walls).
 3. **Time cap** (120-second / 2-minute hard scalp cap).
-4. **OI reversal** (optional; gated by `OI_REVERSAL_EXIT_ENABLED`, threshold 50k, min hold 60s).
-5. **Dynamic Flow-decay hysteresis** (MAD-based Adaptive Noise Floor): Exits trigger only if the velocity drops a 1.0x multiple below the live background noise floor measured continuously by `KineticMicrostructureEngine`. Removes microscopic flickering exits.
+4. **Adaptive Noise Floor**: No longer uses KDO velocity, now looks at pure 1m aggregated foot-print delta from L2 option chain directly.
 
-Strategy tag on trades: `KINETIC_DELTA_ORDERFLOW`.
+Strategy tag on trades: `ASTRA_V2`.
 
 ### 5.4 Coexistence rules
 
@@ -811,7 +810,7 @@ Inactive index parquet is **not** updated live; it is warmed by **EOD ~15:31 RES
 ### 17.2 Adapter layout (intentional duplication / shims)
 
 Historical copies exist under `astra_bot/core/*`, `kronos_bot/core/*`, `shoonya_data_hub/core/*`.  
-**Canonical shared broker code** is under `common/broker/` (`shoonya_adapter.py`, `shoonya_auth.py`, `session_manager.py`, `interfaces.py`, `rate_limiter.py`, `ring_buffer.py`).
+**Canonical shared broker code** is under `common/broker/` (`shoonya_adapter.py`, `shoonya_auth.py`, `session_manager.py`, `interfaces.py`, `rate_limiter.py`, `footprint_compiler.py`).
 
 Agents should:
 

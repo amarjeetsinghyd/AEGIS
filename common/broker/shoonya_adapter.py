@@ -163,8 +163,8 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
         self._constituent_tokens = set()
         self._accumulated_synthetic_vol = 0
         
-        from common.broker.ring_buffer import RingBufferManager
-        self.ring_buffer_manager = RingBufferManager()
+        from common.broker.footprint_compiler import FootprintCompiler
+        self.footprint_compiler_manager = FootprintCompiler()
         self._index_token = ""
         self._option_ce_tokens = set()
         self._option_pe_tokens = set()
@@ -230,8 +230,15 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                 if str(token) in self._constituent_tokens and ltq > 0:
                     self._accumulated_synthetic_vol += ltq
 
-                if hasattr(self, "ring_buffer_manager"):
-                    self.ring_buffer_manager.process_tick(
+                if hasattr(self, "footprint_compiler_manager"):
+                    self.footprint_compiler_manager.process_tick(
+                        message,
+                        getattr(self, "_index_token", ""),
+                        getattr(self, "_option_ce_tokens", set()),
+                        getattr(self, "_option_pe_tokens", set())
+                    )
+                if hasattr(self, "footprint_compiler"):
+                    self.footprint_compiler.process_tick(
                         message,
                         getattr(self, "_index_token", ""),
                         getattr(self, "_option_ce_tokens", set()),
@@ -525,7 +532,7 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
         if token not in self._subscribed_tokens:
             self._subscribed_tokens.add(token)
             try:
-                self.subscribe([token], exchange, feed_type="t")
+                self.subscribe([token], exchange, feed_type="d")
             except Exception:
                 pass
             try:
@@ -615,8 +622,9 @@ class ShoonyaPortfolioProvider(IPortfolioProvider):
         limits = self.get_limits()
         if isinstance(limits, dict) and "cash" in limits:
             cash = float(limits.get("cash", 0.0))
+            payin = float(limits.get("payin", 0.0))
             marginused = float(limits.get("marginused", 0.0))
-            return max(0.0, cash - marginused)
+            return max(0.0, cash + payin - marginused)
         return 0.0
 
 

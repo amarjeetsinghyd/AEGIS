@@ -25,6 +25,8 @@ MAX_OPEN_POSITIONS = 1
 LEVERAGE = 5.0
 TP_PCT = 0.005
 SL_PCT = 0.005
+MAX_HOLD_MINUTES = 30
+PREEMPTION_HOLD_MINUTES = 15
 
 
 class StockExecutionManager:
@@ -79,11 +81,59 @@ class StockExecutionManager:
         slots_left = max(1, MAX_OPEN_POSITIONS - open_n)
         return max(0.0, funds / slots_left)
 
+    def _get_ltp(self, symbol: str) -> float:
+        try:
+            if hasattr(self.broker, "_api") and hasattr(self.broker._api, "searchscrip"):
+                res = self.broker._api.searchscrip(exchange="NSE", searchtext=symbol)
+                if res and res.get("stat") == "Ok" and res.get("values"):
+                    target_tsym = f"{symbol}-EQ"
+                    token = None
+                    for v in res["values"]:
+                        if v.get("tsym") == target_tsym:
+                            token = v.get("token")
+                            break
+                    if not token:
+                        token = res["values"][0]["token"] # Fallback
+                        
+                    quote = self.broker._api.get_quotes(exchange="NSE", token=token)
+                    if quote and quote.get("lp"):
+                        return float(quote["lp"])
+        except Exception as e:
+            logger.debug(f"Failed to fetch LTP for {symbol}: {e}")
+        return 0.0
+
     def execute_entry(self, signal, symbol, spot_price, reason):
-        # 1. GLOBAL CONCURRENCY LOCK (One trade at a time)
+        # 1. GLOBAL CONCURRENCY LOCK & SIGNAL PREEMPTION
         if len(self.open_trades) >= 1 and symbol not in self.open_trades:
-            logger.info(f"Concurrency Lock Active: Ignoring new {signal} signal for {symbol} because we are already holding an open trade.")
-            return
+            # Check if we can preempt an existing trade
+            existing_symbol, existing_trade = list(self.open_trades.items())[0]
+            try:
+                entry_time = datetime.fromisoformat(existing_trade["entry_time"])
+                minutes_held = (datetime.now() - entry_time).total_seconds() / 60.0
+                
+                current_old_price = self._get_ltp(existing_symbol)
+                
+                if current_old_price and current_old_price > 0:
+                    entry = float(existing_trade["entry_price"])
+                    if existing_trade["type"] == "BUY":
+                        pnl_pct = (current_old_price - entry) / entry
+                    else:
+                        pnl_pct = (entry - current_old_price) / entry
+                        
+                    is_losing = pnl_pct < 0
+                else:
+                    # Fallback if price is not available
+                    is_losing = False
+                    
+                if is_losing or minutes_held >= PREEMPTION_HOLD_MINUTES:
+                    logger.info(f"PREEMPTING {existing_symbol} (held {minutes_held:.1f}m, losing={is_losing}) to enter {symbol}")
+                    self._close_trade(existing_symbol, current_old_price if current_old_price else entry, "PREEMPTED")
+                else:
+                    logger.info(f"Concurrency Lock Active: Ignoring new {signal} signal for {symbol}. Existing trade {existing_symbol} is profitable and young.")
+                    return
+            except Exception as e:
+                logger.warning(f"Error during preemption check: {e}")
+                return
 
         now_time = datetime.now().time()
         if now_time < time(9, 15) or now_time >= time(15, 0):
@@ -176,6 +226,12 @@ class StockExecutionManager:
             else:
                 pnl_pct = (entry - current_price) / entry
 
+            try:
+                entry_time = datetime.fromisoformat(trade["entry_time"])
+                minutes_held = (datetime.now() - entry_time).total_seconds() / 60.0
+            except Exception:
+                minutes_held = 0.0
+
             exit_reason = None
             if is_eod_flatten:
                 exit_reason = "EOD_FLATTEN"
@@ -183,6 +239,8 @@ class StockExecutionManager:
                 exit_reason = "TAKE_PROFIT"
             elif pnl_pct <= -SL_PCT:
                 exit_reason = "STOP_LOSS"
+            elif minutes_held >= MAX_HOLD_MINUTES:
+                exit_reason = "TIME_STOP"
 
             if exit_reason:
                 self._close_trade(symbol, current_price, exit_reason)

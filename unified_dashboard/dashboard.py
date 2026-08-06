@@ -42,7 +42,34 @@ def _read_json(path, default=None):
     return default
 
 
+import time
+from common.broker.shoonya_adapter import ShoonyaAdapter
+
+_shoonya_adapter = None
+_live_funds_cache = 0.0
+_last_funds_fetch = 0.0
+
 def _capital(data_dir: str) -> float:
+    global _shoonya_adapter, _live_funds_cache, _last_funds_fetch
+    now = time.time()
+    if now - _last_funds_fetch > 60:
+        if _shoonya_adapter is None:
+            try:
+                _shoonya_adapter = ShoonyaAdapter()
+            except Exception:
+                pass
+        if _shoonya_adapter:
+            try:
+                funds = _shoonya_adapter.get_available_funds()
+                _live_funds_cache = float(funds)
+                _last_funds_fetch = now
+            except Exception:
+                pass
+    
+    if _live_funds_cache > 0:
+        return _live_funds_cache
+        
+    # fallback to paper
     state = _read_json(os.path.join(data_dir, "capital_state.json"), {}) or {}
     return float(state.get("available_funds") or 0.0)
 
@@ -50,8 +77,11 @@ def _capital(data_dir: str) -> float:
 def _active_trade(data_dir: str):
     data = _read_json(os.path.join(data_dir, "trades", "active_trade_context.json"), None)
     if isinstance(data, dict) and data.get("status") == "OPEN":
-        return data
+        return {"main": data} # Wrap in dict to match open_positions format
     return None
+
+def _open_positions(data_dir: str):
+    return _read_json(os.path.join(data_dir, "trades", "open_positions.json"), None)
 
 
 def _normalize_trade(row: dict) -> dict:
@@ -435,9 +465,9 @@ body {
               <div class="hint" id="kronosSignalHint">Green CALL / red PUT when live</div>
             </div>
             <div class="metric">
-              <div class="label">Paper funds</div>
+              <div class="label">Live funds</div>
               <div class="value" id="kronosFunds">—</div>
-              <div class="hint">Disk wallet for Kronos paper trades</div>
+              <div class="hint">Live Shoonya cash margin</div>
             </div>
             <div class="metric"><div class="label">Pred close</div><div class="value" id="kronosPred">—</div></div>
             <div class="metric"><div class="label">Return %</div><div class="value" id="kronosRet">—</div></div>
@@ -461,13 +491,12 @@ body {
               <div class="hint">Waiting = no CALL/PUT yet this bar</div>
             </div>
             <div class="metric">
-              <div class="label">Paper funds</div>
+              <div class="label">Live funds</div>
               <div class="value" id="astraFunds">—</div>
-              <div class="hint">Disk wallet for Astra paper trades</div>
+              <div class="hint">Live Shoonya cash margin</div>
             </div>
-            <div class="metric"><div class="label">GEX</div><div class="value" id="astraGex">—</div></div>
-            <div class="metric"><div class="label">Velocity</div><div class="value" id="astraVel">—</div></div>
-            <div class="metric"><div class="label">Accel</div><div class="value" id="astraAcc">—</div></div>
+            <div class="metric"><div class="label">Chain Delta</div><div class="value" id="astraDelta">—</div></div>
+            <div class="metric"><div class="label">L2 Wall</div><div class="value" id="astraWall">—</div></div>
           </div>
           <div class="reason" id="astraReason">Waiting for live state…</div>
         </div>
@@ -482,7 +511,7 @@ body {
           <div class="metrics">
             <div class="metric"><div class="label">Signal</div><div class="value" id="ofSignal">—</div></div>
             <div class="metric">
-              <div class="label">Paper funds</div>
+              <div class="label">Live funds</div>
               <div class="value" id="ofFunds">—</div>
               <div class="hint">Disk wallet for OF trades</div>
             </div>
@@ -509,6 +538,21 @@ body {
 
     <section class="panel">
       <div class="panel-head">
+        <h2>Active trades</h2>
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <div class="engine-switch" role="tablist" aria-label="Active trades engine">
+            <button type="button" id="activeTabKronos" class="active kronos" data-engine="kronos">Kronos</button>
+            <button type="button" id="activeTabAstra" class="astra" data-engine="astra">Astra</button>
+            <button type="button" id="activeTabOF" class="of" data-engine="of">Order Flow</button>
+          </div>
+          <div class="pill" id="activeCount">0 trades</div>
+        </div>
+      </div>
+      <div class="trades-body" id="activeTrades"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
         <h2>Trade history</h2>
         <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
           <div class="engine-switch" role="tablist" aria-label="Trade history engine">
@@ -529,8 +573,10 @@ const money = (n) => (n === null || n === undefined) ? '—' : '₹' + fmt(n, 2)
 
 let activeLogEngine = 'kronos';
 let activeHistEngine = 'kronos';
+let activeTradeEngine = 'kronos';
 let latestLogs = { kronos: [], astra: [], of: [] };
 let latestHistory = { kronos: [], astra: [], of: [] };
+let latestActive = { kronos: {}, astra: {}, of: {} };
 
 function signalLabel(raw) {
   const t = String(raw || '').toUpperCase();
@@ -620,12 +666,59 @@ function renderHistory() {
     </table>`;
 }
 
+function renderActiveTrades() {
+  const activeObj = latestActive[activeTradeEngine] || {};
+  const rows = Object.values(activeObj);
+  const box = document.getElementById('activeTrades');
+  document.getElementById('activeCount').textContent = rows.length + ' active trades · ' + activeTradeEngine.toUpperCase();
+  if (!rows.length) {
+    box.innerHTML = `<div class="empty">No active ${activeTradeEngine} trades.</div>`;
+    return;
+  }
+  const body = rows.map(t => {
+    let price = t.entry_price;
+    if (price === undefined && t.legs && t.legs.length) {
+      price = t.legs[0].entry_price;
+    }
+    const symbol = t.symbol || (t.legs && t.legs.length ? t.legs[0].symbol : '—');
+    const type = t.type || t.signal_type || (t.legs && t.legs.length ? t.legs[0].signal_type : '—');
+    const qty = t.qty || (t.legs && t.legs.length ? t.legs[0].qty : '—');
+    return `
+    <tr>
+      <td class="mono" style="white-space:nowrap">${(t.entry_time || '—').replace('T', ' ').substring(0, 19)}</td>
+      <td>${signalCellHtml(type)}</td>
+      <td class="mono">${symbol}</td>
+      <td class="mono">${fmt(price, 2)}</td>
+      <td class="mono">${qty}</td>
+      <td class="mono">${money(t.margin || t.notional)}</td>
+      <td>${t.reason || '—'}</td>
+    </tr>`;
+  }).join('');
+  box.innerHTML = `
+    <table class="trades-table">
+      <thead>
+        <tr>
+          <th>Entry Time</th><th>Side</th><th>Symbol</th><th>Entry Price</th><th>Qty</th><th>Margin / Notional</th><th>Reason</th>
+        </tr>
+      </thead>
+      <tbody>${body}</tbody>
+    </table>`;
+}
+
 function setHistEngine(engine) {
   activeHistEngine = engine;
   document.getElementById('histTabKronos').className = activeHistEngine === 'kronos' ? 'active kronos' : 'kronos';
   document.getElementById('histTabAstra').className = activeHistEngine === 'astra' ? 'active astra' : 'astra';
   document.getElementById('histTabOF').className = activeHistEngine === 'of' ? 'active of' : 'of';
   renderHistory();
+}
+
+function setActiveEngine(engine) {
+  activeTradeEngine = engine;
+  document.getElementById('activeTabKronos').className = activeTradeEngine === 'kronos' ? 'active kronos' : 'kronos';
+  document.getElementById('activeTabAstra').className = activeTradeEngine === 'astra' ? 'active astra' : 'astra';
+  document.getElementById('activeTabOF').className = activeTradeEngine === 'of' ? 'active of' : 'of';
+  renderActiveTrades();
 }
 
 async function refresh() {
@@ -662,9 +755,8 @@ async function refresh() {
   document.getElementById('astraSignal').textContent = aSig;
   document.getElementById('astraSignalMetric').className = signalMetricClass(aSig);
   document.getElementById('astraFunds').textContent = money(a.available_funds);
-  document.getElementById('astraGex').textContent = fmt(a.gex_net, 0);
-  document.getElementById('astraVel').textContent = fmt(a.velocity, 0);
-  document.getElementById('astraAcc').textContent = fmt(a.acceleration, 0);
+  document.getElementById('astraDelta').textContent = ((a.chain_delta || 0) * 100).toFixed(1) + '%';
+  document.getElementById('astraWall').textContent = fmt(a.l2_wall_size, 0);
   document.getElementById('astraReason').textContent = a.reasoning || '—';
   const ap = document.getElementById('astraPill');
   ap.textContent = aSig;
@@ -680,8 +772,14 @@ async function refresh() {
     kronos: data.kronos_trade_history || [],
     astra: data.astra_trade_history || [],
   };
+  latestActive = {
+    of: data.of?.active_trade || {},
+    kronos: data.kronos?.active_trade || {},
+    astra: data.astra?.active_trade || {},
+  };
   renderLogs();
   renderHistory();
+  renderActiveTrades();
 }
 
 document.getElementById('logTabKronos').addEventListener('click', () => setLogEngine('kronos'));
@@ -691,13 +789,17 @@ document.getElementById('histTabKronos').addEventListener('click', () => setHist
 document.getElementById('histTabAstra').addEventListener('click', () => setHistEngine('astra'));
 document.getElementById('histTabOF').addEventListener('click', () => setHistEngine('of'));
 
+document.getElementById('activeTabKronos').addEventListener('click', () => setActiveEngine('kronos'));
+document.getElementById('activeTabAstra').addEventListener('click', () => setActiveEngine('astra'));
+document.getElementById('activeTabOF').addEventListener('click', () => setActiveEngine('of'));
+
 setLogEngine('kronos');
 setHistEngine('kronos');
+setActiveEngine('kronos');
 refresh();
 setInterval(refresh, 2000);
 </script>
 </body>
-</html>
 """
 
 
@@ -751,7 +853,7 @@ def live_state():
             "tick_age_sec": _tick_age_seconds(),
             "initial_paper_capital": INITIAL_PAPER_CAPITAL,
             "astra": astra,
-            "of": {"available_funds": of_funds},
+            "of": {"available_funds": of_funds, "active_trade": _open_positions(ORDERFLOW_DATA)},
             "kronos": kronos,
             "astra_logs": astra_logs,
             "of_logs": of_logs,

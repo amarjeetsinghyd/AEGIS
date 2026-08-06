@@ -148,8 +148,8 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
         self._constituent_tokens = set()
         self._accumulated_synthetic_vol = 0
         
-        from kronos_bot.core.ring_buffer import RingBufferManager
-        self.ring_buffer_manager = RingBufferManager()
+        from kronos_bot.core.footprint_compiler import FootprintCompiler
+        self.footprint_compiler_manager = FootprintCompiler()
         self._index_token = ""
         self._option_ce_tokens = set()
         self._option_pe_tokens = set()
@@ -203,8 +203,8 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                 if str(token) in self._constituent_tokens and ltq > 0:
                     self._accumulated_synthetic_vol += ltq
 
-                if hasattr(self, "ring_buffer_manager"):
-                    self.ring_buffer_manager.process_tick(
+                if hasattr(self, "footprint_compiler_manager"):
+                    self.footprint_compiler_manager.process_tick(
                         message,
                         getattr(self, "_index_token", ""),
                         getattr(self, "_option_ce_tokens", set()),

@@ -99,17 +99,8 @@ class ShoonyaOrderLifecycle(OrderLifecycle):
         try:
             exch_seg = getattr(leg, 'exchange', 'BFO' if 'SENSEX' in leg.symbol else 'NFO')
             qty = leg.quantity * (SENSEX_LOT_SIZE if "SENSEX" in leg.symbol else NIFTY_LOT_SIZE)
-            best_ask = leg.current_price
             
-            try:
-                if hasattr(self.broker, "market_data_provider"):
-                    quote = self.broker.market_data_provider.get_quote(exch_seg, str(leg.token))
-                    if quote and quote.get("ask", 0) > 0:
-                        best_ask = float(quote["ask"])
-            except Exception:
-                pass
-
-            limit_price = get_marketable_entry_limit_price(best_ask)
+            limit_price = get_marketable_entry_limit_price(leg.current_price)
             formatted_price = f"{limit_price:.2f}"
             
             # Dynamic Reflection
@@ -140,17 +131,8 @@ class ShoonyaOrderLifecycle(OrderLifecycle):
         exch_seg = getattr(leg, 'exchange', 'BFO' if 'SENSEX' in leg.symbol else 'NFO')
         qty = leg.quantity * (SENSEX_LOT_SIZE if "SENSEX" in leg.symbol else NIFTY_LOT_SIZE)
         token = str(leg.token)
-        best_bid = leg.current_price
         
-        try:
-            if hasattr(self.broker, "market_data_provider"):
-                quote = self.broker.market_data_provider.get_quote(exch_seg, token)
-                if quote and quote.get("bid", 0) > 0:
-                    best_bid = float(quote["bid"])
-        except Exception:
-            pass
-
-        limit_price = get_marketable_exit_limit_price(best_bid)
+        limit_price = get_marketable_exit_limit_price(leg.current_price)
         formatted_price = f"{limit_price:.2f}"
 
         # Dynamic Reflection

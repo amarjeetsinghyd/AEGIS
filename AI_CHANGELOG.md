@@ -9,9 +9,21 @@ Order/broker rules: [`shoonya_data_hub/docs/SHOONYA_ORDER_RULES.md`](shoonya_dat
 
 ---
 
-## 2026-08-06 — SOF RoM clarity + Kronos entry misses
+## 2026-08-06 — Astra V2 Depth + OTM Reach & Stock Order Flow Bug Fixes
 
-### Order Flow P&L (5x MIS)
+### Astra V2: OTM Options Reach & Depth Feed for Order Book
+- **Problem (OTM Range):** Astra V2 was aborting trades due to "no affordable strike" because `data_fetcher.py` was hardcoded to fetch dynamic quotes only within `range(-3, 4)` of ATM. It never saw 4th/5th level OTM options, limiting its search to expensive near-ATM options.
+- **Fix:** Expanded the dynamic strike list range to `range(-10, 11)` in `astra_bot/execution/data_fetcher.py`. It can now find options up to 10-levels deep.
+- **Problem (Order Book Depth):** Index spot token and Option tokens were all being subscribed using `feed_type="t"` (Touchline). Touchline provides LTP/Volume but NOT the L2 Order Book (Top-5 Bid/Ask). Astra V2's `ChainFootprintEvaluator` needs Depth (`feed_type="d"`) to detect Bid/Ask Walls, but only on the actual options (spot index has no order book).
+- **Fix:** Switched `astra_bot/main.py` premarket & 1m boundary to subscribe index to `"t"` and option tokens to `"d"`. Now Astra V2 can see actual Level 2 depth on options without blind spots.
+
+### Stock Order Flow: Wrong Symbol False Preemption (Larsen & Toubro)
+- **Problem:** When monitoring open positions, the `stock_order_flow` execution manager was querying `searchscrip("LT")`. Shoonya returned `LTTS-EQ` as the first result. The bot fetched the price of `LTTS` (₹3618) instead of `LT` (₹4055), assumed a massive crash, and triggered a false 'PREEMPTED' exit.
+- **Fix:** Updated `_get_ltp` in `stock_order_flow/execution_manager.py` to iterate through search results and strictly match `f"{symbol}-EQ"` (e.g. `LT-EQ`).
+
+---
+
+## 2026-08-06 — SOF RoM clarity + Kronos entry misses
 - ₹58 / ₹60 **is already leveraged P&L**: qty was sized with 5x notional (9 RELIANCE), so spot +0.5% → ~+2.5% return on margin.
 - History `result` now shows `spot % | RoM % (5x) | ₹` so the MIS effect is visible; `net_pl` stays cash P&L credited to the wallet.
 
@@ -62,7 +74,7 @@ Order/broker rules: [`shoonya_data_hub/docs/SHOONYA_ORDER_RULES.md`](shoonya_dat
 ### Adaptive Noise Floor & Hybrid Exits (Astra Bot)
 - **Problem**: The Astra bot was experiencing rapid "flickering" exits due to microscopic pullbacks treating zero-crossings of the noisy ABG-filtered signal as valid exit events. Furthermore, momentum trades were being killed due to a blind 30-second pause upon strike rollovers.
 - **Solution (Noise Floor)**: Replaced static exit thresholds with a dynamic `AdaptiveNoiseFloor` using Median Absolute Deviation (MAD) of raw tick velocity over a 60-tick rolling window. Exits now require the signal to pierce a `1.0x` multiple of the live noise floor (Dynamic Hysteresis).
-- **Solution (Kinematic Pause)**: Verified that the "Continuity-Preserving Micro-Bucket Ring Buffer" (already in place in `astra_bot/core/ring_buffer.py`) successfully rebases OI continuity offsets without flushing or pausing upon strike rollover.
+- **Solution (Kinematic Pause)**: Verified that the "Continuity-Preserving Micro-Bucket Footprint Compiler" (already in place in `astra_bot/core/footprint_compiler.py`) successfully rebases OI continuity offsets without flushing or pausing upon strike rollover.
 - **Solution (Hard Stop)**: Replaced the 10-minute hard cap with a symmetrical 120-second (2-minute) hard cap time limit for scalping.
 - **Files**: `astra_bot/core/microstructure_engine.py`, `common/execution/execution_manager.py`.
 - **VPS Impact**: Safely pushed updated code via `scp` and restarted ONLY `astra-bot` via PM2, successfully preserving the live `kronos-bot` execution completely untouched.

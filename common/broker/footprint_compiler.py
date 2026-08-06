@@ -1,8 +1,8 @@
 import time
 import collections
-from astra_bot.core.logger import get_logger
+from common.logger import get_logger
 
-logger = get_logger("ring_buffer")
+logger = get_logger("footprint_compiler")
 
 
 class TickDeduplicator:
@@ -31,7 +31,7 @@ class TickDeduplicator:
         self.seen_queue.clear()
 
 
-class RingBufferManager:
+class FootprintCompiler:
     """
     Continuity-preserving micro-bucket ring buffer.
 

@@ -2,7 +2,7 @@ import time
 import collections
 from kronos_bot.core.logger import get_logger
 
-logger = get_logger("ring_buffer")
+logger = get_logger("footprint_compiler")
 
 
 class TickDeduplicator:
@@ -34,7 +34,7 @@ class TickDeduplicator:
         self.seen_queue.clear()
 
 
-class RingBufferManager:
+class FootprintCompiler:
     """
     60-Second RAM Ring Buffer & Kinematic Micro-Bucketer.
     - Micro-buckets ticks into 5-second snapshots.

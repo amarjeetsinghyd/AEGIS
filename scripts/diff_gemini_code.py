@@ -17,7 +17,7 @@ deployed_micro = os.path.join(base_path, "core", "microstructure_engine.py")
 gemini_micro_1 = os.path.join(gemini_path, "gemini-code-1785910333925.py")
 gemini_micro_2 = os.path.join(gemini_path, "gemini-code-1785910396153.py")
 
-deployed_ring = os.path.join(base_path, "ring_buffer.py")
+deployed_ring = os.path.join(base_path, "footprint_compiler.py")
 gemini_ring = os.path.join(gemini_path, "gemini-code-1785910348751.py")
 
 print("=== DIFF: deployed microstructure vs gemini micro 1 ===")
@@ -26,5 +26,5 @@ print(get_diff(deployed_micro, gemini_micro_1)[:2000] + "\n... (truncated if too
 print("\n=== DIFF: deployed microstructure vs gemini micro 2 ===")
 print(get_diff(deployed_micro, gemini_micro_2)[:2000] + "\n... (truncated if too long)")
 
-print("\n=== DIFF: deployed ring_buffer vs gemini ring_buffer ===")
+print("\n=== DIFF: deployed footprint_compiler vs gemini footprint_compiler ===")
 print(get_diff(deployed_ring, gemini_ring)[:2000] + "\n... (truncated if too long)")

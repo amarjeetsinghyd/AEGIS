@@ -189,6 +189,12 @@ class DataFetcher:
         return df
 
     def get_index_ltp(self) -> float:
+        # Check ring buffer first for WS-driven spot price
+        if hasattr(self.broker, "market_data_provider") and hasattr(self.broker.market_data_provider, "footprint_compiler"):
+            spot = getattr(self.broker.market_data_provider.footprint_compiler, "current_spot", 0.0)
+            if spot > 0:
+                return spot
+                
         token, name, exchange = self.get_cash_index_token()
         quote = self.broker.market_data_provider.get_quote(exchange, token)
         return quote.get("ltp", 0.0)
@@ -374,15 +380,12 @@ class DataFetcher:
         if df.empty or len(df) < 5:
             try:
                 index_price = self.get_index_ltp()
-                if index_price <= 0:
-                    df_win = self.get_window_df()
-                    if not df_win.empty:
-                        index_price = float(df_win.iloc[-1]['close'])
                 
                 if index_price > 0:
                     step = 100 if name == "SENSEX" else 50
                     atm_strike = round(index_price / step) * step
-                    strike_list = [atm_strike + (i * step) for i in range(-5, 6)]
+                    # Expand to 10 strikes ITM and OTM to support deeper OTM trading
+                    strike_list = [atm_strike + (i * step) for i in range(-10, 11)]
                     
                     import re
                     dynamic_opts = []
@@ -391,7 +394,7 @@ class DataFetcher:
                         res = self.broker._api.searchscrip(exchange=exch_seg, searchtext=search_term)
                         if isinstance(res, dict) and res.get('stat') == 'Ok':
                             for item in res.get('values', []):
-                                if item.get('instname') == 'OPTIDX' and item.get('symname') == name:
+                                if item.get('instname') == 'OPTIDX' and (item.get('symname') == name or item.get('symname') == 'BSXOPT'):
                                     tsym = item.get('tsym', '')
                                     exd_str = item.get('exd', '')
                                     try:
