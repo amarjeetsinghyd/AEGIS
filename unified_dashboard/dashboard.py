@@ -600,7 +600,8 @@ function renderHistory() {
   }
   const body = rows.map(t => `
     <tr>
-      <td class="mono">${t.date || '—'}</td>
+      <td class="mono" style="white-space:nowrap">${t.date || '—'}</td>
+      <td class="mono" style="white-space:nowrap">${t.exit_time || '—'}</td>
       <td>${signalCellHtml(t.signal)}</td>
       <td class="mono">${t.symbol || '—'}</td>
       <td class="mono">${fmt(t.entry_price, 2)}</td>
@@ -612,7 +613,7 @@ function renderHistory() {
     <table class="trades-table">
       <thead>
         <tr>
-          <th>When</th><th>Side</th><th>Symbol</th><th>Entry</th><th>Exit</th><th>P&amp;L</th><th>Exit reason</th>
+          <th>Entry Time</th><th>Exit Time</th><th>Side</th><th>Symbol</th><th>Entry</th><th>Exit</th><th>P&amp;L</th><th>Exit reason</th>
         </tr>
       </thead>
       <tbody>${body}</tbody>
