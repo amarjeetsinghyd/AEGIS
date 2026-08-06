@@ -281,19 +281,31 @@ def _subscribe_cash_book(broker, name: str) -> list[str]:
     mdp = broker.market_data_provider
     spot_token, spot_exch = _cash_token(name)
     mdp.subscribe([spot_token], spot_exch, feed_type="t")
-    constituents = _load_constituents(name)
-    const_tokens = [str(t) for t in constituents.values() if str(t).strip()]
-    if const_tokens:
-        cash_exch = "NSE" if name == "NIFTY" else "BSE"
-        broker.register_constituent_tokens(const_tokens)
-        mdp.subscribe(const_tokens, cash_exch, feed_type="t")
-        logger.info(
-            f"Subscribed {len(const_tokens)} {name} constituents on {cash_exch} "
-            f"for synthetic volume WS feed (touchline)"
-        )
-    else:
-        logger.warning(f"No constituents loaded for {name} — synthetic volume will stay 0")
+    
+    const_tokens = []
+    # --- KRONOS SECTION (Priority 3 - DEACTIVATED) ---
+    # constituents = _load_constituents(name)
+    # const_tokens = [str(t) for t in constituents.values() if str(t).strip()]
+    # if const_tokens:
+    #     cash_exch = "NSE" if name == "NIFTY" else "BSE"
+    #     broker.register_constituent_tokens(const_tokens)
+    #     mdp.subscribe(const_tokens, cash_exch, feed_type="t")
+    #     logger.info(f"Subscribed {len(const_tokens)} {name} constituents on {cash_exch} for synthetic volume WS feed")
+    # else:
+    #     logger.warning(f"No constituents loaded for {name} — synthetic volume will stay 0")
+    # ---------------------------------------------------
     return const_tokens
+
+def _subscribe_stock_order_flow(broker) -> list[str]:
+    """--- STOCK ORDER FLOW SECTION (Priority 2) ---"""
+    # Subscribe to 5 specific stocks for Stock Order Flow.
+    # We use hardcoded NSE tokens for demonstration, the user can modify these.
+    # Ex: HDFCBANK (1333), RELIANCE (2885), ICICIBANK (4963), INFY (1594), TCS (11536)
+    stock_tokens = ["1333", "2885", "4963", "1594", "11536"]
+    mdp = broker.market_data_provider
+    mdp.subscribe(stock_tokens, "NSE", feed_type="t")
+    logger.info(f"Subscribed {len(stock_tokens)} Stock Order Flow stocks on NSE.")
+    return stock_tokens
 
 
 def _subscribe_options(broker, name: str, exch_seg: str) -> list[str]:
@@ -320,10 +332,10 @@ def _subscribe_options(broker, name: str, exch_seg: str) -> list[str]:
     ce_tokens: list[str] = []
     pe_tokens: list[str] = []
 
+    # --- ASTRA V2 SECTION (Priority 1) ---
     if api and hasattr(api, "searchscrip"):
-        # Keep option WS light — Shoonya WS has a practical subscription ceiling;
-        # cash/constituents must win those slots for synthetic volume.
-        for offset in range(-5, 6):
+        # Dynamic Sliding Buffer: Subscribe to ATM ± 10
+        for offset in range(-10, 11):
             strike = int(atm + offset * step)
             try:
                 res = api.searchscrip(exchange=exch_seg, searchtext=f"{name} {strike}")
@@ -404,8 +416,12 @@ def main():
     try:
         mdp = broker.market_data_provider
         mdp._ensure_ws_started()
+        # 1. Astra V2 Spot & (Deactivated) Kronos Constituents
         const_tokens = _subscribe_cash_book(broker, name)
+        # 1. Astra V2 Options (ATM ± 10)
         opt_tokens = _subscribe_options(broker, name, exch_seg)
+        # 2. Stock Order Flow (5 Stocks)
+        stock_tokens = _subscribe_stock_order_flow(broker)
     except Exception as e:
         logger.error(f"Subscription warning: {e}")
 
@@ -422,30 +438,32 @@ def main():
                 last_name = name
                 last_cash_resub = time.time()
 
-            # During cash session, if WS synth accum stays dead, re-subscribe touchline cash book.
-            in_cash_session = (now.hour > 9 or (now.hour == 9 and now.minute >= 15)) and (
-                now.hour < 15 or (now.hour == 15 and now.minute < 30)
-            )
+            # (Kronos logic deactivated)
+            # if (
+            #     in_cash_session
+            #     and live_acc <= 0
+            #     and const_tokens
+            #     and (time.time() - last_cash_resub) >= 120
+            # ):
+            #     logger.warning(
+            #         "[SynthVol] live_accum=0 during session — re-subscribing cash touchline feed"
+            #     )
+            #     const_tokens = _subscribe_cash_book(broker, name)
+            #     last_cash_resub = time.time()
+            # 
+            # Check Astra sliding buffer needs updates
             try:
-                live_acc = int(broker.peek_synthetic_volume())
+                new_atm = round(float(mdp.get_quote(spot_exch, spot_token).get('ltp', 0)) / (100 if name == "SENSEX" else 50)) * (100 if name == "SENSEX" else 50)
+                if new_atm > 0 and new_atm != round(float(broker.session_provider._api.get_quotes(spot_exch, spot_token).get('lp', 0)) / (100 if name == "SENSEX" else 50)) * (100 if name == "SENSEX" else 50): # rudimentary check
+                    logger.info("Dynamic ATM Sliding Window triggered - refreshing options")
+                    opt_tokens = _subscribe_options(broker, name, exch_seg)
             except Exception:
-                live_acc = 0
-            if (
-                in_cash_session
-                and live_acc <= 0
-                and const_tokens
-                and (time.time() - last_cash_resub) >= 120
-            ):
-                logger.warning(
-                    "[SynthVol] live_accum=0 during session — re-subscribing cash touchline feed"
-                )
-                const_tokens = _subscribe_cash_book(broker, name)
-                last_cash_resub = time.time()
+                pass
 
             loop_i += 1
-            # Round-robin REST OI only in continuous session 09:15–15:15.
-            if _in_oi_session(now) and opt_tokens:
-                oi_bucket.refresh_oi_round_robin(broker, opt_tokens, exch_seg, batch=8)
+            # Kronos REST OI deactivated
+            # if _in_oi_session(now) and opt_tokens:
+            #     oi_bucket.refresh_oi_round_robin(broker, opt_tokens, exch_seg, batch=8)
 
             payload = _build_payload(
                 broker,
