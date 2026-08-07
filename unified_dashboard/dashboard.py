@@ -453,29 +453,29 @@ body {
     </div>
 
     <div class="grid">
-      <section class="lane kronos">
+      <section class="lane of">
         <div class="lane-head">
-          <div class="lane-title">Kronos</div>
-          <div id="kronosPill" class="pill">—</div>
+          <div class="lane-title">Order Flow</div>
+          <div id="ofPill" class="pill">—</div>
         </div>
         <div class="lane-body">
           <div class="metrics">
-            <div class="metric"><div class="label">Index</div><div class="value" id="kronosIndex">—</div></div>
-            <div class="metric"><div class="label">Spot</div><div class="value" id="kronosSpot">—</div></div>
-            <div class="metric" id="kronosSignalMetric">
+            <div class="metric"><div class="label">Stocks</div><div class="value" id="ofIndex">15</div></div>
+            <div class="metric"><div class="label">Top Setup</div><div class="value" id="ofSpot">—</div></div>
+            <div class="metric" id="ofSignalMetric">
               <div class="label">Signal</div>
-              <div class="value" id="kronosSignal">—</div>
-              <div class="hint" id="kronosSignalHint">Green CALL / red PUT when live</div>
+              <div class="value" id="ofSignal">—</div>
+              <div class="hint" id="ofSignalHint">Top setup signal</div>
             </div>
             <div class="metric">
               <div class="label">Live funds</div>
-              <div class="value" id="kronosFunds">—</div>
+              <div class="value" id="ofFunds">—</div>
               <div class="hint">Live Shoonya cash margin</div>
             </div>
-            <div class="metric"><div class="label">Pred close</div><div class="value" id="kronosPred">—</div></div>
-            <div class="metric"><div class="label">Return %</div><div class="value" id="kronosRet">—</div></div>
+            <div class="metric"><div class="label">Open PnL</div><div class="value" id="ofPred">—</div></div>
+            <div class="metric"><div class="label">Data</div><div class="value" id="ofRet">—</div></div>
           </div>
-          <div class="reason" id="kronosReason">Waiting for live state…</div>
+          <div class="reason" id="ofReason">Waiting for live state…</div>
         </div>
       </section>
 
@@ -510,21 +510,29 @@ body {
         </div>
       </section>
 
-      <section class="lane of">
+      <section class="lane kronos">
         <div class="lane-head">
-          <div class="lane-title">Order Flow</div>
-          <div id="ofPill" class="pill">—</div>
+          <div class="lane-title">Kronos</div>
+          <div id="kronosPill" class="pill">—</div>
         </div>
         <div class="lane-body">
           <div class="metrics">
-            <div class="metric"><div class="label">Signal</div><div class="value" id="ofSignal">—</div></div>
+            <div class="metric"><div class="label">Index</div><div class="value" id="kronosIndex">—</div></div>
+            <div class="metric"><div class="label">Spot</div><div class="value" id="kronosSpot">—</div></div>
+            <div class="metric" id="kronosSignalMetric">
+              <div class="label">Signal</div>
+              <div class="value" id="kronosSignal">—</div>
+              <div class="hint" id="kronosSignalHint">Green CALL / red PUT when live</div>
+            </div>
             <div class="metric">
               <div class="label">Live funds</div>
-              <div class="value" id="ofFunds">—</div>
-              <div class="hint">Disk wallet for OF trades</div>
+              <div class="value" id="kronosFunds">—</div>
+              <div class="hint">Live Shoonya cash margin</div>
             </div>
+            <div class="metric"><div class="label">Pred close</div><div class="value" id="kronosPred">—</div></div>
+            <div class="metric"><div class="label">Return %</div><div class="value" id="kronosRet">—</div></div>
           </div>
-          <div class="reason" id="ofReason">See Trade History/Logs below</div>
+          <div class="reason" id="kronosReason">Waiting for live state…</div>
         </div>
       </section>
     </div>
@@ -535,8 +543,8 @@ body {
         <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
           <div class="engine-switch" role="tablist" aria-label="Engine logs">
             <button type="button" id="logTabOF" class="active of" data-engine="of">Order Flow</button>
-            <button type="button" id="logTabKronos" class="kronos" data-engine="kronos">Kronos</button>
             <button type="button" id="logTabAstra" class="astra" data-engine="astra">Astra</button>
+            <button type="button" id="logTabKronos" class="kronos" data-engine="kronos">Kronos</button>
           </div>
           <div class="pill" id="logCount">0 lines</div>
         </div>
@@ -550,8 +558,8 @@ body {
         <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
           <div class="engine-switch" role="tablist" aria-label="Active trades engine">
             <button type="button" id="activeTabOF" class="active of" data-engine="of">Order Flow</button>
-            <button type="button" id="activeTabKronos" class="kronos" data-engine="kronos">Kronos</button>
             <button type="button" id="activeTabAstra" class="astra" data-engine="astra">Astra</button>
+            <button type="button" id="activeTabKronos" class="kronos" data-engine="kronos">Kronos</button>
           </div>
           <div class="pill" id="activeCount">0 trades</div>
         </div>
@@ -565,8 +573,8 @@ body {
         <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
           <div class="engine-switch" role="tablist" aria-label="Trade history engine">
             <button type="button" id="histTabOF" class="active of" data-engine="of">Order Flow</button>
-            <button type="button" id="histTabKronos" class="kronos" data-engine="kronos">Kronos</button>
             <button type="button" id="histTabAstra" class="astra" data-engine="astra">Astra</button>
+            <button type="button" id="histTabKronos" class="kronos" data-engine="kronos">Kronos</button>
           </div>
           <div class="pill" id="histCount">0 trades · disk</div>
         </div>
@@ -758,7 +766,19 @@ async function refresh() {
 
   const a = data.astra || {};
   const o = data.of || {};
+  
+  const oSig = signalLabel(o.signal || o.signal_status);
   document.getElementById('ofFunds').textContent = money(o.available_funds);
+  document.getElementById('ofSpot').textContent = o.top_setup || '—';
+  document.getElementById('ofSignal').textContent = oSig;
+  document.getElementById('ofSignalMetric').className = signalMetricClass(oSig);
+  document.getElementById('ofPred').textContent = o.open_pnl ? money(o.open_pnl) : '—';
+  document.getElementById('ofRet').textContent = o.data_seeded ? "Seeded" : "Fetching...";
+  document.getElementById('ofReason').textContent = o.reasoning || 'Waiting for live state...';
+  const op = document.getElementById('ofPill');
+  op.textContent = oSig;
+  op.className = pillClass(oSig);
+  
   const k = data.kronos || {};
 
   const kSig = signalLabel(k.signal || k.signal_status);
