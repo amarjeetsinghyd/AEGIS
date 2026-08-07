@@ -96,6 +96,13 @@ def main():
         
         # V4.3 Structure Engine (shadow mode)
         structure = SpotStructureEngine()
+        from collections import deque
+        from astra_bot.strategy.setup_detectors import SetupDetectors
+        from astra_bot.strategy.signal_router import SignalRouter, RouterState
+        from astra_bot.execution.l2_guard import depth_guard_passes
+        detectors = SetupDetectors()
+        router = SignalRouter()
+        delta_hist = deque(maxlen=4)
         STRUCTURE_MODE = os.getenv("ASTRA_STRUCTURE_MODE", "shadow")
         compiler.set_structure_hook(lambda ts, px: structure.on_tick(ts, px))
         
@@ -216,6 +223,38 @@ def main():
                         if snap["last_event"] != "NONE":
                             logger.info(f"[STRUCTURE:{STRUCTURE_MODE}] {snap['last_event']} regime={reg} vwap={snap['vwap']} ema9={snap['ema9']} ema200={snap['ema200']}")
                         
+                        # V4.4 Router
+                        norm_delta = getattr(evaluator, "last_chain_delta", 0.0)
+                        delta_hist.append(norm_delta)
+                        bars3 = list(structure.candles)[-3:]
+                        rstate = RouterState.IDLE
+                        if bars3:
+                            rstate = router.route(bars3, list(delta_hist), structure, time.time(), detectors)
+                            logger.info(f"[ROUTER] ctx={structure.context_state(spot_price)} state={rstate.value} "
+                                        f"veto={detectors.is_veto_active(time.time())} tel={router.get_telemetry()}")
+                            if rstate == RouterState.ARM and router.armed is not None:
+                                side = router.armed.side
+                                otype = "CE" if side == "CALL" else "PE"
+                                best_token, best_vol = None, 0.0
+                                for token, data in compiled.items():
+                                    if data.get("option_type") != otype: continue
+                                    if consideration_strikes and data.get("strike") not in consideration_strikes: continue
+                                    vol = data.get("total_buy_vol", 0) + data.get("total_sell_vol", 0)
+                                    if vol > best_vol:
+                                        best_vol, best_token = vol, token
+                                if best_token is None:
+                                    router.expire_armed(time.time())
+                                else:
+                                    router.armed.spot0 = spot_price
+                                    router.armed.prem0 = compiler.get_last_lp(best_token) if compiler else 0.0
+                                    router.armed.target_token = best_token
+                                    pending_signal = {
+                                        "type": side, "target_token": best_token,
+                                        "spot0": spot_price, "prem0": router.armed.prem0,
+                                        "arm_time": now, "setup": router.armed.setup
+                                    }
+                                    logger.info(f"[ROUTER] ARM {router.armed.setup}/{side} token={best_token}")
+                        
                         # IPC State Update
                         state_payload = {
                             "active_index": fetcher.get_active_instrument()[0],
@@ -226,6 +265,15 @@ def main():
                             "reasoning": digest,
                             "kinematic_ready": True
                         }
+                        state_payload.update({
+                            "context_state": structure.context_state(spot_price),
+                            "router_state": rstate.value,
+                            "armed_setup": router.armed.setup if router.armed else None,
+                            "armed_side": router.armed.side if router.armed else None,
+                            "veto_active": bool(detectors.is_veto_active(time.time())),
+                            "vwap": snap["vwap"], "band_upper": snap["upper"], "band_lower": snap["lower"],
+                            "router_telemetry": router.get_telemetry(),
+                        })
                         update_astra_live_state(state_payload)
                         
                         # V4.3 Synthetic Volume Bridge poll (1Hz from shared tick file)
@@ -238,17 +286,6 @@ def main():
                                 vol_bridge.poll(time.time(), live_accum)
                         except Exception:
                             pass
-                        
-                        # Arm Pending Signal
-                        if sig in ["CALL", "PUT"] and not trader.has_open_trade():
-                            logger.info(f"Signal ARMED: {sig}. Waiting for confirmation block to clear...")
-                            pending_signal = {
-                                "type": sig,
-                                "target_token": target_token,
-                                "spot0": spot_price,
-                                "prem0": compiler.get_last_lp(target_token) if compiler else 0.0,
-                                "arm_time": now
-                            }
             
             # Pending Entry Window Evaluation (~0.5s polling)
             if pending_signal and not trader.has_open_trade():
@@ -275,6 +312,12 @@ def main():
                     # 2. Trigger (Price confirms effect)
                     if dirn * d_spot >= 3.0 or d_prem >= 0.10:
                         logger.info(f"🚀 CONFIRMATION TRIGGER: spot {d_spot:+.1f} / prem {d_prem:+.2f}")
+                        if not depth_guard_passes(broker, token, pending_signal["type"]):
+                            router.trap_guard_block()
+                            logger.warning(f"TRAP_GUARD_BLOCK {token}")
+                            pending_signal = None
+                            continue
+                        router.trigger_armed()
                         trader.execute_entry(pending_signal["type"], current_spot, target_token=token)
                         pending_signal = None
 
