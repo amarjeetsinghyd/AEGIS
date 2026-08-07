@@ -144,9 +144,20 @@ def _tail_log(path: str, n: int = 40) -> list[str]:
     if not path or not os.path.exists(path):
         return []
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-        return [ln.rstrip("\n") for ln in lines[-n:]]
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            buffer = bytearray()
+            pointer = f.tell()
+            lines_found = 0
+            while pointer > 0 and lines_found <= n:
+                pointer -= 1
+                f.seek(pointer)
+                char = f.read(1)
+                if char == b'\n':
+                    lines_found += 1
+                buffer.extend(char)
+            lines = buffer[::-1].decode("utf-8", errors="replace").splitlines()
+            return [ln for ln in lines if ln][-n:]
     except Exception:
         return []
 
