@@ -270,8 +270,10 @@ def main():
                             "router_state": rstate.value,
                             "armed_setup": router.armed.setup if router.armed else None,
                             "armed_side": router.armed.side if router.armed else None,
+                            "armed_strength": round(router.armed.strength, 2) if router.armed else 0.0,
                             "veto_active": bool(detectors.is_veto_active(time.time())),
                             "vwap": snap["vwap"], "band_upper": snap["upper"], "band_lower": snap["lower"],
+                            "ema9": snap["ema9"], "ema200": snap["ema200"],
                             "router_telemetry": router.get_telemetry(),
                         })
                         update_astra_live_state(state_payload)

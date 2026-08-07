@@ -500,6 +500,11 @@ body {
             <div class="metric"><div class="label">L2 Wall</div><div class="value" id="astraWall">—</div></div>
           </div>
           <div class="reason" id="astraReason">Waiting for live state…</div>
+          <hr style="border: 0; border-top: 1px dashed var(--line); margin: 10px 0;" />
+          <div class="row" id="astra-ctx" style="font-size:11px; margin-bottom:4px; font-weight:600;">Context: —</div>
+          <div class="row" id="astra-router" style="font-size:11px; margin-bottom:4px; color:var(--ink);">Router: —</div>
+          <div class="row" id="astra-bands" style="font-family:'IBM Plex Mono',monospace; font-size:11px; margin-bottom:4px; color:var(--muted);">VWAP — | Bands — / —</div>
+          <div class="row" id="astra-tel" style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:var(--muted);">armed — · trig — · exp — · inv — · won — · trap —</div>
         </div>
       </section>
 
@@ -779,6 +784,25 @@ async function refresh() {
   const ap = document.getElementById('astraPill');
   ap.textContent = aSig;
   ap.className = pillClass(aSig);
+
+  const ctxEl = document.getElementById('astra-ctx');
+  ctxEl.textContent = 'Context: ' + (a.context_state || '—');
+  ctxEl.style.color = ({IN_ZONE:'#2e7d32', AT_EXTREME:'#b26a00',
+                        NO_MANS_LAND:'#9e9e9e'})[a.context_state] || '';
+  document.getElementById('astra-router').textContent =
+      'Router: ' + (a.router_state || '—') +
+      (a.armed_setup ? '  ' + a.armed_setup + '/' + a.armed_side +
+                       ' (' + a.armed_strength + ')' : '') +
+      (a.veto_active ? '  ⛔ VETO' : '');
+  document.getElementById('astra-bands').textContent =
+      'VWAP ' + (a.vwap ?? '—') + ' | Bands ' + (a.band_upper ?? '—') + '/' +
+      (a.band_lower ?? '—') + ' | EMA9 ' + (a.ema9 ?? '—') +
+      ' | EMA200 ' + (a.ema200 ?? '—');
+  const t = a.router_telemetry || {};
+  document.getElementById('astra-tel').textContent =
+      'armed ' + (t.armed ?? 0) + ' · trig ' + (t.triggered ?? 0) +
+      ' · exp ' + (t.expired ?? 0) + ' · inv ' + (t.invalidated ?? 0) +
+      ' · won ' + (t.won ?? 0) + ' · trap ' + (t.trap_guard_block ?? 0);
 
   latestLogs = {
     of: data.of_logs || [],
