@@ -81,7 +81,7 @@ class AstraExecutionManager:
         self.trade_context: Optional[TradeContext] = None
         self.trades_today = 0
         self.last_trade_date = None
-        self.max_trades_per_day = 100
+        self.max_trades_per_day = 5
         self.strike_cooldowns = {}
         self._option_cache = {}
         self.tp_order_id = None
@@ -89,14 +89,52 @@ class AstraExecutionManager:
         self.trade_lock = threading.Lock()
         
         self.daily_pnl = 0.0
-        self.daily_loss_cap = -5000.0
+        # Daily loss cap REMOVED per user decision — do not re-add without asking
         
         trades_dir = os.path.join(self.data_dir, "trades")
         os.makedirs(trades_dir, exist_ok=True)
         self.history_file = os.path.join(trades_dir, "trade_history.json")
         self.active_context_file = os.path.join(trades_dir, "astra_active_trade_context.json")
+        self.state_file = os.path.join(trades_dir, "astra_state.json")
         self._load_active_context()
         self._load_daily_pnl()
+        self._load_trades_today()
+
+    def _load_trades_today(self):
+        """Persist {date, trades_today} to disk so restart doesn't reset the counter."""
+        today = datetime.now().date()
+        default_state = {"date": today.isoformat(), "trades_today": 0}
+        if not os.path.exists(self.state_file):
+            self.trades_today = 0
+            self.last_trade_date = today
+            return
+        try:
+            with open(self.state_file, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            state_date = datetime.fromisoformat(state.get("date", "1970-01-01")).date()
+            if state_date == today:
+                self.trades_today = int(state.get("trades_today", 0))
+                self.last_trade_date = today
+                logger.info(f"[AstraEM] Restored trades_today from disk: {self.trades_today}")
+            else:
+                self.trades_today = 0
+                self.last_trade_date = today
+        except Exception as e:
+            logger.error(f"[AstraEM] failed to load trades_today state: {e}")
+            self.trades_today = 0
+            self.last_trade_date = today
+
+    def _save_trades_today(self):
+        """Persist current trade count to disk."""
+        try:
+            state = {
+                "date": (self.last_trade_date or datetime.now().date()).isoformat(),
+                "trades_today": self.trades_today,
+            }
+            with open(self.state_file, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2)
+        except Exception as e:
+            logger.error(f"[AstraEM] failed to save trades_today state: {e}")
 
     def _load_daily_pnl(self):
         self.daily_pnl = 0.0
@@ -133,10 +171,12 @@ class AstraExecutionManager:
 
     @property
     def tp_pct(self):
-        return 0.05 if datetime.now().weekday() == 4 else 0.10
+        # User preference: fixed 10% TP with trail as protector
+        return 0.10
 
     @property
     def hard_sl_pct(self):
+        # Friday -10%, else -15%
         return 0.10 if datetime.now().weekday() == 4 else 0.15
 
     def _effective_sl_price(self, leg) -> float:
@@ -175,9 +215,7 @@ class AstraExecutionManager:
             logger.warning(f"[AstraEM] Daily trade limit ({self.max_trades_per_day}) reached. Entry blocked.")
             return
             
-        if self.daily_pnl <= self.daily_loss_cap:
-            logger.warning(f"[AstraEM] Daily loss cap hit (₹{self.daily_pnl:.0f}). Entries blocked.")
-            return
+        # Daily loss cap removed per user decision — no blocking on PnL
 
         if self.has_open_trade():
             logger.warning("[AstraEM] Entry blocked — trade already open")
@@ -282,6 +320,7 @@ class AstraExecutionManager:
             
         self.capital_engine.deduct_funds(leg.entry_price * quantity * params["lot_size"])
         self.trades_today += 1
+        self._save_trades_today()  # Persist immediately after incrementing
         self.tp_order_id = None
 
         self._place_take_profit(leg)
@@ -452,8 +491,9 @@ class AstraExecutionManager:
         now = datetime.now()
         total_pnl = 0.0
         
-        filled_qty = 0
-        # Bug 22: Partial Fills Check
+        filled_qty = 0  # Bug fix: init to 0 to avoid unbound variable
+        # Bug 22: Partial Fills Check - read actual avgprc from broker
+        actual_fill_price = None
         if self.tp_order_id and not str(self.tp_order_id).startswith("PAPER_"):
             try:
                 api = getattr(self.broker, "_api", None)
@@ -463,6 +503,9 @@ class AstraExecutionManager:
                         latest = history[0]
                         status = latest.get("status")
                         filled_qty = int(float(latest.get("fillshares", 0)))
+                        # Bug fix: read actual avgprc from broker instead of using chased limit prices
+                        if latest.get("avgprc"):
+                            actual_fill_price = float(latest["avgprc"])
                         
                         for leg in self.trade_context.legs:
                             if leg.status == "OPEN":
@@ -481,11 +524,12 @@ class AstraExecutionManager:
                 continue
             
             if leg.quantity <= 0:
-                # Fully filled by resting TP
+                # Fully filled by resting TP - use actual avgprc from broker
                 leg.status = "CLOSED"
                 leg.exit_time = now
-                leg.exit_price = getattr(leg, "tp_price", leg.current_price)
-                leg.pnl = (leg.exit_price - leg.entry_price) * filled_qty # using raw filled shares
+                # Bug fix: use actual fill price from broker if available, else fallback
+                leg.exit_price = actual_fill_price if actual_fill_price else getattr(leg, "tp_price", leg.current_price)
+                leg.pnl = (leg.exit_price - leg.entry_price) * filled_qty
                 total_pnl += leg.pnl
                 self.capital_engine.add_funds(leg.exit_price * filled_qty)
                 logger.info(f"[AstraEM] CLOSED {leg.symbol} via resting TP | PnL {leg.pnl:.2f}")
