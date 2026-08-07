@@ -534,9 +534,9 @@ body {
         <h2>Telemetry</h2>
         <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
           <div class="engine-switch" role="tablist" aria-label="Engine logs">
-            <button type="button" id="logTabKronos" class="active kronos" data-engine="kronos">Kronos</button>
+            <button type="button" id="logTabOF" class="active of" data-engine="of">Order Flow</button>
+            <button type="button" id="logTabKronos" class="kronos" data-engine="kronos">Kronos</button>
             <button type="button" id="logTabAstra" class="astra" data-engine="astra">Astra</button>
-            <button type="button" id="logTabOF" class="of" data-engine="of">Order Flow</button>
           </div>
           <div class="pill" id="logCount">0 lines</div>
         </div>
@@ -549,9 +549,9 @@ body {
         <h2>Active trades</h2>
         <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
           <div class="engine-switch" role="tablist" aria-label="Active trades engine">
-            <button type="button" id="activeTabKronos" class="active kronos" data-engine="kronos">Kronos</button>
+            <button type="button" id="activeTabOF" class="active of" data-engine="of">Order Flow</button>
+            <button type="button" id="activeTabKronos" class="kronos" data-engine="kronos">Kronos</button>
             <button type="button" id="activeTabAstra" class="astra" data-engine="astra">Astra</button>
-            <button type="button" id="activeTabOF" class="of" data-engine="of">Order Flow</button>
           </div>
           <div class="pill" id="activeCount">0 trades</div>
         </div>
@@ -564,9 +564,9 @@ body {
         <h2>Trade history</h2>
         <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
           <div class="engine-switch" role="tablist" aria-label="Trade history engine">
-            <button type="button" id="histTabKronos" class="active kronos" data-engine="kronos">Kronos</button>
+            <button type="button" id="histTabOF" class="active of" data-engine="of">Order Flow</button>
+            <button type="button" id="histTabKronos" class="kronos" data-engine="kronos">Kronos</button>
             <button type="button" id="histTabAstra" class="astra" data-engine="astra">Astra</button>
-            <button type="button" id="histTabOF" class="of" data-engine="of">Order Flow</button>
           </div>
           <div class="pill" id="histCount">0 trades · disk</div>
         </div>
@@ -579,9 +579,9 @@ body {
 const fmt = (n, d=2) => (n === null || n === undefined || Number.isNaN(Number(n))) ? '—' : Number(n).toLocaleString(undefined, {maximumFractionDigits:d, minimumFractionDigits:0});
 const money = (n) => (n === null || n === undefined) ? '—' : '₹' + fmt(n, 2);
 
-let activeLogEngine = 'kronos';
-let activeHistEngine = 'kronos';
-let activeTradeEngine = 'kronos';
+let activeLogEngine = 'of';
+let activeHistEngine = 'of';
+let activeTradeEngine = 'of';
 let latestLogs = { kronos: [], astra: [], of: [] };
 let latestHistory = { kronos: [], astra: [], of: [] };
 let latestActive = { kronos: {}, astra: {}, of: {} };
@@ -627,12 +627,26 @@ function renderLogs() {
   document.getElementById('logCount').textContent = logs.length + ' lines · ' + activeLogEngine.toUpperCase();
 }
 
-function setLogEngine(engine) {
+function setEngine(engine) {
   activeLogEngine = engine;
-  document.getElementById('logTabKronos').className = activeLogEngine === 'kronos' ? 'active kronos' : 'kronos';
-  document.getElementById('logTabAstra').className = activeLogEngine === 'astra' ? 'active astra' : 'astra';
-  document.getElementById('logTabOF').className = activeLogEngine === 'of' ? 'active of' : 'of';
+  activeHistEngine = engine;
+  activeTradeEngine = engine;
+  
+  document.getElementById('logTabKronos').className = engine === 'kronos' ? 'active kronos' : 'kronos';
+  document.getElementById('logTabAstra').className = engine === 'astra' ? 'active astra' : 'astra';
+  document.getElementById('logTabOF').className = engine === 'of' ? 'active of' : 'of';
+  
+  document.getElementById('histTabKronos').className = engine === 'kronos' ? 'active kronos' : 'kronos';
+  document.getElementById('histTabAstra').className = engine === 'astra' ? 'active astra' : 'astra';
+  document.getElementById('histTabOF').className = engine === 'of' ? 'active of' : 'of';
+  
+  document.getElementById('activeTabKronos').className = engine === 'kronos' ? 'active kronos' : 'kronos';
+  document.getElementById('activeTabAstra').className = engine === 'astra' ? 'active astra' : 'astra';
+  document.getElementById('activeTabOF').className = engine === 'of' ? 'active of' : 'of';
+  
   renderLogs();
+  renderHistory();
+  renderActiveTrades();
 }
 
 function pnlClass(v) {
@@ -730,21 +744,7 @@ function renderActiveTrades() {
     </table>`;
 }
 
-function setHistEngine(engine) {
-  activeHistEngine = engine;
-  document.getElementById('histTabKronos').className = activeHistEngine === 'kronos' ? 'active kronos' : 'kronos';
-  document.getElementById('histTabAstra').className = activeHistEngine === 'astra' ? 'active astra' : 'astra';
-  document.getElementById('histTabOF').className = activeHistEngine === 'of' ? 'active of' : 'of';
-  renderHistory();
-}
 
-function setActiveEngine(engine) {
-  activeTradeEngine = engine;
-  document.getElementById('activeTabKronos').className = activeTradeEngine === 'kronos' ? 'active kronos' : 'kronos';
-  document.getElementById('activeTabAstra').className = activeTradeEngine === 'astra' ? 'active astra' : 'astra';
-  document.getElementById('activeTabOF').className = activeTradeEngine === 'of' ? 'active of' : 'of';
-  renderActiveTrades();
-}
 
 async function refresh() {
   const res = await fetch('/api/live_state');
@@ -826,20 +826,18 @@ async function refresh() {
   renderActiveTrades();
 }
 
-document.getElementById('logTabKronos').addEventListener('click', () => setLogEngine('kronos'));
-document.getElementById('logTabAstra').addEventListener('click', () => setLogEngine('astra'));
-document.getElementById('logTabOF').addEventListener('click', () => setLogEngine('of'));
-document.getElementById('histTabKronos').addEventListener('click', () => setHistEngine('kronos'));
-document.getElementById('histTabAstra').addEventListener('click', () => setHistEngine('astra'));
-document.getElementById('histTabOF').addEventListener('click', () => setHistEngine('of'));
+document.getElementById('logTabKronos').addEventListener('click', () => setEngine('kronos'));
+document.getElementById('logTabAstra').addEventListener('click', () => setEngine('astra'));
+document.getElementById('logTabOF').addEventListener('click', () => setEngine('of'));
+document.getElementById('histTabKronos').addEventListener('click', () => setEngine('kronos'));
+document.getElementById('histTabAstra').addEventListener('click', () => setEngine('astra'));
+document.getElementById('histTabOF').addEventListener('click', () => setEngine('of'));
 
-document.getElementById('activeTabKronos').addEventListener('click', () => setActiveEngine('kronos'));
-document.getElementById('activeTabAstra').addEventListener('click', () => setActiveEngine('astra'));
-document.getElementById('activeTabOF').addEventListener('click', () => setActiveEngine('of'));
+document.getElementById('activeTabKronos').addEventListener('click', () => setEngine('kronos'));
+document.getElementById('activeTabAstra').addEventListener('click', () => setEngine('astra'));
+document.getElementById('activeTabOF').addEventListener('click', () => setEngine('of'));
 
-setLogEngine('kronos');
-setHistEngine('kronos');
-setActiveEngine('kronos');
+setEngine('of');
 refresh();
 setInterval(refresh, 2000);
 </script>
