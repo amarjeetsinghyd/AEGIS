@@ -59,6 +59,11 @@ class FootprintCompiler:
         self.last_spot_bar_chg = 0.0
         self.prev_l1 = {}
         self.ofi = defaultdict(float)
+        self.structure_hook = None
+        
+    def set_structure_hook(self, hook_fn):
+        """Main.py will inject structure.on_tick via this hook."""
+        self.structure_hook = hook_fn
         
     def process_tick(self, message: dict, index_token: str, ce_tokens: set = None, pe_tokens: set = None):
         """Processes incoming raw WebSocket tick message."""
@@ -78,6 +83,9 @@ class FootprintCompiler:
             if self.spot_bar_open <= 0.0:
                 self.spot_bar_open = price
             self.current_spot = price
+            # Call structure engine hook
+            if hasattr(self, 'structure_hook'):
+                self.structure_hook(ts_epoch, price)
             return
         with self.lock:
             try:

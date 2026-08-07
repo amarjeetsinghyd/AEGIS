@@ -18,6 +18,7 @@ from astra_bot.execution.data_fetcher import DataFetcher
 from astra_bot.core.footprint_compiler import FootprintCompiler
 from astra_bot.strategy.evaluator import ChainFootprintEvaluator
 from astra_bot.execution.astra_execution_manager import AstraExecutionManager
+from astra_bot.core.spot_structure import SpotStructureEngine
 
 from common.market.market_calendar import (
     is_market_open,
@@ -92,6 +93,20 @@ def main():
             broker.market_data_provider.footprint_compiler = compiler
             
         evaluator = ChainFootprintEvaluator()
+        
+        # V4.3 Structure Engine (shadow mode)
+        structure = SpotStructureEngine(band_pts=5.0, memory_min=5.0)
+        import os
+        structure_mode = os.getenv("ASTRA_STRUCTURE_MODE", "shadow")
+
+        # Inject hook into compiler
+        def structure_tick(ts_epoch, price):
+            structure.on_tick(ts_epoch, price)
+            # If you have synthetic volume feed from another bot, call:
+            # structure.add_volume(int(ts_epoch // 60) * 60, synthetic_qty)
+
+        compiler.set_structure_hook(structure_tick)
+        logger.info(f"[Astra] Spot Structure Engine initialized in {structure_mode} mode")
     except Exception as e:
         logger.critical(f"Initialization failed: {e}")
         sys.exit(1)
@@ -189,6 +204,14 @@ def main():
                         # Compile footprint for the past minute on 6+6 strikes
                         compiled = compiler.get_compiled_footprints(ce_tokens_eval, pe_tokens_eval)
                         
+                        # V4.3 Structure Engine snapshot & event logging
+                        snap = structure.snapshot()
+                        regime = structure.regime(compiler.current_spot)
+                        if snap["last_event"] != "NONE":
+                            if structure_mode == "shadow":
+                                logger.info(f"[STRUCTURE SHADOW] Event={snap['last_event']} regime={regime} vwap={snap['vwap']} ema9={snap['ema9']}")
+                        # Future: live mode would arm pending_signal here
+                        
                         # Evaluate Strategy with 3+3 consideration
                         spot_bar_chg = getattr(compiler, "last_spot_bar_chg", 0.0)
                         sig, reason, target_token = evaluator.evaluate_1m_boundary(
@@ -252,7 +275,17 @@ def main():
             # Manage Open Trades (Stop Loss / Take Profit tracking)
             if trader.has_open_trade():
                 spot = getattr(compiler, "current_spot", 0.0)
-                trader.manage_open_trade(spot_price=spot)
+                # V4.3 Structure-based trail/invalidation checks
+                side = trader.trade_context.signal_type
+                close = compiler.current_spot
+                if structure.trail_exit(side, close):
+                    logger.warning(f"[STRUCTURE] 9-EMA reverse break — exiting {side}")
+                    trader._close_all_legs("9-EMA Trail Exit")
+                elif structure.invalidation(side, close):
+                    logger.warning(f"[STRUCTURE] VWAP band invalidation — exiting {side}")
+                    trader._close_all_legs("VWAP Band SL")
+                else:
+                    trader.manage_open_trade(spot_price=spot)
                 
             # Instant WS Exit Check or 500ms heartbeat
             try:
