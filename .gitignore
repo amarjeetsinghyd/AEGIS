@@ -1,39 +1,46 @@
-# Secrets — NEVER commit these
+# Environment variables
 .env
+.env.local
 .env.*
-*.key
-*.key.pub
-*.pem
-secrets.json
-**/shoonya_session.json
-Oracle SSH keys/
 
-# Python
-venv/
-.venv/
+# Python specific
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+.Python
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+.coverage
+htmlcov/
+.mypy_cache/
+.pytest_cache/
 
-# Logs
-logs/
-*.log
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
 
-# Data / scratch / caches
-data/scratch/
-*.json.bak
-**/option_quotes_cache.json
-*.parquet
-*.db
-
-# Archives
-*.tar.gz
-
-# OS / editor
-.DS_Store
-Thumbs.db
+# IDE specific
 .vscode/
 .idea/
+*.swp
+*.swo
+*.tmp
 
-# Vendor SDK clone (use upstream; do not embed nested .git)
-shoonya_data_hub/reference/ShoonyaApi-py/
+# Logs
+*.log
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Build outputs
+target/
+.gradle/
+node_modules/
+coverage/
