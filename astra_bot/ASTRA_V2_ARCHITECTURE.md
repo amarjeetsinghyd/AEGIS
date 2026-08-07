@@ -62,12 +62,13 @@ Class `FootprintCompiler`. Per-token state in `market_depth[token]`: `{b,s,bv,sv
 ---
 
 ## 4. Spot Structure Engine (V4.3) — `astra_bot/core/spot_structure.py`
-Encodes the user's manual playbook (red=VWAP, yellow=VWAP±band, blue=9EMA, grey=200EMA).
-Class `SpotStructureEngine(band_pts=5.0, memory_min=5.0, orb_candles=15)`:
+Encodes the user's manual playbook: **red=session VWAP** (synthetic volume), **yellow=dynamic High/Low bands** (VWAP-of-Highs & VWAP-of-Lows), **blue=9 EMA trail**, **grey=200 EMA regime**.
+Class `SpotStructureEngine(memory_min=5.0, orb_candles=15)` — `band_pts` deprecated:
 - `on_tick(ts, price)`: builds 1m candles (thread-safe).
-- `add_volume(minute_ts, qty)`: synthetic volume into the current 1m candle (VWAP becomes volume-weighted; falls back to time-weighted if vol=0).
-- `_close_candle`: updates session **VWAP**, `upper=vwap+band`, `lower=vwap−band`, **EMA9**, **EMA200**, **ORB15** (first 15 candles).
+- `add_volume(minute_ts, qty)`: synthetic volume into current 1m candle (VWAP becomes volume-weighted; falls back to time-weighted if vol=0).
+- `_close_candle`: updates session **VWAP** (typical-price weighted), **upper** (VWAP-of-Highs = `high_num/vwap_den`), **lower** (VWAP-of-Lows = `low_num/vwap_den`), **EMA9**, **EMA200**, **ORB15** (first 15 candles).
 - `_evaluate(candle)` → event per 1m close:
+  - Guard: `if upper - lower < 1.0: return "NONE"` (degenerate early-session bands).
   - `REJECT_PUT`: wick ≥ VWAP & close < lower (single-candle fake-breakout), OR zone-touch ≤5min ago + no reclaim + close < lower (two-step rejection).
   - `REJECT_CALL`: mirror.
   - `BREAKDOWN`: recently above VWAP, close < lower. `BREAKOUT`: mirror.
@@ -133,7 +134,8 @@ Affordability (premium ≤₹30) → OTM bias; **3-min cooldown** per strike; **
 | Hard SL | 10%/15% | exec mgr |
 | TP | 10% | exec mgr |
 | Trades/day | 5 (persisted) | exec mgr |
-| VWAP band | ±5pts | spot_structure |
+| VWAP bands | dynamic (High/Low VWAP) | spot_structure |
+| Band spread guard | ≥1.0 pts | spot_structure._evaluate |
 | Zone memory | 5min | spot_structure |
 | Hysteresis | 30pts | compiler |
 
