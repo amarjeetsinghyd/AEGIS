@@ -283,16 +283,16 @@ def _subscribe_cash_book(broker, name: str) -> list[str]:
     mdp.subscribe([spot_token], spot_exch, feed_type="t")
     
     const_tokens = []
-    # --- KRONOS SECTION (Priority 3 - DEACTIVATED) ---
-    # constituents = _load_constituents(name)
-    # const_tokens = [str(t) for t in constituents.values() if str(t).strip()]
-    # if const_tokens:
-    #     cash_exch = "NSE" if name == "NIFTY" else "BSE"
-    #     broker.register_constituent_tokens(const_tokens)
-    #     mdp.subscribe(const_tokens, cash_exch, feed_type="t")
-    #     logger.info(f"Subscribed {len(const_tokens)} {name} constituents on {cash_exch} for synthetic volume WS feed")
-    # else:
-    #     logger.warning(f"No constituents loaded for {name} — synthetic volume will stay 0")
+    # --- KRONOS SECTION (Priority 3 - ACTIVATED) ---
+    constituents = _load_constituents(name)
+    const_tokens = [str(t) for t in constituents.values() if str(t).strip()]
+    if const_tokens:
+        cash_exch = "NSE" if name == "NIFTY" else "BSE"
+        broker.register_constituent_tokens(const_tokens)
+        mdp.subscribe(const_tokens, cash_exch, feed_type="t")
+        logger.info(f"Subscribed {len(const_tokens)} {name} constituents on {cash_exch} for synthetic volume WS feed")
+    else:
+        logger.warning(f"No constituents loaded for {name} — synthetic volume will stay 0")
     # ---------------------------------------------------
     return const_tokens
 

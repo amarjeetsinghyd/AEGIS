@@ -3,7 +3,7 @@ from common.logger import get_logger
 
 logger = get_logger("astra_evaluator")
 
-_CHAIN_DELTA_THR = 0.10  # 10% net delta required to trigger (V4.3 calibration)
+_CHAIN_DELTA_THR = 0.10  # 10% net delta required to trigger
 _WALL_MULT = 1.5
 _WALL_THIN_FRAC = 0.70
 _MIN_FLOW_VOL = 500

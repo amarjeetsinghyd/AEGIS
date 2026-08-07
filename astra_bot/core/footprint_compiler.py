@@ -59,11 +59,8 @@ class FootprintCompiler:
         self.last_spot_bar_chg = 0.0
         self.prev_l1 = {}
         self.ofi = defaultdict(float)
-        self.structure_hook = None
         
-    def set_structure_hook(self, hook_fn):
-        """Main.py will inject structure.on_tick via this hook."""
-        self.structure_hook = hook_fn
+        self.structure_hook = None
         
     def process_tick(self, message: dict, index_token: str, ce_tokens: set = None, pe_tokens: set = None):
         """Processes incoming raw WebSocket tick message."""
@@ -84,7 +81,8 @@ class FootprintCompiler:
                 self.spot_bar_open = price
             self.current_spot = price
             # Call structure engine hook
-            if hasattr(self, 'structure_hook'):
+            if self.structure_hook is not None:
+                ts_epoch = float(ts)
                 self.structure_hook(ts_epoch, price)
             return
         with self.lock:
@@ -302,6 +300,9 @@ class FootprintCompiler:
     def get_last_lp(self, token) -> float:
         with self.lock:
             return float(self.market_depth.get(str(token), {}).get("lp", 0.0))
+
+    def set_structure_hook(self, fn):
+        self.structure_hook = fn
 
     def trigger_strike_rollover(self, new_spot: float, strike_step: float = 50.0):
         if self.last_atm_strike is None:

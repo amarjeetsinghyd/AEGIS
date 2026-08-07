@@ -13,7 +13,7 @@ import astra_bot.config.settings  # noqa: F401
 
 from common.logger import get_logger
 from common.broker import ShoonyaAdapter
-from common.ipc import update_astra_live_state
+from common.ipc import update_astra_live_state, SHARED_TICK_FILE
 from astra_bot.execution.data_fetcher import DataFetcher
 from astra_bot.core.footprint_compiler import FootprintCompiler
 from astra_bot.strategy.evaluator import ChainFootprintEvaluator
@@ -95,18 +95,15 @@ def main():
         evaluator = ChainFootprintEvaluator()
         
         # V4.3 Structure Engine (shadow mode)
-        structure = SpotStructureEngine(band_pts=5.0, memory_min=5.0)
-        import os
-        structure_mode = os.getenv("ASTRA_STRUCTURE_MODE", "shadow")
-
-        # Inject hook into compiler
-        def structure_tick(ts_epoch, price):
-            structure.on_tick(ts_epoch, price)
-            # If you have synthetic volume feed from another bot, call:
-            # structure.add_volume(int(ts_epoch // 60) * 60, synthetic_qty)
-
-        compiler.set_structure_hook(structure_tick)
-        logger.info(f"[Astra] Spot Structure Engine initialized in {structure_mode} mode")
+        structure = SpotStructureEngine()
+        STRUCTURE_MODE = os.getenv("ASTRA_STRUCTURE_MODE", "shadow")
+        compiler.set_structure_hook(lambda ts, px: structure.on_tick(ts, px))
+        
+        # V4.3 Synthetic Volume Bridge
+        from astra_bot.core.spot_structure import SyntheticVolumeBridge
+        vol_bridge = SyntheticVolumeBridge(structure)
+        
+        logger.info(f"[Astra] Spot Structure Engine initialized in {STRUCTURE_MODE} mode")
     except Exception as e:
         logger.critical(f"Initialization failed: {e}")
         sys.exit(1)
@@ -204,14 +201,6 @@ def main():
                         # Compile footprint for the past minute on 6+6 strikes
                         compiled = compiler.get_compiled_footprints(ce_tokens_eval, pe_tokens_eval)
                         
-                        # V4.3 Structure Engine snapshot & event logging
-                        snap = structure.snapshot()
-                        regime = structure.regime(compiler.current_spot)
-                        if snap["last_event"] != "NONE":
-                            if structure_mode == "shadow":
-                                logger.info(f"[STRUCTURE SHADOW] Event={snap['last_event']} regime={regime} vwap={snap['vwap']} ema9={snap['ema9']}")
-                        # Future: live mode would arm pending_signal here
-                        
                         # Evaluate Strategy with 3+3 consideration
                         spot_bar_chg = getattr(compiler, "last_spot_bar_chg", 0.0)
                         sig, reason, target_token = evaluator.evaluate_1m_boundary(
@@ -220,6 +209,12 @@ def main():
                         
                         digest = build_minute_digest(now, sig, reason, compiled, evaluator, compiler, trader, pending_signal)
                         logger.info(digest)
+                        
+                        # V4.3 Structure Engine snapshot
+                        snap = structure.snapshot()
+                        reg = structure.regime(compiler.current_spot)
+                        if snap["last_event"] != "NONE":
+                            logger.info(f"[STRUCTURE:{STRUCTURE_MODE}] {snap['last_event']} regime={reg} vwap={snap['vwap']} ema9={snap['ema9']} ema200={snap['ema200']}")
                         
                         # IPC State Update
                         state_payload = {
@@ -232,6 +227,17 @@ def main():
                             "kinematic_ready": True
                         }
                         update_astra_live_state(state_payload)
+                        
+                        # V4.3 Synthetic Volume Bridge poll (1Hz from shared tick file)
+                        try:
+                            import json
+                            if os.path.exists(SHARED_TICK_FILE):
+                                with open(SHARED_TICK_FILE, "r") as f:
+                                    ticks = json.load(f)
+                                live_accum = float(ticks.get("synthetic_volume_live_accum") or 0)
+                                vol_bridge.poll(time.time(), live_accum)
+                        except Exception:
+                            pass
                         
                         # Arm Pending Signal
                         if sig in ["CALL", "PUT"] and not trader.has_open_trade():
@@ -275,18 +281,19 @@ def main():
             # Manage Open Trades (Stop Loss / Take Profit tracking)
             if trader.has_open_trade():
                 spot = getattr(compiler, "current_spot", 0.0)
-                # V4.3 Structure-based trail/invalidation checks
-                side = trader.trade_context.signal_type
-                close = compiler.current_spot
-                if structure.trail_exit(side, close):
-                    logger.warning(f"[STRUCTURE] 9-EMA reverse break — exiting {side}")
-                    trader._close_all_legs("9-EMA Trail Exit")
-                elif structure.invalidation(side, close):
-                    logger.warning(f"[STRUCTURE] VWAP band invalidation — exiting {side}")
-                    trader._close_all_legs("VWAP Band SL")
-                else:
-                    trader.manage_open_trade(spot_price=spot)
+                trader.manage_open_trade(spot_price=spot)
                 
+                # V4.3 Structure Engine live exit checks (LIVE mode only)
+                if STRUCTURE_MODE == "live" and trader.has_open_trade():
+                    side = trader.trade_context.signal_type
+                    px = compiler.current_spot
+                    if structure.trail_exit(side, px):
+                        trader._cancel_tp()
+                        trader._close_all_legs("9-EMA Trail Exit")
+                    elif structure.invalidation(side, px):
+                        trader._cancel_tp()
+                        trader._close_all_legs("VWAP Band SL")
+            
             # Instant WS Exit Check or 500ms heartbeat
             try:
                 reason = trader.exit_signal_queue.get(timeout=0.5)
