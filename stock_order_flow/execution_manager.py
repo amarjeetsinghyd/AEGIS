@@ -84,9 +84,10 @@ class StockExecutionManager:
             "product_type": "I", # MIS
             "exchange": "NSE",
             "tradingsymbol": symbol,
-            "quantity": str(qty),
+            "quantity": qty,
             "price_type": "MKT",
-            "price": "0",
+            "price": 0,
+            "trigger_price": None,
             "discloseqty": 0,
             "retention": "DAY"
         }
@@ -172,9 +173,10 @@ class StockExecutionManager:
             "product_type": "I", # MIS
             "exchange": "NSE",
             "tradingsymbol": symbol,
-            "quantity": str(qty),
+            "quantity": qty,
             "price_type": "MKT",
-            "price": "0",
+            "price": 0,
+            "trigger_price": None,
             "discloseqty": 0,
             "retention": "DAY"
         }
