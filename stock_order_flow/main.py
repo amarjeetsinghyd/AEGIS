@@ -19,11 +19,29 @@ logger = get_logger("stock_main")
 BAR_MINUTES = 3
 
 EQUITY_UNIVERSE = {
-    "RELIANCE": {"token": "2885", "tsym": "RELIANCE-EQ"},
-    "HDFCBANK": {"token": "1333", "tsym": "HDFCBANK-EQ"},
-    "INFY": {"token": "1594", "tsym": "INFY-EQ"},
-    "LT": {"token": "11483", "tsym": "LT-EQ"},
-    "TATAMOTORS": {"token": "3456", "tsym": "TMPV-EQ"},
+    # Existing 5 Stocks
+    "RELIANCE": {"token": "2885", "tsym": "RELIANCE-EQ", "search": ["RELIANCE-EQ", "RELIANCE"]},
+    "HDFCBANK": {"token": "1333", "tsym": "HDFCBANK-EQ", "search": ["HDFCBANK-EQ", "HDFCBANK"]},
+    "INFY": {"token": "1594", "tsym": "INFY-EQ", "search": ["INFY-EQ", "INFY"]},
+    "LT": {"token": "11483", "tsym": "LT-EQ", "search": ["LT-EQ", "LT"]},
+    "TATAMOTORS": {
+        "token": "3456",
+        "tsym": "TMPV-EQ",
+        "search": ["Tata Motors", "TMPV-EQ", "TATAMOTORS-EQ"],
+        "note": "NSE renamed/split; tracking TMPV-EQ (ex-TATAMOTORS passenger)",
+    },
+    
+    # New 10 High-Liquidity Stocks
+    "ICICIBANK": {"token": "4963", "tsym": "ICICIBANK-EQ", "search": ["ICICIBANK-EQ", "ICICIBANK"]},
+    "SBIN": {"token": "3045", "tsym": "SBIN-EQ", "search": ["SBIN-EQ", "SBIN"]},
+    "TCS": {"token": "11536", "tsym": "TCS-EQ", "search": ["TCS-EQ", "TCS"]},
+    "AXISBANK": {"token": "5900", "tsym": "AXISBANK-EQ", "search": ["AXISBANK-EQ", "AXISBANK"]},
+    "ITC": {"token": "1660", "tsym": "ITC-EQ", "search": ["ITC-EQ", "ITC"]},
+    "KOTAKBANK": {"token": "1922", "tsym": "KOTAKBANK-EQ", "search": ["KOTAKBANK-EQ", "KOTAKBANK"]},
+    "BHARTIARTL": {"token": "10604", "tsym": "BHARTIARTL-EQ", "search": ["BHARTIARTL-EQ", "BHARTIARTL"]},
+    "BAJFINANCE": {"token": "317", "tsym": "BAJFINANCE-EQ", "search": ["BAJFINANCE-EQ", "BAJFINANCE"]},
+    "MARUTI": {"token": "10999", "tsym": "MARUTI-EQ", "search": ["MARUTI-EQ", "MARUTI"]},
+    "M&M": {"token": "2031", "tsym": "M&M-EQ", "search": ["M&M-EQ", "M&M"]},
 }
 
 def main():
