@@ -532,6 +532,7 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
         if token not in self._subscribed_tokens:
             self._subscribed_tokens.add(token)
             try:
+                self.subscribe([token], exchange, feed_type="t")
                 self.subscribe([token], exchange, feed_type="d")
             except Exception:
                 pass
@@ -652,8 +653,9 @@ class ShoonyaExecutionProvider(IExecutionProvider):
             trgprc = order.get("trigger_price") or order.get("trgprc")
 
             # Try calling NorenApiPy with standard signature variants using try-except
+            res = None
             try:
-                return self._api.place_order(
+                res = self._api.place_order(
                     buy_or_sell=action,
                     product_type=prd,
                     exchange=exch,
@@ -667,7 +669,7 @@ class ShoonyaExecutionProvider(IExecutionProvider):
             except TypeError:
                 try:
                     # Fallback to positional or alternative keys if SDK signature differs
-                    return self._api.place_order(
+                    res = self._api.place_order(
                         trantype=action,
                         prd=prd,
                         exch=exch,
@@ -681,7 +683,11 @@ class ShoonyaExecutionProvider(IExecutionProvider):
                     )
                 except Exception as ex:
                     # Final fallback using generic dict unpacking if accepted
-                    return self._api.place_order(**order)
+                    res = self._api.place_order(**order)
+            
+            if res is None:
+                raise ConnectionError("Shoonya API returned None on place_order (Silent Drop)")
+            return res
 
         return call_with_retry(_call, limiter=self._order_limiter)
 

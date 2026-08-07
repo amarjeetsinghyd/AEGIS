@@ -9,20 +9,20 @@ from common.config import EXIT_LIMIT_GRACE_PERIOD_SEC, DEFAULT_PRODUCT_TYPE, NIF
 logger = get_logger("order_lifecycle")
 
 class OrderLifecycle:
-    def execute_entry(self, leg: TradeLeg) -> bool:
+    def execute_entry(self, leg: TradeLeg, live_ask: float = None) -> bool:
         raise NotImplementedError
 
-    def execute_exit(self, leg: TradeLeg, reason: str, exit_price: Optional[float] = None) -> bool:
+    def execute_exit(self, leg: TradeLeg, reason: str, exit_price: Optional[float] = None, live_bid: float = None) -> bool:
         raise NotImplementedError
 
 class PaperOrderLifecycle(OrderLifecycle):
-    def execute_entry(self, leg: TradeLeg) -> bool:
+    def execute_entry(self, leg: TradeLeg, live_ask: float = None) -> bool:
         leg.status = "OPEN"
         leg.paper_order_id = f"PAPER_{uuid.uuid4().hex[:8].upper()}"
         logger.info(f"[PaperOrderLifecycle] Entry executed for leg {leg.leg_id}. Paper Order ID: {leg.paper_order_id}")
         return True
 
-    def execute_exit(self, leg: TradeLeg, reason: str, exit_price: Optional[float] = None) -> bool:
+    def execute_exit(self, leg: TradeLeg, reason: str, exit_price: Optional[float] = None, live_bid: float = None) -> bool:
         if leg.status != "OPEN":
             logger.warning(f"[PaperOrderLifecycle] Attempted to exit leg {leg.leg_id} which is not OPEN.")
             return False
@@ -33,14 +33,14 @@ class PaperOrderLifecycle(OrderLifecycle):
 def get_marketable_entry_limit_price(best_ask: float, tick_size: float = 0.05) -> float:
     if best_ask <= 0:
         return 0.0
-    buffer = max(3.0, best_ask * 0.025)
+    buffer = max(2.0, best_ask * 0.08)
     raw_price = best_ask + buffer
     return round(round(raw_price / tick_size) * tick_size, 2)
 
 def get_marketable_exit_limit_price(best_bid: float, tick_size: float = 0.05) -> float:
     if best_bid <= 0:
         return 0.0
-    buffer = max(3.0, best_bid * 0.025)
+    buffer = max(2.0, best_bid * 0.08)
     raw_price = max(0.05, best_bid - buffer)
     return round(round(raw_price / tick_size) * tick_size, 2)
 
@@ -48,7 +48,7 @@ class ShoonyaOrderLifecycle(OrderLifecycle):
     def __init__(self, broker_gateway, grace_period_sec: float = EXIT_LIMIT_GRACE_PERIOD_SEC):
         self.broker = broker_gateway
         self.grace_period_sec = grace_period_sec
-        self.product_type = "N"
+        self.product_type = "M"
 
     def _build_kwargs(self, action: str, exch: str, symbol: str, qty: str, limit_price: str):
         """Dynamically builds kwargs by reading the installed NorenApi SDK signature."""
@@ -95,25 +95,69 @@ class ShoonyaOrderLifecycle(OrderLifecycle):
             }
         return kwargs
 
-    def execute_entry(self, leg: TradeLeg) -> bool:
+    def execute_entry(self, leg: TradeLeg, live_ask: float = None) -> bool:
         try:
             exch_seg = getattr(leg, 'exchange', 'BFO' if 'SENSEX' in leg.symbol else 'NFO')
             qty = leg.quantity * (SENSEX_LOT_SIZE if "SENSEX" in leg.symbol else NIFTY_LOT_SIZE)
             
-            limit_price = get_marketable_entry_limit_price(leg.current_price)
+            base_price = live_ask if (live_ask and live_ask > 0) else leg.current_price
+            limit_price = get_marketable_entry_limit_price(base_price)
             formatted_price = f"{limit_price:.2f}"
             
             # Dynamic Reflection
             kwargs = self._build_kwargs("B", exch_seg, leg.symbol, str(qty), formatted_price)
-            logger.info(f"[ShoonyaOrderLifecycle] Placing Limit Entry Order using dynamic SDK params: {list(kwargs.keys())}...")
+            logger.info(f"[ShoonyaOrderLifecycle] Placing Limit Entry Order using dynamic SDK params: {kwargs}...")
             
             resp = self.broker.place_order(**kwargs)
             
             if resp and resp.get("stat") == "Ok" and resp.get("norenordno"):
                 ordno = resp["norenordno"]
                 leg.broker_order_id = ordno
+                
+                # Check for actual Fill and get real average price
+                import time
+                api = self.broker if hasattr(self.broker, "single_order_history") else getattr(self.broker, "_api", None)
+                if api and hasattr(api, "single_order_history"):
+                    fill_confirmed = False
+                    avg_prc = limit_price
+                    for _ in range(3):
+                        time.sleep(1.0)
+                        history = api.single_order_history(orderno=ordno)
+                        if history and isinstance(history, list):
+                            status = history[0].get("status")
+                            if status in ["FILLED", "COMPLETE"]:
+                                fill_confirmed = True
+                                avg_prc = float(history[0].get("avgprc", limit_price))
+                                break
+                    
+                    if fill_confirmed:
+                        leg.current_price = avg_prc
+                        leg.entry_price = avg_prc
+                        logger.info(f"[ShoonyaOrderLifecycle] ✅ Entry FILLED @ Avg Price: {avg_prc:.2f} (Order: {ordno})")
+                    else:
+                        logger.warning(f"[ShoonyaOrderLifecycle] ⚠️ Entry order {ordno} not filled within 3 seconds. Modifying to LTP + 1% to chase...")
+                        if hasattr(api, "modify_order"):
+                            new_price = round(limit_price * 1.01, 2)
+                            api.modify_order(exchange=exch_seg, tradingsymbol=leg.symbol, orderno=ordno, newquantity=qty, newprice_type="LMT", newprice=f"{new_price:.2f}")
+                            time.sleep(1.5)
+                            history = api.single_order_history(orderno=ordno)
+                            if history and isinstance(history, list) and history[0].get("status") in ["FILLED", "COMPLETE"]:
+                                avg_prc = float(history[0].get("avgprc", new_price))
+                                leg.current_price = avg_prc
+                                leg.entry_price = avg_prc
+                                logger.info(f"[ShoonyaOrderLifecycle] ✅ Chased Entry FILLED @ Avg Price: {avg_prc:.2f} (Order: {ordno})")
+                            else:
+                                logger.error(f"[ShoonyaOrderLifecycle] 🚨 Chased Entry failed to fill. Cancelling entry to prevent staleness.")
+                                if hasattr(api, "cancel_order"):
+                                    api.cancel_order(orderno=ordno)
+                                return False
+                        else:
+                            return False
+                else:
+                    leg.entry_price = limit_price
+                    logger.warning("[ShoonyaOrderLifecycle] API doesn't support order history. Using limit_price as entry.")
+
                 leg.status = "OPEN"
-                logger.info(f"[ShoonyaOrderLifecycle] ✅ Entry Marketable Limit Order Placed! Order ID: {ordno}")
                 return True
             else:
                 err_msg = resp.get("emsg", "Unknown Broker Error") if isinstance(resp, dict) else str(resp)
@@ -123,7 +167,7 @@ class ShoonyaOrderLifecycle(OrderLifecycle):
             logger.error(f"[ShoonyaOrderLifecycle] Exception in execute_entry: {e}")
             return False
 
-    def execute_exit(self, leg: TradeLeg, reason: str, exit_price: Optional[float] = None) -> bool:
+    def execute_exit(self, leg: TradeLeg, reason: str, exit_price: Optional[float] = None, live_bid: float = None) -> bool:
         if leg.status != "OPEN":
             logger.warning(f"[ShoonyaOrderLifecycle] Leg {leg.symbol} is not OPEN. Skipping exit.")
             return False
@@ -132,7 +176,8 @@ class ShoonyaOrderLifecycle(OrderLifecycle):
         qty = leg.quantity * (SENSEX_LOT_SIZE if "SENSEX" in leg.symbol else NIFTY_LOT_SIZE)
         token = str(leg.token)
         
-        limit_price = get_marketable_exit_limit_price(leg.current_price)
+        base_price = live_bid if (live_bid and live_bid > 0) else leg.current_price
+        limit_price = get_marketable_exit_limit_price(base_price)
         formatted_price = f"{limit_price:.2f}"
 
         # Dynamic Reflection

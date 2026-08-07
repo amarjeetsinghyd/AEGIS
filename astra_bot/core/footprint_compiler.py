@@ -54,6 +54,12 @@ class FootprintCompiler:
         self.market_depth = {}
         self.lock = threading.Lock()
         
+        self.bar_open_lp = {}
+        self.spot_bar_open = 0.0
+        self.last_spot_bar_chg = 0.0
+        self.prev_l1 = {}
+        self.ofi = defaultdict(float)
+        
     def process_tick(self, message: dict, index_token: str, ce_tokens: set = None, pe_tokens: set = None):
         """Processes incoming raw WebSocket tick message."""
         if not isinstance(message, dict):
@@ -69,9 +75,10 @@ class FootprintCompiler:
 
         # Spot Tick
         if token == index_token and price > 0:
+            if self.spot_bar_open <= 0.0:
+                self.spot_bar_open = price
             self.current_spot = price
-            return # Spot ticks don't have L1/L2 order flow
-
+            return
         with self.lock:
             try:
                 tick_min = int(float(ts)) // 60
@@ -94,6 +101,9 @@ class FootprintCompiler:
                 self.market_depth[token] = {"lp": 0.0, "v": 0, "bp1": 0.0, "sp1": 0.0, "bq1": 0, "sq1": 0, "last_depth_ts": 0.0, "ofi": 0.0}
 
             depth = self.market_depth[token]
+            if price > 0 and token not in self.bar_open_lp:
+                self.bar_open_lp[token] = price
+            
             prev_bq1 = depth.get("bq1", 0)
             prev_sq1 = depth.get("sq1", 0)
             prev_bp1 = depth.get("bp1", 0.0)
@@ -124,27 +134,26 @@ class FootprintCompiler:
                     except: pass
                     
             if has_depth_update:
-                depth["last_depth_ts"] = time.time()
+                depth["last_depth_ts"] = time.monotonic()
                 self.l2_history[token].append({
                     "bq1": depth.get("bq1", 0),
                     "sq1": depth.get("sq1", 0)
                 })
                 
-                # Update OFI (Order Flow Imbalance)
-                bq1 = depth.get("bq1", 0)
-                sq1 = depth.get("sq1", 0)
-                bp1 = depth.get("bp1", 0.0)
-                sp1 = depth.get("sp1", 0.0)
-                
-                if bp1 == prev_bp1:
-                    depth["ofi"] += bq1 - prev_bq1
-                else:
-                    depth["ofi"] += bq1 if bp1 > prev_bp1 else -bq1
-
-                if sp1 == prev_sp1:
-                    depth["ofi"] -= sq1 - prev_sq1
-                else:
-                    depth["ofi"] -= sq1 if sp1 < prev_sp1 else -sq1
+                bp1, sp1 = depth["bp1"], depth["sp1"]
+                bq1, sq1 = depth.get("bq1", 0), depth.get("sq1", 0)
+                prev = self.prev_l1.get(token)
+                if prev:
+                    pbp1, psp1, pbq1, psq1 = prev
+                    ofi = 0.0
+                    if bp1 > pbp1: ofi += bq1
+                    elif bp1 == pbp1: ofi += (bq1 - pbq1)
+                    else: ofi -= pbq1
+                    if sp1 < psp1: ofi -= sq1
+                    elif sp1 == psp1: ofi -= (sq1 - psq1)
+                    else: ofi += psq1
+                    self.ofi[token] += ofi
+                self.prev_l1[token] = (bp1, sp1, bq1, sq1)
 
             vol_delta = 0.0
             new_vol = 0
@@ -154,15 +163,14 @@ class FootprintCompiler:
                 
             old_vol = int(depth.get("v") or 0)
 
-            # First tick loss fix: If old_vol is 0, try to use ltq, else we just use the new_vol as baseline
             if old_vol == 0 and new_vol > 0:
                 ltq = int(float(message.get("ltq") or 0))
-                if ltq > 0:
-                    vol_delta = float(ltq)
-                else:
-                    vol_delta = float(new_vol)
+                vol_delta = float(ltq) if ltq > 0 else 0.0   # baseline only; NEVER inject cumulative volume
             elif old_vol > 0 and new_vol > old_vol:
                 vol_delta = float(new_vol - old_vol)
+            if vol_delta > 1000:
+                logger.debug(f"[FootprintCompiler] Suspicious single-tick vol_delta={vol_delta:.0f} on {token} — zeroed")
+                vol_delta = 0.0
                 
             if vol_delta > 0:
                 lp = depth["lp"]
@@ -248,6 +256,9 @@ class FootprintCompiler:
                         if depth_cache.get("bq1", 0) < avg_bid * 0.2:
                             bid_spoof = True
 
+                open_lp = self.bar_open_lp.get(token, 0.0)
+                close_lp = depth_cache.get("lp", 0.0)
+                
                 compiled[token] = {
                     "option_type": "CE" if token in set(str(t) for t in ce_tokens) else "PE",
                     "total_buy_vol": total_buy,
@@ -257,10 +268,11 @@ class FootprintCompiler:
                     "avg_l2_ask": total_l2_ask / tick_count if tick_count else 0,
                     "last_l2_ask": last_l2_ask,
                     "last_l2_bid": last_l2_bid,
-                    "last_depth_ts": depth_cache.get("last_depth_ts", 0.0),
-                    "ofi": depth_cache.get("ofi", 0.0),
                     "ask_wall_spoof": ask_spoof,
                     "bid_wall_spoof": bid_spoof,
+                    "premium_chg_pct": ((close_lp - open_lp) / open_lp) if open_lp > 0 else 0.0,
+                    "ofi": self.ofi.get(token, 0.0),
+                    "depth_age_sec": (time.monotonic() - depth_cache["last_depth_ts"]) if "last_depth_ts" in depth_cache else 999.0,
                 }
             
             # Cleanup target tokens
@@ -272,19 +284,23 @@ class FootprintCompiler:
                 if k in self.l2_history:
                     del self.l2_history[k]
                     
+            self.last_spot_bar_chg = (self.current_spot - self.spot_bar_open) if self.spot_bar_open > 0 else 0.0
+            self.bar_open_lp.clear()
+            self.spot_bar_open = 0.0
+            self.ofi.clear()
+                    
             return compiled
 
-    # Note: reset_for_new_candle is no longer needed as clearing is atomic above.
+    def get_last_lp(self, token) -> float:
+        with self.lock:
+            return float(self.market_depth.get(str(token), {}).get("lp", 0.0))
 
     def trigger_strike_rollover(self, new_spot: float, strike_step: float = 50.0):
-        """
-        STRIKE ROLLOVER (NO FLUSH):
-        Detects ATM shift, updates reference, but NEVER flushes the buffer.
-        """
-        new_atm = round(new_spot / strike_step) * strike_step
-        if self.last_atm_strike is not None and new_atm != self.last_atm_strike:
-            logger.info(f"[STRIKE ROLLOVER DETECTED] Spot moved from {self.last_atm_strike:.0f} to ATM {new_atm:.0f}!")
-            # Note: We do NOT flush self.footprints here. 
-            # `get_compiled_footprints` filters by the active 14 tokens seamlessly.
-            
-        self.last_atm_strike = new_atm
+        if self.last_atm_strike is None:
+            self.last_atm_strike = round(new_spot / strike_step) * strike_step
+            return
+        if abs(new_spot - self.last_atm_strike) >= strike_step * 0.6:   # 30-pt hysteresis kills flicker
+            new_atm = round(new_spot / strike_step) * strike_step
+            if new_atm != self.last_atm_strike:
+                logger.info(f"[STRIKE ROLLOVER] {self.last_atm_strike:.0f} -> {new_atm:.0f}")
+                self.last_atm_strike = new_atm

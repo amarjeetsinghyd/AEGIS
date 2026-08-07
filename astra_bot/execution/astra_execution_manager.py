@@ -81,18 +81,39 @@ class AstraExecutionManager:
         self.trade_context: Optional[TradeContext] = None
         self.trades_today = 0
         self.last_trade_date = None
-        self.max_trades_per_day = 5
+        self.max_trades_per_day = 100
         self.strike_cooldowns = {}
         self._option_cache = {}
         self.tp_order_id = None
         self.exit_signal_queue = queue.Queue()
         self.trade_lock = threading.Lock()
         
+        self.daily_pnl = 0.0
+        self.daily_loss_cap = -5000.0
+        
         trades_dir = os.path.join(self.data_dir, "trades")
         os.makedirs(trades_dir, exist_ok=True)
         self.history_file = os.path.join(trades_dir, "trade_history.json")
         self.active_context_file = os.path.join(trades_dir, "astra_active_trade_context.json")
         self._load_active_context()
+        self._load_daily_pnl()
+
+    def _load_daily_pnl(self):
+        self.daily_pnl = 0.0
+        if not os.path.exists(self.history_file):
+            return
+        try:
+            with open(self.history_file, "r", encoding="utf-8") as f:
+                hist = json.load(f)
+            
+            today_str = datetime.now().strftime("%d %b %Y")
+            for trade in hist:
+                trade_date = trade.get("entry_time", "")
+                if trade_date.startswith(today_str):
+                    self.daily_pnl += trade.get("pnl", 0.0)
+            logger.info(f"[AstraEM] Restored daily PnL from history: ₹{self.daily_pnl:.2f}")
+        except Exception as e:
+            logger.error(f"[AstraEM] failed to load daily PnL: {e}")
 
     # --- calendar gates ---
     @staticmethod
@@ -118,6 +139,13 @@ class AstraExecutionManager:
     def hard_sl_pct(self):
         return 0.10 if datetime.now().weekday() == 4 else 0.15
 
+    def _effective_sl_price(self, leg) -> float:
+        base_sl = _round_tick(leg.entry_price * (1 - self.hard_sl_pct))
+        lock_level = leg.entry_price * (1 + 0.5 * self.tp_pct)   # half of TP
+        if leg.current_price >= lock_level > 0:
+            return max(base_sl, _round_tick(leg.entry_price * 1.01))   # floor at +1%
+        return base_sl
+
     def get_instrument_params(self) -> dict:
         name, _ = self.data_fetcher.get_active_instrument()
         if name == "SENSEX":
@@ -140,10 +168,15 @@ class AstraExecutionManager:
         # Circuit Breaker Reset
         if self.last_trade_date != now.date():
             self.trades_today = 0
+            self.daily_pnl = 0.0
             self.last_trade_date = now.date()
             
         if self.trades_today >= self.max_trades_per_day:
             logger.warning(f"[AstraEM] Daily trade limit ({self.max_trades_per_day}) reached. Entry blocked.")
+            return
+            
+        if self.daily_pnl <= self.daily_loss_cap:
+            logger.warning(f"[AstraEM] Daily loss cap hit (₹{self.daily_pnl:.0f}). Entries blocked.")
             return
 
         if self.has_open_trade():
@@ -205,6 +238,7 @@ class AstraExecutionManager:
             logger.warning(f"[AstraEM] Strike {symbol} in cooldown")
             return
             
+        live_ask = 0.0
         # Spread Check (P1)
         if hasattr(self.broker, "market_data_provider"):
             try:
@@ -213,11 +247,18 @@ class AstraExecutionManager:
                 if q:
                     ask = float(q.get("sp1") or 0)
                     bid = float(q.get("bp1") or 0)
+                    live_ask = ask
                     if ask > 0 and bid > 0:
                         mid = (ask + bid) / 2
                         spread = (ask - bid) / mid
                         if spread > 0.02: # 2% spread limit
                             logger.warning(f"[AstraEM] Entry aborted - Spread too high: {spread*100:.1f}% for {symbol}")
+                            return
+                        
+                        # ✅ NEW: Liquidity Gate (sq1)
+                        sq1 = int(float(q.get("sq1") or 0))
+                        if sq1 < 3: # Less than 3 lots available at the Ask
+                            logger.warning(f"[AstraEM] Entry aborted - Ask Size (sq1={sq1}) too thin for {symbol}")
                             return
             except Exception as e:
                 logger.error(f"[AstraEM] Spread check failed or timed out: {e}")
@@ -232,22 +273,22 @@ class AstraExecutionManager:
             )
             leg = TradeLeg(token_str, symbol, float(opt_row["strike"]), signal_type, quantity, ltp)
     
-            if not self.order_lifecycle.execute_entry(leg):
+            if not self.order_lifecycle.execute_entry(leg, live_ask=live_ask or ltp):
                 logger.error(f"[AstraEM] Entry order rejected for {symbol}")
                 self.trade_context = None
                 return
     
             self.trade_context.add_leg(leg)
             
-        self.capital_engine.deduct_funds(ltp * quantity * params["lot_size"])
+        self.capital_engine.deduct_funds(leg.entry_price * quantity * params["lot_size"])
         self.trades_today += 1
         self.tp_order_id = None
 
         self._place_take_profit(leg)
         self._save_active_context()
         logger.info(
-            f"[AstraEM] ENTERED {signal_type} {quantity}x {symbol} @ {ltp:.2f} | "
-            f"TP={_round_tick(ltp * (1 + self.tp_pct)):.2f} | SL={_round_tick(ltp * (1 - self.hard_sl_pct)):.2f} | max_hold={int(MAX_HOLD_SEC)}s"
+            f"[AstraEM] ENTERED {signal_type} {quantity}x {symbol} @ {leg.entry_price:.2f} | "
+            f"TP={leg.tp_price:.2f} | SL={_round_tick(leg.entry_price * (1 - self.hard_sl_pct)):.2f} | max_hold={int(MAX_HOLD_SEC)}s"
         )
 
     def _place_take_profit(self, leg: TradeLeg):
@@ -305,12 +346,15 @@ class AstraExecutionManager:
                 continue
                 
             tp_price = getattr(leg, "tp_price", _round_tick(leg.entry_price * (1 + self.tp_pct)))
-            sl_price = _round_tick(leg.entry_price * (1 - self.hard_sl_pct))
+            sl_price = self._effective_sl_price(leg)
             
             if current_ltp >= tp_price > 0:
                 self.exit_signal_queue.put(f"Take-Profit Hit (+{self.tp_pct*100:.0f}% premium @ {current_ltp:.2f})")
             elif current_ltp <= sl_price and sl_price > 0:
-                self.exit_signal_queue.put(f"Premium Hard SL (−{self.hard_sl_pct*100:.0f}% @ {current_ltp:.2f})")
+                if sl_price > leg.entry_price:
+                    self.exit_signal_queue.put(f"Profit-Lock SL (+1% floor @ {current_ltp:.2f})")
+                else:
+                    self.exit_signal_queue.put(f"Premium Hard SL (−{self.hard_sl_pct*100:.0f}% @ {current_ltp:.2f})")
 
     def process_exit_queue(self):
         """Polls the exit queue to perform the REST API exit synchronously in the main thread."""
@@ -319,7 +363,6 @@ class AstraExecutionManager:
             reason = self.exit_signal_queue.get_nowait()
             if self.has_open_trade():
                 logger.warning(f"[AstraEM] Executing WS Exit Signal: {reason}")
-                self._cancel_tp()
                 self._close_all_legs(reason)
         except queue.Empty:
             pass
@@ -347,34 +390,45 @@ class AstraExecutionManager:
             # Synthetic / live TP fill detection
             tp_price = getattr(leg, "tp_price", _round_tick(leg.entry_price * (1 + self.tp_pct)))
             if leg.current_price >= tp_price > 0:
-                self._cancel_tp()
                 self._close_all_legs(f"Take-Profit Hit (+{self.tp_pct*100:.0f}% premium @ {leg.current_price:.2f})")
                 return
 
         # 0) Force flatten
         if self.must_force_flatten(now):
-            self._cancel_tp()
             self._close_all_legs(f"Force Flatten (session >= {ASTRA_FORCE_FLATTEN.strftime('%H:%M')})")
             return
 
-        # 1b) Premium hard SL (−25%) — fallback when Chandelier is unreliable
+        # 1b) Premium hard SL / Profit-Lock SL
         for leg in self.trade_context.legs:
             if leg.status != "OPEN":
                 continue
             if leg.entry_price <= 0 or leg.current_price <= 0:
                 continue
-            dd = (leg.current_price - leg.entry_price) / leg.entry_price
-            if dd <= -self.hard_sl_pct:
-                self._cancel_tp()
-                self._close_all_legs(
-                    f"Premium Hard SL (−{self.hard_sl_pct*100:.0f}% @ {leg.current_price:.2f}; "
-                    f"entry {leg.entry_price:.2f}, dd={dd*100:.1f}%)"
-                )
+            
+            sl_price = self._effective_sl_price(leg)
+            if leg.current_price <= sl_price:
+                if sl_price > leg.entry_price:
+                    self._cancel_tp()
+                    self._close_all_legs(f"Profit-Lock SL (+1% floor @ {leg.current_price:.2f})")
+                else:
+                    dd = (leg.current_price - leg.entry_price) / leg.entry_price
+                    self._close_all_legs(
+                        f"Premium Hard SL (−{self.hard_sl_pct*100:.0f}% @ {leg.current_price:.2f}; "
+                        f"entry {leg.entry_price:.2f}, dd={dd*100:.1f}%)"
+                    )
                 return
 
-        # 2) Hard time stop
+        # 2) No-Effect Early Stop (5 mins) & Hard Time Stop (10 mins)
+        if hold_sec >= 300:
+            leg0 = next((l for l in self.trade_context.legs if l.status == "OPEN"), None)
+            if leg0 and leg0.entry_price > 0:
+                chg = (leg0.current_price - leg0.entry_price) / leg0.entry_price
+                if chg < 0.01:
+                    self._cancel_tp()
+                    self._close_all_legs(f"No-Effect Stop ({int(hold_sec)}s, {chg*100:+.1f}%)")
+                    return
+
         if hold_sec >= MAX_HOLD_SEC:
-            self._cancel_tp()
             self._close_all_legs(f"10-Minute Hard Time Stop ({int(hold_sec)}s)")
             return
 
@@ -386,10 +440,19 @@ class AstraExecutionManager:
             # Immediately mark as EXIT_PENDING to prevent double closes
             self.trade_context.status = "EXIT_PENDING"
             
+        import threading
+        threading.Thread(target=self._chase_exit_thread, args=(reason,), daemon=True).start()
+
+    def _chase_exit_thread(self, reason: str):
         params = self.get_instrument_params()
+        
+        with self.trade_lock:
+            legs_snapshot = list(self.trade_context.legs)
+            context = self.trade_context
         now = datetime.now()
         total_pnl = 0.0
         
+        filled_qty = 0
         # Bug 22: Partial Fills Check
         if self.tp_order_id and not str(self.tp_order_id).startswith("PAPER_"):
             try:
@@ -428,24 +491,93 @@ class AstraExecutionManager:
                 logger.info(f"[AstraEM] CLOSED {leg.symbol} via resting TP | PnL {leg.pnl:.2f}")
                 continue
                 
-            if self.order_lifecycle.execute_exit(leg, reason):
-                leg.status = "CLOSED"
-                leg.exit_time = now
+            # Anchor to live bid before chasing
+            try:
+                q = self.broker.market_data_provider.get_quote(exch_seg, leg.token)
+                if q and float(q.get("bp1") or 0) > 0:
+                    leg.current_price = float(q["bp1"])
+            except Exception:
+                pass
+
+            # Limit Chasing Implementation
+            import time
+            api = getattr(self.broker, "_api", None)
+            exch_seg = "BFO" if "SENSEX" in leg.symbol else "NFO"
+            qty = str(leg.quantity * params["lot_size"])
+            
+            # Step 1: Initial Order (LTP - 1%)
+            price_1 = _round_tick(leg.current_price * 0.99)
+            
+            ordno = None
+            if self.tp_order_id and not str(self.tp_order_id).startswith("PAPER_"):
+                ordno = self.tp_order_id
+                logger.info(f"[AstraEM Chaser] Modifying resting TP order {ordno} to LMT Exit @ {price_1:.2f} (LTP-1%)")
+                api.modify_order(exchange=exch_seg, tradingsymbol=leg.symbol, orderno=ordno, newquantity=qty, newprice_type="LMT", newprice=f"{price_1:.2f}") if hasattr(api, "modify_order") else {}
+            else:
+                kwargs = self.order_lifecycle._build_kwargs("S", exch_seg, leg.symbol, qty, f"{price_1:.2f}") if hasattr(self.order_lifecycle, "_build_kwargs") else None
+                place = getattr(api, "place_order", None)
+                if place and kwargs:
+                    logger.info(f"[AstraEM Chaser] Placing Initial LMT Exit @ {price_1:.2f} (LTP-1%)")
+                    resp = place(**kwargs)
+                    if isinstance(resp, dict) and resp.get("stat") == "Ok":
+                        ordno = resp.get("norenordno")
+                    
+            if ordno:
+                time.sleep(1.0)
+                history = api.single_order_history(orderno=ordno) if hasattr(api, "single_order_history") else []
+                status = history[0].get("status") if history and isinstance(history, list) else "OPEN"
+                
+                # Step 2: Modify (LTP - 2%)
+                if status not in ["FILLED", "COMPLETE", "REJECTED"]:
+                    price_2 = _round_tick(leg.current_price * 0.98)
+                    logger.info(f"[AstraEM Chaser] Order {ordno} OPEN. Modifying to {price_2:.2f} (LTP-2%)")
+                    mod_resp = api.modify_order(exchange=exch_seg, tradingsymbol=leg.symbol, orderno=ordno, newquantity=qty, newprice_type="LMT", newprice=f"{price_2:.2f}") if hasattr(api, "modify_order") else {}
+                    
+                    time.sleep(1.5)
+                    history = api.single_order_history(orderno=ordno) if hasattr(api, "single_order_history") else []
+                    status = history[0].get("status") if history and isinstance(history, list) else "OPEN"
+                    
+                    # Step 3: Cancel & Replace (LTP - 3%)
+                    if status not in ["FILLED", "COMPLETE", "REJECTED"]:
+                        logger.warning(f"[AstraEM Chaser] Modify failed to fill. Cancelling {ordno} & Replacing (LTP-3%)")
+                        if hasattr(api, "cancel_order"):
+                            api.cancel_order(orderno=ordno)
+                        
+                        price_3 = _round_tick(leg.current_price * 0.97)
+                        kwargs_3 = self.order_lifecycle._build_kwargs("S", exch_seg, leg.symbol, qty, f"{price_3:.2f}")
+                        logger.info(f"[AstraEM Chaser] Placing final aggressive LMT Exit @ {price_3:.2f}")
+                        place(**kwargs_3)
+                        fill = price_3
+                    else:
+                        fill = price_2
+                else:
+                    fill = price_1
+            else:
+                # Fallback to local order lifecycle execution if API place failed
+                self.order_lifecycle.execute_exit(leg, reason)
                 fill = leg.exit_price if leg.exit_price and leg.exit_price > 0 else leg.current_price
+            
+            with self.trade_lock:
+                leg.status = "CLOSED"
+                leg.exit_time = datetime.now()
+                leg.exit_price = fill
                 leg.pnl = (fill - leg.entry_price) * leg.quantity * params["lot_size"]
                 total_pnl += leg.pnl
                 self.capital_engine.add_funds(fill * leg.quantity * params["lot_size"])
-                self.strike_cooldowns[leg.symbol] = now + timedelta(minutes=3)
+                self.strike_cooldowns[leg.symbol] = datetime.now() + timedelta(minutes=3)
                 logger.info(
                     f"[AstraEM] CLOSED {leg.symbol}: {leg.entry_price:.2f} -> {fill:.2f} | "
                     f"PnL {leg.pnl:.2f} | {reason}"
                 )
-        self.trade_context.status = "CLOSED"
-        self.trade_context.exit_time = now
-        self._append_history(reason, total_pnl)
-        self.trade_context = None
-        self.tp_order_id = None
-        self._save_active_context()
+                
+        with self.trade_lock:
+            context.status = "CLOSED"
+            context.exit_time = datetime.now()
+            self._append_history(reason, total_pnl)
+            if self.trade_context == context:
+                self.trade_context = None
+            self.tp_order_id = None
+            self._save_active_context()
 
     def _append_history(self, reason: str, total_pnl: float):
         hist = []
@@ -465,6 +597,7 @@ class AstraExecutionManager:
         entry_dt_str = self.trade_context.entry_time.strftime("%d %b %Y %H:%M:%S") if self.trade_context and self.trade_context.entry_time else datetime.now().strftime("%d %b %Y %H:%M:%S")
         exit_dt_str = datetime.now().strftime("%d %b %Y %H:%M:%S")
 
+        self.daily_pnl += total_pnl
         # Dual keys: Kronos uses pnl/exit_reason; dashboard also reads net_pl/reason
         hist.append(
             {
@@ -479,6 +612,7 @@ class AstraExecutionManager:
                 "exit_price": fill if leg0 else 0,
                 "pnl": total_pnl,
                 "net_pl": total_pnl,
+                "daily_total_pnl": self.daily_pnl,
                 "exit_reason": reason,
                 "reason": reason,
                 "decision_payload": self.trade_context.decision_payload if self.trade_context else None

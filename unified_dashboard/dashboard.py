@@ -114,6 +114,7 @@ def _normalize_trade(row: dict) -> dict:
         "entry_price": row.get("entry_price"),
         "exit_price": row.get("exit_price"),
         "net_pl": pnl,
+        "daily_total_pnl": row.get("daily_total_pnl"),
         "reason": reason,
         "result": row.get("result")
         or (row.get("post_trade_attribution") or {}).get("outcome")
@@ -636,7 +637,24 @@ function pnlClass(v) {
 function renderHistory() {
   const rows = latestHistory[activeHistEngine] || [];
   const box = document.getElementById('trades');
-  document.getElementById('histCount').textContent = rows.length + ' trades · disk · ' + activeHistEngine.toUpperCase();
+  
+  let totalPnlHtml = '';
+  if (rows.length > 0) {
+      const today = new Date();
+      const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      const datePrefix = ('0' + today.getDate()).slice(-2) + ' ' + monthNames[today.getMonth()] + ' ' + today.getFullYear();
+      
+      let sum = 0;
+      for (const t of rows) {
+          if (t.date && t.date.startsWith(datePrefix)) {
+              sum += Number(t.net_pl || 0);
+          }
+      }
+      totalPnlHtml = ` &middot; Today's P&amp;L: <span class="${pnlClass(sum)}">${money(sum)}</span>`;
+  }
+  
+  document.getElementById('histCount').innerHTML = rows.length + ' trades &middot; disk &middot; ' + activeHistEngine.toUpperCase() + totalPnlHtml;
+  
   if (!rows.length) {
     const histPath = activeHistEngine === 'of'
       ? 'stock_order_flow/data/trades/trade_history.json'

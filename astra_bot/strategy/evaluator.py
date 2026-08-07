@@ -3,9 +3,13 @@ from common.logger import get_logger
 
 logger = get_logger("astra_evaluator")
 
-_CHAIN_DELTA_THR = 0.10  # 10% net delta required to trigger
+_CHAIN_DELTA_THR = 0.15  # 15% net delta required to trigger
 _WALL_MULT = 1.5
 _WALL_THIN_FRAC = 0.70
+_MIN_FLOW_VOL = 500
+_PREM_IMPACT_MIN = 0.004   # ~2 ticks on ₹25 premium
+_SPOT_VETO_PTS = 2.0
+_ICEBERG_DELTA_MIN = 0.15
 
 class ChainFootprintEvaluator:
     def __init__(self):
@@ -15,7 +19,32 @@ class ChainFootprintEvaluator:
         self.last_chain_delta = 0.0
         self.last_wall_size = 0.0
 
-    def evaluate_1m_boundary(self, compiled_footprints, index_spot, now=None):
+    def _confirmation_block(self, data: dict, delta_pct: float, spot_bar_chg, side: str):
+        """Returns a NEUTRAL reason string if the fresh signal must be blocked, else None."""
+        if data.get("depth_age_sec", 999) > 1.5:
+            return f"Stale depth on battleground ({data.get('depth_age_sec', 999):.1f}s) — abort"
+        if data.get("delta", 0) <= 0:
+            return "Battleground not confirming chain direction"
+        prem = data.get("premium_chg_pct", 0.0)
+        if side == "CALL":
+            if delta_pct > _ICEBERG_DELTA_MIN and prem <= 0.0:
+                return f"ICEBERG_SHADOW: Chain Δ +{delta_pct*100:.1f}% but premium {prem*100:+.2f}% (hidden seller suspected; shadow-only)"
+            if prem < _PREM_IMPACT_MIN:
+                return f"NO PRICE IMPACT: Chain Δ +{delta_pct*100:.1f}% but battleground premium {prem*100:+.2f}% → absorbed/noise"
+            if spot_bar_chg is not None and spot_bar_chg <= -_SPOT_VETO_PTS:
+                return f"SPOT DIVERGENCE: CALL flow but spot bar {spot_bar_chg:+.1f} pts"
+        else:
+            if delta_pct < -_ICEBERG_DELTA_MIN and prem <= 0.0:
+                return f"ICEBERG_SHADOW: Chain Δ {delta_pct*100:.1f}% but premium {prem*100:+.2f}% (shadow-only)"
+            if prem > -_PREM_IMPACT_MIN:
+                return f"NO PRICE IMPACT: Chain Δ {delta_pct*100:.1f}% but battleground premium {prem*100:+.2f}% → absorbed/noise"
+            if spot_bar_chg is not None and spot_bar_chg >= _SPOT_VETO_PTS:
+                return f"SPOT DIVERGENCE: PUT flow but spot bar {spot_bar_chg:+.1f} pts"
+        if data.get("ofi", 0) <= 0:
+            return f"OFI not confirming on battleground ({data.get('ofi', 0):+.0f})"
+        return None
+
+    def evaluate_1m_boundary(self, compiled_footprints, index_spot, now=None, spot_bar_chg=None, consideration_strikes=None):
         """
         Evaluates the aggregated 1-minute footprint across all tracked strikes.
         Returns (signal_type, reason, target_strike)
@@ -45,12 +74,11 @@ class ChainFootprintEvaluator:
                 pe_sell += sell_vol
             
         flow = total_chain_buy + total_chain_sell
-        if flow < 500:
-            return "NEUTRAL", f"Low volume across chain ({flow} < 500)", None
-            
-        signed_flow = (ce_buy - ce_sell) + (pe_sell - pe_buy)
+        signed_flow = (ce_buy - ce_sell) + (pe_sell - pe_buy)   # PE buying = bearish, PE selling = bullish
         delta_pct = signed_flow / flow if flow > 0 else 0.0
         self.last_chain_delta = delta_pct
+        if flow < _MIN_FLOW_VOL:
+            return "NEUTRAL", f"Flow too low ({flow:.0f} < {_MIN_FLOW_VOL}) — noise gate", None
         
         # CE vs PE Skew Divergence
         ce_delta = (ce_buy - ce_sell) / max(ce_buy + ce_sell, 1)
@@ -133,7 +161,7 @@ class ChainFootprintEvaluator:
         # 1. Chain Delta heavily positive (Aggressive Call Buying or Put Selling)
         if delta_pct > _CHAIN_DELTA_THR:
             # Straddle Filter (CE vs PE Skew)
-            if pe_delta > 0.05:
+            if pe_delta > 0.05 and ce_delta < (pe_delta * 3):
                 return "NEUTRAL", f"Straddle Flow (False Breakout): CE Δ {ce_delta*100:.1f}%, PE Δ {pe_delta*100:.1f}%", None
 
             # Pass 1: Find the most heavily traded Call (Battleground)
@@ -142,6 +170,9 @@ class ChainFootprintEvaluator:
             
             for token, data in compiled_footprints.items():
                 if data.get("option_type") != "CE":
+                    continue
+                # Only consider battlegrounds within the 3+3 target strikes
+                if consideration_strikes and data.get("strike") not in consideration_strikes:
                     continue
                 vol = data.get("total_buy_vol", 0) + data.get("total_sell_vol", 0)
                 if vol > max_ce_vol:
@@ -152,26 +183,13 @@ class ChainFootprintEvaluator:
             if target_ce_token:
                 data = compiled_footprints[target_ce_token]
                 
-                # Point 6: Target-strike confirmation
-                target_buy = data.get("total_buy_vol", 0)
-                target_sell = data.get("total_sell_vol", 0)
-                if target_buy <= target_sell:
-                    return "NEUTRAL", f"Chain bullish but target CE {target_ce_token} is not confirming (Buy {target_buy} <= Sell {target_sell}).", None
-                
-                # Point 8: OFI confirmation
-                ofi = data.get("ofi", 0.0)
-                if ofi < 0:
-                    return "NEUTRAL", f"Chain bullish but target CE {target_ce_token} has negative OFI ({ofi}).", None
-                    
+                blk = self._confirmation_block(data, delta_pct, spot_bar_chg, "CALL")
+                if blk:
+                    return "NEUTRAL", blk, None
+
                 asks = data.get("last_l2_ask", 0)
                 bids = data.get("last_l2_bid", 0)
                 is_spoof = data.get("ask_wall_spoof", False)
-                last_depth_ts = data.get("last_depth_ts", 0.0)
-                
-                # Point 7: Quote freshness filter
-                quote_age = now.timestamp() - last_depth_ts if last_depth_ts > 0 else 999
-                if quote_age > 1.5:
-                    return "NEUTRAL", f"Target CE {target_ce_token} quote is stale ({quote_age:.1f}s old). Aborting.", None
                 
                 if asks > bids * _WALL_MULT and asks > 0:
                     if is_spoof:
@@ -197,7 +215,7 @@ class ChainFootprintEvaluator:
                 # Wait, what is the straddle trap? If BOTH are being bought!
                 # If PE is being bought (PE_delta > 0) AND CE is being bought (CE_delta > 0)
                 pass # Fixed below
-            if ce_delta > 0.05:
+            if ce_delta > 0.05 and pe_delta < (ce_delta * 3):
                 return "NEUTRAL", f"Straddle Flow (False Breakout): CE Δ {ce_delta*100:.1f}%, PE Δ {pe_delta*100:.1f}%", None
 
             # Pass 1: Find the most heavily traded Put (Battleground)
@@ -206,6 +224,9 @@ class ChainFootprintEvaluator:
             
             for token, data in compiled_footprints.items():
                 if data.get("option_type") != "PE":
+                    continue
+                # Only consider battlegrounds within the 3+3 target strikes
+                if consideration_strikes and data.get("strike") not in consideration_strikes:
                     continue
                 vol = data.get("total_buy_vol", 0) + data.get("total_sell_vol", 0)
                 if vol > max_pe_vol:
@@ -216,26 +237,13 @@ class ChainFootprintEvaluator:
             if target_pe_token:
                 data = compiled_footprints[target_pe_token]
                 
-                # Point 6: Target-strike confirmation
-                target_buy = data.get("total_buy_vol", 0)
-                target_sell = data.get("total_sell_vol", 0)
-                if target_buy <= target_sell:
-                    return "NEUTRAL", f"Chain bearish but target PE {target_pe_token} is not confirming (Buy {target_buy} <= Sell {target_sell}).", None
-                
-                # Point 8: OFI confirmation
-                ofi = data.get("ofi", 0.0)
-                if ofi < 0:
-                    return "NEUTRAL", f"Chain bearish but target PE {target_pe_token} has negative OFI ({ofi}).", None
+                blk = self._confirmation_block(data, delta_pct, spot_bar_chg, "PUT")
+                if blk:
+                    return "NEUTRAL", blk, None
 
                 asks = data.get("last_l2_ask", 0)
                 bids = data.get("last_l2_bid", 0)
                 is_spoof = data.get("ask_wall_spoof", False)
-                last_depth_ts = data.get("last_depth_ts", 0.0)
-                
-                # Point 7: Quote freshness filter
-                quote_age = now.timestamp() - last_depth_ts if last_depth_ts > 0 else 999
-                if quote_age > 1.5:
-                    return "NEUTRAL", f"Target PE {target_pe_token} quote is stale ({quote_age:.1f}s old). Aborting.", None
                 
                 if asks > bids * _WALL_MULT and asks > 0:
                     if is_spoof:

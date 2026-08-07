@@ -128,3 +128,48 @@ During live market execution, the following metrics must be monitored in the PM2
 5. **Straddle Trap Threshold (`0.05` / 5%):**
    - *Monitor:* Ensure valid trades aren't aborted during genuine trend days.
    - *Tuning:* Raise the threshold to `0.07` or `0.08` if massive breakout days are missed.
+
+
+## 4. WebSocket Subscription Lifecycle & Data Pipeline
+
+A major source of confusion in quantitative systems is how continuous stream data (WebSocket) is managed alongside time-based logic (1-minute bars). Astra V3 completely decouples these two concepts to eliminate latency and avoid unnecessary REST API calls.
+
+### The 1-Minute Subscription Manager
+The main.py loop runs every 1-minute, but **it does not fetch tick data**. Its sole purpose regarding data is tracking the Index Spot Price. 
+If the market moves significantly (e.g., Nifty moves from 24,000 to 24,100), the 1-minute loop recalculates the active strike net (ATM ± 10) and sends a new subscribe() command to the Shoonya Data Hub. 
+**Crucially, it adds new strikes to the existing WebSocket connection without dropping the connection.**
+
+### The Streaming Data Pipe
+stra_shoonya_adapter.py maintains the live WebSocket connection. It acts as a continuous firehose. The ticks for all 42 subscribed tokens (21 CE + 21 PE) pour into the adapter at millisecond speeds. On every tick, the adapter immediately pushes the data into the FootprintCompiler's buffers using process_tick().
+
+### The Brain (Narrow Evaluation)
+The FootprintCompiler buffers a wide net (ATM ± 10) of footprint data, but the ChainFootprintEvaluator doesn't consume all of it.
+When it's time to evaluate the footprint, main.py mathematically restricts the focus to only **ATM ± 3** (14 tokens). It retrieves only these specific tokens from the compiler and sends them to the evaluator.
+*Result: The system buffers a wide net of data natively via WebSocket to survive sudden market jumps, but mathematically restricts its processing logic to a narrow band, resulting in zero resubscription latency when the ATM changes.*
+
+## 5. File Architecture & Scope
+
+Astra V3 utilizes a strictly decoupled file structure.
+
+### Astra Dedicated Files vs. Common Files
+- stra_bot/execution/data_fetcher.py: This file is **strictly dedicated** to Astra. It is not shared with Kronos or Stock Order Flow. This decoupling ensures that any aggressive optimizations made for Astra's high-frequency Option order flow do not break the 1-minute ML candle generation required by Kronos.
+- **Shoonya Data Hub Clutter:** The shoonya_data_hub/core directory contains duplicated adapters (e.g., stra_shoonya_adapter.py vs shoonya_adapter.py). The active adapter used by Astra V3 must be strictly isolated to prevent cross-contamination from other bots running on the same VPS.
+
+
+## 9. Module-wise File Mapping & Responsibilities
+This section maps the operational flow to specific codebase files, ensuring developers know exactly where to patch or review the logic for Astra V2/V3.
+
+### Module 1 & 2: Subscriptions, Data Handling & Footprint Compiler
+- **stra_bot/main.py**: The central orchestrator. Subscribes to dynamic option tokens (T+D) based on ATM and slices the 6+6 strikes for evaluation.
+- **common/broker/shoonya_adapter.py**: Manages WebSocket connections. Extracts real-time Tick+Depth data ( for volume) and pipes it to the footprint compiler.
+- **stra_bot/core/footprint_compiler.py**: Aggregates live tick volume into the 1-minute footprint boundary without looking backward.
+- **common/data/data_fetcher.py**: (via DataFetcher/ShoonyaDataHub) Fetches the option chain via searchscrip up to 10 strikes ITM and OTM to feed subscriptions.
+
+### Module 3: Watertight Entry Execution
+- **common/execution/strike_selector.py**: Enforces the ₹2000 affordable budget constraint. Scans ATM -> OTM to pick the cheapest reliable strike.
+- **common/execution/order_lifecycle.py**: Implements the **3-Second Confirmation Loop** in execute_entry: Marketable Limit -> Sleep 1s -> Check single_order_history -> Modify (LTP+1%) -> Sleep 1.5s -> Check -> Cancel/Abort. Also captures the real vgprc.
+
+### Module 4 & 5: Resting Target, Limit Chasing, & Real-Time Monitoring
+- **stra_bot/execution/astra_execution_manager.py**: Contains _place_take_profit which lays the resting DAY LMT target order.
+- **stra_bot/execution/astra_execution_manager.py (manage_open_trade)**: Handles tick-by-tick monitoring for Time Stop (10 mins) and Hard Stop Loss (-10% Friday, -15% Weekday).
+- **stra_bot/execution/astra_execution_manager.py (_chase_exit_thread)**: The institutional exit chaser. Pre-checks single_order_history for Partial/Full Fills (Bug 22) to prevent duplicate exits. If still open, executes tiered emergency modifications: Modify to LTP-1% -> Wait 1s -> Modify to LTP-2% -> Wait 1.5s -> Cancel and Replace at LTP-3%.

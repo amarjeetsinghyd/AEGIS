@@ -10,6 +10,9 @@ scp -o StrictHostKeyChecking=no -i "$sshKey" -r "C:\Users\Amarjeet Singh\quant-b
 Write-Host "Syncing common/ipc directory..."
 scp -o StrictHostKeyChecking=no -i "$sshKey" -r "C:\Users\Amarjeet Singh\quant-bot\common\ipc" "${userHost}:${remoteDir}/common/"
 
+Write-Host "Syncing common/execution directory..."
+scp -o StrictHostKeyChecking=no -i "$sshKey" -r "C:\Users\Amarjeet Singh\quant-bot\common\execution" "${userHost}:${remoteDir}/common/"
+
 Write-Host "Syncing unified_dashboard..."
 scp -o StrictHostKeyChecking=no -i "$sshKey" "C:\Users\Amarjeet Singh\quant-bot\unified_dashboard\dashboard.py" "${userHost}:${remoteDir}/unified_dashboard/"
 
