@@ -26,6 +26,8 @@ class SpotStructureEngine:
         self.vwap = self.upper = self.lower = 0.0
         self.ema9 = self.ema200 = 0.0
         self.orb_high = self.orb_low = 0.0
+        self.day_high = 0.0
+        self.day_low = 0.0
         self.candle_count = 0
         self.last_ts = 0
         self.last_above_vwap = self.last_below_vwap = 0.0
@@ -64,6 +66,7 @@ class SpotStructureEngine:
             self.vwap = self.upper = self.lower = 0.0
             self.ema9 = self.ema200 = 0.0
             self.orb_high = self.orb_low = 0.0
+            self.day_high = self.day_low = 0.0
             self.candle_count = 0
             self.cur = None
             self.last_above_vwap = self.last_below_vwap = 0.0
@@ -77,6 +80,11 @@ class SpotStructureEngine:
         if self.candle_count <= self.orb_n:
             self.orb_high = max(self.orb_high, c["h"])
             self.orb_low = min(self.orb_low, c["l"]) if self.orb_low else c["l"]
+        # Update session extremes
+        if self.day_high == 0.0 or c["h"] > self.day_high:
+            self.day_high = c["h"]
+        if self.day_low == 0.0 or c["l"] < self.day_low:
+            self.day_low = c["l"]
         tp = (c["h"] + c["l"] + c["c"]) / 3.0
         vol = c["vol"] if c["vol"] > 0 else 1.0
         self.vwap_num += tp * vol
@@ -122,6 +130,34 @@ class SpotStructureEngine:
             self.call_zone_ts = now
         return ev
 
+    def context_state(self, price):
+        """
+        V4.4 Context Gate: returns 'IN_ZONE', 'AT_EXTREME', or 'NO_MANS_LAND'
+        PROX = 10.0 pts around the VWAP zone
+        EXT = 5.0 pts around extremes (day high/low, ORB high/low)
+        """
+        PROX = 10.0
+        EXT = 5.0
+        
+        if self.upper <= 0 or self.lower <= 0:
+            return 'NO_MANS_LAND'
+        
+        # Check if in VWAP zone
+        if (self.lower - PROX) <= price <= (self.upper + PROX):
+            return 'IN_ZONE'
+        
+        # Check if at extremes (day high/low or ORB high/low)
+        if self.day_high > 0 and abs(price - self.day_high) <= EXT:
+            return 'AT_EXTREME'
+        if self.day_low > 0 and abs(price - self.day_low) <= EXT:
+            return 'AT_EXTREME'
+        if self.orb_high > 0 and abs(price - self.orb_high) <= EXT:
+            return 'AT_EXTREME'
+        if self.orb_low > 0 and abs(price - self.orb_low) <= EXT:
+            return 'AT_EXTREME'
+        
+        return 'NO_MANS_LAND'
+    
     def regime(self, price):
         if self.ema200 <= 0 or self.vwap <= 0:
             return "CHOP"
