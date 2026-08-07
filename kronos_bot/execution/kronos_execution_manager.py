@@ -116,6 +116,8 @@ class KronosExecutionManager:
 
         self.trade_context: Optional[TradeContext] = None
         self.trades_today = 0
+        self.trades_today_file = os.path.join(self.data_dir, "trades_today.json")
+        self._load_trades_today()
         self.strike_cooldowns = {}
         self._option_cache = {}
         self.tp_order_id = None
@@ -126,6 +128,32 @@ class KronosExecutionManager:
         self.history_file = os.path.join(trades_dir, "trade_history.json")
         self.active_context_file = os.path.join(trades_dir, "active_trade_context.json")
         self._load_active_context()
+
+    # --- state persistency ---
+    def _load_trades_today(self):
+        today = datetime.now().date()
+        try:
+            if os.path.exists(self.trades_today_file):
+                with open(self.trades_today_file, "r") as f:
+                    state = json.load(f)
+                if state.get("date") == today.isoformat():
+                    self.trades_today = int(state.get("trades_today", 0))
+                else:
+                    self.trades_today = 0
+        except Exception as e:
+            logger.error(f"[KronosEM] Failed to load trades_today: {e}")
+            self.trades_today = 0
+
+    def _save_trades_today(self):
+        try:
+            state = {
+                "date": datetime.now().date().isoformat(),
+                "trades_today": self.trades_today
+            }
+            with open(self.trades_today_file, "w") as f:
+                json.dump(state, f)
+        except Exception as e:
+            logger.error(f"[KronosEM] Failed to save trades_today: {e}")
 
     # --- calendar gates ---
     @staticmethod
@@ -237,8 +265,11 @@ class KronosExecutionManager:
         except Exception as e:
             logger.warning(f"[KronosEM] Chandelier seed failed: {e}")
 
-        self._place_take_profit(leg)
         self._save_active_context()
+        self.trades_today += 1
+        self._save_trades_today()
+        
+        self._place_take_profit(leg)
         logger.info(
             f"[KronosEM] ENTERED {signal_type} {quantity}x {symbol} @ {ltp:.2f} | "
             f"TP={_round_tick(ltp * (1 + TP_PCT)):.2f} | max_hold={int(MAX_HOLD_SEC)}s | "

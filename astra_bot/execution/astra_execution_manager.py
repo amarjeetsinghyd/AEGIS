@@ -569,7 +569,8 @@ class AstraExecutionManager:
             if ordno:
                 time.sleep(1.0)
                 history = api.single_order_history(orderno=ordno) if hasattr(api, "single_order_history") else []
-                status = history[0].get("status") if history and isinstance(history, list) else "OPEN"
+                latest = history[0] if history and isinstance(history, list) else {}
+                status = latest.get("status", "OPEN")
                 
                 # Step 2: Modify (LTP - 2%)
                 if status not in ["FILLED", "COMPLETE", "REJECTED"]:
@@ -579,7 +580,8 @@ class AstraExecutionManager:
                     
                     time.sleep(1.5)
                     history = api.single_order_history(orderno=ordno) if hasattr(api, "single_order_history") else []
-                    status = history[0].get("status") if history and isinstance(history, list) else "OPEN"
+                    latest = history[0] if history and isinstance(history, list) else {}
+                    status = latest.get("status", "OPEN")
                     
                     # Step 3: Cancel & Replace (LTP - 3%)
                     if status not in ["FILLED", "COMPLETE", "REJECTED"]:
@@ -588,14 +590,17 @@ class AstraExecutionManager:
                             api.cancel_order(orderno=ordno)
                         
                         price_3 = _round_tick(leg.current_price * 0.97)
-                        kwargs_3 = self.order_lifecycle._build_kwargs("S", exch_seg, leg.symbol, qty, f"{price_3:.2f}")
+                        kwargs_3 = self.order_lifecycle._build_kwargs("S", exch_seg, leg.symbol, qty, f"{price_3:.2f}") if hasattr(self.order_lifecycle, "_build_kwargs") else None
                         logger.info(f"[AstraEM Chaser] Placing final aggressive LMT Exit @ {price_3:.2f}")
-                        place(**kwargs_3)
-                        fill = price_3
+                        if place and kwargs_3:
+                            place(**kwargs_3)
+                        
+                        time.sleep(1.0)
+                        fill = float(latest.get("avgprc")) if latest.get("avgprc") else price_3
                     else:
-                        fill = price_2
+                        fill = float(latest.get("avgprc")) if latest.get("avgprc") else price_2
                 else:
-                    fill = price_1
+                    fill = float(latest.get("avgprc")) if latest.get("avgprc") else price_1
             else:
                 # Fallback to local order lifecycle execution if API place failed
                 self.order_lifecycle.execute_exit(leg, reason)
