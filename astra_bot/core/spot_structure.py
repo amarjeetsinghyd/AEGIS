@@ -139,3 +139,20 @@ class SpotStructureEngine:
                     "lower": round(self.lower, 2), "ema9": round(self.ema9, 2),
                     "ema200": round(self.ema200, 2), "orb_high": round(self.orb_high, 2),
                     "orb_low": round(self.orb_low, 2), "last_event": self.last_event}
+
+
+class SyntheticVolumeBridge:
+    """Bridge from shoonya_data_hub synthetic_volume_live_accum to SpotStructureEngine."""
+    def __init__(self, structure):
+        self.s = structure
+        self.prev = None
+
+    def poll(self, ts, live_accum):
+        if live_accum is None:
+            return
+        delta = (live_accum - self.prev) if self.prev is not None else 0.0
+        if delta < 0:
+            delta = live_accum  # hub 5m reset boundary
+        self.prev = live_accum
+        if delta > 0:
+            self.s.add_volume(int(ts // 60) * 60, delta)

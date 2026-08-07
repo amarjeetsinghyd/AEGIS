@@ -13,7 +13,7 @@ import astra_bot.config.settings  # noqa: F401
 
 from common.logger import get_logger
 from common.broker import ShoonyaAdapter
-from common.ipc import update_astra_live_state
+from common.ipc import update_astra_live_state, SHARED_TICK_FILE
 from astra_bot.execution.data_fetcher import DataFetcher
 from astra_bot.core.footprint_compiler import FootprintCompiler
 from astra_bot.strategy.evaluator import ChainFootprintEvaluator
@@ -98,6 +98,11 @@ def main():
         structure = SpotStructureEngine()
         STRUCTURE_MODE = os.getenv("ASTRA_STRUCTURE_MODE", "shadow")
         compiler.set_structure_hook(lambda ts, px: structure.on_tick(ts, px))
+        
+        # V4.3 Synthetic Volume Bridge
+        from astra_bot.core.spot_structure import SyntheticVolumeBridge
+        vol_bridge = SyntheticVolumeBridge(structure)
+        
         logger.info(f"[Astra] Spot Structure Engine initialized in {STRUCTURE_MODE} mode")
     except Exception as e:
         logger.critical(f"Initialization failed: {e}")
@@ -222,6 +227,17 @@ def main():
                             "kinematic_ready": True
                         }
                         update_astra_live_state(state_payload)
+                        
+                        # V4.3 Synthetic Volume Bridge poll (1Hz from shared tick file)
+                        try:
+                            import json
+                            if os.path.exists(SHARED_TICK_FILE):
+                                with open(SHARED_TICK_FILE, "r") as f:
+                                    ticks = json.load(f)
+                                live_accum = float(ticks.get("synthetic_volume_live_accum") or 0)
+                                vol_bridge.poll(time.time(), live_accum)
+                        except Exception:
+                            pass
                         
                         # Arm Pending Signal
                         if sig in ["CALL", "PUT"] and not trader.has_open_trade():
