@@ -10,6 +10,9 @@ import os
 from datetime import datetime
 
 from flask import Flask, jsonify
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from common.config import INITIAL_PAPER_CAPITAL
 from common.ipc import (
