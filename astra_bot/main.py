@@ -9,6 +9,8 @@ BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
+os.environ["BOT_RUNTIME"] = "astra"
+
 import astra_bot.config.settings  # noqa: F401
 
 from common.logger import get_logger
