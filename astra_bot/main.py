@@ -18,6 +18,7 @@ from astra_bot.execution.data_fetcher import DataFetcher
 from astra_bot.core.footprint_compiler import FootprintCompiler
 from astra_bot.strategy.evaluator import ChainFootprintEvaluator
 from astra_bot.execution.astra_execution_manager import AstraExecutionManager
+from astra_bot.core.spot_structure import SpotStructureEngine
 
 from common.market.market_calendar import (
     is_market_open,
@@ -92,6 +93,12 @@ def main():
             broker.market_data_provider.footprint_compiler = compiler
             
         evaluator = ChainFootprintEvaluator()
+        
+        # V4.3 Structure Engine (shadow mode)
+        structure = SpotStructureEngine()
+        STRUCTURE_MODE = os.getenv("ASTRA_STRUCTURE_MODE", "shadow")
+        compiler.set_structure_hook(lambda ts, px: structure.on_tick(ts, px))
+        logger.info(f"[Astra] Spot Structure Engine initialized in {STRUCTURE_MODE} mode")
     except Exception as e:
         logger.critical(f"Initialization failed: {e}")
         sys.exit(1)
@@ -198,6 +205,12 @@ def main():
                         digest = build_minute_digest(now, sig, reason, compiled, evaluator, compiler, trader, pending_signal)
                         logger.info(digest)
                         
+                        # V4.3 Structure Engine snapshot
+                        snap = structure.snapshot()
+                        reg = structure.regime(compiler.current_spot)
+                        if snap["last_event"] != "NONE":
+                            logger.info(f"[STRUCTURE:{STRUCTURE_MODE}] {snap['last_event']} regime={reg} vwap={snap['vwap']} ema9={snap['ema9']} ema200={snap['ema200']}")
+                        
                         # IPC State Update
                         state_payload = {
                             "active_index": fetcher.get_active_instrument()[0],
@@ -254,6 +267,17 @@ def main():
                 spot = getattr(compiler, "current_spot", 0.0)
                 trader.manage_open_trade(spot_price=spot)
                 
+                # V4.3 Structure Engine live exit checks (LIVE mode only)
+                if STRUCTURE_MODE == "live" and trader.has_open_trade():
+                    side = trader.trade_context.signal_type
+                    px = compiler.current_spot
+                    if structure.trail_exit(side, px):
+                        trader._cancel_tp()
+                        trader._close_all_legs("9-EMA Trail Exit")
+                    elif structure.invalidation(side, px):
+                        trader._cancel_tp()
+                        trader._close_all_legs("VWAP Band SL")
+            
             # Instant WS Exit Check or 500ms heartbeat
             try:
                 reason = trader.exit_signal_queue.get(timeout=0.5)
