@@ -49,26 +49,28 @@ _shoonya_adapter = None
 _live_funds_cache = 0.0
 _last_funds_fetch = 0.0
 
-def _capital(data_dir: str) -> float:
+def _capital(data_dir: str, force_paper: bool = False) -> float:
     global _shoonya_adapter, _live_funds_cache, _last_funds_fetch
-    now = time.time()
-    if now - _last_funds_fetch > 60:
-        if _shoonya_adapter is None:
-            try:
-                _shoonya_adapter = ShoonyaAdapter()
-            except Exception:
-                pass
-        if _shoonya_adapter:
-            try:
-                funds = _shoonya_adapter.get_available_funds()
-                _live_funds_cache = float(funds)
-                _last_funds_fetch = now
-            except Exception:
-                pass
     
-    if _live_funds_cache > 0:
-        return _live_funds_cache
+    if not force_paper:
+        now = time.time()
+        if now - _last_funds_fetch > 60:
+            if _shoonya_adapter is None:
+                try:
+                    _shoonya_adapter = ShoonyaAdapter()
+                except Exception:
+                    pass
+            if _shoonya_adapter:
+                try:
+                    funds = _shoonya_adapter.get_available_funds()
+                    _live_funds_cache = float(funds)
+                    _last_funds_fetch = now
+                except Exception:
+                    pass
         
+        if _live_funds_cache > 0:
+            return _live_funds_cache
+            
     # fallback to paper
     state = _read_json(os.path.join(data_dir, "capital_state.json"), {}) or {}
     return float(state.get("available_funds") or 0.0)
@@ -867,9 +869,9 @@ def live_state():
     astra = get_astra_live_state()
     kronos = get_kronos_live_state()
     
-    astra["available_funds"] = _capital(ASTRA_DATA)
-    kronos["available_funds"] = _capital(KRONOS_DATA)
-    of_funds = _capital(ORDERFLOW_DATA)
+    astra["available_funds"] = _capital(ASTRA_DATA, force_paper=True)
+    kronos["available_funds"] = _capital(KRONOS_DATA, force_paper=True)
+    of_funds = _capital(ORDERFLOW_DATA, force_paper=False)
     
     of_logs = [html.escape(line) for line in _tail_log(os.path.join(ORDERFLOW_LOGS, "stock_order_flow.log"), 80)]
     of_hist = _trade_history(ORDERFLOW_DATA)
