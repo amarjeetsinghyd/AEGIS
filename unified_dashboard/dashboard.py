@@ -108,7 +108,7 @@ def _normalize_trade(row: dict) -> dict:
     return {
         "date": row.get("date") or row.get("entry_time") or "—",
         "exit_time": row.get("exit_time") or "",
-        "signal": row.get("signal_type") or row.get("signal") or "—",
+        "signal": row.get("signal_type") or row.get("signal") or row.get("type") or "—",
         "symbol": row.get("symbol") or "—",
         "strategy": row.get("strategy") or "—",
         "entry_price": row.get("entry_price"),
