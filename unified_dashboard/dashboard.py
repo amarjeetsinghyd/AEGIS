@@ -11,8 +11,10 @@ from datetime import datetime
 
 from flask import Flask, jsonify
 from dotenv import load_dotenv
+import os
 
-load_dotenv()
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 from common.config import INITIAL_PAPER_CAPITAL
 from common.ipc import (
