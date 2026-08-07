@@ -14,6 +14,7 @@ from common.market.market_calendar import is_trading_day, is_market_open, MARKET
 from stock_order_flow.tick_compiler import TickCompiler
 from stock_order_flow.execution_manager import StockExecutionManager
 from stock_order_flow.strategy_engine import StockStrategyEngine # NEW
+from stock_order_flow.historical_data_manager import fetch_and_seed_history
 
 logger = get_logger("stock_main")
 BAR_MINUTES = 3
@@ -55,13 +56,32 @@ def main():
 
     tokens = [meta["token"] for meta in EQUITY_UNIVERSE.values()]
     token_to_symbol = {meta["token"]: sym for sym, meta in EQUITY_UNIVERSE.items()}
+    
+    # ---------------------------------------------------------
+    # 1. Historical Gap Fill (Boot Sync)
+    # ---------------------------------------------------------
+    hist_data = fetch_and_seed_history(broker, tokens, token_to_symbol)
+    for token_str, df in hist_data.items():
+        compiler.bar_book.seed(token_str, df)
+    
     compiler.subscribe(tokens)
     
     last_processed_bucket = None
+    eod_sync_done_for_day = None
 
     while True:
         try:
             now = datetime.now()
+            
+            # EOD Gap Fill Sync Check (at 15:17)
+            if now.time() >= dt_time(15, 17, 0) and eod_sync_done_for_day != now.date():
+                logger.info(f"[{now.strftime('%H:%M:00')}] Triggering EOD Gap Fill Sync...")
+                eod_hist = fetch_and_seed_history(broker, tokens, token_to_symbol)
+                for token_str, df in eod_hist.items():
+                    compiler.bar_book.seed(token_str, df)
+                eod_sync_done_for_day = now.date()
+                logger.info("EOD Gap Fill Sync Complete. Data persisted safely.")
+            
             if not is_trading_day(now.date()) or now.time() > MARKET_CLOSE_TIME:
                 time.sleep(60)
                 continue
