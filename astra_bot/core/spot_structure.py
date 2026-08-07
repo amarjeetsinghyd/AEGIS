@@ -1,8 +1,8 @@
 """
 Astra V4.3 — Spot Structure Engine (shadow-first).
-red=session VWAP (synthetic volume) | yellow=VWAP±band | blue=9 EMA trail
-| grey=200 EMA regime. Events per 1m close:
-BREAKDOWN / BREAKOUT / REJECT_PUT / REJECT_CALL / NONE
+red=session VWAP (synthetic volume) | yellow=dynamic bands:
+upper=VWAP-of-Highs, lower=VWAP-of-Lows | blue=9 EMA trail | grey=200 EMA regime.
+Events per 1m close: BREAKDOWN / BREAKOUT / REJECT_PUT / REJECT_CALL / NONE
 """
 import threading
 from collections import deque
@@ -12,14 +12,17 @@ logger = get_logger("spot_structure")
 
 
 class SpotStructureEngine:
-    def __init__(self, band_pts=5.0, memory_min=5.0, orb_candles=15):
-        self.band = band_pts
+    def __init__(self, band_pts=None, memory_min=5.0, orb_candles=15):
+        # band_pts deprecated & ignored — fixed offset replaced by
+        # dynamic High/Low VWAP bands (user's manual playbook).
         self.memory_sec = memory_min * 60.0
         self.orb_n = orb_candles
         self.lock = threading.Lock()
         self.candles = deque(maxlen=480)
         self.cur = None
         self.vwap_num = self.vwap_den = 0.0
+        self.high_num = 0.0
+        self.low_num = 0.0
         self.vwap = self.upper = self.lower = 0.0
         self.ema9 = self.ema200 = 0.0
         self.orb_high = self.orb_low = 0.0
@@ -57,6 +60,7 @@ class SpotStructureEngine:
         if self.last_ts and (ts - self.last_ts) > 20 * 3600:
             logger.info("[SpotStructure] New session — reset")
             self.vwap_num = self.vwap_den = 0.0
+            self.high_num = self.low_num = 0.0
             self.vwap = self.upper = self.lower = 0.0
             self.ema9 = self.ema200 = 0.0
             self.orb_high = self.orb_low = 0.0
@@ -76,10 +80,12 @@ class SpotStructureEngine:
         tp = (c["h"] + c["l"] + c["c"]) / 3.0
         vol = c["vol"] if c["vol"] > 0 else 1.0
         self.vwap_num += tp * vol
+        self.high_num += c["h"] * vol
+        self.low_num += c["l"] * vol
         self.vwap_den += vol
         self.vwap = self.vwap_num / self.vwap_den
-        self.upper = self.vwap + self.band
-        self.lower = self.vwap - self.band
+        self.upper = self.high_num / self.vwap_den   # VWAP of Highs
+        self.lower = self.low_num / self.vwap_den    # VWAP of Lows
         k9, k200 = 2.0/10.0, 2.0/201.0
         self.ema9 = c["c"] if self.ema9 == 0 else c["c"]*k9 + self.ema9*(1-k9)
         self.ema200 = c["c"] if self.ema200 == 0 else c["c"]*k200 + self.ema200*(1-k200)
@@ -88,6 +94,8 @@ class SpotStructureEngine:
     def _evaluate(self, c):
         if self.vwap <= 0 or self.candle_count < 3:
             return "NONE"
+        if self.upper - self.lower < 1.0:
+            return "NONE"   # degenerate early-session bands
         vwap, upper, lower, now = self.vwap, self.upper, self.lower, c["ts"]
         ev = "NONE"
         if c["h"] >= vwap and c["c"] < lower:
