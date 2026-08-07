@@ -494,9 +494,9 @@ body {
               <div class="hint">Waiting = no CALL/PUT yet this bar</div>
             </div>
             <div class="metric">
-              <div class="label">Live funds</div>
+              <div class="label">Funds</div>
               <div class="value" id="astraFunds">—</div>
-              <div class="hint">Live Shoonya cash margin</div>
+              <div class="hint">Paper trade</div>
             </div>
             <div class="metric"><div class="label">Chain Delta</div><div class="value" id="astraDelta">—</div></div>
             <div class="metric"><div class="label">L2 Wall</div><div class="value" id="astraWall">—</div></div>
@@ -525,9 +525,9 @@ body {
               <div class="hint" id="kronosSignalHint">Green CALL / red PUT when live</div>
             </div>
             <div class="metric">
-              <div class="label">Live funds</div>
+              <div class="label">Funds</div>
               <div class="value" id="kronosFunds">—</div>
-              <div class="hint">Live Shoonya cash margin</div>
+              <div class="hint">Paper trade</div>
             </div>
             <div class="metric"><div class="label">Pred close</div><div class="value" id="kronosPred">—</div></div>
             <div class="metric"><div class="label">Return %</div><div class="value" id="kronosRet">—</div></div>
