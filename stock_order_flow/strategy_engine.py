@@ -19,6 +19,9 @@ class StockStructure:
         self.ema200 = 0.0
         self.day_high = 0.0
         self.day_low = 0.0
+        # Track previous delta and recent delta history for trend analysis (S1)
+        self.prev_delta = 0.0
+        self.delta_hist = []
 
     def update_from_df(self, df: pd.DataFrame):
         """Vectorized calculation using full history"""
@@ -87,6 +90,12 @@ class StockStrategyEngine:
             total_sell = fp_data.get("total_sell_vol", 0)
             flow = total_buy + total_sell
             norm_delta = (total_buy - total_sell) / flow if flow > 0 else 0.0
+            # Update delta tracking on the structure (S1)
+            struct.prev_delta = norm_delta
+            struct.delta_hist.append(norm_delta)
+            # Keep a short history (last 10 deltas)
+            if len(struct.delta_hist) > 10:
+                struct.delta_hist.pop(0)
             
             avg_ask = fp_data.get("avg_l2_ask", 0)
             avg_bid = fp_data.get("avg_l2_bid", 0)
@@ -102,12 +111,14 @@ class StockStrategyEngine:
             veto_active = self.veto_until.get(symbol, 0) > now.timestamp()
             
             # Setup B: Absorption (Takes priority, bypasses Veto)
+            # Use recent delta trend to confirm direction
+            delta_trend = sum(struct.delta_hist[-3:]) / min(3, len(struct.delta_hist)) if struct.delta_hist else 0.0
             if ctx == 'IN_ZONE' and abs(norm_delta) > 0.15:
                 prog = abs(df.iloc[-1]['close'] - df.iloc[-1]['open']) / c
                 if prog < 0.0015: # High effort, low result
-                    if norm_delta < 0 and avg_bid > avg_ask * 1.5:
+                    if norm_delta < 0 and delta_trend < 0 and avg_bid > avg_ask * 1.5:
                         candidates.append((0, symbol, "BUY", f"Setup B Absorption: Buy at VWAP. Delta {norm_delta*100:.1f}%"))
-                    elif norm_delta > 0 and avg_ask > avg_bid * 1.5:
+                    elif norm_delta > 0 and delta_trend > 0 and avg_ask > avg_bid * 1.5:
                         candidates.append((0, symbol, "SELL", f"Setup B Absorption: Sell at VWAP. Delta {norm_delta*100:.1f}%"))
             
             if veto_active: continue
@@ -118,10 +129,10 @@ class StockStrategyEngine:
                 up_trend = c > struct.ema9 and c > struct.ema200
                 down_trend = c < struct.ema9 and c < struct.ema200
                 
-                if c > struct.upper and up_trend and norm_delta > 0:
+                if c > struct.upper and up_trend and norm_delta > 0 and delta_trend > 0:
                     if avg_ask < avg_bid * 2: # L2 Guard
                         candidates.append((1, symbol, "BUY", f"Setup A Breakout (Up). Delta {norm_delta*100:.1f}%"))
-                elif c < struct.lower and down_trend and norm_delta < 0:
+                elif c < struct.lower and down_trend and norm_delta < 0 and delta_trend < 0:
                     if avg_bid < avg_ask * 2: # L2 Guard
                         candidates.append((1, symbol, "SELL", f"Setup A Breakout (Down). Delta {norm_delta*100:.1f}%"))
             

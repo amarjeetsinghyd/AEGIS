@@ -12,6 +12,8 @@ logger = get_logger("tick_compiler")
 
 
 class TickCompiler:
+    _keys_logged = False
+    _expected_keys = {"token", "last_traded_price", "lp", "volume_trade_for_the_day", "v", "bp1", "b", "sp1", "s", "bid", "ask", "oi", "poi", "oiv", "e", "ltq", "bv", "sv", "bq1", "bq2", "bq3", "bq4", "bq5", "sq1", "sq2", "sq3", "sq4", "sq5"}
     def __init__(self, broker):
         self.broker = broker
         self.footprints = defaultdict(list)
@@ -31,6 +33,13 @@ class TickCompiler:
         if not isinstance(message, dict) or "token" not in message:
             return
 
+        # Log any unexpected keys on first occurrence for debugging
+        if not TickCompiler._keys_logged:
+            unexpected_keys = [k for k in message.keys() if k not in self._expected_keys]
+            if unexpected_keys:
+                logger.debug(f"Unexpected tick keys: {unexpected_keys}")
+                TickCompiler._keys_logged = True
+
         token = str(message["token"])
         now = datetime.now()
         with self.lock:
@@ -39,9 +48,10 @@ class TickCompiler:
 
             depth = self.market_depth[token]
 
-            if "last_traded_price" in message:
+            _lp_raw = message.get("last_traded_price") or message.get("lp") or 0
+            if _lp_raw:
                 try:
-                    lp = float(message["last_traded_price"] or 0)
+                    lp = float(_lp_raw)
                     if lp > 0:
                         depth["lp"] = lp
                 except (TypeError, ValueError):
@@ -56,21 +66,24 @@ class TickCompiler:
                     depth["sp1"] = float(message["ask"] or 0)
                 except (TypeError, ValueError):
                     pass
-            if "bp1" in message:
-                try:
-                    depth["bp1"] = float(message["bp1"] or 0)
-                except (TypeError, ValueError):
-                    pass
-            if "sp1" in message:
-                try:
-                    depth["sp1"] = float(message["sp1"] or 0)
-                except (TypeError, ValueError):
-                    pass
+            for _bk in ("bp1", "b"):
+                if _bk in message:
+                    try:
+                        depth["bp1"] = float(message[_bk] or 0)
+                    except (TypeError, ValueError):
+                        pass
+            for _sk in ("sp1", "s"):
+                if _sk in message:
+                    try:
+                        depth["sp1"] = float(message[_sk] or 0)
+                    except (TypeError, ValueError):
+                        pass
 
             vol_delta = 0.0
-            if "volume_trade_for_the_day" in message:
+            _vol_raw = message.get("volume_trade_for_the_day") or message.get("v")
+            if _vol_raw:
                 try:
-                    new_vol = int(float(message.get("volume_trade_for_the_day") or 0))
+                    new_vol = int(float(_vol_raw))
                 except (TypeError, ValueError):
                     new_vol = 0
                 old_vol = int(depth.get("v") or 0)
@@ -89,6 +102,12 @@ class TickCompiler:
 
                     l2_bid_qty = 0
                     l2_ask_qty = 0
+                    if not any(f"bq{i}" in message for i in range(1, 6)):
+                        try:
+                            l2_bid_qty = int(float(message.get("bv") or 0))
+                            l2_ask_qty = int(float(message.get("sv") or 0))
+                        except (TypeError, ValueError):
+                            pass
                     for i in range(1, 6):
                         try:
                             l2_bid_qty += int(float(message.get(f"bq{i}", 0) or 0))

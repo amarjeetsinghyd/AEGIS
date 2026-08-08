@@ -84,7 +84,7 @@ def fetch_and_seed_history(broker, tokens: list, token_map: dict) -> dict:
                             'high': float(r['inth']),
                             'low': float(r['intl']),
                             'close': float(r['intc']),
-                            'volume': float(r['intv'])
+                            'volume': float(r.get('intv') or r.get('v') or 0)
                         })
                     if rows:
                         new_df = pd.DataFrame(rows)

@@ -119,7 +119,7 @@ def main():
                 best_sym, signal, reason = strategy.evaluate_all(sym_footprints, compiler.bar_book, now)
                 
                 allow_entry = now.time() < TRADE_ENTRY_CUTOFF_TIME
-                if best_sym and signal and allow_entry:
+                if best_sym and signal and allow_entry and best_sym in current_prices and current_prices[best_sym] > 0:
                     logger.info(f"🏆 MUTEX WINNER: {best_sym} -> {signal} | {reason}")
                     trader.execute_entry(signal, best_sym, current_prices[best_sym], reason)
                 
