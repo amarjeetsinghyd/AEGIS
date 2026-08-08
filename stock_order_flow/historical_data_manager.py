@@ -80,7 +80,7 @@ def fetch_and_seed_history(broker, tokens: list, token_map: dict) -> dict:
                         dt = datetime.strptime(r['time'], "%d-%m-%Y %H:%M:%S")
                         rows.append({
                             'timestamp': dt,
-                            'open': float(r['intoO']),
+                            'open': float(r['into']),
                             'high': float(r['inth']),
                             'low': float(r['intl']),
                             'close': float(r['intc']),
