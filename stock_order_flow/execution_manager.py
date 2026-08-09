@@ -1,4 +1,6 @@
-"""LIVE execution for Stock Order Flow — Strict Global Lock, MIS MKT Orders."""
+"""LIVE execution for Stock Order Flow — Strict Global Lock, MIS MKT Orders.
+Phase-2: accepts metrics dict (CVD/VP/context) and stores it as ml_features
+inside every trade record — the dataset for future XGBoost confidence model."""
 from __future__ import annotations
 import json
 import os
@@ -23,6 +25,7 @@ LEVERAGE = 5.0
 TP_PCT = 0.010
 SL_PCT = 0.008  # AUDIT E2: noise-safe
 MAX_HOLD_MINUTES = 60
+
 
 class StockExecutionManager:
     def __init__(self, broker):
@@ -67,14 +70,14 @@ class StockExecutionManager:
         except Exception as e:
             logger.warning(f"trade_history save failed: {e}")
 
-    def execute_entry(self, signal, symbol, spot_price, reason):
+    def execute_entry(self, signal, symbol, spot_price, reason, metrics=None):
         if len(self.open_trades) >= MAX_OPEN_POSITIONS:
             logger.info(f"Global Lock Active: Ignoring {signal} for {symbol}.")
             return
         now_time = datetime.now().time()
         if now_time < time(9, 15) or now_time >= time(15, 0):
             return
-        
+
         margin_budget = float(self.capital_engine.get_available_funds())
         if margin_budget < 50:
             logger.warning("Insufficient margin budget.")
@@ -90,7 +93,8 @@ class StockExecutionManager:
 
         notional_budget = min(margin_budget * self.leverage, margin_budget * 2.0)  # AUDIT E1
         qty = int(notional_budget / spot_price)
-        if qty <= 0: return
+        if qty <= 0:
+            return
 
         action = "B" if signal == "BUY" else "S"
         kwargs = {
@@ -116,12 +120,14 @@ class StockExecutionManager:
                     logger.info(f"[StockExecution] ✅ Entry FILLED @ Avg Price: {avg_prc:.2f}")
                 else:
                     logger.warning(f"[StockExecution] ⚠️ Fill unconfirmed, using spot.")
-                
+
                 margin = (qty * avg_prc) / self.leverage
                 trade = {
                     "entry_time": datetime.now().isoformat(), "symbol": symbol, "type": signal,
                     "entry_price": avg_prc, "qty": qty, "margin": round(margin, 2),
-                    "leverage": self.leverage, "reason": reason, "broker_order_id": ordno
+                    "leverage": self.leverage, "reason": reason, "broker_order_id": ordno,
+                    # Phase-2: ML feature snapshot at entry (future training label source)
+                    "ml_features": metrics or {},
                 }
                 self.open_trades[symbol] = trade
                 self._save_open()
@@ -135,25 +141,31 @@ class StockExecutionManager:
         now_time = datetime.now().time()
         is_eod_flatten = now_time >= time(15, 10)
         for symbol, trade in list(self.open_trades.items()):
-            if symbol not in current_prices: continue
+            if symbol not in current_prices:
+                continue
             current_price = float(current_prices[symbol])
             entry = float(trade["entry_price"])
             pnl_pct = (current_price - entry) / entry if trade["type"] == "BUY" else (entry - current_price) / entry
             try:
                 minutes_held = (datetime.now() - datetime.fromisoformat(trade["entry_time"])).total_seconds() / 60.0
-            except:
+            except Exception:
                 minutes_held = 0.0
             exit_reason = None
-            if is_eod_flatten: exit_reason = "EOD_FLATTEN"
-            elif pnl_pct >= TP_PCT: exit_reason = "TAKE_PROFIT"
-            elif pnl_pct <= -SL_PCT: exit_reason = "STOP_LOSS"
-            elif minutes_held >= MAX_HOLD_MINUTES: exit_reason = "TIME_STOP"
+            if is_eod_flatten:
+                exit_reason = "EOD_FLATTEN"
+            elif pnl_pct >= TP_PCT:
+                exit_reason = "TAKE_PROFIT"
+            elif pnl_pct <= -SL_PCT:
+                exit_reason = "STOP_LOSS"
+            elif minutes_held >= MAX_HOLD_MINUTES:
+                exit_reason = "TIME_STOP"
             if exit_reason:
                 self._close_trade(symbol, current_price, exit_reason)
 
     def _close_trade(self, symbol, current_price, exit_reason):
         trade = self.open_trades.get(symbol)
-        if not trade: return
+        if not trade:
+            return
         qty = int(trade["qty"])
         action = "S" if trade["type"] == "BUY" else "B"
         kwargs = {
