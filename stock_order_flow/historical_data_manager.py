@@ -6,9 +6,9 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 from common.config import get_data_dir
-from common.logger import getlogger
+from common.logger import get_logger
 
-logger = getlogger("stockhistory")
+logger = get_logger("stockhistory")
 
 HISTORY_DIR = os.path.join(get_data_dir(), "history")
 os.makedirs(HISTORY_DIR, exist_ok=True)
@@ -54,7 +54,7 @@ def fetch_and_seed_history(broker, tokens: list, token_map: dict) -> dict:
 
             start = int((last_local_ts + timedelta(seconds=1)).timestamp()) if last_local_ts is not None else int((datetime.now() - timedelta(days=6)).timestamp())
             end = int(datetime.now().timestamp())
-            rows = broker.api.get_time_price_series(exchange="NSE", token=str(token), starttime=start, endtime=end, interval="3")
+            rows = broker._api.get_time_price_series(exchange="NSE", token=str(token), starttime=start, endtime=end, interval="3")
             recs = _parse_rows(rows)
             df_new = pd.DataFrame(recs)
             if local is not None and len(local):

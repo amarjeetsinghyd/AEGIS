@@ -16,10 +16,10 @@ if BASEDIR not in sys.path:
 
 from common.config import configure_runtime, get_data_dir
 from common.broker import ShoonyaAdapter
-from common.logger import getlogger
-from stockorderflow.historical_data_manager import fetch_and_seed_history
+from common.logger import get_logger
+from stock_order_flow.historical_data_manager import fetch_and_seed_history
 
-logger = getlogger("universescanner")
+logger = get_logger("universescanner")
 configure_runtime("stock_order_flow")
 
 RUNTIME_HOUR = 16
@@ -155,7 +155,7 @@ def score_symbol(recs):
 
 
 def run_scan(broker):
-    api = broker.api if hasattr(broker, "api") else broker
+    api = broker._api if hasattr(broker, "api") else broker
     cache = resolve_tokens(api, load_token_cache())
     current = set()
     try:
@@ -220,7 +220,7 @@ def main():
     logger.info("Universe scanner started: daily 16:05 IST sleep-loop; --now for one-shot.")
     broker = ShoonyaAdapter()
     if hasattr(broker, "session_provider"):
-        broker.session_provider.restore_or_login()
+        broker.session_provider._restore_or_login()
     if "--now" in sys.argv:
         try:
             run_scan(broker)

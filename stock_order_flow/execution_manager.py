@@ -7,9 +7,9 @@ from datetime import datetime, time
 
 from common.config import get_data_dir
 from common.execution.capital_engine import CapitalEngine
-from common.logger import getlogger
+from common.logger import get_logger
 
-logger = getlogger("stockexecution")
+logger = get_logger("stockexecution")
 
 TRADES_DIR = os.path.join(get_data_dir(), "trades")
 os.makedirs(TRADES_DIR, exist_ok=True)
@@ -34,7 +34,7 @@ MAX_HOLD_MINUTES = 60
 class StockExecutionManager:
     def __init__(self, broker):
         self.broker = broker
-        self.api = self.broker.api if hasattr(self.broker, "api") else self.broker
+        self.api = self.broker._api if hasattr(self.broker, "api") else self.broker
         self.open_trades = {}
         self.leverage = LEVERAGE
         self.capital_engine = CapitalEngine(mode="LIVE", portfolio_provider=self.broker, data_dir=get_data_dir())

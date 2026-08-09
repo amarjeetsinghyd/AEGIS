@@ -12,15 +12,15 @@ if BASEDIR not in sys.path:
 
 from common.config import configure_runtime, get_data_dir
 from common.broker import ShoonyaAdapter
-from common.logger import getlogger
+from common.logger import get_logger
 from common.market.market_calendar import is_trading_day, is_market_open, MARKET_CLOSE_TIME, TRADE_ENTRY_CUTOFF_TIME
-from stockorderflow.tick_compiler import TickCompiler
-from stockorderflow.execution_manager import StockExecutionManager
-from stockorderflow.strategy_engine import StockStrategyEngine
-from stockorderflow.historical_data_manager import fetch_and_seed_history
-from stockorderflow.bar_book import resample_bars
+from stock_order_flow.tick_compiler import TickCompiler
+from stock_order_flow.execution_manager import StockExecutionManager
+from stock_order_flow.strategy_engine import StockStrategyEngine
+from stock_order_flow.historical_data_manager import fetch_and_seed_history
+from stock_order_flow.bar_book import resample_bars
 
-logger = getlogger("stockmain")
+logger = get_logger("stockmain")
 configure_runtime("stock_order_flow")
 
 BAR_MINUTES = 3
@@ -74,7 +74,7 @@ def main():
     logger.info("Starting Stock Order Flow Engine 3 FINAL: 5x, ATR15, Chandelier, dynamic universe")
     broker = ShoonyaAdapter()
     if hasattr(broker, "session_provider"):
-        broker.session_provider.restore_or_login()
+        broker.session_provider._restore_or_login()
 
     compiler = TickCompiler(broker)
     trader = StockExecutionManager(broker)

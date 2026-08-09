@@ -6,9 +6,9 @@ from datetime import datetime, time as dtime
 
 import pandas as pd
 
-from common.logger import getlogger
+from common.logger import get_logger
 
-logger = getlogger("sofbarbook")
+logger = get_logger("sofbarbook")
 
 SESSION_START = dtime(9, 15)
 SESSION_END = dtime(15, 15)

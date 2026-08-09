@@ -8,9 +8,9 @@ import numpy as np
 import pandas as pd
 import talib
 
-from common.logger import getlogger
+from common.logger import get_logger
 
-logger = getlogger("stockstrategy")
+logger = get_logger("stockstrategy")
 
 
 FLOW_EPS = 1e-9

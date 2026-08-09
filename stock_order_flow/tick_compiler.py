@@ -4,10 +4,10 @@ import threading
 from collections import defaultdict
 from datetime import datetime
 
-from common.logger import getlogger
-from stockorderflow.bar_book import ThreeMinuteBarBook, BarBook
+from common.logger import get_logger
+from stock_order_flow.bar_book import ThreeMinuteBarBook, BarBook
 
-logger = getlogger("tickcompiler")
+logger = get_logger("tickcompiler")
 
 
 class TickCompiler:
