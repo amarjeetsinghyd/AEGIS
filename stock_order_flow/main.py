@@ -1,56 +1,79 @@
 """Stock Order Flow — Engine 3 main loop (LIVE), 3-minute WS clock.
-Phase-2: strategy now returns a 4-tuple (sym, signal, reason, metrics)."""
+Final: reads universe.json (daily scanner output) with built-in fallback,
+dual bar books (3m + 15m, SYMBOL-keyed), 4-tuple strategy return."""
 from __future__ import annotations
-import os, sys, time
+import os, sys, json, time
 from datetime import datetime, time as dt_time
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-from common.config import configure_runtime
+from common.config import configure_runtime, get_data_dir
 configure_runtime("stock_order_flow")
 
 from common.broker import ShoonyaAdapter
 from common.logger import get_logger
-from common.market.market_calendar import is_trading_day, is_market_open, MARKET_OPEN_TIME, MARKET_CLOSE_TIME, TRADE_ENTRY_CUTOFF_TIME
+from common.market.market_calendar import is_trading_day, is_market_open, MARKET_CLOSE_TIME, TRADE_ENTRY_CUTOFF_TIME
 from stock_order_flow.tick_compiler import TickCompiler
 from stock_order_flow.execution_manager import StockExecutionManager
 from stock_order_flow.strategy_engine import StockStrategyEngine
 from stock_order_flow.historical_data_manager import fetch_and_seed_history
+from stock_order_flow.bar_book import resample_bars
 
 logger = get_logger("stock_main")
 
 BAR_MINUTES = 3
+UNIVERSE_PATH = os.path.join(get_data_dir(), "universe.json")
 
-EQUITY_UNIVERSE = {
-    # Existing 5 Stocks
-    "RELIANCE": {"token": "2885", "tsym": "RELIANCE-EQ", "search": ["RELIANCE-EQ", "RELIANCE"]},
-    "HDFCBANK": {"token": "1333", "tsym": "HDFCBANK-EQ", "search": ["HDFCBANK-EQ", "HDFCBANK"]},
-    "INFY": {"token": "1594", "tsym": "INFY-EQ", "search": ["INFY-EQ", "INFY"]},
-    "LT": {"token": "11483", "tsym": "LT-EQ", "search": ["LT-EQ", "LT"]},
-    "TATAMOTORS": {
-        "token": "3456",
-        "tsym": "TMPV-EQ",
-        "search": ["Tata Motors", "TMPV-EQ", "TATAMOTORS-EQ"],
-        "note": "NSE renamed/split; tracking TMPV-EQ (ex-TATAMOTORS passenger)",
-    },
-    # New 10 High-Liquidity Stocks
-    "ICICIBANK": {"token": "4963", "tsym": "ICICIBANK-EQ", "search": ["ICICIBANK-EQ", "ICICIBANK"]},
-    "SBIN": {"token": "3045", "tsym": "SBIN-EQ", "search": ["SBIN-EQ", "SBIN"]},
-    "TCS": {"token": "11536", "tsym": "TCS-EQ", "search": ["TCS-EQ", "TCS"]},
-    "AXISBANK": {"token": "5900", "tsym": "AXISBANK-EQ", "search": ["AXISBANK-EQ", "AXISBANK"]},
-    "ITC": {"token": "1660", "tsym": "ITC-EQ", "search": ["ITC-EQ", "ITC"]},
-    "KOTAKBANK": {"token": "1922", "tsym": "KOTAKBANK-EQ", "search": ["KOTAKBANK-EQ", "KOTAKBANK"]},
-    "BHARTIARTL": {"token": "10604", "tsym": "BHARTIARTL-EQ", "search": ["BHARTIARTL-EQ", "BHARTIARTL"]},
-    "BAJFINANCE": {"token": "317", "tsym": "BAJFINANCE-EQ", "search": ["BAJFINANCE-EQ", "BAJFINANCE"]},
-    "MARUTI": {"token": "10999", "tsym": "MARUTI-EQ", "search": ["MARUTI-EQ", "MARUTI"]},
-    "M&M": {"token": "2031", "tsym": "M&M-EQ", "search": ["M&M-EQ", "M&M"]},
+DEFAULT_UNIVERSE = {
+    "RELIANCE": {"token": "2885", "search": ["RELIANCE-EQ", "RELIANCE"]},
+    "HDFCBANK": {"token": "1333", "search": ["HDFCBANK-EQ", "HDFCBANK"]},
+    "INFY": {"token": "1594", "search": ["INFY-EQ", "INFY"]},
+    "LT": {"token": "11483", "search": ["LT-EQ", "LT"]},
+    "TATAMOTORS": {"token": "3456", "search": ["Tata Motors", "TMPV-EQ", "TATAMOTORS-EQ"]},
+    "ICICIBANK": {"token": "4963", "search": ["ICICIBANK-EQ", "ICICIBANK"]},
+    "SBIN": {"token": "3045", "search": ["SBIN-EQ", "SBIN"]},
+    "TCS": {"token": "11536", "search": ["TCS-EQ", "TCS"]},
+    "AXISBANK": {"token": "5900", "search": ["AXISBANK-EQ", "AXISBANK"]},
+    "ITC": {"token": "1660", "search": ["ITC-EQ", "ITC"]},
+    "KOTAKBANK": {"token": "1922", "search": ["KOTAKBANK-EQ", "KOTAKBANK"]},
+    "BHARTIARTL": {"token": "10604", "search": ["BHARTIARTL-EQ", "BHARTIARTL"]},
+    "BAJFINANCE": {"token": "317", "search": ["BAJFINANCE-EQ", "BAJFINANCE"]},
+    "MARUTI": {"token": "10999", "search": ["MARUTI-EQ", "MARUTI"]},
+    "M&M": {"token": "2031", "search": ["M&M-EQ", "M&M"]},
 }
 
 
+def load_universe():
+    try:
+        if os.path.exists(UNIVERSE_PATH):
+            with open(UNIVERSE_PATH, "r") as f:
+                data = json.load(f)
+            stocks = data.get("stocks", [])
+            if stocks:
+                uni = {}
+                for s in stocks:
+                    uni[s["symbol"]] = {"token": str(s["token"]), "search": s.get("search", [])}
+                logger.info(f"Universe loaded from universe.json ({len(uni)} stocks, dated {data.get('date')})")
+                return uni
+    except Exception as e:
+        logger.warning(f"universe.json read failed ({e}) — using default universe")
+    return DEFAULT_UNIVERSE
+
+
+def seed_books(broker_hist, compiler, token_to_symbol):
+    """Seed both bar books keyed by SYMBOL (strategy queries by symbol)."""
+    for token_str, df in broker_hist.items():
+        sym = token_to_symbol.get(str(token_str), str(token_str))
+        compiler.bar_book.seed(sym, df)
+        df15 = resample_bars(df, 15)
+        if df15 is not None and len(df15):
+            compiler.bar_book_15.seed(sym, df15)
+
+
 def main():
-    logger.info("Starting Stock Order Flow Engine 3 — V4.4 + Phase-2 (CVD/VP/ML-features)")
+    logger.info("Starting Stock Order Flow Engine 3 — FINAL (5x, ATR15, Chandelier, dynamic universe)")
     broker = ShoonyaAdapter()
     if hasattr(broker, "session_provider"):
         broker.session_provider._restore_or_login()
@@ -58,15 +81,14 @@ def main():
     trader = StockExecutionManager(broker)
     strategy = StockStrategyEngine()
 
-    tokens = [meta["token"] for meta in EQUITY_UNIVERSE.values()]
-    token_to_symbol = {meta["token"]: sym for sym, meta in EQUITY_UNIVERSE.items()}
+    universe = load_universe()
+    tokens = [meta["token"] for meta in universe.values()]
+    token_to_symbol = {meta["token"]: sym for sym, meta in universe.items()}
 
-    # ---------------------------------------------------------
-    # 1. Historical Gap Fill (Boot Sync)
-    # ---------------------------------------------------------
+    compiler.set_symbol_map(token_to_symbol)   # books SYMBOL-keyed from now on
+
     hist_data = fetch_and_seed_history(broker, tokens, token_to_symbol)
-    for token_str, df in hist_data.items():
-        compiler.bar_book.seed(token_str, df)
+    seed_books(hist_data, compiler, token_to_symbol)
     compiler.subscribe(tokens)
 
     last_processed_bucket = None
@@ -76,14 +98,12 @@ def main():
         try:
             now = datetime.now()
 
-            # EOD Gap Fill Sync Check (at 15:17)
             if now.time() >= dt_time(15, 17, 0) and eod_sync_done_for_day != now.date():
                 logger.info(f"[{now.strftime('%H:%M:00')}] Triggering EOD Gap Fill Sync...")
                 eod_hist = fetch_and_seed_history(broker, tokens, token_to_symbol)
-                for token_str, df in eod_hist.items():
-                    compiler.bar_book.seed(token_str, df)
+                seed_books(eod_hist, compiler, token_to_symbol)
                 eod_sync_done_for_day = now.date()
-                logger.info("EOD Gap Fill Sync Complete. Data persisted safely.")
+                logger.info("EOD Gap Fill Sync Complete.")
 
             if not is_trading_day(now.date()) or now.time() > MARKET_CLOSE_TIME:
                 time.sleep(60)
@@ -103,7 +123,6 @@ def main():
             if is_boundary and bucket_key != last_processed_bucket and is_market_open(now):
                 last_processed_bucket = bucket_key
 
-                # Check Global Mutex before doing heavy calculations
                 if len(trader.open_trades) > 0:
                     logger.info(f"[{now.strftime('%H:%M:00')}] Global Mutex Active. Skipping evaluation.")
                     compiler.reset_for_new_candle()
@@ -111,14 +130,14 @@ def main():
 
                 logger.info(f"========== {BAR_MINUTES}m BOUNDARY EVALUATION ==========")
                 for token in tokens:
-                    compiler.bar_book.force_close_forming(token, now)
+                    sym = token_to_symbol[token]
+                    compiler.bar_book.force_close_forming(sym, now)
 
-                # Convert token footprints to symbol footprints for the strategy engine
                 token_footprints = compiler.get_compiled_footprints()
                 sym_footprints = {token_to_symbol[t]: fp for t, fp in token_footprints.items()}
 
-                # Evaluate all stocks together and get the SINGLE best signal (+ ML metrics)
-                best_sym, signal, reason, metrics = strategy.evaluate_all(sym_footprints, compiler.bar_book, now)
+                best_sym, signal, reason, metrics = strategy.evaluate_all(
+                    sym_footprints, compiler.bar_book, compiler.bar_book_15, now)
                 allow_entry = now.time() < TRADE_ENTRY_CUTOFF_TIME
                 if best_sym and signal and allow_entry:
                     px = current_prices.get(best_sym, 0.0)

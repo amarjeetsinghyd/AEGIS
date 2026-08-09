@@ -1,182 +1,132 @@
-"""Compile L1 footprint + L2 depth + WS 3m OHLC from Shoonya ticks."""
+"""Tick compiler: alias-tolerant WS parsing, tick-rule footprints, L2 depth,
+and dual bar books (3m + 15m) fed from the same ticks.
+Bar books are keyed by SYMBOL via set_symbol_map(); market_depth & footprints
+stay token-keyed (main translates)."""
 from __future__ import annotations
-
 import threading
 from collections import defaultdict
 from datetime import datetime
-
 from common.logger import get_logger
-from stock_order_flow.bar_book import ThreeMinuteBarBook
+from stock_order_flow.bar_book import ThreeMinuteBarBook, BarBook
 
 logger = get_logger("tick_compiler")
 
 
 class TickCompiler:
-    _keys_logged = False
-    _expected_keys = {"token", "last_traded_price", "lp", "volume_trade_for_the_day", "v", "bp1", "b", "sp1", "s", "bid", "ask", "oi", "poi", "oiv", "e", "ltq", "bv", "sv", "bq1", "bq2", "bq3", "bq4", "bq5", "sq1", "sq2", "sq3", "sq4", "sq5"}
     def __init__(self, broker):
         self.broker = broker
         self.footprints = defaultdict(list)
         self.market_depth = {}
         self.lock = threading.Lock()
-        self._tokens = []
         self.bar_book = ThreeMinuteBarBook()
+        self.bar_book_15 = BarBook(15)
+        self._keys_logged = False
+        self._t2s = {}   # token -> symbol map (set by main)
 
-    def reset_for_new_candle(self):
-        """Clear footprint matrix after a completed 3m boundary (OHLC book kept)."""
+    def set_symbol_map(self, token_to_symbol: dict):
+        self._t2s = {str(k): str(v) for k, v in token_to_symbol.items()}
+
+    def on_message(self, message: dict):
+        try:
+            if not self._keys_logged:
+                logger.info(f"tick keys sample: {sorted(message.keys())}")
+                self._keys_logged = True
+
+            token = str(message.get("token", "") or "")
+            if not token:
+                return
+
+            lp = float(message.get("last_traded_price") or message.get("lp") or 0) or 0.0
+            new_vol = float(message.get("volume_trade_for_the_day") or message.get("v") or 0) or 0.0
+            bp1 = float(message.get("bid") or message.get("bp1") or 0) or 0.0
+            sp1 = float(message.get("ask") or message.get("sp1") or 0) or 0.0
+            ts = datetime.now()
+
+            with self.lock:
+                prev = self.market_depth.get(token, {"lp": 0.0, "v": 0.0})
+                old_vol = float(prev.get("v", 0.0))
+                self.market_depth[token] = {"lp": lp, "v": new_vol, "bp1": bp1, "sp1": sp1}
+            vol_delta = (new_vol - old_vol) if (old_vol > 0 and new_vol > old_vol) else 0.0
+
+            # L2 depth (5-level sums, bv/sv fallback)
+            l2_bid = 0.0
+            l2_ask = 0.0
+            for i in range(1, 6):
+                l2_bid += float(message.get(f"bq{i}") or 0) or 0.0
+                l2_ask += float(message.get(f"sq{i}") or 0) or 0.0
+            if l2_bid <= 0:
+                l2_bid = float(message.get("bv") or 0) or 0.0
+            if l2_ask <= 0:
+                l2_ask = float(message.get("sv") or 0) or 0.0
+
+            # Tick-rule classification
+            trade_type = None
+            if lp > 0:
+                if sp1 > 0 and lp >= sp1:
+                    trade_type = "BUY"
+                elif bp1 > 0 and lp <= bp1:
+                    trade_type = "SELL"
+
+            # Feed BOTH bar books from the same tick (SYMBOL-keyed)
+            if lp > 0:
+                key = self._t2s.get(token, token)
+                self.bar_book.on_tick(key, lp, ts, volume_delta=vol_delta)
+                self.bar_book_15.on_tick(key, lp, ts, volume_delta=vol_delta)
+
+            if trade_type and vol_delta > 0:
+                with self.lock:
+                    self.footprints[token].append({
+                        "price": lp, "volume": vol_delta, "type": trade_type,
+                        "l2_bid": l2_bid, "l2_ask": l2_ask,
+                    })
+        except Exception as e:
+            logger.debug(f"on_message error: {e}")
+
+    def get_compiled_footprints(self) -> dict:
         with self.lock:
-            self.footprints.clear()
-            logger.info("Footprint matrix reset for new 3-minute candle.")
-
-    def on_message(self, message):
-        """Process normalized WS ticks (touchline and/or depth)."""
-        if not isinstance(message, dict) or "token" not in message:
-            return
-
-        # Log any unexpected keys on first occurrence for debugging
-        if not TickCompiler._keys_logged:
-            unexpected_keys = [k for k in message.keys() if k not in self._expected_keys]
-            if unexpected_keys:
-                logger.debug(f"Unexpected tick keys: {unexpected_keys}")
-                TickCompiler._keys_logged = True
-
-        token = str(message["token"])
-        now = datetime.now()
-        with self.lock:
-            if token not in self.market_depth:
-                self.market_depth[token] = {"lp": 0.0, "v": 0, "bp1": 0.0, "sp1": 0.0}
-
-            depth = self.market_depth[token]
-
-            _lp_raw = message.get("last_traded_price") or message.get("lp") or 0
-            if _lp_raw:
-                try:
-                    lp = float(_lp_raw)
-                    if lp > 0:
-                        depth["lp"] = lp
-                except (TypeError, ValueError):
-                    pass
-            if "bid" in message:
-                try:
-                    depth["bp1"] = float(message["bid"] or 0)
-                except (TypeError, ValueError):
-                    pass
-            if "ask" in message:
-                try:
-                    depth["sp1"] = float(message["ask"] or 0)
-                except (TypeError, ValueError):
-                    pass
-            for _bk in ("bp1", "b"):
-                if _bk in message:
-                    try:
-                        depth["bp1"] = float(message[_bk] or 0)
-                    except (TypeError, ValueError):
-                        pass
-            for _sk in ("sp1", "s"):
-                if _sk in message:
-                    try:
-                        depth["sp1"] = float(message[_sk] or 0)
-                    except (TypeError, ValueError):
-                        pass
-
-            vol_delta = 0.0
-            _vol_raw = message.get("volume_trade_for_the_day") or message.get("v")
-            if _vol_raw:
-                try:
-                    new_vol = int(float(_vol_raw))
-                except (TypeError, ValueError):
-                    new_vol = 0
-                old_vol = int(depth.get("v") or 0)
-
-                if old_vol > 0 and new_vol > old_vol:
-                    vol_delta = float(new_vol - old_vol)
-                    lp = depth["lp"]
-                    bp1 = depth["bp1"]
-                    sp1 = depth["sp1"]
-
-                    trade_type = "NEUTRAL"
-                    if lp >= sp1 and sp1 > 0:
-                        trade_type = "BUY"
-                    elif lp <= bp1 and bp1 > 0:
-                        trade_type = "SELL"
-
-                    l2_bid_qty = 0
-                    l2_ask_qty = 0
-                    if not any(f"bq{i}" in message for i in range(1, 6)):
-                        try:
-                            l2_bid_qty = int(float(message.get("bv") or 0))
-                            l2_ask_qty = int(float(message.get("sv") or 0))
-                        except (TypeError, ValueError):
-                            pass
-                    for i in range(1, 6):
-                        try:
-                            l2_bid_qty += int(float(message.get(f"bq{i}", 0) or 0))
-                            l2_ask_qty += int(float(message.get(f"sq{i}", 0) or 0))
-                        except (TypeError, ValueError):
-                            pass
-
-                    if trade_type != "NEUTRAL" and vol_delta > 0:
-                        self.footprints[token].append(
-                            {
-                                "price": lp,
-                                "volume": vol_delta,
-                                "type": trade_type,
-                                "l2_bid": l2_bid_qty,
-                                "l2_ask": l2_ask_qty,
-                            }
-                        )
-
-                if new_vol > 0:
-                    depth["v"] = new_vol
-
-            # Canonical 3m OHLC from WS (even on depth-only ticks with LTP)
-            if depth["lp"] > 0:
-                self.bar_book.on_tick(token, depth["lp"], ts=now, volume_delta=vol_delta)
-
-    def get_compiled_footprints(self):
-        with self.lock:
-            compiled = {}
+            out = {}
             for token, trades in self.footprints.items():
-                levels = defaultdict(lambda: {"buy": 0, "sell": 0})
-                total_buy = 0
-                total_sell = 0
-                total_l2_bid = 0
-                total_l2_ask = 0
-                tick_count = len(trades)
-
-                for trade in trades:
-                    price = trade["price"]
-                    vol = trade["volume"]
-                    total_l2_bid += trade.get("l2_bid", 0)
-                    total_l2_ask += trade.get("l2_ask", 0)
-                    if trade["type"] == "BUY":
-                        levels[price]["buy"] += vol
-                        total_buy += vol
+                total_buy = 0.0
+                total_sell = 0.0
+                l2_bid_sum = 0.0
+                l2_ask_sum = 0.0
+                n = 0
+                for t in trades:
+                    if t["type"] == "BUY":
+                        total_buy += t["volume"]
                     else:
-                        levels[price]["sell"] += vol
-                        total_sell += vol
-
-                compiled[token] = {
-                    "levels": dict(levels),
+                        total_sell += t["volume"]
+                    l2_bid_sum += t["l2_bid"]
+                    l2_ask_sum += t["l2_ask"]
+                    n += 1
+                out[token] = {
                     "total_buy_vol": total_buy,
                     "total_sell_vol": total_sell,
                     "delta": total_buy - total_sell,
-                    "avg_l2_bid": total_l2_bid / tick_count if tick_count else 0,
-                    "avg_l2_ask": total_l2_ask / tick_count if tick_count else 0,
+                    "avg_l2_bid": (l2_bid_sum / n) if n else 0.0,
+                    "avg_l2_ask": (l2_ask_sum / n) if n else 0.0,
                 }
-            return compiled
+            return out
 
-    def subscribe(self, tokens, exchange="NSE"):
-        self._tokens = [str(t) for t in tokens]
-        mdp = self.broker.market_data_provider
-        try:
+    def reset_for_new_candle(self):
+        with self.lock:
+            self.footprints.clear()
+
+    def subscribe(self, tokens: list, exchange: str = "NSE"):
+        mdp = None
+        for name in ("market_data", "mdp", "market_data_provider", "_mdp"):
+            obj = getattr(self.broker, name, None)
+            if obj is not None and (hasattr(obj, "add_tick_listener") or hasattr(obj, "subscribe")):
+                mdp = obj
+                break
+        if mdp is None and (hasattr(self.broker, "add_tick_listener") or hasattr(self.broker, "subscribe")):
+            mdp = self.broker
+        if mdp is None:
+            logger.error("🚨 TICK WIRING FAILED: no add_tick_listener/subscribe found on broker chain!")
+            return
+        if hasattr(mdp, "add_tick_listener"):
             mdp.add_tick_listener(self.on_message)
-            mdp._ensure_ws_started()
-            mdp.subscribe(self._tokens, exchange, feed_type="t")
-            mdp.subscribe(self._tokens, exchange, feed_type="d")
-            logger.info(
-                f"Subscribed {len(self._tokens)} equities on {exchange} "
-                f"(touchline+depth) for 3m WS candles + footprint."
-            )
-        except Exception as e:
-            logger.error(f"WebSocket subscribe failed: {e}")
+        if hasattr(mdp, "subscribe"):
+            mdp.subscribe(tokens, exchange, feed_type="t")
+            mdp.subscribe(tokens, exchange, feed_type="d")
+        logger.info(f"Subscribed {len(tokens)} equities on {exchange} (touchline+depth) for 3m+15m WS candles + footprint.")

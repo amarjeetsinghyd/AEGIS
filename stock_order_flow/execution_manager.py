@@ -1,6 +1,5 @@
-"""LIVE execution for Stock Order Flow — Strict Global Lock, MIS MKT Orders.
-Phase-2: accepts metrics dict (CVD/VP/context) and stores it as ml_features
-inside every trade record — the dataset for future XGBoost confidence model."""
+"""LIVE execution — final. 5x full leverage, 1xATR15 TP/SL + Chandelier trail,
+5% daily loss cap on day-start snapshot, transaction costs, ML features."""
 from __future__ import annotations
 import json
 import os
@@ -12,18 +11,25 @@ from common.logger import get_logger
 
 logger = get_logger("stock_execution")
 
-JOURNAL_DIR = os.path.join(get_data_dir(), "decisions")
 TRADES_DIR = os.path.join(get_data_dir(), "trades")
-os.makedirs(JOURNAL_DIR, exist_ok=True)
 os.makedirs(TRADES_DIR, exist_ok=True)
-
 OPEN_PATH = os.path.join(TRADES_DIR, "open_positions.json")
 HISTORY_PATH = os.path.join(TRADES_DIR, "trade_history.json")
 
 MAX_OPEN_POSITIONS = 1
 LEVERAGE = 5.0
-TP_PCT = 0.010
-SL_PCT = 0.008  # AUDIT E2: noise-safe
+
+BROKERAGE_PCT = 0.0003
+STT_PCT = 0.00025
+SLIPPAGE_PCT = 0.0005
+TOTAL_COST_PCT = BROKERAGE_PCT + STT_PCT + SLIPPAGE_PCT
+
+TP_ATR_MULT = 1.0
+SL_ATR_MULT = 1.0
+CHANDELIER_ATR_MULT = 1.0
+FALLBACK_TP_PCT = 0.010
+FALLBACK_SL_PCT = 0.008
+DAILY_LOSS_CAP_PCT = 0.05
 MAX_HOLD_MINUTES = 60
 
 
@@ -35,8 +41,9 @@ class StockExecutionManager:
         self.leverage = LEVERAGE
         self.capital_engine = CapitalEngine(mode="LIVE", portfolio_provider=self.broker, data_dir=get_data_dir())
         self._load_open()
-        self._day_key = None      # AUDIT E3
-        self._day_loss = 0.0      # AUDIT E3
+        self._day_key = None
+        self._day_start_margin = 0.0
+        self._day_loss = 0.0
 
     def _load_open(self):
         try:
@@ -55,11 +62,6 @@ class StockExecutionManager:
 
     def _save_history(self, trade):
         try:
-            _today = datetime.now().date()
-            if self._day_key != _today:
-                self._day_key = _today
-                self._day_loss = 0.0
-            self._day_loss += float(trade.get("net_pl") or 0.0)  # AUDIT E4
             history = []
             if os.path.exists(HISTORY_PATH):
                 with open(HISTORY_PATH, "r") as f:
@@ -70,6 +72,15 @@ class StockExecutionManager:
         except Exception as e:
             logger.warning(f"trade_history save failed: {e}")
 
+    def _ensure_day_snapshot(self):
+        _today = datetime.now().date()
+        if self._day_key != _today:
+            self._day_key = _today
+            self._day_loss = 0.0  # reset FIRST (bugfix)
+            current_funds = float(self.capital_engine.get_available_funds())
+            self._day_start_margin = max(current_funds, 1.0)
+            logger.info(f"[StockExecution] Day snapshot: start_margin = ₹{self._day_start_margin:.2f}")
+
     def execute_entry(self, signal, symbol, spot_price, reason, metrics=None):
         if len(self.open_trades) >= MAX_OPEN_POSITIONS:
             logger.info(f"Global Lock Active: Ignoring {signal} for {symbol}.")
@@ -78,29 +89,34 @@ class StockExecutionManager:
         if now_time < time(9, 15) or now_time >= time(15, 0):
             return
 
+        self._ensure_day_snapshot()
+
         margin_budget = float(self.capital_engine.get_available_funds())
         if margin_budget < 50:
             logger.warning("Insufficient margin budget.")
             return
 
-        _today = datetime.now().date()
-        if self._day_key != _today:
-            self._day_key = _today
-            self._day_loss = 0.0
-        if self._day_loss <= -0.02 * max(margin_budget, 1.0):
-            logger.warning(f"Daily loss cap hit ({self._day_loss:.2f}) — no new entries today.")
-            return  # AUDIT E5
+        loss_cap_limit = -DAILY_LOSS_CAP_PCT * self._day_start_margin
+        if self._day_loss <= loss_cap_limit:
+            logger.warning(f"Daily loss cap hit ({self._day_loss:.2f} <= {loss_cap_limit:.2f}) — no new entries today.")
+            return
 
-        notional_budget = min(margin_budget * self.leverage, margin_budget * 2.0)  # AUDIT E1
+        notional_budget = margin_budget * self.leverage  # FULL 5x, no cap
         qty = int(notional_budget / spot_price)
         if qty <= 0:
             return
+
+        atr = float(metrics.get("atr", 0.0)) if metrics else 0.0
+        if atr > 0:
+            logger.info(f"ATR15 exits: TP={atr*TP_ATR_MULT:.2f}, InitSL={atr*SL_ATR_MULT:.2f}, Chandelier={atr*CHANDELIER_ATR_MULT:.2f}")
+        else:
+            logger.warning("ATR not available — using fixed % fallback exits")
 
         action = "B" if signal == "BUY" else "S"
         kwargs = {
             "buy_or_sell": action, "product_type": "I", "exchange": "NSE",
             "tradingsymbol": symbol, "quantity": qty, "price_type": "MKT",
-            "price": 0, "trigger_price": None, "discloseqty": 0, "retention": "DAY"
+            "price": 0, "trigger_price": None, "discloseqty": 0, "retention": "DAY",
         }
         try:
             logger.info(f"[StockExecution] Placing LIVE {action} MKT for {qty}x {symbol}...")
@@ -111,22 +127,22 @@ class StockExecutionManager:
                 fill_confirmed = False
                 for _ in range(3):
                     pytime.sleep(1.0)
-                    history = self.api.single_order_history(orderno=ordno) if hasattr(self.api, "single_order_history") else []
-                    if history and isinstance(history, list) and history[0].get("status") in ["FILLED", "COMPLETE"]:
+                    hist = self.api.single_order_history(orderno=ordno) if hasattr(self.api, "single_order_history") else []
+                    if hist and isinstance(hist, list) and hist[0].get("status") in ["FILLED", "COMPLETE"]:
                         fill_confirmed = True
-                        avg_prc = float(history[0].get("avgprc", spot_price))
+                        avg_prc = float(hist[0].get("avgprc", spot_price))
                         break
                 if fill_confirmed:
-                    logger.info(f"[StockExecution] ✅ Entry FILLED @ Avg Price: {avg_prc:.2f}")
+                    logger.info(f"[StockExecution] ✅ Entry FILLED @ {avg_prc:.2f}")
                 else:
-                    logger.warning(f"[StockExecution] ⚠️ Fill unconfirmed, using spot.")
+                    logger.warning("[StockExecution] ⚠️ Fill unconfirmed, using spot.")
 
                 margin = (qty * avg_prc) / self.leverage
                 trade = {
                     "entry_time": datetime.now().isoformat(), "symbol": symbol, "type": signal,
                     "entry_price": avg_prc, "qty": qty, "margin": round(margin, 2),
                     "leverage": self.leverage, "reason": reason, "broker_order_id": ordno,
-                    # Phase-2: ML feature snapshot at entry (future training label source)
+                    "atr": round(atr, 4), "highest": avg_prc, "lowest": avg_prc,
                     "ml_features": metrics or {},
                 }
                 self.open_trades[symbol] = trade
@@ -145,19 +161,43 @@ class StockExecutionManager:
                 continue
             current_price = float(current_prices[symbol])
             entry = float(trade["entry_price"])
-            pnl_pct = (current_price - entry) / entry if trade["type"] == "BUY" else (entry - current_price) / entry
+            atr = float(trade.get("atr", 0.0))
             try:
                 minutes_held = (datetime.now() - datetime.fromisoformat(trade["entry_time"])).total_seconds() / 60.0
             except Exception:
                 minutes_held = 0.0
+
             exit_reason = None
             if is_eod_flatten:
                 exit_reason = "EOD_FLATTEN"
-            elif pnl_pct >= TP_PCT:
-                exit_reason = "TAKE_PROFIT"
-            elif pnl_pct <= -SL_PCT:
-                exit_reason = "STOP_LOSS"
-            elif minutes_held >= MAX_HOLD_MINUTES:
+            elif atr > 0:
+                if trade["type"] == "BUY" and current_price >= entry + atr * TP_ATR_MULT:
+                    exit_reason = "TAKE_PROFIT"
+                elif trade["type"] == "SELL" and current_price <= entry - atr * TP_ATR_MULT:
+                    exit_reason = "TAKE_PROFIT"
+                else:
+                    if trade["type"] == "BUY":
+                        trade["highest"] = max(float(trade.get("highest", entry)), current_price)
+                        chan_stop = float(trade["highest"]) - atr * CHANDELIER_ATR_MULT
+                        init_stop = entry - atr * SL_ATR_MULT
+                        stop_price = max(init_stop, chan_stop)
+                        if current_price <= stop_price:
+                            exit_reason = "CHANDELIER_EXIT" if chan_stop > init_stop else "STOP_LOSS"
+                    else:
+                        trade["lowest"] = min(float(trade.get("lowest", entry)), current_price)
+                        chan_stop = float(trade["lowest"]) + atr * CHANDELIER_ATR_MULT
+                        init_stop = entry + atr * SL_ATR_MULT
+                        stop_price = min(init_stop, chan_stop)
+                        if current_price >= stop_price:
+                            exit_reason = "CHANDELIER_EXIT" if chan_stop < init_stop else "STOP_LOSS"
+            else:
+                pnl_pct = (current_price - entry) / entry if trade["type"] == "BUY" else (entry - current_price) / entry
+                if pnl_pct >= FALLBACK_TP_PCT:
+                    exit_reason = "TAKE_PROFIT"
+                elif pnl_pct <= -FALLBACK_SL_PCT:
+                    exit_reason = "STOP_LOSS"
+
+            if exit_reason is None and minutes_held >= MAX_HOLD_MINUTES:
                 exit_reason = "TIME_STOP"
             if exit_reason:
                 self._close_trade(symbol, current_price, exit_reason)
@@ -171,7 +211,7 @@ class StockExecutionManager:
         kwargs = {
             "buy_or_sell": action, "product_type": "I", "exchange": "NSE",
             "tradingsymbol": symbol, "quantity": qty, "price_type": "MKT",
-            "price": 0, "trigger_price": None, "discloseqty": 0, "retention": "DAY"
+            "price": 0, "trigger_price": None, "discloseqty": 0, "retention": "DAY",
         }
         try:
             logger.info(f"[StockExecution] Exiting {qty}x {symbol} ({exit_reason})...")
@@ -181,19 +221,28 @@ class StockExecutionManager:
                 avg_prc = current_price
                 for _ in range(3):
                     pytime.sleep(1.0)
-                    history = self.api.single_order_history(orderno=ordno) if hasattr(self.api, "single_order_history") else []
-                    if history and isinstance(history, list) and history[0].get("status") in ["FILLED", "COMPLETE"]:
-                        avg_prc = float(history[0].get("avgprc", current_price))
+                    hist = self.api.single_order_history(orderno=ordno) if hasattr(self.api, "single_order_history") else []
+                    if hist and isinstance(hist, list) and hist[0].get("status") in ["FILLED", "COMPLETE"]:
+                        avg_prc = float(hist[0].get("avgprc", current_price))
                         break
                 entry = float(trade["entry_price"])
-                abs_pnl = qty * (avg_prc - entry) if trade["type"] == "BUY" else qty * (entry - avg_prc)
-                logger.info(f"[StockExecution] CLOSED: {symbol} {exit_reason} | PnL=₹{abs_pnl:.2f}")
+                gross_pnl = qty * (avg_prc - entry) if trade["type"] == "BUY" else qty * (entry - avg_prc)
+                notional = qty * ((entry + avg_prc) / 2)
+                txn_cost = notional * TOTAL_COST_PCT
+                net_pnl = gross_pnl - txn_cost
+
+                logger.info(f"[StockExecution] CLOSED: {symbol} {exit_reason} | Gross=₹{gross_pnl:.2f}, Cost=₹{txn_cost:.2f}, Net=₹{net_pnl:.2f}")
                 trade["exit_time"] = datetime.now().isoformat()
                 trade["exit_price"] = avg_prc
-                trade["net_pl"] = round(abs_pnl, 2)
+                trade["gross_pl"] = round(gross_pnl, 2)
+                trade["txn_cost"] = round(txn_cost, 2)
+                trade["net_pl"] = round(net_pnl, 2)
                 trade["exit_reason"] = exit_reason
                 trade["strategy"] = "stock_order_flow"
                 trade["exit_broker_order_id"] = ordno
+
+                self._day_loss += net_pnl
+
                 self._save_history(trade)
                 del self.open_trades[symbol]
                 self._save_open()

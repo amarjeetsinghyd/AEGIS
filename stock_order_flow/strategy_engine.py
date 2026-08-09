@@ -1,11 +1,7 @@
-"""
-Stock Order Flow — Context Gate & Setup Detectors (V4.4 + Phase-2)
-Phase-2 additions:
-  * Volume Profile (POC / VAH / VAL) from today's 3m bars — overhead-supply guard for Setup A.
-  * Cumulative Volume Delta (CVD) + 3-candle divergence — absorption confirmation for Setup B.
-  * ML feature snapshot (metrics dict) returned with every signal for future XGBoost training.
-"""
+"""Strategy engine — final. VWAP zones, Volume Profile, CVD hard-gate absorption,
+confidence scoring, continuous trend score, tie-breaking, ATR15 from 15m book."""
 from datetime import datetime
+import math
 from common.logger import get_logger
 
 logger = get_logger("stock_strategy")
@@ -22,16 +18,13 @@ class StockStructure:
         self.ema200 = 0.0
         self.day_high = 0.0
         self.day_low = 0.0
-        # Phase-2: Volume Profile levels (0 = not ready yet)
         self.poc = 0.0
         self.vah = 0.0
         self.val = 0.0
-        # S1 delta tracking
         self.prev_delta = 0.0
         self.delta_hist = []
 
     def update_from_df(self, df: pd.DataFrame):
-        """Vectorized calculation using full history."""
         df['ema9'] = talib.EMA(df['close'], timeperiod=9)
         df['ema200'] = talib.EMA(df['close'], timeperiod=200)
         df['tp'] = (df['high'] + df['low'] + df['close']) / 3.0
@@ -56,7 +49,6 @@ class StockStructure:
         self._update_volume_profile(df, last_row['date'])
 
     def _update_volume_profile(self, df, today):
-        """24-bin intraday volume histogram -> POC + 70% Value Area (VAH/VAL)."""
         try:
             tdf = df[df['date'] == today]
             if len(tdf) < 5:
@@ -108,7 +100,7 @@ class StockStructure:
             logger.debug(f"Volume profile compute failed: {e}")
 
     def context_state(self, price):
-        PROX = price * 0.0020  # 0.20% buffer for stocks
+        PROX = price * 0.0020
         EXT = price * 0.0015
         if self.upper <= 0 or pd.isna(self.upper):
             return 'NO_MANS_LAND'
@@ -123,7 +115,6 @@ class StockStrategyEngine:
     def __init__(self):
         self.structures = {}
         self.veto_until = {}
-        # Phase-2: CVD tracking (per symbol, resets daily)
         self._day_key = None
         self._cvd = {}
         self._cvd_snap = {}
@@ -135,8 +126,18 @@ class StockStrategyEngine:
             self._cvd = {}
             self._cvd_snap = {}
 
-    def evaluate_all(self, footprints, bar_book, now):
-        """Returns (best_symbol, signal_type, reason, metrics) or (None, None, None, {})."""
+    @staticmethod
+    def _atr15(bar_book_15, symbol):
+        df15 = bar_book_15.completed_df(symbol, min_bars=16)
+        if df15 is None or len(df15) < 16:
+            return 0.0
+        a = talib.ATR(df15['high'].values, df15['low'].values, df15['close'].values, timeperiod=14)
+        if len(a) == 0 or math.isnan(a[-1]):
+            return 0.0
+        return float(a[-1])
+
+    def evaluate_all(self, footprints, bar_book, bar_book_15, now):
+        """Returns (best_symbol, signal, reason, metrics) or (None, None, None, {})."""
         self._roll_day(now)
         candidates = []
         for symbol, fp_data in footprints.items():
@@ -149,12 +150,13 @@ class StockStrategyEngine:
             struct.update_from_df(df)
             c = float(df.iloc[-1]['close'])
             ctx = struct.context_state(c)
+            atr15 = self._atr15(bar_book_15, symbol)
+
             total_buy = fp_data.get("total_buy_vol", 0)
             total_sell = fp_data.get("total_sell_vol", 0)
             flow = total_buy + total_sell
             norm_delta = (total_buy - total_sell) / flow if flow > 0 else 0.0
 
-            # S1 delta tracking
             struct.prev_delta = norm_delta
             struct.delta_hist.append(norm_delta)
             if len(struct.delta_hist) > 10:
@@ -164,7 +166,7 @@ class StockStrategyEngine:
             avg_ask = fp_data.get("avg_l2_ask", 0)
             avg_bid = fp_data.get("avg_l2_bid", 0)
 
-            # ---- Phase-2: CVD accumulation + 3-candle divergence ----
+            # CVD accumulation + divergence
             candle_delta = total_buy - total_sell
             cvd = self._cvd.get(symbol, 0.0) + candle_delta
             self._cvd[symbol] = cvd
@@ -178,12 +180,9 @@ class StockStrategyEngine:
             if len(snaps) >= 4:
                 cvd_prev, close_prev = snaps[-4]
                 window_delta = cvd - cvd_prev
-                # Selling pressure absorbed: CVD falling but price not falling
                 div_buy = (window_delta < 0) and (c >= close_prev * 0.999)
-                # Buying pressure absorbed: CVD rising but price not rising
                 div_sell = (window_delta > 0) and (c <= close_prev * 1.001)
 
-            # ML feature snapshot (saved with every trade for future training)
             metrics = {
                 "ctx": ctx,
                 "norm_delta": round(norm_delta, 4),
@@ -198,6 +197,7 @@ class StockStrategyEngine:
                 "vwap": round(struct.vwap, 2),
                 "upper": round(struct.upper, 2),
                 "lower": round(struct.lower, 2),
+                "atr": round(atr15, 4),
                 "l2_bid_ask": round(avg_bid / avg_ask, 3) if avg_ask > 0 else 0.0,
                 "time": now.strftime("%H:%M"),
             }
@@ -211,57 +211,88 @@ class StockStrategyEngine:
                     continue
             veto_active = self.veto_until.get(symbol, 0) > now.timestamp()
 
-            # Setup B: Absorption + CVD divergence confirmation
-            if ctx == 'IN_ZONE' and abs(norm_delta) > 0.15:
+            # Setup B: Absorption (CVD divergence = HARD GATE) + confidence
+            if ctx == 'IN_ZONE' and abs(norm_delta) > 0.10:
                 prog = abs(c - float(df.iloc[-1]['open'])) / c
-                if prog < 0.0015:  # High effort, low result
-                    if norm_delta < 0 and delta_trend < 0 and avg_bid > avg_ask * 1.5 and div_buy:
+                if norm_delta < 0 and delta_trend < 0 and div_buy:
+                    delta_score = min(1.0, abs(norm_delta) / 0.20)
+                    progress_score = max(0.0, 1.0 - (prog / 0.0015))
+                    l2_score = min(1.0, (avg_bid / avg_ask) / 2.0) if avg_ask > 0 else 0.0
+                    conf = min(1.0, delta_score * 0.35 + progress_score * 0.30 + l2_score * 0.35)
+                    if conf >= 0.65:
                         candidates.append((0, symbol, "BUY",
-                                           f"Setup B Absorption+CVD-div: Delta {norm_delta*100:.1f}%, CVD win {window_delta:+.0f}",
-                                           metrics))
-                    elif norm_delta > 0 and delta_trend > 0 and avg_ask > avg_bid * 1.5 and div_sell:
+                                           f"Setup B Absorption+CVD-div: Delta {norm_delta*100:.1f}%, Conf {conf:.2f}",
+                                           metrics, conf))
+                if norm_delta > 0 and delta_trend > 0 and div_sell:
+                    delta_score = min(1.0, abs(norm_delta) / 0.20)
+                    progress_score = max(0.0, 1.0 - (prog / 0.0015))
+                    l2_score = min(1.0, (avg_ask / avg_bid) / 2.0) if avg_bid > 0 else 0.0
+                    conf = min(1.0, delta_score * 0.35 + progress_score * 0.30 + l2_score * 0.35)
+                    if conf >= 0.65:
                         candidates.append((0, symbol, "SELL",
-                                           f"Setup B Absorption+CVD-div: Delta {norm_delta*100:.1f}%, CVD win {window_delta:+.0f}",
-                                           metrics))
+                                           f"Setup B Absorption+CVD-div: Delta {norm_delta*100:.1f}%, Conf {conf:.2f}",
+                                           metrics, conf))
 
             if veto_active:
                 continue
 
-            # Setup A: Breakout + POC overhead-supply guard
-            if ctx == 'IN_ZONE' and abs(norm_delta) > 0.10:
+            # Setup A: Breakout + POC guard + VAH/VAL confluence + continuous trend
+            if ctx == 'IN_ZONE' and abs(norm_delta) > 0.08:
                 up_trend = c > struct.ema9 and c > struct.ema200
                 down_trend = c < struct.ema9 and c < struct.ema200
+
                 if c > struct.upper and up_trend and norm_delta > 0 and delta_trend > 0:
-                    if avg_ask < avg_bid * 2:  # L2 Guard
+                    if avg_ask < avg_bid * 2:
                         if struct.poc > 0 and c < struct.poc:
                             logger.info(f"{symbol}: Setup A BUY blocked — close below POC (overhead supply).")
                         else:
-                            vp = " [VP: above VAH]" if (struct.vah > 0 and c > struct.vah) else ""
-                            candidates.append((1, symbol, "BUY",
-                                               f"Setup A Breakout (Up). Delta {norm_delta*100:.1f}%{vp}",
-                                               metrics))
+                            delta_score = min(1.0, norm_delta / 0.15)
+                            trend_score = min(1.0, max(0.0, ((c - struct.ema200) / struct.ema200) / 0.02)) if struct.ema200 > 0 else 0.0
+                            l2_score = max(0.0, 1.0 - (avg_ask / (avg_bid * 2))) if avg_bid > 0 else 0.0
+                            vp_bonus = 0.0
+                            vp_tag = ""
+                            if struct.vah > 0 and c > struct.vah:
+                                vp_bonus = 0.15
+                                vp_tag = " [VP: above VAH]"
+                            conf = min(1.0, delta_score * 0.30 + trend_score * 0.25 + l2_score * 0.25 + vp_bonus)
+                            if conf >= 0.60:
+                                candidates.append((1, symbol, "BUY",
+                                                   f"Setup A Breakout (Up). Delta {norm_delta*100:.1f}%, Conf {conf:.2f}{vp_tag}",
+                                                   metrics, conf))
                 elif c < struct.lower and down_trend and norm_delta < 0 and delta_trend < 0:
-                    if avg_bid < avg_ask * 2:  # L2 Guard
+                    if avg_bid < avg_ask * 2:
                         if struct.poc > 0 and c > struct.poc:
                             logger.info(f"{symbol}: Setup A SELL blocked — close above POC (underhead demand).")
                         else:
-                            vp = " [VP: below VAL]" if (struct.val > 0 and c < struct.val) else ""
-                            candidates.append((1, symbol, "SELL",
-                                               f"Setup A Breakout (Down). Delta {norm_delta*100:.1f}%{vp}",
-                                               metrics))
+                            delta_score = min(1.0, abs(norm_delta) / 0.15)
+                            trend_score = min(1.0, max(0.0, ((struct.ema200 - c) / struct.ema200) / 0.02)) if struct.ema200 > 0 else 0.0
+                            l2_score = max(0.0, 1.0 - (avg_bid / (avg_ask * 2))) if avg_ask > 0 else 0.0
+                            vp_bonus = 0.0
+                            vp_tag = ""
+                            if struct.val > 0 and c < struct.val:
+                                vp_bonus = 0.15
+                                vp_tag = " [VP: below VAL]"
+                            conf = min(1.0, delta_score * 0.30 + trend_score * 0.25 + l2_score * 0.25 + vp_bonus)
+                            if conf >= 0.60:
+                                candidates.append((1, symbol, "SELL",
+                                                   f"Setup A Breakout (Down). Delta {norm_delta*100:.1f}%, Conf {conf:.2f}{vp_tag}",
+                                                   metrics, conf))
 
-            # Setup D: Stacked Imbalance
+            # Setup D: Stacked Imbalance (explicit threshold)
             if abs(norm_delta) > 0.40:
-                if norm_delta > 0 and c > float(df.iloc[-1]['open']):
-                    candidates.append((2, symbol, "BUY",
-                                       f"Setup D Imbalance. Delta {norm_delta*100:.1f}%", metrics))
-                elif norm_delta < 0 and c < float(df.iloc[-1]['open']):
-                    candidates.append((2, symbol, "SELL",
-                                       f"Setup D Imbalance. Delta {norm_delta*100:.1f}%", metrics))
+                delta_score = min(1.0, abs(norm_delta) / 0.50)
+                if delta_score >= 0.60:
+                    if norm_delta > 0 and c > float(df.iloc[-1]['open']):
+                        candidates.append((2, symbol, "BUY",
+                                           f"Setup D Imbalance. Delta {norm_delta*100:.1f}%, Conf {delta_score:.2f}",
+                                           metrics, delta_score))
+                    elif norm_delta < 0 and c < float(df.iloc[-1]['open']):
+                        candidates.append((2, symbol, "SELL",
+                                           f"Setup D Imbalance. Delta {norm_delta*100:.1f}%, Conf {delta_score:.2f}",
+                                           metrics, delta_score))
 
         if not candidates:
             return None, None, None, {}
-        # Mutex Sort: Priority 0 (Setup B) > 1 (Setup A) > 2 (Setup D)
-        candidates.sort(key=lambda x: x[0])
+        candidates.sort(key=lambda x: (x[0], -x[5]))
         best = candidates[0]
         return best[1], best[2], best[3], best[4]

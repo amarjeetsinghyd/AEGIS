@@ -1,175 +1,109 @@
-# STOCK ORDER FLOW — ENGINE 3: DEFINITIVE ARCHITECTURE (V4.4, AUDITED)
-**Repo:** quant-bot · **Folder:** stock_order_flow/ · **Mode:** LIVE (small capital, MIS)
-**Owner:** Amarjeet Singh · **Architect:** Qwen (chat) · **Implementers:** VS Code agent / Qwen Coder
-**Purpose of this file:** Any AI reading ONLY this document must be able to narrate the
-entire stock order-flow system — what lives where, what each piece does, and every
-audited code change — like a story.
+# STOCK ORDER FLOW ENGINE 3 — DEFINITIVE ARCHITECTURE (FINAL)
+Version: FINAL (V4.4 + Phase-2 + Phase-3 consolidation)
+Updated: 2026-08-09 | Owner: Amarjeet Singh | Architect: Qwen
+Deployment: Oracle Cloud VPS (1GB RAM) via PM2 | Broker: Shoonya (Noren API)
 
----
+## 0. EXECUTIVE SUMMARY
+Live institutional-grade intraday order-flow engine. Trades a DYNAMIC universe
+(top-15 most volatile NIFTY-100 stocks, refreshed daily) on 3-minute candles.
+Combines VWAP zones, tick-rule footprints, L2 depth guards, CVD divergence,
+Volume Profile, and non-binary confidence scoring. Exits are ATR15-based with
+Chandelier trailing. Full 5x MIS leverage, 5% daily loss cap on day-start
+snapshot. A separate daily scanner (16:05 IST) selects the universe from
+NIFTY-100 using NATR7 volatility ranking with hysteresis buffer.
 
-## 0. THE SYSTEM IN ONE PARAGRAPH
-Engine 3 trades 15 liquid NSE equities intraday. WebSocket ticks flow into a
-TickCompiler that builds (a) canonical 3-minute OHLCV bars and (b) a per-candle
-buy/sell footprint with L2 depth averages. Every 3 minutes, a Strategy Engine
-computes per-stock dynamic VWAP bands (VWAP-of-Highs / VWAP-of-Lows), EMA9/EMA200,
-classifies the price context (IN_ZONE / AT_EXTREME / NO_MANS_LAND), and runs four
-institutional setups (A breakout, B absorption, C exhaustion-veto, D stacked
-imbalance) under a strict mutex that emits at most ONE best signal. A live
-Execution Manager then places MIS market orders (5x leverage, capped at 2x funds),
-manages TP/SL/time/EOD exits, and persists everything to disk. Historical 3m bars
-are REST-fetched at boot and 15:17 and cached in parquet so indicators are warm at open.
+## 1. CORE PHILOSOPHY
+- VWAP ZONE (not line): upper=VWAP-of-Highs, lower=VWAP-of-Lows. Breakout must
+  EXIT the zone; single-line crosses are noise.
+- ORDER FLOW: every tick classified by initiator (lp>=sp1 BUY, lp<=bp1 SELL).
+  Normalized delta = (buy-sell)/(buy+sell), range -100%..+100%.
+- CONTEXT GATE: IN_ZONE (+/-0.20%), AT_EXTREME (+/-0.15% of day H/L),
+  NO_MANS_LAND (engine idle).
+- NON-BINARY: confidence scores 0-1 replace hard gates where possible;
+  CVD divergence remains a HARD gate for Setup B.
+- DYNAMIC UNIVERSE: volatility is the fuel; universe = hottest 15 stocks daily.
 
-## 1. DATA-FLOW TOPOLOGY
-```
-Shoonya WS ("t" touchline + "d" depth, 15 EQ tokens)
-        │  on_message(tick dict)
-        ▼
-TickCompiler ──► market_depth[token] = {lp,bp1,sp1,v}          (live prices)
-   │  vol_delta = cumulative-volume difference
-   │  tick-rule: lp>=sp1 BUY / lp<=bp1 SELL
-   ├──► footprints[token] = [{price,vol,type,l2_bid,l2_ask}]  (per 3m candle)
-   └──► ThreeMinuteBarBook.on_tick → 3m OHLCV bars
-REST get_time_price_series(3m) ──► parquet cache ──► bar_book.seed (boot + 15:17)
-Every 3m boundary:
-   bar_book.force_close_forming → get_compiled_footprints → evaluate_all
-        → ONE (symbol, BUY/SELL, reason) → StockExecutionManager (MKT, MIS)
-```
+## 2. DATA FLOW TOPOLOGY
+Shoonya WS (t+d) -> TickCompiler -> {BarBook 3m, BarBook 15m, Footprints}
+-> [3m boundary] StrategyEngine.evaluate_all(footprints, book3, book15, now)
+-> (symbol, signal, reason, metrics) -> ExecutionManager (5x, ATR15 exits)
+UniverseScanner (separate pm2 proc, 16:05) -> REST daily bars NIFTY-100 ->
+score/rank/buffer -> universe.json + 3m pre-fetch -> engine reads at boot.
 
-## 2. SEMANTIC COMPONENT MAP (file → class → function → job)
-### stock_order_flow/main.py
-- `EQUITY_UNIVERSE` — 15 stocks {token, tsym, search}; TATAMOTORS tracked as TMPV-EQ (rename note).
-- `main()` — boot: `ShoonyaAdapter()` → session restore → `TickCompiler(broker)` →
-  `StockExecutionManager(broker)` → `StockStrategyEngine()`.
-- Boot sync: `fetch_and_seed_history(...)` → `compiler.bar_book.seed(token, df)` → `compiler.subscribe(tokens)`.
-- Loop: EOD gap-fill at 15:17; non-trading/after-close sleep; `current_prices` from
-  `compiler.market_depth[t]["lp"]`; `trader.manage_open_trades(current_prices)`;
-  boundary = `minute%3==0 and second>=2` + `bucket_key` dedupe; **global mutex**
-  (skip eval if any open trade); `force_close_forming` all tokens;
-  `strategy.evaluate_all(sym_footprints, bar_book, now)`; entry only before
-  `TRADE_ENTRY_CUTOFF_TIME`; `compiler.reset_for_new_candle()`.
+## 3. FILE MAP
+- main.py: boot, universe.json load (DEFAULT fallback), dual-book seeding
+  (3m raw + 15m resampled), 3m boundary clock, mutex, EOD 15:17 sync.
+- tick_compiler.py: alias-tolerant parsing, tick-rule, L2 sums (bv/sv fallback),
+  feeds BOTH bar books, footprint reset per candle.
+- bar_book.py: BarBook(minutes) thread-safe; seed/on_tick/force_close/
+  completed_df; resample_bars() for 15m seeding; 2000-bar cap.
+- strategy_engine.py: indicators (EMA9/200, VWAP zone, VP 24-bin POC/VAH/VAL),
+  CVD tracking, setups A-D, confidence scoring, tie-break, ATR15 via
+  talib.ATR(14) on 15m completed bars.
+- execution_manager.py: 5x notional (no cap), 1xATR15 TP/SL + Chandelier
+  (highest - 1xATR15, ratchet up only), 5% daily cap on day-start snapshot
+  (reset _day_loss FIRST), txn costs ~0.105% notional, ML features logging.
+- historical_data_manager.py: 6-day 3m REST gap-fill, parquet cache, volume
+  fallback intv/v. (UNCHANGED)
+- universe_scanner.py: as section 6.
+- common/broker/shoonya_adapter.py: add_tick_listener (line ~458) shares one
+  WS with engine; search_scrip for token resolution.
 
-### stock_order_flow/tick_compiler.py
-- `TickCompiler.on_message` — alias-tolerant tick parsing (AUDIT T1–T6):
-  lp from `last_traded_price|lp`; bp1 from `bp1|b|bid`; sp1 from `sp1|s|ask`;
-  volume from `volume_trade_for_the_day|v`; `vol_delta` only when cumulative rises;
-  L2 qty = Σ(bq1..5)/Σ(sq1..5) with `bv/sv` fallback; one-time `tick keys sample` log.
-- `get_compiled_footprints()` — per token: levels, total_buy_vol, total_sell_vol,
-  delta, avg_l2_bid, avg_l2_ask.
-- `reset_for_new_candle()` — clears footprint matrix (bar book kept).
-- `subscribe()` — `mdp.add_tick_listener(on_message)` + WS start + subscribe "t" and "d".
+## 4. SETUPS (final logic)
+Priority B(0) > A(1) > D(2); tie-break = confidence descending.
+- SETUP B (Absorption, HARD CVD gate): IN_ZONE, |delta|>10%, delta_trend sign
+  match, div_buy/div_sell TRUE (4-candle CVD vs price divergence),
+  conf = 0.35*delta_score + 0.30*progress_score + 0.35*l2_score >= 0.65.
+- SETUP A (Breakout): IN_ZONE, close beyond upper/lower, EMA9+EMA200 trend,
+  |delta|>8%, L2 guard (<2x opposite), POC overhead guard (BUY blocked if
+  close<POC), continuous trend_score = dist(EMA200)/2%, VAH/VAL confluence
+  +0.15, conf >= 0.60.
+- SETUP C (Veto): AT_EXTREME + |delta|>20% + progress<0.10% -> veto 300s
+  (blocks A/D only).
+- SETUP D (Imbalance): |delta|>40%, directional close, delta_score >= 0.60.
 
-### stock_order_flow/bar_book.py
-- `floor_3m` — 09:15 grid (09:15, 09:18, …).
-- `seed(token, df)` — REST warmup into `_completed` (session-hours filter).
-- `on_tick(token, ltp, ts, volume_delta)` — forming-bar OHLC + volume accumulation.
-- `force_close_forming(token, now)` — closes forming bar at boundary.
-- `completed_df(token, min_bars)` — DataFrame of completed bars.
+## 5. EXECUTION & RISK (final parameters)
+- Leverage 5x full; notional = margin*5 (NO cap).
+- TP = 1xATR15; Initial SL = 1xATR15; Chandelier = highest - 1xATR15
+  (effective stop = max(init, chandelier) for BUY; mirror for SELL).
+- Fallback (ATR missing): TP 1.0%, SL 0.8%.
+- TIME_STOP 60m; EOD_FLATTEN 15:10; entry cutoff 15:00; mutex = 1 trade.
+- Daily loss cap = -5% * day_start_margin (snapshot once/day, reset-first).
+- Costs logged: brokerage 0.03% + STT 0.025% + slippage 0.05% (per round trip).
+- trade_history.json stores ml_features snapshot for future XGBoost.
 
-### stock_order_flow/historical_data_manager.py
-- `fetch_and_seed_history(broker, tokens, token_map)` — 6 calendar days, interval='3',
-  fields into/inth/intl/intc + volume via `intv|v` (AUDIT H1); parquet save + 6-day prune.
+## 6. UNIVERSE SCANNER (daily 16:05 IST, pm2 sleep-loop; --now one-shot)
+- Source: NIFTY-100 static list; daily bars (60d) via own REST (interval D).
+- Tokens: search_scrip, cached tokens_cache.json.
+- Gates: NATR7 >= 1.2% (NO upper cap), avg_vol(20d) >= 10L, close 500-5000.
+- Score = NATR7 * (1 + 2*max(0, ATR7/ATR14 - 1)) + 0.5 if BB-width squeeze
+  (width <= 20th percentile). NATR14 used ONLY inside expansion ratio.
+- Hysteresis: newcomers need rank <= 12; incumbents survive to rank <= 20;
+  fill to TOP_N = 15.
+- Output: universe.json (symbol/token/tsym/search/scores); pre-fetch 3m
+  parquet for warm boot. Engine reads at boot; DEFAULT_UNIVERSE fallback.
 
-### stock_order_flow/strategy_engine.py
-- `StockStructure.update_from_df` — talib EMA9/EMA200; daily-anchored VWAP
-  (`cum_pv/cum_vol`); `upper = cum_high_vol/cum_vol` (VWAP of Highs);
-  `lower = cum_low_vol/cum_vol` (VWAP of Lows); day_high/day_low.
-- `StockStructure.context_state(price)` — PROX=0.20% → IN_ZONE; EXT=0.15% of
-  day_high/day_low → AT_EXTREME; else NO_MANS_LAND (zero logic).
-- `StockStrategyEngine.__init__` — structures, veto_until, **prev_delta, delta_hist** (AUDIT S1).
-- `evaluate_all(footprints, bar_book, now)` — AUDIT S2 version: `min_bars=30`;
-  per-symbol norm_delta; Setup C veto; Setup B flip-confirmed absorption;
-  Setup A 2-close-sustain breakout + L2 guard; Setup D 2-bar stacked imbalance;
-  priority sort B(0) > A(1) > D(2); returns single best.
+## 7. DEPLOYMENT
+Paths: /home/opc/astra_bot/stock_order_flow/ (RUNNING), /home/opc/stock_order_flow/ (SCP landing).
+pm2: stock-order-flow (engine), universe-scanner (scanner).
+Deploy: scp 6 files -> cp to astra_bot -> pm2 restart stock-order-flow.
+Scanner first run: python3 stock_order_flow/universe_scanner.py --now.
+Rollback: git tag pre-stock-live (V4.4 base).
 
-### stock_order_flow/execution_manager.py
-- Constants: MAX_OPEN_POSITIONS=1; LEVERAGE=5; TP_PCT=0.010; **SL_PCT=0.008** (AUDIT E2);
-  MAX_HOLD_MINUTES=60.
-- `__init__` — CapitalEngine(mode="LIVE"); **_day_key/_day_loss** (AUDIT E3).
-- `execute_entry` — mutex; 09:15–15:00 gate; margin≥50; **daily loss cap −2%** (AUDIT E5);
-  **notional = min(margin*5, margin*2)** (AUDIT E1); MKT order product "I";
-  3×1s fill confirmation via `single_order_history.avgprc`; persist open.
-- `manage_open_trades` — EOD flatten 15:10; TP/SL/time-stop; `_close_trade` MKT with
-  fill truth; `_save_history` accrues **daily P&L** (AUDIT E4).
+## 8. TROUBLESHOOTING
+- No ticks: check add_tick_listener + WS subscribe logs.
+- Setup A blocked often: POC guard working (log line present).
+- Setup B silent: needs 4 CVD snapshots (~12 min) + divergence.
+- universe.json missing: engine falls back to DEFAULT_UNIVERSE.
+- RAM high: pgrep python3 for orphans; scanner is separate proc.
 
-### unified_dashboard/dashboard.py
-- `get_runtime_paths("stock_order_flow")` → OF funds (live), open positions,
-  trade history, `stock_order_flow.log` tail.
+## 9. GLOSSARY
+NATR7/14 = normalized ATR %; CVD = cumulative volume delta; POC/VAH/VAL =
+volume profile levels; ATR15 = ATR(14) on 15m bars; Chandelier = trailing stop
+highest-3x? NO: highest - 1xATR15 (final); squeeze = BB-width low percentile.
 
-### common/ dependencies
-- `ShoonyaAdapter` / `market_data_provider` — WS + REST; **must expose
-  `add_tick_listener(fn)` and dispatch normalized ticks to listeners** (VERIFY item).
-- `CapitalEngine(mode="LIVE")` — real broker funds. `market_calendar` — gates.
-
-## 3. THE FOUR LINES & CONTEXT GATE (per stock)
-red = daily VWAP · yellow-upper = VWAP-of-Highs · yellow-lower = VWAP-of-Lows ·
-blue = EMA9 · grey = EMA200.
-Gate: IN_ZONE (within ±0.20% of the band envelope) → evaluate; AT_EXTREME (within
-0.15% of day H/L) → veto logic only; NO_MANS_LAND → engine does NOTHING.
-
-## 4. SETUPS (exact rules, post-audit)
-- **A Momentum:** last TWO closes > upper AND > EMA9 (mirror below) + norm_delta ≥ ±10%
-  + trend alignment + L2 guard (asks < bids×2 for BUY).
-- **B Absorption:** previous bar heavy |Δ|≥15% INTO zone with progress <0.15% (effort
-  without result) + current bar delta FLIPS sign with |flip|≥5% + L2 ratio 1.5 → reversal.
-- **C Veto Shield:** AT_EXTREME + |Δ|≥20% + progress <0.10% → veto 300s (blocks A & D).
-- **D Stacked Imbalance:** 2 consecutive bars each |Δ|≥50% (≈3:1 buy:sell) with
-  close>open and close>prev-close (mirror) → momentum.
-Priority: B > A > D. ONE signal per boundary; ONE open position globally.
-
-## 5. RISK PARAMETER MASTER TABLE
-| Param | Value | Where |
-|---|---|---|
-| Universe | 15 EQ | main.EQUITY_UNIVERSE |
-| Bar | 3m | bar_book |
-| Context PROX/EXT | 0.20% / 0.15% | strategy.context_state |
-| A delta / sustain | ≥10% / 2 closes | evaluate_all |
-| B absorb/flip | ≥15% / ≥5% | evaluate_all |
-| C veto | ≥20%, 300s | evaluate_all |
-| D stack | ≥50% ×2 bars | evaluate_all |
-| L2 guard | ask<bid×2 (BUY) | evaluate_all |
-| TP / SL | 1% / 0.8% | execution constants |
-| Max hold / EOD | 60m / 15:10 | execution |
-| Entry cutoff | 15:00 | main + execution |
-| Leverage | 5x, capped 2x funds | execution E1 |
-| Daily loss cap | −2% of funds | execution E5 |
-| Open positions | 1 | execution mutex |
-
-## 6. AUDIT FIX LEDGER (what changed, where, why)
-- T1–T4 tick_compiler: alias-tolerant lp/bp1/sp1/volume reads — prevents silent
-  zero-data death when adapter emits short WS keys (lp/v/b/s).
-- T5 tick_compiler: bv/sv fallback when 5-level bq/sq absent — keeps L2 guards alive.
-- T6 tick_compiler: one-time tick-keys log — field-contract proof at boot.
-- M1 main: `current_prices.get(best_sym)` guard — no KeyError crash at boundary.
-- E1 execution: notional cap 2x funds — kills 100% concentration in one trade.
-- E2 execution: SL 0.5%→0.8% — noise-safe for equities with MKT exits.
-- E3/E4/E5 execution: daily loss accrual + −2% entry gate — streak breaker.
-- H1 historical: `intv|v` volume fallback — history seeds even if field name differs.
-- S1/S2 strategy: prev_delta/delta_hist; min_bars=30; B flip enforced; A 2-close
-  sustain; D real 2-bar stacking with correct older-bar index — tightens all setups.
-
-## 7. STORY OF ONE TRADE (narrative)
-09:15 boot seeds 6 days of 3m bars from REST+parquet, so EMA200/VWAP are warm.
-Ticks stream in; TickCompiler splits each tick into price (bar book) and aggression
-(footprint). At 09:18 the boundary fires: RELIANCE is IN_ZONE; yesterday-style
-absorption printed — heavy selling last bar with <0.15% fall, bids 1.8x asks — and
-this bar's delta flipped +6% → Setup B BUY candidate. No other stock beats priority 0.
-Global mutex free, before cutoff → MKT BUY fills in ~1s at avgprc. Management:
-+1% → TAKE_PROFIT; −0.8% → STOP_LOSS; 60m → TIME_STOP; 15:10 → EOD_FLATTEN.
-Close writes trade_history.json with net_pl; daily loss ledger updates; dashboard
-shows funds, active trade, and logs. If instead price sat at day-high with 20% delta
-and no progress, Setup C would veto momentum for 5 minutes — the engine stands aside.
-
-## 8. DEPLOY & VCS PROTOCOL (current practice)
-Local edits by VS Code agent from exact FIND/REPLACE patches → files uploaded to
-Architect for line-by-line verification → THEN push to GitHub main + VPS together.
-Always keep a timestamped local backup before pushing. No PRs for this engine
-(user decision); Architect verification replaces PR review.
-
-## 9. KNOWN LIMITATIONS & ROADMAP
-- VERIFY: `add_tick_listener` exists in common/broker/shoonya_adapter.py and
-  dispatches ticks to listeners (else no data flows).
-- VERIFY: TATAMOTORS token 3456 ↔ TMPV-EQ mapping via search.
-- No trailing stop / partial TP on stocks yet (fixed TP/SL only).
-- L2 averages are tick-mean of 5-level sums; MKT slippage assumed small on 15 liquid names.
-- Roadmap: ATR-based SL, per-setup telemetry counters, parquet backtest harness,
-  9-EMA trail for stocks, paper mode toggle.
+## 10. VERSION HISTORY
+V4.4 base (2026-08-08) -> Phase-2 (CVD/VP/ML) -> FINAL (2026-08-09):
+5x no-cap, ATR15 exits + Chandelier, 5% cap snapshot-fix, dual bar books,
+dynamic universe scanner (NATR7 gate, TOP_N 15, hysteresis).
+END — single source of truth.
