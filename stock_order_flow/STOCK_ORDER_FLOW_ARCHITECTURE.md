@@ -1,11 +1,9 @@
-# 📄 `STOCK_ORDER_FLOW_ARCHITECTURE.md` (FINAL PRODUCTION)
-
 ```markdown
 # STOCK ORDER FLOW ENGINE 3 — PRODUCTION ARCHITECTURE
-**Version:** FINAL (2026-08-09)  
+**Version:** FINAL v2 (2026-08-09)  
 **Status:** LIVE on Oracle VPS (1GB RAM)  
 **Owner:** Amarjeet Singh  
-**Architect:** Qwen + Amarjeet
+**Architect:** Qwen + Kimi K3 + Amarjeet
 
 ---
 
@@ -21,6 +19,9 @@ This is a **LIVE institutional-grade intraday order-flow trading engine** that:
 - **Non-binary confidence scoring** (0-1) for setup evaluation
 - **CVD divergence** as HARD GATE for Setup B (absorption)
 - **Volume Profile guard** (POC overhead-supply protection)
+- **Shadow candidate logging** for future ML training data
+- **Impact efficiency** and **acceptance score** metrics for setup quality
+- **Regime-weighted scoring** based on intraday volatility
 
 ---
 
@@ -49,6 +50,12 @@ Engine only evaluates when price is in **meaningful zones**:
 - **IN_ZONE**: Within ±0.20% of VWAP zone (where most volume traded)
 - **AT_EXTREME**: Within 0.15% of day high/low (exhaustion detection)
 - **NO_MANS_LAND**: Between zones (engine idle, no chasing runaway moves)
+
+### 1.4 Enhanced Metrics (Kimi K3 Additions)
+- **Impact Efficiency**: Price change per unit of aggressive flow → detects absorption vs thin-book fragility
+- **Acceptance Score**: Measures whether breakout level is sustained (not just poked through)
+- **Regime-Weighted Scoring**: Delta thresholds adapt to intraday volatility
+- **Shadow Logging**: All evaluated-but-rejected candidates logged for future ML training
 
 ---
 
@@ -97,10 +104,10 @@ def load_universe():
     # If file missing/corrupt/empty → DEFAULT_UNIVERSE (15 hardcoded stocks)
     # Returns: {symbol: {token, search}}
 
-def seed_books(broker_hist, compiler):
+def seed_books(broker_hist, compiler, token_to_symbol):
     """Seed BOTH bar books (3m + 15m) keyed by SYMBOL."""
     for token_str, df in broker_hist.items():
-        sym = token_to_symbol[token_str]
+        sym = token_to_symbol.get(str(token_str), str(token_str))
         compiler.bar_book.seed(sym, df)           # SYMBOL key
         df15 = resample_bars(df, 15)
         compiler.bar_book_15.seed(sym, df15)      # SYMBOL key
@@ -130,6 +137,7 @@ def main():
 - `bucket_key` deduplication prevents re-evaluation on same 3m window
 - `current_prices.get(best_sym, 0.0)` guard prevents KeyError
 - `allow_entry = now.time() < TRADE_ENTRY_CUTOFF_TIME` (15:00) prevents late entries
+- `compiler.set_symbol_map(token_to_symbol)` ensures symbol-keyed books
 
 ---
 
@@ -150,6 +158,17 @@ class TickCompiler:
     def set_symbol_map(self, token_to_symbol: dict):
         """Books are SYMBOL-keyed; main calls this after loading universe."""
         self._t2s = {str(k): str(v) for k, v in token_to_symbol.items()}
+    
+    def _as_float(self, message: dict, *keys, default=0.0):
+        """Alias-tolerant float extraction from tick message."""
+        for k in keys:
+            v = message.get(k, None)
+            if v not in (None, ""):
+                try:
+                    return float(v)
+                except Exception:
+                    pass
+        return float(default)
     
     def on_message(self, message: dict):
         """
@@ -179,21 +198,28 @@ class TickCompiler:
         }
         """
     
+    def get_market_depth_snapshot(self) → dict:
+        """Return current market depth for all tokens (future use)."""
+        with self.lock:
+            return {k: dict(v) for k, v in self.market_depth.items()}
+    
     def subscribe(self, tokens: list, exchange: str = "NSE"):
         """
         Hardened subscription:
         - Try broker.market_data, broker.mdp, broker._mdp, broker (chain)
         - If no add_tick_listener/subscribe found → log ERROR
         - Subscribe touchline (t) + depth (d) feeds
+        - Handle API differences (feed_type vs positional arg)
         """
 ```
 
 **Critical Design Decisions:**
-- **Alias tolerance**: Handles both normalized (`lp`, `bid`, `ask`) and raw (`last_traded_price`, `bp1`, `sp1`)
+- **Alias tolerance**: `_as_float()` handles both normalized (`lp`, `bid`, `ask`) and raw (`last_traded_price`, `bp1`, `sp1`)
 - **Symbol-keyed books**: Strategy queries by symbol; tick_compiler translates token→symbol via `_t2s` map
 - **Cumulative volume**: `vol_delta` only when `new_vol > old_vol` prevents double-counting
 - **L2 fallback**: If bq1-5 missing, uses `bv`/`sv` (total bid/ask volume)
 - **Thread safety**: Lock protects footprint/bar_book from concurrent WS ticks
+- **Hardened subscribe**: Tries multiple attribute names, handles TypeError for positional args
 
 ---
 
@@ -203,21 +229,33 @@ class TickCompiler:
 
 **Key Classes:**
 ```python
+def floor_3m(ts: datetime) → datetime:
+    """Module-level helper (kept for historical_data_manager import compatibility)."""
+    m = ts.minute - (ts.minute % 3)
+    return ts.replace(minute=m, second=0, microsecond=0)
+
 class BarBook:
     def __init__(self, minutes: int = 3):
         self.minutes = minutes
-        self._completed = defaultdict(list)  # symbol → list of completed bars
-        self._forming = {}                   # symbol → forming bar dict
+        self.completed = defaultdict(list)  # symbol → list of completed bars
+        self.forming = {}                   # symbol → forming bar dict
         self.lock = threading.Lock()
     
     def seed(self, token: str, df: pd.DataFrame):
         """Load historical bars, filter to session hours, dedup, cap at 2000."""
+        # Convert timestamp to pydatetime for session check
+        # Deduplicate by timestamp
+        # Cap at 2000 bars to prevent memory bloat
     
     def on_tick(self, token: str, ltp: float, ts: datetime, volume_delta: float):
         """Update forming bar; if window ended, move to completed."""
+        bucket = self.floor_bar(ts)
+        # If bucket changed, finalize previous forming bar
+        # Update high/low/close/volume
     
     def force_close_forming(self, token: str, now: datetime):
         """Close forming bar only if window ended (3m book at each boundary)."""
+        # Only finalize if timestamp < floor_bar(now)
     
     def completed_df(self, token: str, min_bars: int = 2) → pd.DataFrame:
         """Return DataFrame of completed bars (timestamp, open, high, low, close, volume)."""
@@ -231,11 +269,6 @@ def resample_bars(df: pd.DataFrame, minutes: int = 15) → pd.DataFrame:
     return df.resample(f"{minutes}min").agg(
         {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
     ).dropna(subset=["close"])
-
-def floor_3m(ts: datetime) → datetime:
-    """Module-level helper (kept for historical_data_manager import compatibility)."""
-    m = ts.minute - (ts.minute % 3)
-    return ts.replace(minute=m, second=0, microsecond=0)
 ```
 
 **Critical Logic:**
@@ -243,12 +276,13 @@ def floor_3m(ts: datetime) → datetime:
 - **Forming bar lifecycle**: Created on first tick, updated on every tick, finalized at boundary
 - **Volume accumulation**: Uses `volume_delta` (not cumulative) to avoid double-counting
 - **2000-bar cap**: Prevents memory bloat on long-running sessions
+- **Symbol-keyed**: All operations use symbol (not token) as key
 
 ---
 
 ### 3.4 `strategy_engine.py` — THE BRAIN
 
-**Purpose:** Compute indicators, evaluate setups, return single best signal with ML metrics.
+**Purpose:** Compute indicators, evaluate setups, return single best signal with ML metrics, log shadow candidates.
 
 **Key Class: `StockStructure`**
 ```python
@@ -280,6 +314,9 @@ class StockStructure:
     
     def _update_volume_profile(self, df, today):
         """24-bin intraday volume histogram → POC + 70% Value Area."""
+        # Distribute each bar's volume across bins it touches
+        # Find POC (max volume bin)
+        # Expand outward to capture 70% of total volume → VAH/VAL
     
     def context_state(self, price: float) → str:
         """Return 'IN_ZONE' / 'AT_EXTREME' / 'NO_MANS_LAND'."""
@@ -294,16 +331,42 @@ class StockStrategyEngine:
         # Phase-2: CVD tracking
         self._day_key = None
         self._cvd = {}            # symbol → cumulative delta
-        self._cvd_snap = {}       # symbol → list of (cvd, close) snapshots
+        self._cvd_snap = {}       # symbol → list of (cvd, close, norm_delta) snapshots
+        # Kimi K3 additions
+        self._shadow_log = []     # rejected candidates for ML training
+        self._last_scores = {}    # last metrics per symbol
+    
+    def roll_day(self, now: datetime):
+        """Reset daily state at day rollover."""
     
     @staticmethod
     def _atr15(bar_book_15, symbol):
         """ATR(14) on 15m completed bars (min 16 bars required)."""
-        df15 = bar_book_15.completed_df(symbol, min_bars=16)
-        if df15 is None or len(df15) < 16:
-            return 0.0
-        a = talib.ATR(df15['high'], df15['low'], df15['close'], timeperiod=14)
-        return float(a[-1]) if len(a) > 0 and not math.isnan(a[-1]) else 0.0
+    
+    def _shadow(self, record: dict):
+        """Log shadow candidate (rejected but evaluated)."""
+        self._shadow_log.append(record)
+        if len(self._shadow_log) > 1000:
+            self._shadow_log = self._shadow_log[-1000:]
+    
+    def get_shadow_log(self):
+        """Return shadow log for analysis."""
+        return list(self._shadow_log)
+    
+    def _flow_quality(self, fpdata: dict) → float:
+        """L2 bid/ask ratio as flow quality metric."""
+    
+    def _impact_efficiency(self, close, prev_close, delta, atr) → float:
+        """Price change per unit of aggressive flow (absorption detector)."""
+        denom = max(abs(delta), 1.0)
+        move = abs(close - prev_close)
+        scale = atr if atr > 0 else max(close * 0.005, 1.0)
+        return (move / denom) / max(scale, FLOW_EPS)
+    
+    def _regime_weight(self, df, norm_delta, ctx) → tuple[float, float]:
+        """Adapt delta thresholds to intraday volatility regime."""
+        # Calculate 20-bar return volatility
+        # Scale delta threshold accordingly
     
     def evaluate_all(self, footprints: dict, bar_book, bar_book_15, now: datetime):
         """
@@ -326,12 +389,18 @@ class StockStrategyEngine:
         
         Setup Evaluation:
         - Setup C (Veto): AT_EXTREME + |delta|>20% + progress<0.10% → veto 300s
-        - Setup B (Absorption): IN_ZONE + |delta|>10% + CVD divergence (HARD GATE) + confidence ≥ 0.65
-        - Setup A (Breakout): IN_ZONE + |delta|>8% + trend filter + POC guard + VAH/VAL confluence + confidence ≥ 0.60
+        - Setup B (Absorption): IN_ZONE + |delta|>10% + CVD divergence (HARD GATE) + 
+          impact efficiency + confidence ≥ 0.65
+        - Setup A (Breakout): IN_ZONE + |delta|>8% + trend filter + POC guard + 
+          VAH/VAL confluence + acceptance score + confidence ≥ 0.60
         - Setup D (Imbalance): |delta|>40% + directional close + delta_score ≥ 0.60
         
         Priority Sort: B (0) > A (1) > D (2), tie-break by confidence (descending)
         Returns single best candidate.
+        
+        Shadow Logging:
+        - All rejected candidates logged with status, metrics, confidence
+        - Selected candidate logged with full metrics
         
         ML Metrics Snapshot:
         {
@@ -349,6 +418,7 @@ class StockStrategyEngine:
             "lower": 2945.6,
             "atr": 15.2,
             "l2_bid_ask": 2.25,
+            "impact_eff": 0.000234,
             "time": "10:30"
         }
         """
@@ -356,7 +426,7 @@ class StockStrategyEngine:
 
 **SETUP LOGIC (DETAILED):**
 
-**SETUP B: ABSORPTION (CVD DIVERGENCE = HARD GATE)**
+**SETUP B: ABSORPTION (CVD DIVERGENCE = HARD GATE + IMPACT EFFICIENCY)**
 ```
 BUY conditions:
 - ctx == IN_ZONE
@@ -365,15 +435,16 @@ BUY conditions:
 - div_buy == TRUE (CVD falling but price not falling) ← HARD GATE
 - confidence ≥ 0.65
 
-Confidence = 0.35 × delta_score + 0.30 × progress_score + 0.35 × l2_score
-- delta_score = min(1.0, |norm_delta| / 0.20)
-- progress_score = max(0.0, 1.0 - (prog / 0.0015))
-- l2_score = min(1.0, (avg_bid / avg_ask) / 2.0)
+Confidence = 0.28 × delta_score + 0.24 × progress_score + 0.26 × l2_score + 0.22 × impact_score
+- delta_score = min(1.0, |norm_delta| / max(0.20, delta_scale))
+- progress_score = max(0.0, 1.0 - (progress / 0.0015))
+- l2_score = max(0.0, min(1.0, l2_ratio / 2.0))
+- impact_score = max(0.0, min(1.0, 1.0 - min(1.0, impact_efficiency * 10.0)))
 
 SELL conditions: mirror (norm_delta > 10%, delta_trend > 0, div_sell == TRUE)
 ```
 
-**SETUP A: BREAKOUT + POC GUARD + VAH/VAL + CONTINUOUS TREND**
+**SETUP A: BREAKOUT + POC GUARD + VAH/VAL + ACCEPTANCE SCORE + REGIME-AWARE**
 ```
 BUY conditions:
 - ctx == IN_ZONE
@@ -385,11 +456,12 @@ BUY conditions:
 - close > POC (VP guard: no overhead supply)
 - confidence ≥ 0.60
 
-Confidence = 0.30 × delta_score + 0.25 × trend_score + 0.25 × l2_score + vp_bonus
-- delta_score = min(1.0, norm_delta / 0.15)
-- trend_score = min(1.0, max(0.0, ((c - EMA200) / EMA200) / 0.02))  # continuous
+Confidence = 0.22 × delta_score + 0.22 × trend_score + 0.24 × l2_score + 0.14 × vp_bonus + 0.18 × acceptance
+- delta_score = min(1.0, norm_delta / max(0.15, delta_scale))
+- trend_score = min(1.0, max(0.0, ((c - EMA200) / EMA200) / 0.02))
 - l2_score = max(0.0, 1.0 - (avg_ask / (avg_bid × 2)))
 - vp_bonus = 0.15 if close > VAH (above value area) else 0.0
+- acceptance = max(0.0, min(1.0, 1.0 - abs(c - upper) / max(atr15, c * 0.005)))
 
 SELL conditions: mirror (close < lower, down trend, delta < -8%, close < POC, vp_bonus if close < VAL)
 ```
@@ -404,7 +476,7 @@ Trigger:
 Effect: veto_until[symbol] = now + 300s → blocks Setup A and D (Setup B bypasses)
 ```
 
-**SETUP D: STACKED IMBALANCE**
+**SETUP D: STACKED IMBALANCE (LOWER PRIORITY)**
 ```
 BUY conditions:
 - norm_delta > 40% (3:1 buy:sell ratio)
@@ -412,6 +484,8 @@ BUY conditions:
 - delta_score ≥ 0.60 (explicit threshold)
 
 SELL conditions: norm_delta < -40%, close < open
+
+Note: Setup D is lower priority (2) and serves as impulse evidence, not primary entry.
 ```
 
 ---
@@ -441,6 +515,39 @@ class StockExecutionManager:
             self._day_loss = 0.0  # STEP 1: clear yesterday's leftover FIRST
             current_funds = float(self.capital_engine.get_available_funds())
             self._day_start_margin = max(current_funds, 1.0)  # STEP 2: today's true start
+    
+    def _place_order(self, kwargs: dict):
+        """Hardened order placement (handles API differences)."""
+        if hasattr(self.api, "place_order"):
+            return self.api.place_order(**kwargs)
+        if hasattr(self.api, "placeorder"):
+            return self.api.placeorder(**kwargs)
+        return None
+    
+    def _order_history(self, ordno: str):
+        """Hardened order history (handles API differences)."""
+        if hasattr(self.api, "single_order_history"):
+            return self.api.single_order_history(ordno)
+        if hasattr(self.api, "singleorderhistory"):
+            return self.api.singleorderhistory(ordno)
+        return None
+    
+    def _confirm_fill(self, ordno: str, fallback_price: float):
+        """Poll order history to confirm fill, return (filled, avg_price)."""
+        avgprc = fallback_price
+        for _ in range(3):
+            pytime.sleep(1.0)
+            hist = self._order_history(ordno)
+            if hist and isinstance(hist, list):
+                row = hist[0]
+                status = str(row.get("status", "")).upper()
+                if status in {"FILLED", "COMPLETE", "COMPLETED"}:
+                    try:
+                        avgprc = float(row.get("avgprc", fallback_price))
+                    except Exception:
+                        avgprc = fallback_price
+                    return True, avgprc
+        return False, avgprc
     
     def execute_entry(self, signal, symbol, spot_price, reason, metrics=None):
         """
@@ -527,6 +634,11 @@ TOTAL_COST_PCT = 0.00105 # ~0.105% per round trip
 
 **Key Functions:**
 ```python
+def _parse_rows(rows):
+    """Parse REST response rows into standardized format."""
+    # Handle multiple timestamp formats (time, ts, timestamp)
+    # Handle multiple OHLCV key formats (into/inth/intl/intc/intv vs open/high/low/close/volume)
+
 def fetch_and_seed_history(broker, tokens: list, token_map: dict) → dict:
     """
     Returns: {token: DataFrame} of 3m bars
@@ -535,7 +647,7 @@ def fetch_and_seed_history(broker, tokens: list, token_map: dict) → dict:
     1. Load local parquet (if exists)
     2. Compute last_local_ts
     3. Fetch REST gap: get_time_price_series(interval='3', starttime=last_local_ts+1, endtime=now)
-    4. Parse rows: timestamp, open (into), high (inth), low (intl), close (intc), volume (intv or v)
+    4. Parse rows: timestamp, open, high, low, close, volume
     5. Merge with local, deduplicate by timestamp
     6. Prune to 6-day window
     7. Save parquet
@@ -543,10 +655,10 @@ def fetch_and_seed_history(broker, tokens: list, token_map: dict) → dict:
 ```
 
 **Critical Logic:**
-- **Volume fallback**: `r.get('intv') or r.get('v') or 0`
+- **Alias tolerance**: `_parse_rows()` handles multiple key formats
 - **6-day rolling window**: `cutoff = now - 6 days` — older bars auto-pruned
-- **Session-hours filter**: Bar book excludes pre/post-market bars
 - **Boot + 15:17 sync**: Ensures parquet is always current
+- **Deduplication**: `drop_duplicates(subset=["timestamp"], keep="last")`
 
 ---
 
@@ -820,6 +932,16 @@ pm2 delete stock-order-flow
 **Cause:** Bar books were token-keyed, strategy queries by symbol  
 **Fix:** Ensure `tick_compiler.set_symbol_map()` is called by main after loading universe
 
+### 6.9 Dunder/Underscore Stripping (Kimi K3 Bug)
+**Symptoms:** `ImportError: cannot import name 'getlogger'` (should be `get_logger`)  
+**Cause:** LLM code generation strips `__` and `_` from identifiers  
+**Fix:** PowerShell regex replacement to restore dunders:
+```powershell
+$c = $c -replace 'from future import', 'from __future__ import'
+$c = $c -replace 'getlogger', 'get_logger'
+$c = $c -replace 'def init\(', 'def __init__('
+```
+
 ---
 
 ## 7. ROLLBACK PROCEDURE
@@ -856,12 +978,14 @@ pm2 restart stock-order-flow
   - progress = |2949.6 - 2950.0| / 2949.6 = 0.014%
   - CVD: prev 4 candles = -45,000, current = -48,000 → window_delta = -3,000
   - div_buy = (window_delta < 0) and (2949.6 >= 2950.0 × 0.999) = TRUE
+  - impact_efficiency = |2949.6 - 2950.0| / 120,000 / 15.0 = 0.000002
+  - impact_score = 1.0 - min(1.0, 0.000002 × 10.0) = 1.0
   - Setup B check:
     - IN_ZONE ✓
     - |delta| > 10% ✓ (-60%)
     - delta_trend < 0 ✓
     - div_buy ✓ (HARD GATE)
-    - confidence = 0.35 × 1.0 + 0.30 × 0.91 + 0.35 × 1.0 = 0.97 ≥ 0.65 ✓
+    - confidence = 0.28 × 1.0 + 0.24 × 0.91 + 0.26 × 1.0 + 0.22 × 1.0 = 0.97 ≥ 0.65 ✓
   - → Candidate: (0, "RELIANCE", "BUY", "Setup B Absorption+CVD-div: Delta -60.0%, Conf 0.97", metrics, 0.97)
 
 **10:30:03 (Entry Execution):**
@@ -898,15 +1022,19 @@ pm2 restart stock-order-flow
 | **CVD Divergence** | CVD moving opposite to price (e.g., CVD falling but price stable) |
 | **ATR15** | ATR(14) on 15m bars (for TP/SL/Chandelier) |
 | **Chandelier Exit** | Trailing stop = highest - 1×ATR15 (ratchet up only) |
-| **Setup A** | Momentum Breakout (upper/lower + trend filter + POC guard + VAH/VAL + confidence) |
-| **Setup B** | Absorption (heavy delta + CVD divergence HARD GATE + confidence) |
+| **Setup A** | Momentum Breakout (upper/lower + trend filter + POC guard + VAH/VAL + acceptance + confidence) |
+| **Setup B** | Absorption (heavy delta + CVD divergence HARD GATE + impact efficiency + confidence) |
 | **Setup C** | Veto Shield (exhaustion at extremes → 5-min cooldown) |
-| **Setup D** | Stacked Imbalance (sustained high delta + directional close) |
+| **Setup D** | Stacked Imbalance (sustained high delta + directional close, lower priority) |
 | **IN_ZONE** | Price within ±0.20% of VWAP zone envelope |
 | **AT_EXTREME** | Price within 0.15% of day high/low |
 | **NO_MANS_LAND** | Price between zones (engine inactive) |
 | **NATR7** | Normalized ATR(7) % - recent volatility heat |
 | **Hysteresis Buffer** | Universe stability rule (newcomers rank <= 12, incumbents survive to rank <= 20) |
+| **Impact Efficiency** | Price change per unit of aggressive flow (absorption detector) |
+| **Acceptance Score** | Measures whether breakout level is sustained (not just poked) |
+| **Shadow Logging** | Logging all evaluated-but-rejected candidates for ML training |
+| **Regime Weight** | Adapting delta thresholds to intraday volatility |
 
 ---
 
@@ -917,6 +1045,7 @@ pm2 restart stock-order-flow
 | V4.4 Base | 2026-08-08 | Initial deployment: VWAP zones, 4 setups, risk caps, exits |
 | V4.4 + Phase-2 | 2026-08-09 | CVD divergence, Volume Profile guard, ML feature logging |
 | FINAL | 2026-08-09 | 5x full leverage, ATR15 exits + Chandelier, 5% cap snapshot-fix, dual bar books (3m+15m), dynamic universe scanner (NATR7 gate, TOP_N 15, hysteresis), symbol-keyed books, floor_3m compat |
+| FINAL v2 | 2026-08-09 | Kimi K3 enhancements: shadow logging, impact efficiency, acceptance score, regime-weighted scoring, hardened subscribe, dunder/underscore bug fixes |
 
 ---
 
@@ -960,6 +1089,11 @@ def floor_3m(ts: datetime) -> datetime:
 **Cause:** 15m book has < 16 bars  
 **Fix:** Ensure `resample_bars()` is called during seeding; fallback to fixed % exits (TP 1.0%, SL 0.8%)
 
+### Error: `ImportError: cannot import name 'getlogger'`
+**File:** All `.py` files  
+**Cause:** LLM code generation stripped underscores  
+**Fix:** PowerShell regex replacement (see Section 6.9)
+
 ---
 
 ## 12. FINAL NOTES
@@ -977,3 +1111,4 @@ This document is the **single source of truth** for the Stock Order Flow Engine.
 ---
 
 **END OF DOCUMENT**
+```
