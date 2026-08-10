@@ -192,8 +192,12 @@ class TickCompiler:
                 "total_buy_vol": int,
                 "total_sell_vol": int,
                 "delta": buy - sell,
-                "avg_l2_bid": sum(l2_bid) / tick_count,
-                "avg_l2_ask": sum(l2_ask) / tick_count
+                "avg_l2_bid": sum(l2_bid) / tick_count,       # simple 5-level sum average (legacy)
+                "avg_l2_ask": sum(l2_ask) / tick_count,       # simple 5-level sum average (legacy)
+                "ew_l2_bid": sum(bq×w) / tick_count,          # end-weighted (w=[1,0.5,0.33,0.25,0.2])
+                "ew_l2_ask": sum(sq×w) / tick_count,          # end-weighted
+                "bid_persistence": avg(1 if bid_wall held ≥98% else 0),  # wall replenishment flag
+                "ask_persistence": avg(1 if ask_wall held ≥98% else 0)
             }
         }
         """
@@ -217,7 +221,9 @@ class TickCompiler:
 - **Alias tolerance**: `_as_float()` handles both normalized (`lp`, `bid`, `ask`) and raw (`last_traded_price`, `bp1`, `sp1`)
 - **Symbol-keyed books**: Strategy queries by symbol; tick_compiler translates token→symbol via `_t2s` map
 - **Cumulative volume**: `vol_delta` only when `new_vol > old_vol` prevents double-counting
-- **L2 fallback**: If bq1-5 missing, uses `bv`/`sv` (total bid/ask volume)
+- **End-weighted L2 (v7)**: `_LEVEL_WEIGHTS = (1.0, 0.5, 0.33, 0.25, 0.2)` — best bid/ask level gets full weight, decays outward. Stored as `ew_l2_bid` / `ew_l2_ask` alongside legacy simple sums.
+- **L2 Persistence (v7)**: `_prev_l2w` tracks previous tick's weighted bid/ask. `bid_persist=1.0` if wall held ≥ 98% of previous value, else 0.0. Initialised at 0.5 on first tick.
+- **L2 fallback**: If bq1-5 missing, uses `bv`/`sv` (total bid/ask volume); ew values equal simple values in fallback.
 - **Thread safety**: Lock protects footprint/bar_book from concurrent WS ticks
 - **Hardened subscribe**: Tries multiple attribute names, handles TypeError for positional args
 
@@ -354,7 +360,7 @@ class StockStrategyEngine:
         return list(self._shadow_log)
     
     def _flow_quality(self, fpdata: dict) → float:
-        """L2 bid/ask ratio as flow quality metric."""
+        """L2 bid/ask ratio as flow quality metric. Uses ew_l2_bid/ask (v7) with fallback to avg_l2_bid/ask."""
     
     def _impact_efficiency(self, close, prev_close, delta, atr) → float:
         """Price change per unit of aggressive flow (absorption detector)."""
@@ -402,7 +408,7 @@ class StockStrategyEngine:
         - All rejected candidates logged with status, metrics, confidence
         - Selected candidate logged with full metrics
         
-        ML Metrics Snapshot:
+        ML Metrics Snapshot (v7 — includes persistence keys):
         {
             "ctx": "IN_ZONE",
             "norm_delta": 0.1234,
@@ -418,6 +424,8 @@ class StockStrategyEngine:
             "lower": 2945.6,
             "atr": 15.2,
             "l2_bid_ask": 2.25,
+            "l2_bid_persist": 0.85,      ← NEW v7: bid wall persistence (0-1)
+            "l2_ask_persist": 0.42,      ← NEW v7: ask wall persistence (0-1)
             "impact_eff": 0.000234,
             "time": "10:30"
         }
@@ -438,7 +446,8 @@ BUY conditions:
 Confidence = 0.28 × delta_score + 0.24 × progress_score + 0.26 × l2_score + 0.22 × impact_score
 - delta_score = min(1.0, |norm_delta| / max(0.20, delta_scale))
 - progress_score = max(0.0, 1.0 - (progress / 0.0015))
-- l2_score = max(0.0, min(1.0, l2_ratio / 2.0))
+- l2_score = max(0.0, min(1.0, ew_l2_ratio / 2.0)) × (0.5 + 0.5 × bid_persist)  ← v7: persistence-weighted
+  (BUY uses bid_persist; SELL uses ask_persist — persistent wall boosts score, pulled wall penalises)
 - impact_score = max(0.0, min(1.0, 1.0 - min(1.0, impact_efficiency * 10.0)))
 
 SELL conditions: mirror (norm_delta > 10%, delta_trend > 0, div_sell == TRUE)
@@ -669,7 +678,9 @@ def fetch_and_seed_history(broker, tokens: list, token_map: dict) → dict:
 **Key Functions:**
 ```python
 def resolve_tokens(api, cache):
-    """Resolve NIFTY-100 tokens via search_scrip (cached to disk)."""
+    """Resolve NIFTY-100 tokens via searchscrip/search_scrip (tries both; cached to disk).
+    v2 fix: _resolve_api() walks broker chain to find the object that has searchscrip.
+    _search_values() tries both method names, handles kwargs/positional, parses r['values'] list."""
 
 def fetch_daily(api, token, days=60):
     """Daily bars from our own adapter REST, sorted old → new."""
@@ -1046,6 +1057,9 @@ pm2 restart stock-order-flow
 | V4.4 + Phase-2 | 2026-08-09 | CVD divergence, Volume Profile guard, ML feature logging |
 | FINAL | 2026-08-09 | 5x full leverage, ATR15 exits + Chandelier, 5% cap snapshot-fix, dual bar books (3m+15m), dynamic universe scanner (NATR7 gate, TOP_N 15, hysteresis), symbol-keyed books, floor_3m compat |
 | FINAL v2 | 2026-08-09 | Kimi K3 enhancements: shadow logging, impact efficiency, acceptance score, regime-weighted scoring, hardened subscribe, dunder/underscore bug fixes |
+| v7 (tick+strategy) | 2026-08-10 | End-weighted L2 (_LEVEL_WEIGHTS), bid/ask persistence tracking (_prev_l2w), 4 new footprint keys (ew_l2_bid/ask, bid/ask_persistence), Setup B l2_score persistence-multiplied, 2 new ML metrics keys (l2_bid/ask_persist) |
+| v2 (scanner) | 2026-08-10 | Fixed Noren token resolution: _resolve_api() chain walk, _search_values() tries searchscrip+search_scrip, parses r['values'] key correctly |
+| dashboard fix | 2026-08-10 | Removed ShoonyaAdapter/Selenium/Chrome crash; _capital() reads capital_state.json directly; OF log wired to stock_order_flow.log; of{} block now includes signal/reasoning/top_setup/open_pnl/data_seeded; default_log_engine='of' |
 
 ---
 
@@ -1105,8 +1119,8 @@ This document is the **single source of truth** for the Stock Order Flow Engine.
 4. Understand the Monday morning ritual
 5. Auto-fix common errors using the guide in Section 11
 
-**Last Updated:** 2026-08-09  
-**Status:** PRODUCTION READY
+**Last Updated:** 2026-08-10  
+**Status:** PRODUCTION READY — v7 deployed pending market close
 
 ---
 
