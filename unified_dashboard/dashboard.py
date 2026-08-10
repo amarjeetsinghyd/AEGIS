@@ -47,36 +47,9 @@ def _read_json(path, default=None):
     return default
 
 
-import time
-from common.broker.shoonya_adapter import ShoonyaAdapter
-
-_shoonya_adapter = None
-_live_funds_cache = 0.0
-_last_funds_fetch = 0.0
-
 def _capital(data_dir: str, force_paper: bool = False) -> float:
-    global _shoonya_adapter, _live_funds_cache, _last_funds_fetch
-    
-    if not force_paper:
-        now = time.time()
-        if now - _last_funds_fetch > 60:
-            if _shoonya_adapter is None:
-                try:
-                    _shoonya_adapter = ShoonyaAdapter()
-                except Exception:
-                    pass
-            if _shoonya_adapter:
-                try:
-                    funds = _shoonya_adapter.get_available_funds()
-                    _live_funds_cache = float(funds)
-                    _last_funds_fetch = now
-                except Exception:
-                    pass
-        
-        if _live_funds_cache > 0:
-            return _live_funds_cache
-            
-    # fallback to paper
+    """Read available funds directly from capital_state.json written by execution_manager.
+    No broker API calls — avoids Selenium/Chrome dependency entirely."""
     state = _read_json(os.path.join(data_dir, "capital_state.json"), {}) or {}
     return float(state.get("available_funds") or 0.0)
 
@@ -902,22 +875,43 @@ def health():
 def live_state():
     astra = get_astra_live_state()
     kronos = get_kronos_live_state()
-    
+
+    # Astra + Kronos are offline — supply funds from their capital_state.json (paper only)
     astra["available_funds"] = _capital(ASTRA_DATA, force_paper=True)
     kronos["available_funds"] = _capital(KRONOS_DATA, force_paper=True)
-    of_funds = _capital(ORDERFLOW_DATA, force_paper=False)
-    
-    of_logs = [html.escape(line) for line in _tail_log(os.path.join(ORDERFLOW_LOGS, "stock_order_flow.log"), 80)]
+
+    # Order Flow: funds from capital_state.json (written by execution_manager, no broker call)
+    of_funds = _capital(ORDERFLOW_DATA)
+
+    # OF open positions (dict keyed by symbol, e.g. {"SBIN": {...}})
+    of_positions = _open_positions(ORDERFLOW_DATA) or {}
+
+    # Compute open PnL from open_positions using current capital_state if available
+    of_open_pnl = None
+    if of_positions:
+        try:
+            cap = _read_json(os.path.join(ORDERFLOW_DATA, "capital_state.json"), {})
+            # Best-effort: sum margin of open trades as a proxy (actual PnL needs live price)
+            of_open_pnl = sum(
+                float(v.get("margin", 0)) for v in of_positions.values() if isinstance(v, dict)
+            )
+        except Exception:
+            pass
+
+    # OF logs: read the live log file written by stock_main logger
+    of_log_path = os.path.join(ORDERFLOW_LOGS, "stock_order_flow.log")
+    of_logs = [html.escape(line) for line in _tail_log(of_log_path, 80)]
+
     of_hist = _trade_history(ORDERFLOW_DATA)
 
+    # Astra/Kronos are stopped — read their logs defensively (empty if missing)
     astra["active_trade"] = _active_trade(ASTRA_DATA)
     kronos["active_trade"] = _active_trade(KRONOS_DATA)
-
     astra_logs = [html.escape(line) for line in _tail_log(os.path.join(ASTRA_LOGS, "astra_bot.log"), 80)]
     kronos_logs = [html.escape(line) for line in _tail_log(os.path.join(KRONOS_LOGS, "kronos_bot.log"), 80)]
-
     astra_hist = _trade_history(ASTRA_DATA)
     kronos_hist = _trade_history(KRONOS_DATA)
+
     # Escape free-text fields for safe HTML embedding via JSON → DOM text/innerHTML table
     for rows in (astra_hist, kronos_hist, of_hist):
         for row in rows:
@@ -925,21 +919,40 @@ def live_state():
                 if key in row and row[key] is not None:
                     row[key] = html.escape(str(row[key]))
 
+    # Build OF state block: signal from open position if any, else idle
+    of_signal = None
+    of_reason = "Engine idle — no open position"
+    of_top_setup = "—"
+    if of_positions:
+        first = next(iter(of_positions.values()))
+        if isinstance(first, dict):
+            of_signal = first.get("type")  # "BUY" or "SELL"
+            of_reason = first.get("reason", "")
+            of_top_setup = first.get("symbol", "—")
+
     return jsonify(
         {
             "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "tick_age_sec": _tick_age_seconds(),
             "initial_paper_capital": INITIAL_PAPER_CAPITAL,
             "astra": astra,
-            "of": {"available_funds": of_funds, "active_trade": _open_positions(ORDERFLOW_DATA)},
             "kronos": kronos,
+            "of": {
+                "available_funds": of_funds,
+                "active_trade": of_positions,
+                "signal": of_signal,
+                "reasoning": of_reason,
+                "top_setup": of_top_setup,
+                "open_pnl": of_open_pnl,
+                "data_seeded": bool(of_logs),
+            },
             "astra_logs": astra_logs,
             "of_logs": of_logs,
             "kronos_logs": kronos_logs,
             "astra_trade_history": astra_hist,
             "of_trade_history": of_hist,
             "kronos_trade_history": kronos_hist,
-            "default_log_engine": "kronos",
+            "default_log_engine": "of",
         }
     )
 
