@@ -1,8 +1,8 @@
 import numpy as np
 import time
-import logging
+from common.logger import get_logger
 
-logger = logging.getLogger("gamma_burst")
+logger = get_logger("gamma_burst")
 
 # Constants
 N_STRIKES = 21          # offsets -10..+10 from ATM

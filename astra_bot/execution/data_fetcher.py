@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from astra_bot.config.settings import BROKER
 ACTIVE_BROKER = (os.getenv("ACTIVE_BROKER") or BROKER).upper()
 
-from astra_bot.core.logger import get_logger
+from common.logger import get_logger
 logger = get_logger("data_fetcher")
 
 
