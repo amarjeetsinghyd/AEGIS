@@ -21,6 +21,7 @@ from astra_bot.core.footprint_compiler import FootprintCompiler
 from astra_bot.strategy.evaluator import ChainFootprintEvaluator
 from astra_bot.execution.astra_execution_manager import AstraExecutionManager
 from astra_bot.core.spot_structure import SpotStructureEngine
+from astra_bot.core.gamma_burst_detector import GammaBurstDetector
 
 from common.market.market_calendar import (
     is_market_open,
@@ -112,6 +113,11 @@ def main():
         from astra_bot.core.spot_structure import SyntheticVolumeBridge
         vol_bridge = SyntheticVolumeBridge(structure)
         
+        # Gamma Burst Detector (Claude 3.5 Blueprint)
+        gamma_detector = GammaBurstDetector()
+        # Add a listener for raw ticks directly to the market data provider
+        # We will attach it after step is defined
+        
         logger.info(f"[Astra] Spot Structure Engine initialized in {STRUCTURE_MODE} mode")
     except Exception as e:
         logger.critical(f"Initialization failed: {e}")
@@ -143,7 +149,15 @@ def main():
     
     last_minute = datetime.now().minute
     step = 100.0 if "SENSEX" in fetcher.get_active_instrument()[0] else 50.0
+    
+    # Attach tick listener for Gamma Burst Detector now that step is defined
+    if hasattr(broker, "market_data_provider"):
+        broker.market_data_provider.add_tick_listener(
+            lambda msg: gamma_detector.process_raw_tick(msg, strike_step=step)
+        )
+        
     last_subscribed_opts = set()
+    last_atm_strike = 0.0
     pending_signal = None
 
     while True:
@@ -177,6 +191,24 @@ def main():
                     weekly_opts = fetcher.get_weekly_option_tokens()
                     if not weekly_opts.empty:
                         atm_strike = round(spot_price / step) * step
+                        
+                        # Gamma Burst Detector - ATM Shift Handling
+                        if atm_strike != last_atm_strike:
+                            shift_steps = int((atm_strike - last_atm_strike) / step) if last_atm_strike > 0 else 0
+                            gamma_detector.shift_atm(shift_steps, atm_strike)
+                            last_atm_strike = atm_strike
+                            
+                        # Build Token Map for Gamma Detector
+                        token_map = {}
+                        for _, row in weekly_opts.iterrows():
+                            tkn = str(row['token'])
+                            stk = float(row.get('strike', 0))
+                            sym = str(row.get('symbol', ''))
+                            if stk > 0:
+                                side = 0 if 'CE' in sym or ('C' in sym and sym[-1].isdigit()) else 1
+                                token_map[tkn] = {'side': side, 'strike': stk}
+                        gamma_detector.set_token_map(token_map)
+                        
                         # Evaluation window is ±6 (6+6), Consideration window is ±3 (3+3)
                         evaluation_strikes = [atm_strike + (i * step) for i in range(-6, 7)]
                         consideration_strikes = [atm_strike + (i * step) for i in range(-3, 4)]
@@ -277,6 +309,9 @@ def main():
                             "vwap": snap["vwap"], "band_upper": snap["upper"], "band_lower": snap["lower"],
                             "ema9": snap["ema9"], "ema200": snap["ema200"],
                             "router_telemetry": router.get_telemetry(),
+                            "gamma_burst_z": gamma_detector.last_burst_z,
+                            "gamma_pressure": gamma_detector.last_gamma_pressure,
+                            "gamma_signal": gamma_detector.last_signal
                         })
                         update_astra_live_state(state_payload)
                         
