@@ -289,6 +289,26 @@ def main():
                                     }
                                     logger.info(f"[ROUTER] ARM {router.armed.setup}/{side} token={best_token}")
                         
+                        # Gamma Burst Paper Trading Route (Claude Blueprint)
+                        if gamma_detector.last_signal == "GAMMA_BURST" and not pending_signal and not trader.has_open_trade():
+                            side = "CALL" if gamma_detector.last_direction == "UP" else "PUT"
+                            otype = "CE" if side == "CALL" else "PE"
+                            best_token, best_vol = None, 0.0
+                            for token, data in compiled.items():
+                                if data.get("option_type") != otype: continue
+                                if consideration_strikes and data.get("strike") not in consideration_strikes: continue
+                                vol = data.get("total_buy_vol", 0) + data.get("total_sell_vol", 0)
+                                if vol > best_vol:
+                                    best_vol, best_token = vol, token
+                            
+                            if best_token:
+                                pending_signal = {
+                                    "type": side, "target_token": best_token,
+                                    "spot0": spot_price, "prem0": compiler.get_last_lp(best_token) if compiler else 0.0,
+                                    "arm_time": now, "setup": "GAMMA_BURST"
+                                }
+                                logger.info(f"🔥 GAMMA BURST SIGNAL INJECTED INTO PAPER TRADER: {side} token={best_token}")
+                        
                         # IPC State Update
                         state_payload = {
                             "active_index": fetcher.get_active_instrument()[0],

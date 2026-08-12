@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$sshKey = "C:\Users\Amarjeet Singh\quant-bot\Oracle SSH keys\ssh-key-2026-07-11.key"
+$sshKey = "C:\Users\Amarjeet Singh\quant-bot\stock_order_flow\Oracle SSH keys\ssh-key-2026-07-11.key"
 $userHost = "opc@137.23.41.38"
 $remoteDir = "/home/opc"
 

@@ -489,6 +489,8 @@ body {
             </div>
             <div class="metric"><div class="label">Chain Delta</div><div class="value" id="astraDelta">—</div></div>
             <div class="metric"><div class="label">L2 Wall</div><div class="value" id="astraWall">—</div></div>
+            <div class="metric"><div class="label">Gamma Burst Z</div><div class="value" id="astraGammaZ">—</div></div>
+            <div class="metric"><div class="label">Gamma Pressure</div><div class="value" id="astraGammaP">—</div></div>
           </div>
           <div class="reason" id="astraReason">Waiting for live state…</div>
           <hr style="border: 0; border-top: 1px dashed var(--line); margin: 10px 0;" />
@@ -661,10 +663,12 @@ function renderHistory() {
       const today = new Date();
       const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
       const datePrefix = ('0' + today.getDate()).slice(-2) + ' ' + monthNames[today.getMonth()] + ' ' + today.getFullYear();
+      // ISO prefix for new engine format: "2026-08-11T..." 
+      const isoPrefix = today.getFullYear() + '-' + ('0' + (today.getMonth() + 1)).slice(-2) + '-' + ('0' + today.getDate()).slice(-2);
       
       let sum = 0;
       for (const t of rows) {
-          if (t.date && t.date.startsWith(datePrefix)) {
+          if (t.date && (t.date.startsWith(datePrefix) || t.date.startsWith(isoPrefix))) {
               sum += Number(t.net_pl || 0);
           }
       }
@@ -791,6 +795,8 @@ async function refresh() {
   document.getElementById('astraFunds').textContent = money(a.available_funds);
   document.getElementById('astraDelta').textContent = ((a.chain_delta || 0) * 100).toFixed(1) + '%';
   document.getElementById('astraWall').textContent = fmt(a.l2_wall_size, 0);
+  document.getElementById('astraGammaZ').textContent = fmt(a.gamma_burst_z, 2);
+  document.getElementById('astraGammaP').textContent = fmt(a.gamma_pressure, 0);
   document.getElementById('astraReason').textContent = a.reasoning || '—';
   const ap = document.getElementById('astraPill');
   ap.textContent = aSig;

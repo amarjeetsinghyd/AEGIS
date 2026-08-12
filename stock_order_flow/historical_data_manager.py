@@ -1,10 +1,7 @@
 from __future__ import annotations
-
 import os
 from datetime import datetime, timedelta
-
 import pandas as pd
-
 from common.config import get_data_dir
 from common.logger import get_logger
 
@@ -18,16 +15,21 @@ def _parse_rows(rows):
     recs = []
     for r in rows or []:
         try:
-            recs.append(
-                {
-                    "timestamp": pd.to_datetime(r.get("time") or r.get("ts") or r.get("timestamp")),
-                    "open": float(r.get("into") or r.get("open") or 0),
-                    "high": float(r.get("inth") or r.get("high") or 0),
-                    "low": float(r.get("intl") or r.get("low") or 0),
-                    "close": float(r.get("intc") or r.get("close") or 0),
-                    "volume": float(r.get("intv") or r.get("v") or 0),
-                }
-            )
+            t = r.get("time") or r.get("ts") or r.get("timestamp")
+            if isinstance(t, str):
+                ts = pd.to_datetime(t, dayfirst=True)          # Noren = DD-MM-YYYY
+            elif isinstance(t, (int, float)):
+                ts = pd.to_datetime(t, unit="s")
+            else:
+                ts = pd.to_datetime(t)
+            recs.append({
+                "timestamp": ts,
+                "open": float(r.get("into") or r.get("open") or 0),
+                "high": float(r.get("inth") or r.get("high") or 0),
+                "low": float(r.get("intl") or r.get("low") or 0),
+                "close": float(r.get("intc") or r.get("close") or 0),
+                "volume": float(r.get("intv") or r.get("v") or 0),
+            })
         except Exception:
             continue
     recs.sort(key=lambda x: x["timestamp"])
@@ -46,12 +48,10 @@ def fetch_and_seed_history(broker, tokens: list, token_map: dict) -> dict:
                     local = pd.read_parquet(path)
                 except Exception:
                     local = None
-
             last_local_ts = None
             if local is not None and len(local):
                 local["timestamp"] = pd.to_datetime(local["timestamp"])
                 last_local_ts = local["timestamp"].max()
-
             start = int((last_local_ts + timedelta(seconds=1)).timestamp()) if last_local_ts is not None else int((datetime.now() - timedelta(days=6)).timestamp())
             end = int(datetime.now().timestamp())
             rows = broker._api.get_time_price_series(exchange="NSE", token=str(token), starttime=start, endtime=end, interval="3")
