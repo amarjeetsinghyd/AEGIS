@@ -1,47 +1,49 @@
+"""Stock Order Flow — Engine 3 main loop (LIVE), 3-minute WS clock.
+FINAL v4: symbol-keyed books + tsym map + StructureMapEngine wiring
+(15m bars filtered to today for OR15/OR30 freeze)."""
 from __future__ import annotations
+import os, sys, json, time
+from datetime import datetime, time as dt_time
+import pandas as pd
 
-import os
-import sys
-import json
-import time
-from datetime import datetime, time as dttime
-
-BASEDIR = os.path.dirname(os.path.dirname(__file__))
-if BASEDIR not in sys.path:
-    sys.path.insert(0, BASEDIR)
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
 
 from common.config import configure_runtime, get_data_dir
+configure_runtime("stock_order_flow")
+
 from common.broker import ShoonyaAdapter
 from common.logger import get_logger
-from common.market.market_calendar import is_trading_day, is_market_open, MARKET_CLOSE_TIME, TRADE_ENTRY_CUTOFF_TIME
+from common.market.market_calendar import is_trading_day, is_market_open, MARKET_CLOSE_TIME
 from stock_order_flow.tick_compiler import TickCompiler
 from stock_order_flow.execution_manager import StockExecutionManager
 from stock_order_flow.strategy_engine import StockStrategyEngine
+from stock_order_flow.structure_map import StructureMapEngine
 from stock_order_flow.historical_data_manager import fetch_and_seed_history
 from stock_order_flow.bar_book import resample_bars
 
-logger = get_logger("stockmain")
-configure_runtime("stock_order_flow")
+logger = get_logger("stock_main")
 
 BAR_MINUTES = 3
 UNIVERSE_PATH = os.path.join(get_data_dir(), "universe.json")
 
 DEFAULT_UNIVERSE = {
-    "RELIANCE": {"token": 2885, "search": "RELIANCE-EQ"},
-    "HDFCBANK": {"token": 1333, "search": "HDFCBANK-EQ"},
-    "INFY": {"token": 1594, "search": "INFY-EQ"},
-    "LT": {"token": 11483, "search": "LT-EQ"},
-    "TATAMOTORS": {"token": 3456, "search": "TATAMOTORS-EQ"},
-    "ICICIBANK": {"token": 4963, "search": "ICICIBANK-EQ"},
-    "SBIN": {"token": 3045, "search": "SBIN-EQ"},
-    "TCS": {"token": 11536, "search": "TCS-EQ"},
-    "AXISBANK": {"token": 5900, "search": "AXISBANK-EQ"},
-    "ITC": {"token": 1660, "search": "ITC-EQ"},
-    "KOTAKBANK": {"token": 1922, "search": "KOTAKBANK-EQ"},
-    "BHARTIARTL": {"token": 10604, "search": "BHARTIARTL-EQ"},
-    "BAJFINANCE": {"token": 317, "search": "BAJFINANCE-EQ"},
-    "MARUTI": {"token": 10999, "search": "MARUTI-EQ"},
-    "MM": {"token": 2031, "search": "MM-EQ"},
+    "RELIANCE": {"token": "2885", "search": ["RELIANCE-EQ", "RELIANCE"]},
+    "HDFCBANK": {"token": "1333", "search": ["HDFCBANK-EQ", "HDFCBANK"]},
+    "INFY": {"token": "1594", "search": ["INFY-EQ", "INFY"]},
+    "LT": {"token": "11483", "search": ["LT-EQ", "LT"]},
+    "TATAMOTORS": {"token": "3456", "search": ["Tata Motors", "TMPV-EQ", "TATAMOTORS-EQ"]},
+    "ICICIBANK": {"token": "4963", "search": ["ICICIBANK-EQ", "ICICIBANK"]},
+    "SBIN": {"token": "3045", "search": ["SBIN-EQ", "SBIN"]},
+    "TCS": {"token": "11536", "search": ["TCS-EQ", "TCS"]},
+    "AXISBANK": {"token": "5900", "search": ["AXISBANK-EQ", "AXISBANK"]},
+    "ITC": {"token": "1660", "search": ["ITC-EQ", "ITC"]},
+    "KOTAKBANK": {"token": "1922", "search": ["KOTAKBANK-EQ", "KOTAKBANK"]},
+    "BHARTIARTL": {"token": "10604", "search": ["BHARTIARTL-EQ", "BHARTIARTL"]},
+    "BAJFINANCE": {"token": "317", "search": ["BAJFINANCE-EQ", "BAJFINANCE"]},
+    "MARUTI": {"token": "10999", "search": ["MARUTI-EQ", "MARUTI"]},
+    "M&M": {"token": "2031", "search": ["M&M-EQ", "M&M"]},
 }
 
 
@@ -51,41 +53,92 @@ def load_universe():
             with open(UNIVERSE_PATH, "r") as f:
                 data = json.load(f)
             stocks = data.get("stocks", [])
-            uni = {}
-            for s in stocks:
-                uni[s["symbol"]] = {"token": str(s["token"]), "search": s.get("search", s["symbol"]) }
-            logger.info(f"Universe loaded from universe.json: {len(uni)} stocks, dated {data.get('date')}")
-            return uni
+            if stocks:
+                uni = {}
+                for s in stocks:
+                    uni[s["symbol"]] = {"token": str(s["token"]), "search": s.get("search", [])}
+                logger.info(f"Universe loaded from universe.json ({len(uni)} stocks, dated {data.get('date')})")
+                return uni
     except Exception as e:
-        logger.warning(f"universe.json read failed: {e}; using default universe")
+        logger.warning(f"universe.json read failed ({e}) — using default universe")
     return DEFAULT_UNIVERSE
 
 
-def seed_books(broker_hist, compiler, token_to_symbol):
+def build_tsym_map(universe: dict) -> dict:
+    m = {}
+    for sym, meta in universe.items():
+        search = meta.get("search", [])
+        if isinstance(search, list) and search:
+            m[sym] = str(search[0])
+        elif isinstance(search, str) and search:
+            m[sym] = search
+        else:
+            m[sym] = f"{sym}-EQ"
+    return m
+
+
+def compute_prior(df):
+    try:
+        if df is None or len(df) == 0:
+            return None
+        d = df.copy()
+        d["timestamp"] = pd.to_datetime(d["timestamp"])
+        d["date"] = d["timestamp"].dt.date
+        last_date = d["date"].max()
+        prev = d[d["date"] < last_date]
+        if len(prev) == 0:
+            return None
+        pday = prev[prev["date"] == prev["date"].max()]
+        if len(pday) == 0:
+            return None
+        h = float(pday["high"].max())
+        l = float(pday["low"].min())
+        c = float(pday["close"].iloc[-1])
+        tp = (pday["high"] + pday["low"] + pday["close"]) / 3.0
+        v = pday["volume"].replace(0, 1e-9)
+        vwap = float((tp * v).sum() / v.sum())
+        return {"h": h, "l": l, "c": c, "vwap": vwap}
+    except Exception:
+        return None
+
+
+def seed_books(broker_hist, compiler, token_to_symbol, smap):
     for token_str, df in broker_hist.items():
         sym = token_to_symbol.get(str(token_str), str(token_str))
         compiler.bar_book.seed(sym, df)
         df15 = resample_bars(df, 15)
         if df15 is not None and len(df15):
             compiler.bar_book_15.seed(sym, df15)
+        prior = compute_prior(df)
+        if prior:
+            smap.set_prior(sym, prior["h"], prior["l"], prior["c"], prior["vwap"])
 
 
 def main():
-    logger.info("Starting Stock Order Flow Engine 3 FINAL: 5x, ATR15, Chandelier, dynamic universe")
+    logger.info("Starting Stock Order Flow Engine 3 — FINAL v4 (zone-aware)")
     broker = ShoonyaAdapter()
     if hasattr(broker, "session_provider"):
         broker.session_provider._restore_or_login()
-
     compiler = TickCompiler(broker)
     trader = StockExecutionManager(broker)
     strategy = StockStrategyEngine()
+    smap = StructureMapEngine()
+
     universe = load_universe()
     tokens = [meta["token"] for meta in universe.values()]
     token_to_symbol = {meta["token"]: sym for sym, meta in universe.items()}
 
     compiler.set_symbol_map(token_to_symbol)
+    trader.set_tsym_map(build_tsym_map(universe))
+
+    from stock_order_flow.l2_archiver import attach_archiver
+    archiver = attach_archiver(broker, token_to_symbol)
+
+    from stock_order_flow.cascade.value_engine import attach_cascade_engine
+    cascade_engine = attach_cascade_engine(broker, token_to_symbol)
+
     hist_data = fetch_and_seed_history(broker, tokens, token_to_symbol)
-    seed_books(hist_data, compiler, token_to_symbol)
+    seed_books(hist_data, compiler, token_to_symbol, smap)
     compiler.subscribe(tokens)
 
     last_processed_bucket = None
@@ -95,56 +148,67 @@ def main():
         try:
             now = datetime.now()
 
-            if now.time() >= dttime(15, 17, 0) and eod_sync_done_for_day != now.date():
-                logger.info(f"{now.strftime('%H:%M:%S')} Triggering EOD Gap Fill Sync...")
+            if now.time() >= dt_time(15, 17, 0) and eod_sync_done_for_day != now.date():
+                logger.info(f"[{now.strftime('%H:%M:00')}] Triggering EOD Gap Fill Sync...")
                 eod_hist = fetch_and_seed_history(broker, tokens, token_to_symbol)
-                seed_books(eod_hist, compiler, token_to_symbol)
+                seed_books(eod_hist, compiler, token_to_symbol, smap)
                 eod_sync_done_for_day = now.date()
                 logger.info("EOD Gap Fill Sync Complete.")
 
-            if not is_trading_day(now.date()):
+            if not is_trading_day(now.date()) or now.time() > MARKET_CLOSE_TIME:
                 time.sleep(60)
-                continue
-            if not is_market_open(now):
-                time.sleep(10)
                 continue
 
             current_prices = {}
-            for token in tokens:
-                sym = token_to_symbol.get(token)
-                md = compiler.market_depth.get(str(token), {})
-                if md and md.get("lp", 0) > 0:
-                    current_prices[sym] = md["lp"]
+            for t in tokens:
+                sym = token_to_symbol[t]
+                if t in compiler.market_depth and compiler.market_depth[t]["lp"] > 0:
+                    current_prices[sym] = compiler.market_depth[t]["lp"]
 
             trader.manage_open_trades(current_prices)
 
             bucket_key = (now.date(), now.hour, now.minute - (now.minute % BAR_MINUTES))
-            is_boundary = now.minute % BAR_MINUTES == 0 and now.second >= 2
+            is_boundary = (now.minute % BAR_MINUTES == 0) and (now.second >= 2)
+
             if is_boundary and bucket_key != last_processed_bucket and is_market_open(now):
                 last_processed_bucket = bucket_key
+
                 if len(trader.open_trades) > 0:
-                    logger.info(f"{now.strftime('%H:%M:%S')} Global Mutex Active. Skipping evaluation.")
+                    logger.info(f"[{now.strftime('%H:%M:00')}] Global Mutex Active. Skipping evaluation.")
                     compiler.reset_for_new_candle()
                     continue
 
                 logger.info(f"========== {BAR_MINUTES}m BOUNDARY EVALUATION ==========")
                 for token in tokens:
-                    sym = token_to_symbol.get(token)
+                    sym = token_to_symbol[token]
                     compiler.bar_book.force_close_forming(sym, now)
                     compiler.bar_book_15.force_close_forming(sym, now)
 
-                token_footprints = compiler.get_compiled_footprints()
-                sym_footprints = {token_to_symbol.get(t, t): fp for t, fp in token_footprints.items()}
+                # update spatial map from TODAY's 15m structure only
+                today_ts = pd.Timestamp(now.date())
+                for token in tokens:
+                    sym = token_to_symbol[token]
+                    df15 = compiler.bar_book_15.completed_df(sym, min_bars=1)
+                    if df15 is not None and len(df15):
+                        df15 = df15[pd.to_datetime(df15["timestamp"]) >= today_ts]
+                    bars = df15.to_dict("records") if df15 is not None and len(df15) else []
+                    atr15 = strategy._atr15(compiler.bar_book_15, sym)
+                    smap.update(sym, bars, atr15, now)
 
-                best_sym, signal, reason, metrics = strategy.evaluate_all(sym_footprints, compiler.bar_book, compiler.bar_book_15, now)
-                allow_entry = now.time() < TRADE_ENTRY_CUTOFF_TIME
+                token_footprints = compiler.get_compiled_footprints()
+                sym_footprints = {token_to_symbol[t]: fp for t, fp in token_footprints.items()}
+
+                best_sym, signal, reason, metrics = strategy.evaluate_all(
+                    sym_footprints, compiler.bar_book, compiler.bar_book_15, now, smap=smap)
+                allow_entry = now.time() < dt_time(14, 45)
                 if best_sym and signal and allow_entry:
                     px = current_prices.get(best_sym, 0.0)
                     if px <= 0:
-                        logger.warning(f"No live price for {best_sym}; skipping entry.")
+                        logger.warning(f"No live price for {best_sym} — skipping entry")
                     else:
                         logger.info(f"🏆 MUTEX WINNER: {best_sym} -> {signal} | {reason}")
                         trader.execute_entry(signal, best_sym, px, reason, metrics=metrics)
+
                 compiler.reset_for_new_candle()
 
             time.sleep(1)
