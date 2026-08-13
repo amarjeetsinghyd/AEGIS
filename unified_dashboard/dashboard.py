@@ -42,6 +42,12 @@ def _read_json(path, default=None):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
+        except UnicodeError:
+            try:
+                with open(path, "r", encoding="utf-16") as f:
+                    return json.load(f)
+            except Exception:
+                pass
         except Exception:
             pass
     return default
@@ -913,7 +919,7 @@ def live_state():
     # Astra/Kronos are stopped — read their logs defensively (empty if missing)
     astra["active_trade"] = _active_trade(ASTRA_DATA)
     kronos["active_trade"] = _active_trade(KRONOS_DATA)
-    astra_logs = [html.escape(line) for line in _tail_log(os.path.join(ASTRA_LOGS, "astra_bot.log"), 80)]
+    astra_logs = [html.escape(line) for line in _tail_log(os.path.join(ASTRA_LOGS, "app.log"), 80)]
     kronos_logs = [html.escape(line) for line in _tail_log(os.path.join(KRONOS_LOGS, "kronos_bot.log"), 80)]
     astra_hist = _trade_history(ASTRA_DATA)
     kronos_hist = _trade_history(KRONOS_DATA)
