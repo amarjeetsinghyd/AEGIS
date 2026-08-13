@@ -119,6 +119,11 @@ def seed_books(broker_hist, compiler, token_to_symbol, smap):
 
 def main():
     logger.info("Starting Stock Order Flow Engine 3 — FINAL v4 (zone-aware)")
+    now = datetime.now()
+    if not is_bot_active_hours(now) and not is_pre_market(now):
+        logger.info("Bot started outside active hours. Entering deep sleep until premarket...")
+        sleep_until_next_premarket()
+
     broker = ShoonyaAdapter()
     if hasattr(broker, "session_provider"):
         broker.session_provider._restore_or_login()
