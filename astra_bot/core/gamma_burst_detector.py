@@ -65,6 +65,11 @@ class GammaBurstDetector:
         self.last_gamma_pressure = 0.0
         self.last_signal = None
         self.last_direction = None
+        
+        self._prev_cum_vol = 0.0
+        self._last_recompute_time = 0.0
+        
+        self.UNDERLYING_TOKENS = {"26000", "1", "99919000"}
 
     def update_depth(self, side_idx, strike_offset, level, bpx, bqty, apx, aqty):
         # side_idx: 0 for CE, 1 for PE
@@ -193,7 +198,7 @@ class GammaBurstDetector:
             return None
 
         # Determine if it's the underlying index
-        if "e" in msg and msg["e"] in ["NSE", "BSE"] and ("26000" in str(msg.get("tk", "")) or "1" in str(msg.get("tk", "")) or "99919000" in str(msg.get("tk", ""))):
+        if "e" in msg and msg["e"] in ["NSE", "BSE"] and str(msg.get("tk", "")) in self.UNDERLYING_TOKENS:
             if "lp" in msg:
                 vol = float(msg.get("v", 0.0))
                 return self.on_underlying_tick(float(msg["lp"]), vol)
@@ -253,9 +258,20 @@ class GammaBurstDetector:
     def on_underlying_tick(self, ltp, volume):
         self.underlying_ltp = float(ltp)
         vol = float(volume)
+        
+        dvol = max(0.0, vol - self._prev_cum_vol)
+        self._prev_cum_vol = vol
+        
         self._push(self.underlying_ltp_hist, self.underlying_ltp)
-        self._push(self.underlying_vol_hist, vol)
-        # heartbeat: underlying tick drives full recompute
+        self._push(self.underlying_vol_hist, dvol)
+        
+        # Throttle recompute to max ~4 times per second (250ms)
+        import time
+        now = time.time()
+        if now - self._last_recompute_time < 0.25:
+            return None
+            
+        self._last_recompute_time = now
         return self._recompute()
 
     def _recompute(self):

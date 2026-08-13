@@ -24,7 +24,8 @@ class CascadeValueEngine:
         
         # Deques to hold historical bucket metrics
         self.vpin_q = {}
-        self.hawkes_q = {}
+        # We store completion timestamps for Fano factor calculation
+        self.completion_times = {}
         
         self.LOG_FILE = os.path.join(get_data_dir(), "logs", f"shadow_cascade_{datetime.now().strftime('%Y-%m-%d')}.jsonl")
         
@@ -51,10 +52,14 @@ class CascadeValueEngine:
                 sp1 = float(msg.get("sp1") or st.get("sp1") or 0)
                 
                 # Assign to Buy/Sell (Aggressor)
-                if lp >= sp1: 
-                    self.cur_buy_val[sym] = self.cur_buy_val.get(sym, 0.0) + trade_val
-                elif lp <= bp1:
-                    self.cur_sell_val[sym] = self.cur_sell_val.get(sym, 0.0) + trade_val
+                if bp1 > 0 and sp1 > 0:
+                    if lp >= sp1: 
+                        self.cur_buy_val[sym] = self.cur_buy_val.get(sym, 0.0) + trade_val
+                    elif lp <= bp1:
+                        self.cur_sell_val[sym] = self.cur_sell_val.get(sym, 0.0) + trade_val
+                    else:
+                        self.cur_buy_val[sym] = self.cur_buy_val.get(sym, 0.0) + trade_val * 0.5
+                        self.cur_sell_val[sym] = self.cur_sell_val.get(sym, 0.0) + trade_val * 0.5
                 else:
                     self.cur_buy_val[sym] = self.cur_buy_val.get(sym, 0.0) + trade_val * 0.5
                     self.cur_sell_val[sym] = self.cur_sell_val.get(sym, 0.0) + trade_val * 0.5
@@ -85,16 +90,28 @@ class CascadeValueEngine:
         self.vpin_q.setdefault(sym, deque(maxlen=20)).append(tpin)
         avg_tpin = sum(self.vpin_q[sym]) / len(self.vpin_q[sym])
         
-        # 2. Hawkes Branching (Duration variance)
-        duration = nows - st.get("bts", nows)
-        self.hawkes_q.setdefault(sym, deque(maxlen=20)).append(duration)
-        dq = self.hawkes_q[sym]
+        # 2. Hawkes Branching (Fano factor of completions in 10-sec bins over 600s)
+        self.completion_times.setdefault(sym, deque(maxlen=200)).append(nows)
+        times = self.completion_times[sym]
+        
+        # Remove timestamps older than 600 seconds
+        cutoff = nows - 600
+        while times and times[0] < cutoff:
+            times.popleft()
+            
         branching = 0.0
-        if len(dq) >= 10:
-            mean_dur = np.mean(dq)
-            var_dur = np.var(dq)
-            if var_dur > 0:
-                branching = max(0.0, 1.0 - np.sqrt(mean_dur / var_dur))
+        if len(times) >= 10:
+            # Build counts for 60 bins of 10s each
+            counts = np.zeros(60)
+            for t in times:
+                bin_idx = int((t - cutoff) // 10)
+                if 0 <= bin_idx < 60:
+                    counts[bin_idx] += 1
+            
+            mean_c = np.mean(counts)
+            var_c = np.var(counts)
+            if var_c > 0 and mean_c > 0:
+                branching = max(0.0, 1.0 - np.sqrt(mean_c / var_c))
         
         # 3. Microprice Value Deviation
         bp1, bq1 = st.get("bp1", 0.0), st.get("bq1", 0.0)

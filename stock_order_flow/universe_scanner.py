@@ -324,12 +324,15 @@ def run_scan(broker):
             if not f:
                 funnel["compute_fail"] += 1
                 continue
-            if f["close"] > PRICE_MAX:
+            if f["close"] < 50.0:
                 funnel["price_cap"] += 1
                 continue
-            if f["avg_vol"] < MIN_AVG_VOL:
+                
+            turnover = f["avg_vol"] * f["close"]
+            if turnover < 1.0e7:  # 1 Crore INR daily turnover minimum
                 funnel["vol_min"] += 1
                 continue
+                
             if f["idr22"] < IDR_FLOOR:
                 funnel["idr_min"] += 1
                 continue

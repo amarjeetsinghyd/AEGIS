@@ -208,6 +208,7 @@ def main():
                                 side = 0 if 'CE' in sym or ('C' in sym and sym[-1].isdigit()) else 1
                                 token_map[tkn] = {'side': side, 'strike': stk}
                         gamma_detector.set_token_map(token_map)
+                        logger.info(f"Gamma detector token map updated. Size: {len(token_map)}")
                         
                         # Evaluation window is ±6 (6+6), Consideration window is ±3 (3+3)
                         evaluation_strikes = [atm_strike + (i * step) for i in range(-6, 7)]

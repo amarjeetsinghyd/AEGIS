@@ -376,6 +376,12 @@ class ExecutionManager:
                 self._close_all_legs(f"Hard SL Hit (-25% Premium Loss: {profit_pct*100:.1f}%)")
                 return
 
+            # Breakeven Lock: If profit >= 15%, floor the trailing stop at entry (0% profit)
+            # This prevents giving away significant MFE (Maximum Favorable Excursion)
+            if hwm_pct >= 0.15 and profit_pct <= 0.0:
+                self._close_all_legs(f"Breakeven Lock Hit (Peak +{hwm_pct*100:.1f}%, Floored at Entry)")
+                return
+
             # Exit Branch 2: Trailing Stop Loss (Gives back >50% of peak gain after +15% profit achieved)
             if hwm_pct >= 0.15 and profit_pct <= (hwm_pct * 0.50):
                 self._close_all_legs(f"Trailing SL Hit (Peak +{hwm_pct*100:.1f}%, Retraced to +{profit_pct*100:.1f}%)")
