@@ -15,7 +15,10 @@ configure_runtime("stock_order_flow")
 
 from common.broker import ShoonyaAdapter
 from common.logger import get_logger
-from common.market.market_calendar import is_trading_day, is_market_open, MARKET_CLOSE_TIME
+from common.market.market_calendar import (
+    is_trading_day, is_market_open, MARKET_CLOSE_TIME,
+    is_bot_active_hours, sleep_until_next_premarket, is_pre_market
+)
 from stock_order_flow.tick_compiler import TickCompiler
 from stock_order_flow.execution_manager import StockExecutionManager
 from stock_order_flow.strategy_engine import StockStrategyEngine
@@ -147,6 +150,17 @@ def main():
     while True:
         try:
             now = datetime.now()
+
+            if not is_bot_active_hours(now):
+                logger.info("Bot active runtime closed. Entering deep sleep...")
+                sleep_until_next_premarket()
+                if hasattr(broker, "session_provider"):
+                    broker.session_provider._restore_or_login()
+                continue
+                
+            if is_pre_market(now):
+                time.sleep(1)
+                continue
 
             if now.time() >= dt_time(15, 17, 0) and eod_sync_done_for_day != now.date():
                 logger.info(f"[{now.strftime('%H:%M:00')}] Triggering EOD Gap Fill Sync...")
