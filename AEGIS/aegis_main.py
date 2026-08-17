@@ -23,8 +23,8 @@ from common.broker import ShoonyaAdapter
 from common.config import get_data_dir
 from common.ipc import update_aegis_live_state, SHARED_TICK_FILE
 from AEGIS.execution.data_fetcher import DataFetcher
-from AEGIS.execution.aegis_execution_manager import AegisExecutionManager
-from AEGIS.core.aegis_gamma_engine import AegisGammaEngine, create_aegis_engine
+from AEGIS.aegis_execution_manager import AegisExecutionManager
+from AEGIS.aegis_gamma_engine import AegisGammaEngine, create_aegis_engine
 from AEGIS.l2_options_archiver import attach_aegis_archiver
 
 logger = get_logger("aegis_main")
