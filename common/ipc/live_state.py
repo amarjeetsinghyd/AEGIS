@@ -29,6 +29,7 @@ def _shm_path(name: str) -> str:
 SHARED_TICK_FILE = _shm_path("shoonya_live_ticks.json")
 ASTRA_STATE_FILE = _shm_path("kdo_live_state.json")
 KRONOS_STATE_FILE = _shm_path("kronos_live_state.json")
+AEGIS_STATE_FILE = _shm_path("aegis_live_state.json")
 KILL_SWITCH_FILE = _shm_path("KILL_SWITCH_ACTIVE")
 
 _DEFAULT_ASTRA = {
@@ -61,6 +62,27 @@ _DEFAULT_KRONOS = {
     "available_funds": 0.0,
     "reasoning": "Waiting for next 5-minute candle...",
     "engine": "kronos",
+}
+
+# AEGIS V2.0 live-state schema (Gamma Burst Engine)
+# Keys mirror AegisGammaEngine.get_state_summary() + execution manager state.
+_DEFAULT_AEGIS = {
+    "timestamp": "",
+    "active_index": "NIFTY",
+    "spot_price": 0.0,
+    "atm_strike": 0.0,
+    "atm_iv": 0.0,
+    "gamma_sum": 0.0,
+    "speed_sum": 0.0,
+    "hawkes_B": 0.0,
+    "conviction_eff": 0.0,
+    "trades_today": 0,
+    "daily_pnl": 0.0,
+    "has_open_trade": False,
+    "active_trade": None,
+    "available_funds": 0.0,
+    "params_source": "priors",
+    "engine": "aegis",
 }
 
 
@@ -110,6 +132,14 @@ def update_kronos_live_state(data: dict) -> dict:
 
 def get_kronos_live_state() -> dict:
     return _read_json(KRONOS_STATE_FILE, _DEFAULT_KRONOS)
+
+
+def update_aegis_live_state(data: dict) -> dict:
+    return _update_state(AEGIS_STATE_FILE, _DEFAULT_AEGIS, data)
+
+
+def get_aegis_live_state() -> dict:
+    return _read_json(AEGIS_STATE_FILE, _DEFAULT_AEGIS)
 
 
 # Back-compat aliases used by Astra KDO loop

@@ -1,213 +1,214 @@
-"""L2 Archiver v1.1 (Q14 + N-research) — passive microstructure recorder.
-ZERO impact on trading logic: attaches via broker chain walk (market_data/mdp/_mdp/api),
-same pattern as tick_compiler.subscribe.
-Outputs:
-  data/l2_archive/l2_YYYY-MM-DD.parquet  (snappy, 30d retention)
-  data/logs/preopen_*.jsonl              (09:00-09:15 auction imbalance)
-  data/logs/closeauction_*.jsonl         (15:30-15:40)
-Per-candle research accumulators via get_candle_features() (shadow-only):
-large-trade stats, asym ratio, liquidity response, adverse selection,
-Pareto tail alpha, microprice deviation. Single-pass, O(1)/tick, RAM-flat."""
+"""L2 Archiver v3.0 — Raw Data Logger (Partitioned Parquet)
+Subscribes ONLY to hardcoded 110 liquid symbols (< 3000 INR).
+Writes raw L2 ticks to partitioned Snappy Parquet (15-min files).
+ZERO Microstructure Math. Pure Passive Recorder.
+Optimized for 1GB RAM VPS: Partitioned writes, no in-memory accumulation."""
 from __future__ import annotations
-import os, math, json, time as pytime
-from collections import deque
+import os
+import sys
+
+# ─── BOOTSTRAP ───
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
+import json, time as pytime
 from datetime import datetime, time as dtime, timedelta
 import numpy as np
 import pandas as pd
 from common.config import get_data_dir
 from common.logger import get_logger
+from common.symbols import SUBSCRIPTION_UNIVERSE
 
 logger = get_logger("l2_archiver")
 
 DATA = get_data_dir()
-ARCH_DIR = os.path.join(DATA, "l2_archive")
-LOGS = os.path.join(DATA, "logs")
-os.makedirs(ARCH_DIR, exist_ok=True)
+RAW_DIR = os.path.join(DATA, "l2_raw")       # Partitioned raw data
+LOGS = os.path.join(DATA, "logs")             # Auction logs
+os.makedirs(RAW_DIR, exist_ok=True)
 os.makedirs(LOGS, exist_ok=True)
-TICK = 0.05
-RETENTION_DAYS = 30
 
+RETENTION_DAYS = 30
+FLUSH_INTERVAL_SEC = 900  # 15 minutes = 1 partition file
+AUCTION_LOG_INTERVAL = 2.0
+TICK_SIZE = 0.05
+
+# ─── Schema Definition (PyArrow/Parquet Optimized) ───
+SCHEMA_DTYPES = {
+    "ts": "int64",        # Unix ms
+    "tok": "int32",       # Token
+    "lp": "float32",      # Last Price
+    "vol": "float32",     # Day Volume
+    "bp1": "float32", "bq1": "int32",
+    "bp2": "float32", "bq2": "int32",
+    "bp3": "float32", "bq3": "int32",
+    "bp4": "float32", "bq4": "int32",
+    "bp5": "float32", "bq5": "int32",
+    "sp1": "float32", "sq1": "int32",
+    "sp2": "float32", "sq2": "int32",
+    "sp3": "float32", "sq3": "int32",
+    "sp4": "float32", "sq4": "int32",
+    "sp5": "float32", "sq5": "int32",
+}
 
 class L2Archiver:
     def __init__(self, token_to_symbol: dict):
-        self.t2s = {str(k): str(v) for k, v in token_to_symbol.items()}
-        self.prev_vol = {}
-        self.last_snap = {}
-        self.buffer = []
-        self.auction_buf = []
+        # Reverse Map: Symbol -> Token (for Subscription Filter)
+        self.sym_to_tok = {str(v): str(k) for k, v in token_to_symbol.items()}
+        # Filter: Only keep tokens for our 110 symbols
+        self.target_tokens = {self.sym_to_tok[s] for s in SUBSCRIPTION_UNIVERSE if s in self.sym_to_tok}
+        logger.info(f"L2Archiver: Subscription Filter Active. Target Tokens: {len(self.target_tokens)}")
+
+        # Token -> Symbol for writing
+        self.tok_to_sym = {str(k): str(v) for k, v in token_to_symbol.items() if str(k) in self.target_tokens}
+        
+        self.buffer: list[dict] = []
+        self.auction_buf: list[dict] = []
         self.last_flush = pytime.time()
         self.last_aflush = pytime.time()
-        self.dv = {}          # per-symbol deque of (ts, dVol, sign)
-        self.logsz = {}       # per-symbol deque of log(dVol)
-        self.ema_liq = {}
-        self.ema_adv = {}
-        self.ema_expimp = {}
-        self.micro = {}
-        self._prune()
+        self.partition_seq = 0
+        self.current_date = datetime.now().strftime("%Y-%m-%d")
+        self._prune_old_files()
 
-    def _prune(self):
+    def _prune_old_files(self):
         try:
-            cut_p = datetime.now() - timedelta(days=RETENTION_DAYS)
-            for f in os.listdir(ARCH_DIR):
-                if f.endswith(".parquet"):
-                    d = f.replace("l2_", "").replace(".parquet", "")
-                    if datetime.strptime(d, "%Y-%m-%d") < cut_p:
-                        os.remove(os.path.join(ARCH_DIR, f))
+            cut = datetime.now() - timedelta(days=RETENTION_DAYS)
+            for f in os.listdir(RAW_DIR):
+                if f.startswith("l2_raw_") and f.endswith(".parquet"):
+                    # Parse date from filename l2_raw_YYYY-MM-DD_part_N.parquet
+                    parts = f.replace("l2_raw_", "").replace(".parquet", "").split("_part_")
+                    if len(parts) == 2:
+                        d = datetime.strptime(parts[0], "%Y-%m-%d")
+                        if d < cut: os.remove(os.path.join(RAW_DIR, f))
+            # Prune Auction Logs
             cut_l = datetime.now() - timedelta(days=7)
             for f in os.listdir(LOGS):
                 if (f.startswith("preopen_") or f.startswith("closeauction_")) and f.endswith(".jsonl"):
-                    d = f.split("_")[1].replace(".jsonl", "")
-                    if datetime.strptime(d, "%Y-%m-%d") < cut_l:
-                        os.remove(os.path.join(LOGS, f))
+                    d = datetime.strptime(f.split("_")[1].replace(".jsonl", ""), "%Y-%m-%d")
+                    if d < cut_l: os.remove(os.path.join(LOGS, f))
         except Exception as e:
-            logger.debug(f"prune failed: {e}")
+            logger.debug(f"Prune failed: {e}")
 
-    def on_tick(self, msg):
-        try:
-            tok = str(msg.get("token", ""))
-            sym = self.t2s.get(tok)
-            if not sym:
-                return
-            lp = float(msg.get("last_traded_price") or msg.get("lp") or 0)
-            vol = float(msg.get("volume_trade_for_the_day") or msg.get("v") or 0)
-            bq1 = float(msg.get("bq1") or 0); sq1 = float(msg.get("sq1") or 0)
-            bp1 = float(msg.get("bp1") or 0); sp1 = float(msg.get("sp1") or 0)
-            if lp <= 0:
-                return
-            now = datetime.now(); ts = now.time(); nows = now.timestamp()
-            # Microprice
-            if bq1 + sq1 > 0 and bp1 > 0 and sp1 > 0:
-                self.micro[sym] = (bp1 * sq1 + sp1 * bq1) / (bq1 + sq1)
-            # Auction imbalance loggers
-            if dtime(9, 0) <= ts < dtime(9, 15) or dtime(15, 30) <= ts < dtime(15, 40):
-                sb = sum(float(msg.get(f"bq{i}") or 0) for i in range(1, 6))
-                sa = sum(float(msg.get(f"sq{i}") or 0) for i in range(1, 6))
-                st = self.last_snap.setdefault(sym, {})
-                if nows - st.get("a_ts", 0) >= 2.0:
-                    st["a_ts"] = nows
-                    self.auction_buf.append({"ts": nows, "sym": sym, "lp": lp,
-                                             "imb": (sb - sa) / max(sb + sa, 1.0)})
-            # Depth snapshot (on-change + 2s heartbeat)
-            st = self.last_snap.setdefault(sym, {})
-            chg = (abs(lp - st.get("lp", 0)) >= 2 * TICK or
-                   abs(bq1 - st.get("bq1", 0)) >= 0.2 * max(st.get("bq1", 1), 1) or
-                   abs(sq1 - st.get("sq1", 0)) >= 0.2 * max(st.get("sq1", 1), 1))
-            if chg or nows - st.get("s_ts", 0) >= 2.0:
-                st.update({"lp": lp, "bq1": bq1, "sq1": sq1, "s_ts": nows})
-                self.buffer.append({
-                    "ts": int(nows * 1000), "tok": int(tok) if tok.isdigit() else 0,
-                    "lp": np.float32(lp), "bp1": np.float32(bp1), "sp1": np.float32(sp1),
-                    "bq1": np.int32(bq1), "sq1": np.int32(sq1),
-                    "bq2": np.int32(msg.get("bq2") or 0), "sq2": np.int32(msg.get("sq2") or 0),
-                    "bq3": np.int32(msg.get("bq3") or 0), "sq3": np.int32(msg.get("sq3") or 0)})
-            # Research accumulators (market hours only)
-            dVol = max(0.0, vol - self.prev_vol.get(sym, vol))
-            self.prev_vol[sym] = vol
-            if dtime(9, 15) <= ts < dtime(15, 30) and dVol > 0:
-                sign = 1.0 if (lp >= sp1) else (-1.0 if lp <= bp1 else 0.0)
-                self.dv.setdefault(sym, deque(maxlen=400)).append((nows, dVol, sign))
-                self.logsz.setdefault(sym, deque(maxlen=200)).append(math.log(dVol))
-                # Liquidity response (N3)
-                pc = lp - st.get("pc", lp)
-                if pc != 0 and (bq1 + sq1) > 0:
-                    bdc = bq1 - st.get("pbq", bq1); adc = sq1 - st.get("psq", sq1)
-                    lr = (bdc * (1 if pc > 0 else -1) + adc * (-1 if pc > 0 else 1)) / (bq1 + sq1)
-                    self.ema_liq[sym] = 0.95 * self.ema_liq.get(sym, 0.0) + 0.05 * lr
-                st["pc"], st["pbq"], st["psq"] = lp, bq1, sq1
-                # Adverse selection (N4)
-                dlp = abs(lp - st.get("plp", lp)); st["plp"] = lp
-                imp = dlp / dVol
-                expimp = self.ema_expimp.get(sym, imp)
-                self.ema_expimp[sym] = 0.98 * expimp + 0.02 * imp
-                if expimp > 1e-9:
-                    self.ema_adv[sym] = 0.95 * self.ema_adv.get(sym, 1.0) + 0.05 * (imp / expimp)
-            # Flushers
-            if nows - self.last_flush >= 60 and self.buffer:
-                self._flush_parquet(now)
-            if nows - self.last_aflush >= 30 and self.auction_buf:
-                self._flush_auction(now)
-        except Exception as e:
-            logger.debug(f"archiver tick error: {e}")
+    def _get_partition_path(self) -> str:
+        return os.path.join(RAW_DIR, f"l2_raw_{self.current_date}_part_{self.partition_seq:03d}.parquet")
 
-    def _flush_parquet(self, now):
-        self.last_flush = pytime.time()
+    def _flush_buffer(self, force=False, tick_ts_sec=None):
+        nows = pytime.time()
+        if not force and (nows - self.last_flush < FLUSH_INTERVAL_SEC) and len(self.buffer) < 50000:
+            return
+        
+        if not self.buffer:
+            self.last_flush = nows
+            return
+
         try:
-            df = pd.DataFrame(self.buffer); self.buffer = []
-            path = os.path.join(ARCH_DIR, f"l2_{now.strftime('%Y-%m-%d')}.parquet")
-            if os.path.exists(path):
-                df = pd.concat([pd.read_parquet(path), df], ignore_index=True)
+            df = pd.DataFrame(self.buffer)
+            # Enforce Schema / Types
+            for col, dtype in SCHEMA_DTYPES.items():
+                if col in df.columns:
+                    df[col] = df[col].astype(dtype)
+            
+            path = self._get_partition_path()
             df.to_parquet(path, index=False, compression="snappy")
+            size_mb = os.path.getsize(path) / 1e6
+            logger.info(f"L2Archiver: Flushed Partition {self.partition_seq} | {len(df)} rows | {size_mb:.1f} MB")
+            
+            self.buffer = []
+            self.partition_seq += 1
+            self.last_flush = nows
+            
+            # Date rollover check - USE TICK TIMESTAMP not datetime.now() to avoid race condition
+            if tick_ts_sec is not None:
+                new_date = datetime.fromtimestamp(tick_ts_sec).strftime("%Y-%m-%d")
+            else:
+                new_date = datetime.now().strftime("%Y-%m-%d")
+            if new_date != self.current_date:
+                self.current_date = new_date
+                self.partition_seq = 0
+                self._prune_old_files()
+                
         except Exception as e:
-            logger.debug(f"parquet flush failed: {e}")
+            logger.error(f"Partition flush failed: {e}")
 
-    def _flush_auction(self, now):
-        self.last_aflush = pytime.time()
+    def _flush_auction(self, now: datetime):
+        if not self.auction_buf: return
         try:
             kind = "preopen" if now.hour < 12 else "closeauction"
-            with open(os.path.join(LOGS, f"{kind}_{now.strftime('%Y-%m-%d')}.jsonl"), "a") as f:
-                for r in self.auction_buf:
-                    f.write(json.dumps(r) + "\n")
+            path = os.path.join(LOGS, f"{kind}_{now.strftime('%Y-%m-%d')}.jsonl")
+            with open(path, "a") as f:
+                for r in self.auction_buf: f.write(json.dumps(r) + "\n")
             self.auction_buf = []
-        except Exception as e:
-            logger.debug(f"auction flush failed: {e}")
+            self.last_aflush = pytime.time()
+        except Exception: pass
 
-    def get_candle_features(self, symbol):
-        """Research accumulators for strategy consumption (shadow-only)."""
-        out = {"asym_ratio": 0.0, "large_delta": 0.0, "large_n": 0,
-               "liq_resp": round(self.ema_liq.get(symbol, 0.0), 4),
-               "adv_sel": round(self.ema_adv.get(symbol, 1.0), 3),
-               "tail_alpha": 0.0, "micro_dev": 0.0}
+    # ═══════════════════════════════════════════════════════════
+    # HOT PATH — RAW TICK INGESTION (ZERO MATH)
+    # ═══════════════════════════════════════════════════════════
+    def on_tick(self, msg: dict):
         try:
-            dq = self.dv.get(symbol)
-            if dq and len(dq) >= 20:
-                vols = np.array([v for _, v, _ in dq])
-                up = sum(v for _, v, s in dq if s > 0)
-                dn = sum(v for _, v, s in dq if s < 0)
-                out["asym_ratio"] = round(up / max(dn, 1.0), 3)
-                p95 = float(np.percentile(vols, 95))
-                lb = [(v, s) for _, v, s in dq if v >= p95]
-                out["large_n"] = len(lb)
-                if len(lb) >= 3:
-                    lbu = sum(v for v, s in lb if s > 0); lse = sum(v for v, s in lb if s < 0)
-                    out["large_delta"] = round((lbu - lse) / max(lbu + lse, 1.0), 3)
-            lz = self.logsz.get(symbol)
-            if lz and len(lz) >= 50:
-                arr = np.array(list(lz)); mn = arr.min()
-                s = arr.sum() - len(arr) * mn
-                if s > 1e-9:
-                    out["tail_alpha"] = round(1.0 + len(arr) / s, 3)
-            mp = self.micro.get(symbol, 0.0)
-            st = self.last_snap.get(symbol, {})
-            if mp > 0 and st.get("lp", 0) > 0:
-                out["micro_dev"] = round((st["lp"] - mp) / mp, 5)
-        except Exception:
-            pass
-        return out
+            # Shoonya may send token as "token" or "tk" - handle both, normalize to string
+            tok = str(msg.get("token") or msg.get("tk") or "")
+            # HARD SUBSCRIPTION FILTER - normalize both sides to string for comparison
+            if tok not in self.target_tokens:
+                return
+
+            sym = self.tok_to_sym.get(tok)
+            if not sym: return
+
+            lp = float(msg.get("last_traded_price") or msg.get("lp") or 0)
+            if lp <= 0: return
+
+            now = datetime.now()
+            ts_ms = int(now.timestamp() * 1000)
+            ts_sec = now.timestamp()
+            ts_time = now.time()
+
+            # Auction Logging (Pre-open / Close)
+            if (dtime(9,0) <= ts_time < dtime(9,15) or dtime(15,30) <= ts_time < dtime(15,40)):
+                if ts_sec - getattr(self, '_last_auction_ts', 0) >= AUCTION_LOG_INTERVAL:
+                    self._last_auction_ts = ts_sec
+                    sb = sum(float(msg.get(f"bq{i}") or 0) for i in range(1, 6))
+                    sa = sum(float(msg.get(f"sq{i}") or 0) for i in range(1, 6))
+                    self.auction_buf.append({"ts": ts_sec, "sym": sym, "lp": lp, "imb": (sb-sa)/max(sb+sa,1.0)})
+
+            # Raw Row Construction (Unrolled for Speed)
+            row = {"ts": ts_ms, "tok": int(tok), "lp": np.float32(lp), 
+                   "vol": np.float32(msg.get("volume_trade_for_the_day") or msg.get("v") or 0)}
+            
+            for i in range(1, 6):
+                row[f"bp{i}"] = np.float32(msg.get(f"bp{i}") or 0)
+                row[f"bq{i}"] = np.int32(msg.get(f"bq{i}") or 0)
+                row[f"sp{i}"] = np.float32(msg.get(f"sp{i}") or 0)
+                row[f"sq{i}"] = np.int32(msg.get(f"sq{i}") or 0)
+
+            self.buffer.append(row)
+
+            # Periodic Flush Checks
+            if ts_sec - self.last_aflush >= 30:
+                self._flush_auction(now)
+            self._flush_buffer(tick_ts_sec=ts_sec)
+
+        except Exception as e:
+            logger.debug(f"Archiver tick error: {e}")
+
+    def shutdown(self):
+        """Call at EOD (15:31) to flush final buffer."""
+        logger.info("L2Archiver: Shutdown signal received. Final flush...")
+        self._flush_buffer(force=True)
+        self._flush_auction(datetime.now())
+        logger.info("L2Archiver: Final flush complete.")
 
 
 def attach_archiver(broker, token_to_symbol):
-    """Attach L2Archiver via broker chain walk (same pattern as tick_compiler).
-    Non-fatal: if no listener found, logs warning and returns None."""
     arch = L2Archiver(token_to_symbol)
-    # Chain walk to find add_tick_listener
-    target = None
-    candidates = []
-    for attr in ("market_data", "mdp", "market_data_provider", "_mdp", "_api", "api", "session_provider"):
+    candidates = [broker]
+    for attr in ("market_data","mdp","market_data_provider","_mdp","_api","api","session_provider"):
         obj = getattr(broker, attr, None)
-        if obj is not None:
-            candidates.append(obj)
-            for sub_attr in ("_api", "api", "_mdp", "mdp"):
-                sub = getattr(obj, sub_attr, None)
-                if sub is not None:
-                    candidates.append(sub)
-    candidates.append(broker)
+        if obj: candidates.append(obj)
     for c in candidates:
         if hasattr(c, "add_tick_listener"):
-            target = c
-            break
-    if target is None:
-        logger.warning("L2Archiver: could not find add_tick_listener — archiver NOT attached (non-fatal).")
-        return None
-    target.add_tick_listener(arch.on_tick)
-    logger.info("L2Archiver attached (passive; archive + research accumulators).")
+            c.add_tick_listener(arch.on_tick)
+            logger.info("L2Archiver ATTACHED (Raw Partitioned Logger | 110 Symbol Filter Active)")
+            return arch
+    logger.warning("L2Archiver: No add_tick_listener found.")
     return arch

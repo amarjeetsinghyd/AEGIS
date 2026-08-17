@@ -2,7 +2,16 @@
 end-weighted + persistence-aware L2 depth, dual bar books (3m + 15m)
 SYMBOL-keyed via set_symbol_map. market_depth preserves last good values."""
 from __future__ import annotations
+import os
+import sys
+
+# ─── BOOTSTRAP ───
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
 import threading
+import time
 from collections import defaultdict
 from datetime import datetime
 from common.logger import get_logger
@@ -16,6 +25,20 @@ _LEVEL_WEIGHTS = (1.0, 0.5, 1.0 / 3.0, 0.25, 0.2)
 _PERSIST_HOLD = 0.98
 
 
+class ParsedTick:
+    """Zero-allocation parsed tick for hot path. Reused per symbol."""
+    __slots__ = ('tok', 'lp', 'vol', 'bp', 'bq', 'sp', 'sq', 'ts')
+    def __init__(self):
+        self.tok = ""
+        self.lp = 0.0
+        self.vol = 0.0
+        self.bp = [0.0]*5
+        self.bq = [0]*5
+        self.sp = [0.0]*5
+        self.sq = [0]*5
+        self.ts = 0.0
+
+
 class TickCompiler:
     def __init__(self, broker):
         self.broker = broker
@@ -27,9 +50,33 @@ class TickCompiler:
         self._keys_logged = False
         self._t2s = {}
         self._prev_l2w = {}  # token -> (bid_weighted, ask_weighted) for persistence
+        self._tick_pool = {}  # sym -> ParsedTick (reused)
+        self.engine = None  # Set via set_engine()
+        # ─── MN-4: WebSocket reconnection bookkeeping ───
+        # Reconnect is listener-owned (see ShoonyaMarketDataProvider.add_close_listener).
+        # The backoff thread is OFF the hot path — on_message is never blocked.
+        # Weekend/holiday WS drops are expected (AGENTS.md SHOONYA) and skipped via
+        # is_trading_day before any re-subscribe attempt.
+        self._subscribed_tokens = []
+        self._subscribed_exchange = "NSE"
+        self._reconnect_lock = threading.Lock()
+        self._reconnecting = False
 
     def set_symbol_map(self, token_to_symbol: dict):
         self._t2s = {str(k): str(v) for k, v in token_to_symbol.items()}
+        # Initialize tick pool for zero-copy path
+        for sym in self._t2s.values():
+            if sym not in self._tick_pool:
+                self._tick_pool[sym] = ParsedTick()
+
+    def set_engine(self, engine):
+        """Set the engine for zero-copy tick dispatch."""
+        self.engine = engine
+
+    @property
+    def token_to_symbol(self):
+        """Expose the token-to-symbol mapping for external access."""
+        return self._t2s
 
     def _as_float(self, message: dict, *keys, default=0.0):
         for k in keys:
@@ -55,16 +102,18 @@ class TickCompiler:
             sp1 = self._as_float(message, "ask", "sp1", default=0.0)
             ts = datetime.now()
 
+            import time
             with self.lock:
                 prev = self.market_depth.get(token, {"v": 0.0, "lp": 0.0, "bp1": 0.0, "sp1": 0.0})
                 old_vol = float(prev.get("v", 0.0))
                 vol_delta = new_vol - old_vol if old_vol > 0 and new_vol >= old_vol else 0.0
-                # Preserve last good values; depth-only msgs may carry zeros
+                # Preserve last good values; depth-only msgs may carry zeros. Atomically swap dict.
                 self.market_depth[token] = {
                     "lp": lp if lp > 0 else prev.get("lp", 0.0),
                     "v": new_vol if new_vol > 0 else prev.get("v", 0.0),
                     "bp1": bp1 if bp1 > 0 else prev.get("bp1", 0.0),
                     "sp1": sp1 if sp1 > 0 else prev.get("sp1", 0.0),
+                    "ts": time.time()
                 }
 
             # L2 depth: simple sums (legacy) + end-weighted sums (new)
@@ -122,6 +171,22 @@ class TickCompiler:
                         "bid_persist": bid_persist, "ask_persist": ask_persist,
                         "ts": ts.isoformat(),
                     })
+
+            # ── ZERO-COPY DISPATCH TO ENGINE ──
+            # Parse directly into pre-allocated ParsedTick, bypass dict creation
+            if self.engine and key in self._tick_pool:
+                tick = self._tick_pool[key]
+                tick.tok = token
+                tick.lp = lp
+                tick.vol = new_vol
+                tick.ts = time.time()
+                for i in range(5):
+                    tick.bp[i] = self._as_float(message, f"bp{i+1}", default=0.0)
+                    tick.bq[i] = int(self._as_float(message, f"bq{i+1}", default=0.0))
+                    tick.sp[i] = self._as_float(message, f"sp{i+1}", default=0.0)
+                    tick.sq[i] = int(self._as_float(message, f"sq{i+1}", default=0.0))
+                # Non-blocking dispatch - engine processes in same thread
+                self.engine.on_tick_parsed(tick)
         except Exception as e:
             logger.debug(f"on_message error: {e}")
 
@@ -183,8 +248,16 @@ class TickCompiler:
         if mdp is None:
             logger.error("TICK WIRING FAILED: no add_tick_listener/subscribe found on broker chain!")
             return
+        # MN-4: remember what we subscribed so a mid-session WS close can re-issue it.
+        self._subscribed_tokens = list([str(t) for t in tokens])
+        self._subscribed_exchange = exchange
         if hasattr(mdp, "add_tick_listener"):
             mdp.add_tick_listener(self.on_message)
+        # MN-4: register as a WS-close listener so the broker hands us the
+        # socket_close_callback without us owning the WS lifecycle. Guarded so
+        # brokers without close-listener support silently skip reconnect wiring.
+        if hasattr(mdp, "add_close_listener"):
+            mdp.add_close_listener(self.on_ws_close)
         if hasattr(mdp, "subscribe"):
             try:
                 mdp.subscribe(tokens, exchange, feed_type="t")
@@ -195,3 +268,69 @@ class TickCompiler:
             except TypeError:
                 mdp.subscribe(tokens, exchange, "d")
         logger.info(f"Subscribed {len(tokens)} equities on {exchange} (touchline+depth) for 3m+15m WS candles + footprints.")
+
+    # ─── MN-4: WebSocket reconnection with exponential backoff ───
+    # on_ws_close is called by the broker's socket_close_callback (NorenApiPy).
+    # We do NOT immediately re-subscribe in-line (the WS object is gone); instead
+    # a short background thread re-subscribes after backoff. Only ONE reconnect
+    # attempt is in flight at a time (_reconnecting single-flight). Weekend and
+    # NSE-holiday closes are expected (AGENTS.md SHOONYA) and skipped — no
+    # backoff burn, no log spam on a Saturday.
+    def on_ws_close(self):
+        with self._reconnect_lock:
+            if self._reconnecting:
+                return  # already retrying — let the in-flight loop handle this close
+            self._reconnecting = True
+        threading.Thread(target=self._reconnect_loop, name="tick-compiler-reconnect", daemon=True).start()
+
+    def _reconnect_loop(self):
+        """Exponential-backoff re-subscribe after a mid-session WS drop.
+        Trading-day-gated (weekend/holiday closes are skipped). Stdlib-only."""
+        try:
+            backoff = 1.0
+            while True:
+                time.sleep(backoff)
+                try:
+                    from common.market.market_calendar import is_trading_day
+                    from datetime import datetime as _dt
+                    if not is_trading_day(_dt.now().date()):
+                        logger.info("WS closed on a non-trading day (weekend/holiday) — no reconnect attempt.")
+                        return
+                except Exception:
+                    # If the calendar import fails we err on the side of NOT
+                    # hammering the broker on a weekend; bail out.
+                    logger.warning("is_trading_day unavailable — skipping WS reconnect re-issue.")
+                    return
+                mdp = self._resolve_mdp()
+                if mdp is None:
+                    logger.warning("Reconnect cannot re-issue subscribe: no MDP resolved.")
+                    return
+                tokens = self._subscribed_tokens
+                exchange = self._subscribed_exchange
+                try:
+                    if hasattr(mdp, "subscribe"):
+                        try:
+                            mdp.subscribe(tokens, exchange, feed_type="t")
+                        except TypeError:
+                            mdp.subscribe(tokens, exchange, "t")
+                        try:
+                            mdp.subscribe(tokens, exchange, feed_type="d")
+                        except TypeError:
+                            mdp.subscribe(tokens, exchange, "d")
+                    logger.info(f"WS reconnect re-subscribed {len(tokens)} tokens on {exchange} after {backoff:.1f}s backoff.")
+                    return  # re-issue succeeded — close listener will fire again on the next drop
+                except Exception as exc:
+                    logger.warning(f"WS reconnect re-subscribe failed ({exc}); backing off {min(backoff*2, 30.0):.1f}s.")
+                    backoff = min(backoff * 2, 30.0)  # cap: 1, 2, 4, 8, 16, 30s ...
+        finally:
+            with self._reconnect_lock:
+                self._reconnecting = False
+
+    def _resolve_mdp(self):
+        for name in ("market_data", "mdp", "market_data_provider", "_mdp"):
+            obj = getattr(self.broker, name, None)
+            if obj is not None and (hasattr(obj, "add_tick_listener") or hasattr(obj, "subscribe")):
+                return obj
+        if hasattr(self.broker, "add_tick_listener") or hasattr(self.broker, "subscribe"):
+            return self.broker
+        return None

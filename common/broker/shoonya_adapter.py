@@ -44,6 +44,17 @@ from common.runtime.paths import get_project_root
 
 _PROJECT_ROOT = str(get_project_root())
 SESSION_FILE = os.path.join(_PROJECT_ROOT, "data", "shoonya_session.json")
+SESSION_LOCK_FILE = os.path.join(_PROJECT_ROOT, "data", "shoonya_session.lock")
+
+# ─── Cooperative session protocol (harness §1.1.1: one login per credential set) ───
+# A second concurrent login with the same credentials invalidates the first's
+# token, so exactly ONE process may run the OAuth login at a time. All other
+# processes adopt the shared session file token via set_session (no server
+# login, no kick). Constants tuned for: Chrome OAuth ~3-4 min, token life ~24h.
+SESSION_MAX_AGE_SEC = 20 * 3600   # adopt only if younger; refresh before mid-day expiry
+LOCK_STALE_SEC = 420              # login holder presumed dead after 7 min
+PEER_WAIT_TIMEOUT_SEC = 480       # wait up to 8 min for the peer's fresh token
+PEER_POLL_SEC = 10
 
 
 def _load_shoonya_env() -> None:
@@ -51,7 +62,7 @@ def _load_shoonya_env() -> None:
 
     candidates = [
         os.path.join(_PROJECT_ROOT, ".env"),
-        os.path.join(_PROJECT_ROOT, "astra_bot", ".env"),
+        os.path.join(_PROJECT_ROOT, "AEGIS", ".env"),
         os.path.join(_PROJECT_ROOT, "kronos_bot", ".env"),
         os.path.join(_PROJECT_ROOT, "shoonya_data_hub", ".env"),
     ]
@@ -76,33 +87,144 @@ class ShoonyaSessionProvider(ISessionProvider):
         self._restore_or_login()
 
     def _restore_or_login(self):
-        if os.path.exists(SESSION_FILE):
+        """Cooperative session acquisition.
+
+        Order of preference:
+        1. Adopt the shared session file token (no server login, no kick) when
+           it is younger than SESSION_MAX_AGE_SEC and still server-valid.
+        2. If a peer process is already running the OAuth login, wait for it
+           and adopt its token.
+        3. Otherwise take the login lock and run the OAuth login ourselves.
+        4. Last resort on login failure: fall back to the old token if the
+           server still accepts it.
+        """
+        if self._try_restore(max_age_sec=SESSION_MAX_AGE_SEC):
+            return
+        if self._login_cooperative():
+            return
+        if self._try_restore(max_age_sec=None):
+            self.logger.warning("Shoonya OAuth login failed — continuing with the older (still server-valid) shared token.")
+
+    def _try_restore(self, max_age_sec=None) -> bool:
+        """Adopt the shared session token. Returns True if validated server-side."""
+        if not os.path.exists(SESSION_FILE):
+            return False
+        try:
+            with open(SESSION_FILE, "r") as f:
+                data = json.load(f)
+            if data.get("userid") != self.userid or not data.get("susertoken"):
+                return False
+            age = max(0.0, time.time() - float(data.get("updated_at", 0)))
+            if max_age_sec is not None and age > max_age_sec:
+                self.logger.info(
+                    f"Shared Shoonya session is {age/3600:.1f}h old "
+                    f"(> {max_age_sec/3600:.0f}h refresh threshold) — refreshing.")
+                return False
+            self.susertoken = data["susertoken"]
+            actid = data.get("actid", self.userid)
+            self._api.set_session(self.userid, self.password, self.susertoken, self.susertoken)
+            self._api.injectOAuthHeader(self.susertoken, self.userid, actid)
+            limits = self._api.get_limits()
+            if isinstance(limits, dict) and limits.get("stat") != "Not_Ok":
+                self.logger.info(
+                    f"Restored and validated shared Shoonya session for {self.userid} "
+                    f"(age {age/3600:.1f}h, no fresh login needed).")
+                return True
+            self.logger.warning(f"Shared session invalid or expired for {self.userid}. Re-authenticating.")
+            self.susertoken = None
+            return False
+        except Exception as e:
+            self.logger.error(f"Failed to restore Shoonya session: {e}")
+            return False
+
+    # ─── Login lock (cross-process, file-based) ───
+
+    def _acquire_login_lock(self) -> bool:
+        try:
+            fd = os.open(SESSION_LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except OSError:
+            return False
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump({
+                    "pid": os.getpid(),
+                    "ts": time.time(),
+                    "host": os.uname().nodename if hasattr(os, "uname") else "",
+                }, f)
+            return True
+        except OSError:
+            return False
+
+    def _login_lock_is_stale(self) -> bool:
+        try:
+            with open(SESSION_LOCK_FILE, "r") as f:
+                info = json.load(f)
+        except Exception:
+            return True
+        if time.time() - float(info.get("ts", 0)) > LOCK_STALE_SEC:
+            return True
+        pid = int(info.get("pid", 0) or 0)
+        if pid and pid != os.getpid() and hasattr(os, "kill"):
             try:
-                with open(SESSION_FILE, "r") as f:
-                    data = json.load(f)
-                    if data.get("userid") == self.userid and data.get("susertoken"):
-                        self.susertoken = data["susertoken"]
-                        actid = data.get("actid", self.userid)
-                        self._api.set_session(self.userid, self.password, self.susertoken, self.susertoken)
-                        self._api.injectOAuthHeader(self.susertoken, self.userid, actid)
-                        limits = self._api.get_limits()
-                        if isinstance(limits, dict) and limits.get("stat") != "Not_Ok":
-                            self.logger.debug(f"Restored and validated Shoonya session for {self.userid}")
-                            return
-                        else:
-                            self.logger.warning(f"Restored session invalid or expired for {self.userid}. Re-authenticating.")
-                            self.susertoken = None
-            except Exception as e:
-                self.logger.error(f"Failed to restore Shoonya session: {e}")
+                os.kill(pid, 0)  # liveness probe; raises if the pid is gone
+            except ProcessLookupError:
+                return True
+            except OSError:
+                pass
+        return False
 
-        self._login()
+    def _release_login_lock(self) -> None:
+        try:
+            os.remove(SESSION_LOCK_FILE)
+        except FileNotFoundError:
+            pass
 
-    def _login(self):
+    def _login_cooperative(self) -> bool:
+        """Exactly one process logs in; peers wait and adopt the fresh token."""
+        wait_started = time.time()
+        while True:
+            if self._acquire_login_lock():
+                try:
+                    # A peer may have refreshed the session while we were
+                    # failing validation / waiting for the lock — re-check.
+                    if self._try_restore(max_age_sec=SESSION_MAX_AGE_SEC):
+                        return True
+                    self.logger.info(f"Shoonya login lock acquired (pid {os.getpid()}) — running OAuth login.")
+                    return self._login()
+                finally:
+                    self._release_login_lock()
+
+            if self._login_lock_is_stale():
+                self.logger.warning("Stale Shoonya login lock detected — breaking it.")
+                try:
+                    os.remove(SESSION_LOCK_FILE)
+                except FileNotFoundError:
+                    pass
+                continue
+
+            if time.time() - wait_started > PEER_WAIT_TIMEOUT_SEC:
+                self.logger.error(
+                    f"Timed out after {PEER_WAIT_TIMEOUT_SEC}s waiting for peer login — "
+                    "forcing own login as last resort (a kick may occur).")
+                return self._login()
+
+            self.logger.info(
+                f"Peer process holds the Shoonya login lock — waiting for its session "
+                f"({int(time.time() - wait_started)}s elapsed).")
+            time.sleep(PEER_POLL_SEC)
+            if self._try_restore(max_age_sec=SESSION_MAX_AGE_SEC):
+                self.logger.info("Adopted peer's fresh Shoonya session after waiting.")
+                return True
+
+    def _login(self) -> bool:
         if not self.client_id or not self.userid:
             self.logger.warning("Shoonya credentials missing in .env")
-            return
-            
+            return False
+
         try:
+            # NorenRestApiPy 0.0.22 (installed on the VPS) exposes getAccessToken +
+            # set_session but NOT NorenApi.login() — the headless OAuth flow below
+            # is the only login path compatible with the deployed SDK.
             from common.broker.shoonya_auth import ShoonyaHeadlessOAuthProvider
             oauth_provider = ShoonyaHeadlessOAuthProvider(
                 client_id=self.client_id,
@@ -111,13 +233,13 @@ class ShoonyaSessionProvider(ISessionProvider):
                 password=self.password,
                 totp_secret=self.totp
             )
-            
+
             limiter = TokenBucketLimiter(per_second=1, name="shoonya_oauth")
             auth_code = call_with_retry(
                 lambda: oauth_provider.authenticate(),
                 limiter=limiter
             )
-            
+
             if auth_code:
                 result = self._api.getAccessToken(auth_code, self.client_secret, self.client_id, self.userid)
                 if result is not None:
@@ -126,21 +248,30 @@ class ShoonyaSessionProvider(ISessionProvider):
                     self.logger.info("Shoonya getAccessToken successful.")
                     self._api.set_session(self.userid, self.password, self.susertoken, self.susertoken)
                     os.makedirs(os.path.dirname(SESSION_FILE), exist_ok=True)
-                    with open(SESSION_FILE, "w") as f:
+                    # Atomic write: waiting peers must never observe a partial file.
+                    tmp_path = SESSION_FILE + ".tmp"
+                    with open(tmp_path, "w") as f:
                         json.dump({
                             "userid": self.userid,
                             "susertoken": self.susertoken,
                             "actid": actid,
                             "updated_at": time.time()
                         }, f)
-                    self.logger.info(f"Shoonya OAuth login successful for {self.userid}")
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(tmp_path, SESSION_FILE)
+                    self.logger.info(f"Shoonya OAuth login successful for {self.userid} — shared token published.")
+                    return True
                 else:
                     self.logger.error("Failed to retrieve access token via getAccessToken")
+                    return False
             else:
                 self.logger.error("Shoonya OAuth login failed: No auth code returned")
+                return False
 
         except Exception as e:
             self.logger.error(f"Exception during Shoonya login: {e}")
+            return False
 
     def get_session(self) -> dict:
         return {"access_token": self.susertoken}
@@ -171,6 +302,8 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
         self._option_oi_start = {}
         self._option_oi_latest = {}
         self._tick_listeners = []  # extra consumers (e.g. Stock Order Flow) — do not start a 2nd WS
+        self._close_listeners = []  # WS close consumers (e.g. TickCompiler reconnect) — do not start a 2nd WS
+        self._last_subscribe_exchange = "NSE"  # remembered for reconnect re-issue
 
     def get_quotes(self, instrument_ids: list) -> dict:
         res = {}
@@ -203,7 +336,22 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
         return resp
 
     def start_live_feed(self, on_tick_callback, on_open_callback=None, on_error_callback=None) -> None:
+        if not hasattr(self, "_last_ws_tick_time"):
+            self._last_ws_tick_time = time.time()
+            import threading
+            from datetime import datetime, time as dt_time
+            def _ws_watchdog_loop():
+                while True:
+                    time.sleep(15)
+                    now_time = datetime.now().time()
+                    if dt_time(9, 15) <= now_time <= dt_time(15, 30):
+                        if time.time() - self._last_ws_tick_time > 35:
+                            logger.critical("Shoonya WebSocket frozen for >35s! Forcing hard restart to recover feed.")
+                            os._exit(1)
+            threading.Thread(target=_ws_watchdog_loop, daemon=True).start()
+
         def event_handler_quote_update(message):
+            self._last_ws_tick_time = time.time()
             if isinstance(message, dict):
                 token = message.get("tk")
                 if not token:
@@ -300,7 +448,16 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                 on_error_callback(err)
 
         def close_callback():
-            pass
+            # WS dropped (mid-session). Notify registered close listeners so an
+            # engine-level reconnect (exponential backoff re-subscribe) can fire.
+            # Weekend/holiday drops are expected; listeners must self-gate on
+            # is_trading_day before attempting a reconnect (AGENTS.md SHOONYA rule).
+            logger.warning("Shoonya WebSocket CLOSED — notifying close listeners (reconnect is listener-owned).")
+            for cb in list(getattr(self, "_close_listeners", []) or []):
+                try:
+                    cb()
+                except Exception as exc:
+                    logger.debug(f"close listener error: {exc}")
 
         self._api.start_websocket(
             order_update_callback=event_handler_order_update,
@@ -464,6 +621,26 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
         if callback not in self._tick_listeners:
             self._tick_listeners.append(callback)
 
+    def add_close_listener(self, callback) -> None:
+        """Register a WebSocket-close consumer. The callback is invoked from the
+        Noren WS socket_close_callback with no arguments. Reconnect / backoff is
+        owned by the listener, not the provider — the weekend drop is expected
+        (AGENTS.md SHOONYA) and must NOT be treated as an error by default."""
+        if callback is None:
+            return
+        if not hasattr(self, "_close_listeners") or self._close_listeners is None:
+            self._close_listeners = []
+        if callback not in self._close_listeners:
+            self._close_listeners.append(callback)
+
+    def remove_close_listener(self, callback) -> None:
+        if not hasattr(self, "_close_listeners"):
+            return
+        try:
+            self._close_listeners.remove(callback)
+        except ValueError:
+            pass
+
     def remove_tick_listener(self, callback) -> None:
         if not hasattr(self, "_tick_listeners"):
             return
@@ -489,7 +666,7 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
         if not token:
             return
         q_dict = self._live_quotes.setdefault(
-            token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0}
+            token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0, "pc": 0.0}
         )
         if not isinstance(q_dict, dict):
             q_dict = {
@@ -498,6 +675,7 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                 "ask": 0.0,
                 "oi": 0.0,
                 "volume": 0.0,
+                "pc": 0.0,
             }
             self._live_quotes[token] = q_dict
 
@@ -525,6 +703,9 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
         vol = _f("volume_trade_for_the_day", "v", "volume")
         if vol is not None:
             q_dict["volume"] = vol
+        pc = _f("percent_change", "pc")
+        if pc is not None:
+            q_dict["pc"] = pc
 
     def get_quote(self, exchange: str, token: str) -> dict:
         self._ensure_ws_started()
@@ -540,11 +721,13 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                 res = self._api.get_quotes(exchange=exchange, token=token)
                 if isinstance(res, dict) and res.get("lp") is not None:
                     q_dict = self._live_quotes.setdefault(
-                        token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0}
+                        token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0, "pc": 0.0}
                     )
                     q_dict["ltp"] = float(res.get("lp", 0.0) or 0.0)
                     q_dict["bid"] = float(res.get("bp1", 0.0) or 0.0)
                     q_dict["ask"] = float(res.get("sp1", 0.0) or 0.0)
+                    if res.get("pc") is not None:
+                        q_dict["pc"] = float(res.get("pc", 0.0) or 0.0)
                     if res.get("v") is not None:
                         q_dict["volume"] = float(res.get("v") or 0.0)
                     if res.get("oi") is not None:
@@ -557,7 +740,7 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
             except Exception:
                 pass
         return self._live_quotes.get(
-            token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0}
+            token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0, "pc": 0.0}
         )
 
     def _ingest_option_oi(self, token: str, oi_val: float) -> None:
@@ -584,11 +767,13 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
             res = self._api.get_quotes(exchange=exchange, token=token)
             if isinstance(res, dict) and res.get("lp") is not None:
                 q_dict = self._live_quotes.setdefault(
-                    token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0}
+                    token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0, "pc": 0.0}
                 )
                 q_dict["ltp"] = float(res.get("lp", 0.0) or 0.0)
                 q_dict["bid"] = float(res.get("bp1", 0.0) or 0.0)
                 q_dict["ask"] = float(res.get("sp1", 0.0) or 0.0)
+                if res.get("pc") is not None:
+                    q_dict["pc"] = float(res.get("pc", 0.0) or 0.0)
                 if res.get("v") is not None:
                     q_dict["volume"] = float(res.get("v") or 0.0)
                 if res.get("oi") is not None:
@@ -602,7 +787,7 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
         except Exception as e:
             logger.debug(f"force_rest_quote {exchange}|{token} failed: {e}")
         return self._live_quotes.get(
-            token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0}
+            token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0, "pc": 0.0}
         )
 
 class ShoonyaPortfolioProvider(IPortfolioProvider):

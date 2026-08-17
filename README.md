@@ -1,27 +1,41 @@
 # quant-bot
 
-Dual paper/live stack: **Astra** (KDO microstructure) + **Kronos** (foundation model + Supertrend), shared **Shoonya data hub**, light **unified dashboard**.
+Autonomous day-trading stack on Oracle Cloud, fronted by Shoonya (NorenApi).
+
+**Two active engines** (Kronos is decommissioned):
+- **VORTEX** — HFT microstructure equities (Nifty 100, cash).
+- **Astra Bot** — options Gamma-Burst + Spot-Structure (Nifty/Sensex 0DTE).
+- **Unified Dashboard** — read-only Flask UI; dual-brand `Quant Console × VORTEX × ASTRA`.
 
 ## Read first
 | Doc | Purpose |
 |---|---|
-| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Full system design, calendars, Kronos exits, IPC, VPS |
-| [`SEMANTIC_MAP.md`](SEMANTIC_MAP.md) | Folder → file → function map + symptom triage |
-| [`IDEAS.md`](IDEAS.md) | Parked operator ideas (EOD queue; not live work) |
-| [`AI_CHANGELOG.md`](AI_CHANGELOG.md) | Agent-maintained change history (append after work) |
-| [`shoonya_data_hub/docs/SHOONYA_ORDER_RULES.md`](shoonya_data_hub/docs/SHOONYA_ORDER_RULES.md) | Broker order product / DAY retention rules |
+| [`AGENTS.md`](AGENTS.md) | **Start here.** Standing instructions for any AI/human touching this repo. |
+| [`SYSTEM_ARCHITECTURE.md`](SYSTEM_ARCHITECTURE.md) | Cross-engine map (VPS, PM2, Shoonya, `common/`, dashboard); links into each engine's harness doc. |
+| `stock_order_flow/AGENTIC HARNESS DOCUMENT v3.5.md` | Engine 1 authoritative spec. |
+| `astra_bot/AGENTIC HARNESS DOCUMENT Astra v4.3.md` | Engine 2 authoritative spec. |
+| [`AI_CHANGELOG.md`](AI_CHANGELOG.md) | Agent-maintained change history (append after work). |
 
-## Layout
+## Layout (canonical — full version in [`SYSTEM_ARCHITECTURE.md`](SYSTEM_ARCHITECTURE.md) §8)
 ```
-common/                 # shared broker, execution primitives, market, ipc
-shoonya_data_hub/       # tick hub + Shoonya reference SDK + order rules
-astra_bot/              # KDO engine (uses shared KDO ExecutionManager)
-kronos_bot/             # Kronos engine + model/ + KronosExecutionManager
-unified_dashboard/      # light dual-brand console (:5000)
-ecosystem.config.js     # PM2: hub + astra + kronos + dashboard
+common/                 # shared library: broker, execution, market, ipc, runtime, config, symbols
+stock_order_flow/       # Engine 1 + its harness doc + docs/ + archive/
+astra_bot/              # Engine 2 + its harness doc + core/ + execution/ + strategy/ + archive/
+unified_dashboard/      # Flask UI (:5000)
+institutional_memory/   # constituents.json
+scripts/                # ad-hoc diagnostic / ops scripts
+tests/                  # pytest suite — must stay 100% green
+_archive/               # read-only history (kronos_bot/, shoonya_data_hub/, stale docs)
+Oracle SSH keys/        # SSH key lives ONLY at repo root
+ecosystem.config.js     # PM2: astra-bot + stock-order-flow + unified-dashboard (no Kronos)
 ```
+`venv/` and `node_modules/` are local-only, not committed.
 
-## VPS
-- Host: `137.23.41.38` (user `opc`)
-- Default: `ENABLE_LIVE_BROKERAGE_EXECUTION=False` (paper)
-- Start: `pm2 start ecosystem.config.js && pm2 save`
+## VPS (Oracle Cloud)
+- Host `137.23.41.38`, user `opc`, repo at `/home/opc`.
+- SSH: `ssh -i "Oracle SSH keys/ssh-key-2026-07-11.key" opc@137.23.41.38`.
+- PM2: `pm2 start ecosystem.config.js && pm2 save` (3 apps, no Kronos).
+- Shoonya WS is **weekend-offline by design** — Sat/Sun disconnect is not a bug.
+
+## Kronos
+Decommissioned. Code is read-only in `_archive/kronos_bot/`. Do not revive — see `AGENTS.md`.

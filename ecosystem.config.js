@@ -1,23 +1,8 @@
 module.exports = {
   apps: [
     {
-      name: "shoonya-data-hub",
-      script: "shoonya_data_hub/main.py",
-      cwd: "/home/opc",
-      interpreter: "python3",
-      autorestart: true,
-      watch: false,
-      max_memory_restart: "500M",
-      max_restarts: 20,
-      restart_delay: 5000,
-      env: {
-        PYTHONPATH: "/home/opc",
-        BOT_RUNTIME: "hub"
-      }
-    },
-    {
-      name: "astra-bot",
-      script: "astra_bot/main.py",
+      name: "aegis-bot",
+      script: "AEGIS/aegis_main.py",
       cwd: "/home/opc",
       interpreter: "python3",
       autorestart: true,
@@ -27,22 +12,7 @@ module.exports = {
       restart_delay: 5000,
       env: {
         PYTHONPATH: "/home/opc",
-        BOT_RUNTIME: "astra"
-      }
-    },
-    {
-      name: "kronos-bot",
-      script: "kronos_bot/main.py",
-      cwd: "/home/opc",
-      interpreter: "python3",
-      autorestart: true,
-      watch: false,
-      max_memory_restart: "1G",
-      max_restarts: 20,
-      restart_delay: 5000,
-      env: {
-        PYTHONPATH: "/home/opc",
-        BOT_RUNTIME: "kronos"
+        BOT_RUNTIME: "aegis"
       }
     },
     {
