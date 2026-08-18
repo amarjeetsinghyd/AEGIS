@@ -16,7 +16,7 @@ module.exports = {
       }
     },
     {
-      name: "stock-order-flow",
+      name: "vortex",
       script: "stock_order_flow/main.py",
       cwd: "/home/opc",
       interpreter: "python3",

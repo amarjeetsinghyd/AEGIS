@@ -1,0 +1,1038 @@
+{
+  "date": "2026-08-17",
+  "engine": "CascadeValueEngine v3.0 Adaptive",
+  "total_symbols": 76,
+  "total_signals": 41,
+  "total_captured": 5,
+  "overall_capture_pct": 12.195121951219512,
+  "signals": [
+    {
+      "sym": "ONGC",
+      "side": "SELL",
+      "lp": 237.75,
+      "conviction": 5.77,
+      "regime": "BURST",
+      "branching": 0.92639,
+      "whale_z": 2.65691,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.31545743"
+    },
+    {
+      "sym": "JIOFIN",
+      "side": "SELL",
+      "lp": 246.35000610351562,
+      "conviction": 7.89,
+      "regime": "BURST",
+      "branching": 0.80534,
+      "whale_z": 2.85381,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.24355839"
+    },
+    {
+      "sym": "JIOFIN",
+      "side": "BUY",
+      "lp": 245.8000030517578,
+      "conviction": 7.17,
+      "regime": "BURST",
+      "branching": 0.82193,
+      "whale_z": 2.52889,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.44751456"
+    },
+    {
+      "sym": "BEL",
+      "side": "SELL",
+      "lp": 413.20001220703125,
+      "conviction": 5.74,
+      "regime": "BURST",
+      "branching": 0.83832,
+      "whale_z": 1.4944,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.25411865"
+    },
+    {
+      "sym": "NMDC",
+      "side": "BUY",
+      "lp": 82.0,
+      "conviction": 6.68,
+      "regime": "BURST",
+      "branching": 0.87329,
+      "whale_z": 2.27252,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.14634481"
+    },
+    {
+      "sym": "SHRIRAMFIN",
+      "side": "BUY",
+      "lp": 1117.800048828125,
+      "conviction": 5.54,
+      "regime": "BURST",
+      "branching": 0.85629,
+      "whale_z": 2.08936,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.35784575"
+    },
+    {
+      "sym": "SHRIRAMFIN",
+      "side": "BUY",
+      "lp": 1120.300048828125,
+      "conviction": 5.8,
+      "regime": "BURST",
+      "branching": 0.84921,
+      "whale_z": 1.9366,
+      "mom_5m": 0,
+      "captured": "True",
+      "move_pct": "0.6158977"
+    },
+    {
+      "sym": "ZYDUSLIFE",
+      "side": "SELL",
+      "lp": 1139.4000244140625,
+      "conviction": 5.8,
+      "regime": "BURST",
+      "branching": 0.77392,
+      "whale_z": 2.29282,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.18430538"
+    },
+    {
+      "sym": "INFY",
+      "side": "SELL",
+      "lp": 1141.0,
+      "conviction": 8.41,
+      "regime": "BURST",
+      "branching": 0.87784,
+      "whale_z": 1.91249,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.22786814"
+    },
+    {
+      "sym": "ICICIBANK",
+      "side": "SELL",
+      "lp": 1408.300048828125,
+      "conviction": 5.92,
+      "regime": "BURST",
+      "branching": 0.8501,
+      "whale_z": 1.54549,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.035503797"
+    },
+    {
+      "sym": "M&M",
+      "side": "BUY",
+      "lp": 3398.5,
+      "conviction": 7.32,
+      "regime": "BURST",
+      "branching": 0.83656,
+      "whale_z": 2.62514,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.20597324"
+    },
+    {
+      "sym": "NESTLEIND",
+      "side": "SELL",
+      "lp": 1481.0,
+      "conviction": 5.74,
+      "regime": "BURST",
+      "branching": 0.6908,
+      "whale_z": 2.48873,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.13504389"
+    },
+    {
+      "sym": "HAVELLS",
+      "side": "BUY",
+      "lp": 1306.0999755859375,
+      "conviction": 6.41,
+      "regime": "BURST",
+      "branching": 0.68925,
+      "whale_z": 2.35939,
+      "mom_5m": 0,
+      "captured": "True",
+      "move_pct": "0.604856"
+    },
+    {
+      "sym": "DLF",
+      "side": "SELL",
+      "lp": 670.5,
+      "conviction": 6.64,
+      "regime": "BURST",
+      "branching": 0.73842,
+      "whale_z": 1.79251,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.19388334"
+    },
+    {
+      "sym": "RELIANCE",
+      "side": "BUY",
+      "lp": 1304.699951171875,
+      "conviction": 6.38,
+      "regime": "BURST",
+      "branching": 0.84562,
+      "whale_z": 2.11332,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.39856467"
+    },
+    {
+      "sym": "UNIONBANK",
+      "side": "SELL",
+      "lp": 189.25,
+      "conviction": 5.87,
+      "regime": "BURST",
+      "branching": 0.75349,
+      "whale_z": 1.80322,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.1321004"
+    },
+    {
+      "sym": "ONGC",
+      "side": "SELL",
+      "lp": 238.89999389648438,
+      "conviction": 7.77,
+      "regime": "BURST",
+      "branching": 0.81206,
+      "whale_z": 2.19292,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.07952582"
+    },
+    {
+      "sym": "PAYTM",
+      "side": "SELL",
+      "lp": 1591.0,
+      "conviction": 6.43,
+      "regime": "BURST",
+      "branching": 0.69101,
+      "whale_z": 2.72895,
+      "mom_5m": 0,
+      "captured": "True",
+      "move_pct": "0.6913891"
+    },
+    {
+      "sym": "PAYTM",
+      "side": "BUY",
+      "lp": 1587.0,
+      "conviction": 5.92,
+      "regime": "BURST",
+      "branching": 0.73383,
+      "whale_z": 1.79089,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.22684157"
+    },
+    {
+      "sym": "RELIANCE",
+      "side": "SELL",
+      "lp": 1314.0,
+      "conviction": 5.6,
+      "regime": "BURST",
+      "branching": 0.83529,
+      "whale_z": 2.5953,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.045660242"
+    },
+    {
+      "sym": "RELIANCE",
+      "side": "SELL",
+      "lp": 1317.800048828125,
+      "conviction": 5.78,
+      "regime": "BURST",
+      "branching": 0.82785,
+      "whale_z": 2.32248,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.15176809"
+    },
+    {
+      "sym": "SUNPHARMA",
+      "side": "SELL",
+      "lp": 1897.5,
+      "conviction": 7.31,
+      "regime": "BURST",
+      "branching": 0.7613,
+      "whale_z": 1.73284,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.1264835"
+    },
+    {
+      "sym": "RELIANCE",
+      "side": "SELL",
+      "lp": 1318.5999755859375,
+      "conviction": 6.12,
+      "regime": "BURST",
+      "branching": 0.82778,
+      "whale_z": 0.84779,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.21234088"
+    },
+    {
+      "sym": "AXISBANK",
+      "side": "SELL",
+      "lp": 1231.9000244140625,
+      "conviction": 6.84,
+      "regime": "BURST",
+      "branching": 0.69319,
+      "whale_z": 1.29098,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.33281723"
+    },
+    {
+      "sym": "VOLTAS",
+      "side": "SELL",
+      "lp": 1264.0,
+      "conviction": 8.52,
+      "regime": "BURST",
+      "branching": 0.4804,
+      "whale_z": 2.05174,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.29271767"
+    },
+    {
+      "sym": "TATAPOWER",
+      "side": "SELL",
+      "lp": 382.6499938964844,
+      "conviction": 6.44,
+      "regime": "GRIND",
+      "branching": 0.27203,
+      "whale_z": 1.77565,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.31359774"
+    },
+    {
+      "sym": "JINDALSTEL",
+      "side": "BUY",
+      "lp": 1113.9000244140625,
+      "conviction": 5.84,
+      "regime": "BURST",
+      "branching": 0.61583,
+      "whale_z": 3.17285,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.43091184"
+    },
+    {
+      "sym": "PAYTM",
+      "side": "SELL",
+      "lp": 1595.199951171875,
+      "conviction": 6.25,
+      "regime": "BURST",
+      "branching": 0.79539,
+      "whale_z": 3.07896,
+      "mom_5m": 0,
+      "captured": "True",
+      "move_pct": "0.5391158"
+    },
+    {
+      "sym": "GAIL",
+      "side": "BUY",
+      "lp": 173.1999969482422,
+      "conviction": 5.97,
+      "regime": "BURST",
+      "branching": 0.50732,
+      "whale_z": 3.43978,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.05774025"
+    },
+    {
+      "sym": "SBIN",
+      "side": "SELL",
+      "lp": 1063.5999755859375,
+      "conviction": 6.25,
+      "regime": "BURST",
+      "branching": 0.77243,
+      "whale_z": 1.52537,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.112819776"
+    },
+    {
+      "sym": "SBIN",
+      "side": "SELL",
+      "lp": 1064.0,
+      "conviction": 5.86,
+      "regime": "BURST",
+      "branching": 0.77781,
+      "whale_z": 1.54707,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.15037365"
+    },
+    {
+      "sym": "JSWSTEEL",
+      "side": "SELL",
+      "lp": 1285.699951171875,
+      "conviction": 6.51,
+      "regime": "BURST",
+      "branching": 0.74739,
+      "whale_z": 2.65194,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.36555582"
+    },
+    {
+      "sym": "HDFCBANK",
+      "side": "SELL",
+      "lp": 728.75,
+      "conviction": 6.01,
+      "regime": "BURST",
+      "branching": 0.78363,
+      "whale_z": 1.302,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.048024096"
+    },
+    {
+      "sym": "VOLTAS",
+      "side": "SELL",
+      "lp": 1266.0999755859375,
+      "conviction": 6.41,
+      "regime": "GRIND",
+      "branching": 0.53927,
+      "whale_z": 1.49324,
+      "mom_5m": 0,
+      "captured": "True",
+      "move_pct": "0.5370766"
+    },
+    {
+      "sym": "PAYTM",
+      "side": "SELL",
+      "lp": 1587.4000244140625,
+      "conviction": 5.81,
+      "regime": "BURST",
+      "branching": 0.78758,
+      "whale_z": 1.31153,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.037796117"
+    },
+    {
+      "sym": "SUNPHARMA",
+      "side": "SELL",
+      "lp": 1888.0,
+      "conviction": 5.51,
+      "regime": "BURST",
+      "branching": 0.75494,
+      "whale_z": 0.73308,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.4025411"
+    },
+    {
+      "sym": "ITC",
+      "side": "BUY",
+      "lp": 273.3999938964844,
+      "conviction": 5.65,
+      "regime": "BURST",
+      "branching": 0.71239,
+      "whale_z": 1.02764,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.09144112"
+    },
+    {
+      "sym": "NMDC",
+      "side": "BUY",
+      "lp": 85.16999816894531,
+      "conviction": 6.91,
+      "regime": "BURST",
+      "branching": 0.65687,
+      "whale_z": 0.91684,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.34049657"
+    },
+    {
+      "sym": "NMDC",
+      "side": "SELL",
+      "lp": 85.16000366210938,
+      "conviction": 5.54,
+      "regime": "BURST",
+      "branching": 0.66591,
+      "whale_z": 2.33,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.0"
+    },
+    {
+      "sym": "HDFCBANK",
+      "side": "BUY",
+      "lp": 731.4000244140625,
+      "conviction": 5.77,
+      "regime": "BURST",
+      "branching": 0.78669,
+      "whale_z": 1.1165,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.088865645"
+    },
+    {
+      "sym": "CANBK",
+      "side": "BUY",
+      "lp": 131.00999450683594,
+      "conviction": 6.53,
+      "regime": "GRIND",
+      "branching": 0.34062,
+      "whale_z": 3.38333,
+      "mom_5m": 0,
+      "captured": "False",
+      "move_pct": "0.26715985"
+    }
+  ],
+  "regime_final": {
+    "BHARTIARTL": "NOISE",
+    "POWERGRID": "NOISE",
+    "MUTHOOTFIN": "NOISE",
+    "VEDL": "NOISE",
+    "TATAPOWER": "NOISE",
+    "REC": "NOISE",
+    "COALINDIA": "NOISE",
+    "INDUSINDBK": "NOISE",
+    "NMDC": "BURST",
+    "VBL": "NOISE",
+    "RELIANCE": "NOISE",
+    "CHOLAFIN": "BURST",
+    "ACC": "NOISE",
+    "ASIANPAINT": "NOISE",
+    "AXISBANK": "NOISE",
+    "GODREJPROP": "NOISE",
+    "SBICARD": "NOISE",
+    "HDFCBANK": "NOISE",
+    "BAJAJFINSV": "NOISE",
+    "VOLTAS": "NOISE",
+    "UNIONBANK": "NOISE",
+    "CANBK": "NOISE",
+    "TORNTPHARM": "NOISE",
+    "NYKAA": "NOISE",
+    "POLICYBZR": "NOISE",
+    "HDFCLIFE": "NOISE",
+    "JIOFIN": "NOISE",
+    "AMBUJACEM": "NOISE",
+    "DLF": "NOISE",
+    "NESTLEIND": "NOISE",
+    "HINDALCO": "BURST",
+    "MARICO": "NOISE",
+    "FEDERALBNK": "NOISE",
+    "ICICIBANK": "NOISE",
+    "TVSMOTOR": "NOISE",
+    "SAIL": "BURST",
+    "ITC": "NOISE",
+    "BEL": "NOISE",
+    "ICICIPRULI": "NOISE",
+    "CIPLA": "NOISE",
+    "GRASIM": "BURST",
+    "ADANIPORTS": "NOISE",
+    "HINDUNILVR": "NOISE",
+    "PNB": "NOISE",
+    "JINDALSTEL": "NOISE",
+    "SBIN": "NOISE",
+    "INFY": "NOISE",
+    "PAYTM": "NOISE",
+    "IRFC": "NOISE",
+    "TATASTEEL": "NOISE",
+    "SBILIFE": "NOISE",
+    "DABUR": "NOISE",
+    "NTPC": "NOISE",
+    "JSWSTEEL": "NOISE",
+    "UPL": "NOISE",
+    "HCLTECH": "GRIND",
+    "HAVELLS": "NOISE",
+    "WIPRO": "NOISE",
+    "IRCTC": "NOISE",
+    "BANKBARODA": "NOISE",
+    "TECHM": "NOISE",
+    "GODREJCP": "NOISE",
+    "LUPIN": "NOISE",
+    "ICICIGI": "NOISE",
+    "BPCL": "NOISE",
+    "SUNPHARMA": "BURST",
+    "M&M": "NOISE",
+    "PFC": "GRIND",
+    "IDFCFIRSTB": "NOISE",
+    "KOTAKBANK": "BURST",
+    "AUROPHARMA": "NOISE",
+    "ADANIENT": "NOISE",
+    "GAIL": "NOISE",
+    "ZYDUSLIFE": "NOISE",
+    "SHRIRAMFIN": "NOISE",
+    "ONGC": "NOISE"
+  },
+  "posteriors": {
+    "BHARTIARTL": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "POWERGRID": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "MUTHOOTFIN": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "VEDL": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "TATAPOWER": {
+      "beta_alpha": 3.0,
+      "beta_beta": 21.0,
+      "W_alpha": 2.0,
+      "W_beta": 11.0
+    },
+    "REC": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "COALINDIA": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "INDUSINDBK": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "NMDC": {
+      "beta_alpha": 3.0,
+      "beta_beta": 23.0,
+      "W_alpha": 2.0,
+      "W_beta": 13.0
+    },
+    "VBL": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "RELIANCE": {
+      "beta_alpha": 3.0,
+      "beta_beta": 24.0,
+      "W_alpha": 2.0,
+      "W_beta": 14.0
+    },
+    "CHOLAFIN": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "ACC": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "ASIANPAINT": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "AXISBANK": {
+      "beta_alpha": 3.0,
+      "beta_beta": 21.0,
+      "W_alpha": 2.0,
+      "W_beta": 11.0
+    },
+    "GODREJPROP": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "SBICARD": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "HDFCBANK": {
+      "beta_alpha": 3.0,
+      "beta_beta": 22.0,
+      "W_alpha": 2.0,
+      "W_beta": 12.0
+    },
+    "BAJAJFINSV": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "VOLTAS": {
+      "beta_alpha": 3.0,
+      "beta_beta": 22.0,
+      "W_alpha": 2.0,
+      "W_beta": 12.0
+    },
+    "UNIONBANK": {
+      "beta_alpha": 3.0,
+      "beta_beta": 21.0,
+      "W_alpha": 2.0,
+      "W_beta": 11.0
+    },
+    "CANBK": {
+      "beta_alpha": 3.0,
+      "beta_beta": 21.0,
+      "W_alpha": 2.0,
+      "W_beta": 11.0
+    },
+    "TORNTPHARM": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "NYKAA": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "POLICYBZR": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "HDFCLIFE": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "JIOFIN": {
+      "beta_alpha": 3.0,
+      "beta_beta": 22.0,
+      "W_alpha": 2.0,
+      "W_beta": 12.0
+    },
+    "AMBUJACEM": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "DLF": {
+      "beta_alpha": 3.0,
+      "beta_beta": 21.0,
+      "W_alpha": 2.0,
+      "W_beta": 11.0
+    },
+    "NESTLEIND": {
+      "beta_alpha": 3.0,
+      "beta_beta": 21.0,
+      "W_alpha": 2.0,
+      "W_beta": 11.0
+    },
+    "HINDALCO": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "MARICO": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "FEDERALBNK": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "ICICIBANK": {
+      "beta_alpha": 3.0,
+      "beta_beta": 21.0,
+      "W_alpha": 2.0,
+      "W_beta": 11.0
+    },
+    "TVSMOTOR": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "SAIL": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "ITC": {
+      "beta_alpha": 3.0,
+      "beta_beta": 21.0,
+      "W_alpha": 2.0,
+      "W_beta": 11.0
+    },
+    "BEL": {
+      "beta_alpha": 3.0,
+      "beta_beta": 21.0,
+      "W_alpha": 2.0,
+      "W_beta": 11.0
+    },
+    "ICICIPRULI": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "CIPLA": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "GRASIM": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "ADANIPORTS": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "HINDUNILVR": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "PNB": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "JINDALSTEL": {
+      "beta_alpha": 3.0,
+      "beta_beta": 21.0,
+      "W_alpha": 2.0,
+      "W_beta": 11.0
+    },
+    "SBIN": {
+      "beta_alpha": 3.0,
+      "beta_beta": 22.0,
+      "W_alpha": 2.0,
+      "W_beta": 12.0
+    },
+    "INFY": {
+      "beta_alpha": 3.0,
+      "beta_beta": 21.0,
+      "W_alpha": 2.0,
+      "W_beta": 11.0
+    },
+    "PAYTM": {
+      "beta_alpha": 3.0,
+      "beta_beta": 24.0,
+      "W_alpha": 2.0,
+      "W_beta": 14.0
+    },
+    "IRFC": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "TATASTEEL": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "SBILIFE": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "DABUR": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "NTPC": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "JSWSTEEL": {
+      "beta_alpha": 3.0,
+      "beta_beta": 21.0,
+      "W_alpha": 2.0,
+      "W_beta": 11.0
+    },
+    "UPL": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "HCLTECH": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "HAVELLS": {
+      "beta_alpha": 3.0,
+      "beta_beta": 21.0,
+      "W_alpha": 2.0,
+      "W_beta": 11.0
+    },
+    "WIPRO": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "IRCTC": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "BANKBARODA": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "TECHM": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "GODREJCP": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "LUPIN": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "ICICIGI": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "BPCL": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "SUNPHARMA": {
+      "beta_alpha": 3.0,
+      "beta_beta": 22.0,
+      "W_alpha": 2.0,
+      "W_beta": 12.0
+    },
+    "M&M": {
+      "beta_alpha": 3.0,
+      "beta_beta": 21.0,
+      "W_alpha": 2.0,
+      "W_beta": 11.0
+    },
+    "PFC": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "IDFCFIRSTB": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "KOTAKBANK": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "AUROPHARMA": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "ADANIENT": {
+      "beta_alpha": 3.0,
+      "beta_beta": 20.0,
+      "W_alpha": 2.0,
+      "W_beta": 10.0
+    },
+    "GAIL": {
+      "beta_alpha": 3.0,
+      "beta_beta": 21.0,
+      "W_alpha": 2.0,
+      "W_beta": 11.0
+    },
+    "ZYDUSLIFE": {
+      "beta_alpha": 3.0,
+      "beta_beta": 21.0,
+      "W_alpha": 2.0,
+      "W_beta": 11.0
+    },
+    "SHRIRAMFIN": {
+      "beta_alpha": 3.0,
+      "beta_beta": 22.0,
+      "W_alpha": 2.0,
+      "W_beta": 12.0
+    },
+    "ONGC": {
+      "beta_alpha": 3.0,
+      "beta_beta": 22.0,
+      "W_alpha": 2.0,
+      "W_beta": 12.0
+    }
+  }
+}

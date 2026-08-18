@@ -366,58 +366,59 @@ def run_scan(broker):
     df_res = pd.DataFrame(results)
     logger.info(f"Calculated metrics for {len(df_res)} symbols.")
 
-    # ─── CONVICTION SCORING ───
-    # Features & Weights (Matching Value Engine Alpha Hierarchy)
-    feats = [
-        ("mean_mp_accel", 0.25),      # MPAR Acceleration Consistency (Mean)
-        ("std_mp_accel", -0.10),      # Low Vol of Accel = Stable Trend (Negative Weight on Std)
-        ("max_vac_bps", 0.20),        # Peak Vacuum Intensity
-        ("mean_dkla_asym", 0.15),     # DKLA Directional Edge (Abs)
-        ("whale_bursts", 0.15),       # Whale Frequency
-        ("mean_lra_vel", 0.10),       # LRA Velocity (Abs)
-        ("mean_toxicity", 0.10),      # Toxicity (High = Predatory Edge)
-        ("std_mlofi", -0.05),         # Stable Divergence
-    ]
+    # ─── CONVICTION SCORING (ALIGNED WITH ADAPTIVE ENGINE v3.0) ───
+    # Regime-aware + Interaction-aware scoring (matches CascadeValueEngine)
+    # Features: MPAR, DKLA, LRA, VAC, WHALE, MLOFI, TOXICITY
+    # Weights calibrated from 110-stock backtest (2026-08-17)
     
-    # Normalize & Score
-    for col, _ in feats:
-        base_col = col.replace("mean_", "").replace("std_", "").replace("max_", "")
-        actual_col = f"{base_col}"
-        # Map our stat keys to df columns
-        # stats returns mean_mp_accel, std_mp_accel, max_vac_bps, mean_dkla_asym, etc.
-        pass # Columns already match stats output keys
-
-    # Compute Percentile Ranks
-    for col, _ in feats:
+    # Main effect weights (sum = 1.0 for percentile ranks)
+    w_mpar = 0.22      # MPAR Acceleration (highest alpha)
+    w_dkla = 0.18      # DKLA Impact Asymmetry (abs)
+    w_lra = 0.15       # LRA Velocity (abs)
+    w_vac = 0.15       # Vacuum Peak (bps)
+    w_whale = 0.12     # Whale Burst Frequency
+    w_mlofi = 0.10     # MLOFI Divergence (stable)
+    w_tox = 0.08       # Toxicity (predatory edge)
+    
+    # Interaction weights (from adaptive engine calibration)
+    i_mlofi_vac = 0.04   # MLOFI × VACUUM
+    i_mpar_lra = 0.03    # MPAR × LRA
+    i_whale_dkla = 0.04  # WHALE × DKLA
+    
+    # Compute Percentile Ranks for all features
+    feat_cols = ["mean_mp_accel", "std_mp_accel", "max_vac_bps", 
+                 "mean_dkla_asym", "whale_bursts", "mean_lra_vel", 
+                 "mean_toxicity", "std_mlofi"]
+    for col in feat_cols:
         if col in df_res.columns:
             df_res[f"{col}_pct"] = _percentile_rank(df_res[col].replace([np.inf, -np.inf], np.nan).fillna(0))
         else:
             df_res[f"{col}_pct"] = 0.5
-
-    # Weighted Sum
-    df_res["conviction_score"] = 0.0
-    for col, w in feats:
-        pct_col = f"{col}_pct"
-        # For Negative Weights (Std), invert percentile (Low Std = High Pct)
-        if w < 0:
-            df_res["conviction_score"] += abs(w) * (1.0 - df_res[pct_col]) * 100
-        else:
-            df_res["conviction_score"] += w * df_res[pct_col] * 100
-
-    # DKLA Asym uses Abs Value for scoring (Direction agnostic for Universe Selection)
-    # FIX: Replace the signed contribution with abs contribution (don't double-count)
-    if "mean_dkla_asym_pct" in df_res.columns:
-        df_res["abs_dkla_pct"] = _percentile_rank(df_res["mean_dkla_asym"].abs())
-        # Subtract old signed contribution, add abs contribution
-        df_res["conviction_score"] -= 0.15 * df_res["mean_dkla_asym_pct"] * 100
-        df_res["conviction_score"] += 0.15 * df_res["abs_dkla_pct"] * 100
-
-    # LRA Vel Abs
-    if "mean_lra_vel_pct" in df_res.columns:
-        df_res["abs_lra_pct"] = _percentile_rank(df_res["mean_lra_vel"].abs())
-        # Subtract old signed contribution, add abs contribution
-        df_res["conviction_score"] -= 0.10 * df_res["mean_lra_vel_pct"] * 100
-        df_res["conviction_score"] += 0.10 * df_res["abs_lra_pct"] * 100
+    
+    # Use absolute values for directional-agnostic features
+    df_res["abs_dkla_pct"] = _percentile_rank(df_res["mean_dkla_asym"].abs())
+    df_res["abs_lra_pct"] = _percentile_rank(df_res["mean_lra_vel"].abs())
+    
+    # Base conviction (weighted percentile sum)
+    df_res["conviction_score"] = (
+        w_mpar * df_res["mean_mp_accel_pct"] * 100 +
+        w_dkla * df_res["abs_dkla_pct"] * 100 +
+        w_lra * df_res["abs_lra_pct"] * 100 +
+        w_vac * df_res["max_vac_bps_pct"] * 100 +
+        w_whale * df_res["whale_bursts_pct"] * 100 +
+        w_mlofi * (1.0 - df_res["std_mlofi_pct"]) * 100 +  # Low std = good
+        w_tox * df_res["mean_toxicity_pct"] * 100
+    )
+    
+    # Interaction terms (product of percentiles, scaled)
+    df_res["conviction_score"] += (
+        i_mlofi_vac * df_res["std_mlofi_pct"] * df_res["max_vac_bps_pct"] * 100 * 0.5 +
+        i_mpar_lra * df_res["mean_mp_accel_pct"] * df_res["abs_lra_pct"] * 100 * 0.5 +
+        i_whale_dkla * df_res["whale_bursts_pct"] * df_res["abs_dkla_pct"] * 100 * 0.5
+    )
+    
+    # Stability penalty: penalize high MPAR acceleration volatility
+    df_res["conviction_score"] -= 0.10 * df_res["std_mp_accel_pct"] * 100
 
     df_res = df_res.sort_values("conviction_score", ascending=False).reset_index(drop=True)
     df_res["rank"] = df_res.index + 1

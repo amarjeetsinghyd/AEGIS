@@ -1,0 +1,410 @@
+{
+  "RELIANCE": {
+    "token": "2885",
+    "tsym": "RELIANCE-EQ"
+  },
+  "TCS": {
+    "token": "11536",
+    "tsym": "TCS-EQ"
+  },
+  "HDFCBANK": {
+    "token": "1333",
+    "tsym": "HDFCBANK-EQ"
+  },
+  "ICICIBANK": {
+    "token": "4963",
+    "tsym": "ICICIBANK-EQ"
+  },
+  "INFY": {
+    "token": "1594",
+    "tsym": "INFY-EQ"
+  },
+  "HINDUNILVR": {
+    "token": "1394",
+    "tsym": "HINDUNILVR-EQ"
+  },
+  "ITC": {
+    "token": "1660",
+    "tsym": "ITC-EQ"
+  },
+  "SBIN": {
+    "token": "3045",
+    "tsym": "SBIN-EQ"
+  },
+  "BHARTIARTL": {
+    "token": "10604",
+    "tsym": "BHARTIARTL-EQ"
+  },
+  "KOTAKBANK": {
+    "token": "1922",
+    "tsym": "KOTAKBANK-EQ"
+  },
+  "LT": {
+    "token": "11483",
+    "tsym": "LT-EQ"
+  },
+  "AXISBANK": {
+    "token": "5900",
+    "tsym": "AXISBANK-EQ"
+  },
+  "ASIANPAINT": {
+    "token": "236",
+    "tsym": "ASIANPAINT-EQ"
+  },
+  "MARUTI": {
+    "token": "10999",
+    "tsym": "MARUTI-EQ"
+  },
+  "TITAN": {
+    "token": "3506",
+    "tsym": "TITAN-EQ"
+  },
+  "SUNPHARMA": {
+    "token": "3351",
+    "tsym": "SUNPHARMA-EQ"
+  },
+  "ULTRACEMCO": {
+    "token": "11532",
+    "tsym": "ULTRACEMCO-EQ"
+  },
+  "BAJFINANCE": {
+    "token": "317",
+    "tsym": "BAJFINANCE-EQ"
+  },
+  "WIPRO": {
+    "token": "3787",
+    "tsym": "WIPRO-EQ"
+  },
+  "HCLTECH": {
+    "token": "7229",
+    "tsym": "HCLTECH-EQ"
+  },
+  "NESTLEIND": {
+    "token": "17963",
+    "tsym": "NESTLEIND-EQ"
+  },
+  "M&M": {
+    "token": "2031",
+    "tsym": "M&M-EQ"
+  },
+  "ADANIENT": {
+    "token": "25",
+    "tsym": "ADANIENT-EQ"
+  },
+  "ADANIPORTS": {
+    "token": "15083",
+    "tsym": "ADANIPORTS-EQ"
+  },
+  "POWERGRID": {
+    "token": "14977",
+    "tsym": "POWERGRID-EQ"
+  },
+  "NTPC": {
+    "token": "11630",
+    "tsym": "NTPC-EQ"
+  },
+  "ONGC": {
+    "token": "2475",
+    "tsym": "ONGC-EQ"
+  },
+  "JSWSTEEL": {
+    "token": "11723",
+    "tsym": "JSWSTEEL-EQ"
+  },
+  "TATASTEEL": {
+    "token": "3499",
+    "tsym": "TATASTEEL-EQ"
+  },
+  "BAJAJFINSV": {
+    "token": "16675",
+    "tsym": "BAJAJFINSV-EQ"
+  },
+  "TECHM": {
+    "token": "13538",
+    "tsym": "TECHM-EQ"
+  },
+  "GRASIM": {
+    "token": "1232",
+    "tsym": "GRASIM-EQ"
+  },
+  "DRREDDY": {
+    "token": "881",
+    "tsym": "DRREDDY-EQ"
+  },
+  "BRITANNIA": {
+    "token": "547",
+    "tsym": "BRITANNIA-EQ"
+  },
+  "APOLLOHOSP": {
+    "token": "157",
+    "tsym": "APOLLOHOSP-EQ"
+  },
+  "EICHERMOT": {
+    "token": "910",
+    "tsym": "EICHERMOT-EQ"
+  },
+  "HEROMOTOCO": {
+    "token": "1348",
+    "tsym": "HEROMOTOCO-EQ"
+  },
+  "BAJAJ-AUTO": {
+    "token": "16669",
+    "tsym": "BAJAJ-AUTO-EQ"
+  },
+  "DIVISLAB": {
+    "token": "10940",
+    "tsym": "DIVISLAB-EQ"
+  },
+  "CIPLA": {
+    "token": "694",
+    "tsym": "CIPLA-EQ"
+  },
+  "BPCL": {
+    "token": "526",
+    "tsym": "BPCL-EQ"
+  },
+  "INDUSINDBK": {
+    "token": "5258",
+    "tsym": "INDUSINDBK-EQ"
+  },
+  "UPL": {
+    "token": "11287",
+    "tsym": "UPL-EQ"
+  },
+  "SHRIRAMFIN": {
+    "token": "4306",
+    "tsym": "SHRIRAMFIN-EQ"
+  },
+  "SBILIFE": {
+    "token": "21808",
+    "tsym": "SBILIFE-EQ"
+  },
+  "HDFCLIFE": {
+    "token": "467",
+    "tsym": "HDFCLIFE-EQ"
+  },
+  "DABUR": {
+    "token": "772",
+    "tsym": "DABUR-EQ"
+  },
+  "GODREJCP": {
+    "token": "10099",
+    "tsym": "GODREJCP-EQ"
+  },
+  "MARICO": {
+    "token": "4067",
+    "tsym": "MARICO-EQ"
+  },
+  "TRENT": {
+    "token": "1964",
+    "tsym": "TRENT-EQ"
+  },
+  "VBL": {
+    "token": "18921",
+    "tsym": "VBL-EQ"
+  },
+  "PIDILITIND": {
+    "token": "2664",
+    "tsym": "PIDILITIND-EQ"
+  },
+  "SIEMENS": {
+    "token": "3150",
+    "tsym": "SIEMENS-EQ"
+  },
+  "ABB": {
+    "token": "13",
+    "tsym": "ABB-EQ"
+  },
+  "BAJAJHLDNG": {
+    "token": "305",
+    "tsym": "BAJAJHLDNG-EQ"
+  },
+  "CHOLAFIN": {
+    "token": "685",
+    "tsym": "CHOLAFIN-EQ"
+  },
+  "TVSMOTOR": {
+    "token": "8479",
+    "tsym": "TVSMOTOR-EQ"
+  },
+  "DLF": {
+    "token": "14732",
+    "tsym": "DLF-EQ"
+  },
+  "GODREJPROP": {
+    "token": "17875",
+    "tsym": "GODREJPROP-EQ"
+  },
+  "BANKBARODA": {
+    "token": "4668",
+    "tsym": "BANKBARODA-EQ"
+  },
+  "PNB": {
+    "token": "10666",
+    "tsym": "PNB-EQ"
+  },
+  "CANBK": {
+    "token": "10794",
+    "tsym": "CANBK-EQ"
+  },
+  "UNIONBANK": {
+    "token": "10753",
+    "tsym": "UNIONBANK-EQ"
+  },
+  "FEDERALBNK": {
+    "token": "1023",
+    "tsym": "FEDERALBNK-EQ"
+  },
+  "IDFCFIRSTB": {
+    "token": "11184",
+    "tsym": "IDFCFIRSTB-EQ"
+  },
+  "AUROPHARMA": {
+    "token": "275",
+    "tsym": "AUROPHARMA-EQ"
+  },
+  "LUPIN": {
+    "token": "10440",
+    "tsym": "LUPIN-EQ"
+  },
+  "ALKEM": {
+    "token": "11703",
+    "tsym": "ALKEM-EQ"
+  },
+  "TORNTPHARM": {
+    "token": "3518",
+    "tsym": "TORNTPHARM-EQ"
+  },
+  "MUTHOOTFIN": {
+    "token": "23650",
+    "tsym": "MUTHOOTFIN-EQ"
+  },
+  "HAVELLS": {
+    "token": "9819",
+    "tsym": "HAVELLS-EQ"
+  },
+  "ICICIPRULI": {
+    "token": "18652",
+    "tsym": "ICICIPRULI-EQ"
+  },
+  "ICICIGI": {
+    "token": "21770",
+    "tsym": "ICICIGI-EQ"
+  },
+  "SBICARD": {
+    "token": "17971",
+    "tsym": "SBICARD-EQ"
+  },
+  "ZYDUSLIFE": {
+    "token": "7929",
+    "tsym": "ZYDUSLIFE-EQ"
+  },
+  "HAL": {
+    "token": "2303",
+    "tsym": "HAL-EQ"
+  },
+  "BEL": {
+    "token": "383",
+    "tsym": "BEL-EQ"
+  },
+  "IRCTC": {
+    "token": "13611",
+    "tsym": "IRCTC-EQ"
+  },
+  "REC": {
+    "token": "15355",
+    "tsym": "RECLTD-EQ"
+  },
+  "PFC": {
+    "token": "14299",
+    "tsym": "PFC-EQ"
+  },
+  "VOLTAS": {
+    "token": "3718",
+    "tsym": "VOLTAS-EQ"
+  },
+  "AMBUJACEM": {
+    "token": "1270",
+    "tsym": "AMBUJACEM-EQ"
+  },
+  "ACC": {
+    "token": "22",
+    "tsym": "ACC-EQ"
+  },
+  "SHREECEM": {
+    "token": "3103",
+    "tsym": "SHREECEM-EQ"
+  },
+  "JINDALSTEL": {
+    "token": "6733",
+    "tsym": "JINDALSTEL-EQ"
+  },
+  "COALINDIA": {
+    "token": "20374",
+    "tsym": "COALINDIA-EQ"
+  },
+  "HINDALCO": {
+    "token": "1363",
+    "tsym": "HINDALCO-EQ"
+  },
+  "TATAPOWER": {
+    "token": "3426",
+    "tsym": "TATAPOWER-EQ"
+  },
+  "NMDC": {
+    "token": "15332",
+    "tsym": "NMDC-EQ"
+  },
+  "SAIL": {
+    "token": "2963",
+    "tsym": "SAIL-EQ"
+  },
+  "GAIL": {
+    "token": "4717",
+    "tsym": "GAIL-EQ"
+  },
+  "VEDL": {
+    "token": "3063",
+    "tsym": "VEDL-EQ"
+  },
+  "DMART": {
+    "token": "19913",
+    "tsym": "DMART-EQ"
+  },
+  "BOSCHLTD": {
+    "token": "2181",
+    "tsym": "BOSCHLTD-EQ"
+  },
+  "LTIM": {
+    "token": "25996",
+    "tsym": "EMULTIMQ-EQ"
+  },
+  "PERSISTENT": {
+    "token": "18365",
+    "tsym": "PERSISTENT-EQ"
+  },
+  "POLYCAB": {
+    "token": "9590",
+    "tsym": "POLYCAB-EQ"
+  },
+  "JIOFIN": {
+    "token": "18143",
+    "tsym": "JIOFIN-EQ"
+  },
+  "IRFC": {
+    "token": "2029",
+    "tsym": "IRFC-EQ"
+  },
+  "PAYTM": {
+    "token": "6705",
+    "tsym": "PAYTM-EQ"
+  },
+  "NYKAA": {
+    "token": "6545",
+    "tsym": "NYKAA-EQ"
+  },
+  "POLICYBZR": {
+    "token": "6656",
+    "tsym": "POLICYBZR-EQ"
+  }
+}

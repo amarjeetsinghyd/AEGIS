@@ -136,12 +136,39 @@ class CascadeValueEngine:
         }
         self._hawkes_bins = int(self.CFG["hawkes_lookback_sec"] / self.CFG["hawkes_bin_sec"])
         
+        # ─── SYMBOL INDEX MAPPING (for array-based regime state) ───
+        self.sym_to_idx = {sym: i for i, sym in enumerate(self.t2s.values())}
+        self.idx_to_sym = {i: sym for sym, i in self.sym_to_idx.items()}
+        self._n_symbols = len(self.sym_to_idx)
+        
+        # ─── ADAPTIVE GATING: Regime Classification State (pre-allocated arrays, zero hot-path allocation) ───
+        self.regime_beta_ema = np.zeros(self._n_symbols, dtype=np.float32)
+        self.regime_W_ema = np.zeros(self._n_symbols, dtype=np.float32)
+        self.regime_mom_ema = np.zeros(self._n_symbols, dtype=np.float32)
+        self.regime_beta_var = np.zeros(self._n_symbols, dtype=np.float32)
+        self.regime_W_var = np.zeros(self._n_symbols, dtype=np.float32)
+        self.regime_id = np.zeros(self._n_symbols, dtype=np.int8)  # 0=NOISE, 1=BURST, 2=GRIND, 3=WHALE
+        self.regime_conf = np.zeros(self._n_symbols, dtype=np.float32)
+        self.regime_mom_history = {sym: deque(maxlen=300) for sym in self.t2s.values()}  # 5-min LTP history
+        
+        # ─── ADAPTIVE GATING: Bayesian Threshold Posteriors (bucket-level only) ───
+        # Beta-Binomial conjugate priors per symbol: branching threshold & whale_z threshold
+        self.post_alpha_beta = np.ones(self._n_symbols) * 3.0
+        self.post_beta_beta = np.ones(self._n_symbols) * 20.0
+        self.post_alpha_W = np.ones(self._n_symbols) * 2.0
+        self.post_beta_W = np.ones(self._n_symbols) * 10.0
+        self.bucket_count = np.zeros(self._n_symbols, dtype=np.int32)
+        
+        # ─── ADAPTIVE GATING: False Positive Rate Tracking (for dynamic conviction threshold) ───
+        self.recent_fp = {sym: deque(maxlen=20) for sym in self.t2s.values()}
+        self.recent_tp = {sym: deque(maxlen=20) for sym in self.t2s.values()}
+        
         # ─── TRIGGER CONFIG (The "Holy Grail" Thresholds) ───
         default_trigger = {
-            # Core Gates (Must Pass All)
+            # Core Gates (Must Pass All) - BASE VALUES (adaptive overrides these)
             "min_ticks": 3,
-            "min_branching": 0.35,      # Self-exciting flow
-            "min_whale_z": 1.2,         # Statistical whale presence
+            "min_branching": 0.35,      # Self-exciting flow (base, will be overridden by adaptive)
+            "min_whale_z": 1.2,         # Statistical whale presence (base, will be overridden by adaptive)
             "min_tox_pct": 75,          # Toxicity percentile
             
             # Long Conviction Weights (Sum > THRESHOLD triggers)
@@ -151,7 +178,7 @@ class CascadeValueEngine:
             "w_lra": 1.5,               # MM Retreat
             "w_dkla": 1.5,              # Impact Asymmetry
             "w_micro": 0.5,             # Microprice Stretch
-            "conviction_threshold": 7.5, # Out of ~10.5 max
+            "conviction_threshold": 7.5, # Out of ~10.5 max (base, regime-adaptive overrides)
             
             # Dynamic Normalization Clamps
             "mlofi_cap": 3.0,
@@ -159,6 +186,36 @@ class CascadeValueEngine:
             "vac_cap": 100.0,           # bps
             "lra_cap": 1.0,
             "dkla_cap": 1.0,
+            
+            # ─── ADAPTIVE GATING CONFIG — CALIBRATED 2026-08-17 ───
+            # Regime classification thresholds (calibrated from 110-stock backtest)
+            "regime_burst_beta_min": 0.65,      # Beta EMA for burst: 0.65+ (was 0.50)
+            "regime_burst_W_min": 0.50,         # WhaleZ EMA for burst: 0.50+ (was 0.30)
+            "regime_burst_mom_min": 0.25,       # Momentum EMA for burst: 0.25%+ (was 0.15%)
+            "regime_grind_beta_min": 0.25,      # Beta EMA for grind: 0.25-0.65 (was 0.30)
+            "regime_grind_beta_max": 0.65,
+            "regime_grind_W_min": 0.40,         # WhaleZ EMA for grind: 0.40+ (was 0.30)
+            "regime_grind_mom_min": 0.35,       # Momentum EMA for grind: 0.35%+ (was 0.30%)
+            "regime_whale_W_min": 1.00,         # WhaleZ EMA for whale: 1.00+ (was 0.80)
+            
+            # Bayesian priors (per symbol overrides allowed via trigger_config)
+            "prior_alpha_beta": 3.0, "prior_beta_beta": 20.0,
+            "prior_alpha_W": 2.0, "prior_beta_W": 10.0,
+            
+            # Minimax fallback (CALIBRATION-OPTIMAL from forensic sweep)
+            "minimax_beta": 0.10, "minimax_W": 0.50, "minimax_mom": 0.30, "minimax_tox_pct": 50,
+            
+            # Conviction thresholds per regime (RAISED for precision)
+            "conv_thresh_burst": 7.5, "conv_thresh_grind": 8.0, "conv_thresh_whale": 9.0,
+            
+            # Interaction weights (REDUCED to prevent over-contribution)
+            "interact_mlofi_vac": 0.4, "interact_mpar_lra": 0.3,
+            "interact_whale_dkla": 0.4, "interact_beta_mom": 0.2,
+            
+            # Adaptation controls
+            "ema_alpha_regime": 0.15, "ucb_exploration_c": 0.5,
+            "min_buckets_for_bayes": 30, "min_buckets_for_omd": 50,
+            "fpr_window": 20, "fpr_target": 0.15,
         }
         self.CFG.update(default_trigger)   # apply defaults FIRST
         if trigger_config: self.CFG.update(trigger_config)  # then apply any explicit overrides
@@ -307,6 +364,180 @@ class CascadeValueEngine:
         return accel, align, mp
 
     # ═══════════════════════════════════════════════════════════
+    # ADAPTIVE GATING: REGIME CLASSIFICATION & DYNAMIC THRESHOLDS
+    # ═══════════════════════════════════════════════════════════
+
+    def _update_regime_state(self, sym_idx: int, beta: float, whale_z: float, mom_5m: float) -> None:
+        """EMA-based regime classifier: 0=NOISE, 1=BURST, 2=GRIND, 3=WHALE. O(1), zero allocation."""
+        alpha = self.CFG["ema_alpha_regime"]  # 0.15
+        b_ema = self.regime_beta_ema[sym_idx]
+        w_ema = self.regime_W_ema[sym_idx]
+        m_ema = self.regime_mom_ema[sym_idx]
+        b_var = self.regime_beta_var[sym_idx]
+        w_var = self.regime_W_var[sym_idx]
+        
+        # EMA updates
+        self.regime_beta_ema[sym_idx] = alpha * beta + (1 - alpha) * b_ema
+        self.regime_W_ema[sym_idx] = alpha * whale_z + (1 - alpha) * w_ema
+        self.regime_mom_ema[sym_idx] = alpha * mom_5m + (1 - alpha) * m_ema
+        
+        # Variance for confidence
+        self.regime_beta_var[sym_idx] = alpha * (beta - self.regime_beta_ema[sym_idx])**2 + (1 - alpha) * b_var
+        self.regime_W_var[sym_idx] = alpha * (whale_z - self.regime_W_ema[sym_idx])**2 + (1 - alpha) * w_var
+        
+        # Classify
+        b, w, m = self.regime_beta_ema[sym_idx], self.regime_W_ema[sym_idx], abs(self.regime_mom_ema[sym_idx])
+        if b >= self.CFG["regime_burst_beta_min"] and w >= self.CFG["regime_burst_W_min"] and m >= self.CFG["regime_burst_mom_min"]:
+            self.regime_id[sym_idx] = 1  # BURST
+            self.regime_conf[sym_idx] = 0.9
+        elif (self.CFG["regime_grind_beta_min"] <= b < self.CFG["regime_grind_beta_max"] and 
+              w >= self.CFG["regime_grind_W_min"] and m >= self.CFG["regime_grind_mom_min"]):
+            self.regime_id[sym_idx] = 2  # GRIND
+            self.regime_conf[sym_idx] = 0.8
+        elif b < self.CFG["regime_grind_beta_min"] and w >= self.CFG["regime_whale_W_min"]:
+            self.regime_id[sym_idx] = 3  # WHALE
+            self.regime_conf[sym_idx] = 0.7
+        else:
+            self.regime_id[sym_idx] = 0  # NOISE
+            self.regime_conf[sym_idx] = 0.5
+
+    def _get_dynamic_thresholds(self, sym_idx: int) -> tuple:
+        """Beta-Binomial posterior mean + UCB exploration. Falls back to minimax when data < 30 buckets."""
+        if self.bucket_count[sym_idx] < self.CFG["min_buckets_for_bayes"]:
+            return (self.CFG["minimax_beta"], self.CFG["minimax_W"], 
+                    self.CFG["minimax_mom"], self.CFG["minimax_tox_pct"])
+        
+        c = self.CFG["ucb_exploration_c"]
+        n_beta = self.post_alpha_beta[sym_idx] + self.post_beta_beta[sym_idx]
+        n_W = self.post_alpha_W[sym_idx] + self.post_beta_W[sym_idx]
+        
+        t_beta = self.post_alpha_beta[sym_idx] / n_beta + c * math.sqrt(math.log(self.bucket_count[sym_idx]) / n_beta)
+        t_W = self.post_alpha_W[sym_idx] / n_W + c * math.sqrt(math.log(self.bucket_count[sym_idx]) / n_W)
+        
+        return (float(np.clip(t_beta, 0.08, 0.35)), float(np.clip(t_W, 0.8, 2.5)),
+                self.CFG["minimax_mom"], self.CFG["minimax_tox_pct"])
+
+    def _evaluate_adaptive_gate(self, sym_idx: int, beta: float, whale_z: float, mom_5m: float, 
+                                toxicity: float, tox_hist: deque, thresholds: tuple) -> bool:
+        """Regime-specific gate logic. Returns True if gate passes."""
+        regime = self.regime_id[sym_idx]
+        t_beta, t_W, t_mom, t_tox_pct = thresholds
+        
+        if regime == 1:  # BURST: Standard AND with relaxed dynamic thresholds
+            tox_pass = (len(tox_hist) < 20 or toxicity >= np.percentile(tox_hist, t_tox_pct))
+            return (beta >= t_beta * 0.9) and (whale_z >= t_W * 0.9) and tox_pass
+        elif regime == 2:  # GRIND: OR-gate (whale OR momentum) + beta floor
+            whale_gate = whale_z >= t_W * 1.1
+            mom_gate = abs(mom_5m) >= t_mom * 0.8
+            beta_gate = beta >= 0.10
+            tox_pass = (len(tox_hist) < 20 or toxicity >= np.percentile(tox_hist, t_tox_pct))
+            return beta_gate and (whale_gate or mom_gate) and tox_pass
+        elif regime == 3:  # WHALE: Whale-only with higher threshold
+            tox_pass = (len(tox_hist) < 20 or toxicity >= np.percentile(tox_hist, t_tox_pct))
+            return (whale_z >= t_W * 1.3) and tox_pass
+        else:  # NOISE: Block all
+            return False
+
+    def _update_threshold_posteriors(self, sym_idx: int, signal_fired: bool, move_captured: bool) -> None:
+        """Beta-Binomial conjugate update for branching & whale thresholds."""
+        if not signal_fired:
+            return
+        if move_captured:
+            self.post_alpha_beta[sym_idx] += 1.0
+            self.post_alpha_W[sym_idx] += 1.0
+        else:
+            self.post_beta_beta[sym_idx] += 1.0
+            self.post_beta_W[sym_idx] += 1.0
+
+    def _compute_5m_momentum(self, sym: str, lp: float, nows: float) -> float:
+        """Compute 5-minute LTP momentum (%). Zero-allocation using pre-allocated deque."""
+        hist = self.regime_mom_history[sym]
+        hist.append((nows, lp))
+        cutoff = nows - 300.0  # 5 minutes
+        # Find oldest entry within window
+        old_lp = lp
+        for ts, price in hist:
+            if ts >= cutoff:
+                old_lp = price
+                break
+        if old_lp > 0:
+            return (lp - old_lp) / old_lp * 100.0
+        return 0.0
+
+    def _compute_interaction_conviction(self, signals: dict, regime: int) -> tuple:
+        """Interaction-aware conviction scoring. Returns (long_score, short_score)."""
+        # Main effects (monotonic transforms for long: positive values; for short: negative values)
+        mlofi_long = np.clip(signals['mlofi'] / self.CFG["mlofi_cap"], 0, 1)
+        mpar_long = np.clip(signals['mpar'] / self.CFG["mpar_cap"], 0, 1)
+        vac_long = np.clip(signals['net_vac'] / self.CFG["vac_cap"], 0, 1)
+        lra_long = np.clip(signals['lra_signal'] / self.CFG["lra_cap"], 0, 1)
+        dkla_long = np.clip(signals['dkla_asym'] / self.CFG["dkla_cap"], 0, 1)
+        micro_long = 1.0 if signals['micro_dev'] > 0.0002 else 0.0
+        
+        mlofi_short = np.clip(-signals['mlofi'] / self.CFG["mlofi_cap"], 0, 1)
+        mpar_short = np.clip(-signals['mpar'] / self.CFG["mpar_cap"], 0, 1)
+        vac_short = np.clip(-signals['net_vac'] / self.CFG["vac_cap"], 0, 1)
+        lra_short = np.clip(-signals['lra_signal'] / self.CFG["lra_cap"], 0, 1)
+        dkla_short = np.clip(-signals['dkla_asym'] / self.CFG["dkla_cap"], 0, 1)
+        micro_short = 1.0 if signals['micro_dev'] < -0.0002 else 0.0
+        
+        whale_t = np.clip(abs(signals['whale_z']) / 3.0, 0, 1)
+        beta_t = np.clip(signals['branching'] / 0.5, 0, 1)
+        mom_t = np.clip(abs(signals['mom_5m']) / 0.5, 0, 1)
+        
+        # Linear weighted sum (base conviction)
+        base_long = (mlofi_long * self.CFG["w_mlofi"] + mpar_long * self.CFG["w_mpar"] + vac_long * self.CFG["w_vac"] +
+                     lra_long * self.CFG["w_lra"] + dkla_long * self.CFG["w_dkla"] + micro_long * self.CFG["w_micro"])
+        base_short = (mlofi_short * self.CFG["w_mlofi"] + mpar_short * self.CFG["w_mpar"] + vac_short * self.CFG["w_vac"] +
+                      lra_short * self.CFG["w_lra"] + dkla_short * self.CFG["w_dkla"] + micro_short * self.CFG["w_micro"])
+        
+        # Pairwise interactions (directional: long uses positive, short uses negative)
+        inter_long = 0.0
+        inter_short = 0.0
+        
+        # MLOFI x VACUUM: bid pressure + ask vacuum = long; ask pressure + bid vacuum = short
+        if mlofi_long > 0 and vac_long > 0:
+            inter_long += self.CFG["interact_mlofi_vac"] * mlofi_long * vac_long
+        if mlofi_short > 0 and vac_short > 0:
+            inter_short += self.CFG["interact_mlofi_vac"] * mlofi_short * vac_short
+        
+        # MPAR x LRA: microprice accel up + MM flee ask = long; accel down + MM flee bid = short
+        if mpar_long > 0 and lra_long > 0:
+            inter_long += self.CFG["interact_mpar_lra"] * min(mpar_long, lra_long)
+        if mpar_short > 0 and lra_short > 0:
+            inter_short += self.CFG["interact_mpar_lra"] * min(mpar_short, lra_short)
+        
+        # WHALE x DKLA: large lots + buy-side impact = long; large lots + sell-side impact = short
+        if whale_t > 0 and dkla_long > 0:
+            inter_long += self.CFG["interact_whale_dkla"] * whale_t * dkla_long
+        if whale_t > 0 and dkla_short > 0:
+            inter_short += self.CFG["interact_whale_dkla"] * whale_t * dkla_short
+        
+        # BRANCHING x MOMENTUM: clustering + trend = directional confirmation
+        if beta_t > 0 and mom_t > 0:
+            # For long: positive momentum; for short: negative momentum
+            if signals['mom_5m'] > 0:
+                inter_long += self.CFG["interact_beta_mom"] * beta_t * mom_t
+            else:
+                inter_short += self.CFG["interact_beta_mom"] * beta_t * mom_t
+        
+        return base_long + inter_long, base_short + inter_short
+
+    def _get_regime_conviction_threshold(self, regime: int, sym: str) -> float:
+        """Regime-adaptive conviction threshold with dynamic FPR adjustment."""
+        base_thresh = {1: self.CFG["conv_thresh_burst"], 
+                       2: self.CFG["conv_thresh_grind"], 
+                       3: self.CFG["conv_thresh_whale"], 
+                       0: float('inf')}[regime]
+        
+        # Dynamic FPR adjustment
+        if len(self.recent_fp[sym]) >= self.CFG["fpr_window"]:
+            fpr = sum(self.recent_fp[sym]) / len(self.recent_fp[sym])
+            base_thresh *= (1.0 + 0.5 * fpr / self.CFG["fpr_target"])
+        
+        return base_thresh
+
+    # ═══════════════════════════════════════════════════════════
     # MAIN TICK LOOP
     # ═══════════════════════════════════════════════════════════
 
@@ -398,6 +629,9 @@ class CascadeValueEngine:
         try:
             sym = self.t2s.get(tick.tok)
             if not sym: return
+            # TIER 2 GATE: Skip symbols not in active set
+            if hasattr(self, '_active_symbols') and self._active_symbols and sym not in self._active_symbols:
+                return
             st = self.last_snap.setdefault(sym, {})
             lp = tick.lp
             if lp <= 0: return
@@ -541,23 +775,33 @@ class CascadeValueEngine:
         dkla_asym = adv.get("dkla_asym", 0.0)
         
         # ═══════════════════════════════════════════════
-        # UNIFIED CONVICTION SCORING (THE TRIGGER LOGIC)
+        # ADAPTIVE GATING & INTERACTION-AWARE CONVICTION SCORING
         # ═══════════════════════════════════════════════
         
-        # --- HARD GATES (Must Pass) ---
-        gate_ticks = tc >= self.TRIG["min_ticks"]
-        gate_branching = branching >= self.TRIG["min_branching"]
-        gate_whale = whale_z >= self.TRIG["min_whale_z"]
-        gate_tox = (len(tox_hist) < 20 or toxicity >= np.percentile(tox_hist, self.TRIG["min_tox_pct"]))
+        # --- ADAPTIVE REGIME CLASSIFICATION & DYNAMIC THRESHOLDS ---
+        sym_idx = self.sym_to_idx[sym]
+        mom_5m = self._compute_5m_momentum(sym, lp, nows)
+        self._update_regime_state(sym_idx, branching, whale_z, mom_5m)
         
-        hard_gate_pass = bool(gate_ticks and gate_branching and gate_whale and gate_tox)
+        t_beta, t_W, t_mom, t_tox_pct = self._get_dynamic_thresholds(sym_idx)
+        
+        # --- ADAPTIVE HARD GATES (Regime-Specific Logic) ---
+        gate_ticks = tc >= self.TRIG["min_ticks"]
+        
+        hard_gate_pass = bool(gate_ticks and self._evaluate_adaptive_gate(
+            sym_idx, branching, whale_z, mom_5m, toxicity, tox_hist, (t_beta, t_W, t_mom, t_tox_pct)
+        ))
         
         # ULTRA-DETAILED TELEMETRY: Log all Phase 1 Hard Gates with pass/fail
+        regime_names = {0: "NOISE", 1: "BURST", 2: "GRIND", 3: "WHALE"}
+        regime = self.regime_id[sym_idx]
+        tox_thresh = np.percentile(tox_hist, t_tox_pct) if len(tox_hist) >= 20 else toxicity
+        tick_ok = "OK" if gate_ticks else "FAIL"
         logger.info(
-            f"[GATE] {sym} | Ticks: {tc}/{self.TRIG['min_ticks']} {'✅' if gate_ticks else '❌'} | "
-            f"Branching: {branching:.3f}/{self.TRIG['min_branching']} {'✅' if gate_branching else '❌'} | "
-            f"WhaleZ: {whale_z:.2f}/{self.TRIG['min_whale_z']} {'✅' if gate_whale else '❌'} | "
-            f"Toxicity: {toxicity:.1f}/{tox_p90:.1f}(P90) {'✅' if gate_tox else '❌'} | "
+            f"[ADAPTIVE_GATE] {sym} | Regime: {regime_names[regime]} (conf={self.regime_conf[sym_idx]:.1f}) | "
+            f"Ticks: {tc}/{self.TRIG['min_ticks']} {tick_ok} | "
+            f"Branching: {branching:.3f}/{t_beta:.3f} | WhaleZ: {whale_z:.2f}/{t_W:.2f} | "
+            f"Mom5m: {mom_5m:+.2f}%/{t_mom:.2f}% | Toxicity: {toxicity:.1f}/{tox_thresh:.1f}(P{t_tox_pct}) | "
             f"HARD_GATE: {'PASS' if hard_gate_pass else 'FAIL'}"
         )
         
@@ -567,42 +811,18 @@ class CascadeValueEngine:
         short_score = 0.0
         
         if hard_gate_pass:
-            # --- LONG CONVICTION ---
-            # Components normalized to ~ [0, 1] range via tanh/clamp
-            c_mlofi = max(0.0, min(self.TRIG["mlofi_cap"], mlofi)) / self.TRIG["mlofi_cap"]      # Book supports bid
-            c_mpar  = max(0.0, min(self.TRIG["mpar_cap"], mpar_score)) / self.TRIG["mpar_cap"]     # Accel up
-            c_vac   = max(0.0, min(self.TRIG["vac_cap"], net_vac)) / self.TRIG["vac_cap"]          # Ask vacuum
-            c_lra   = max(0.0, min(self.TRIG["lra_cap"], lra_signal)) / self.TRIG["lra_cap"]       # MM flee ask
-            c_dkla  = max(0.0, min(self.TRIG["dkla_cap"], dkla_asym)) / self.TRIG["dkla_cap"]      # Lambda Buy > Sell
-            c_micro = 1.0 if micro_dev > 0.0002 else 0.0                                           # Price > Fair Value
+            # --- INTERACTION-AWARE CONVICTION SCORING ---
+            signals = {
+                'mlofi': mlofi, 'mpar': mpar_score, 'net_vac': net_vac,
+                'lra_signal': lra_signal, 'dkla_asym': dkla_asym,
+                'micro_dev': micro_dev, 'whale_z': whale_z,
+                'branching': branching, 'mom_5m': mom_5m
+            }
+            long_score, short_score = self._compute_interaction_conviction(signals, regime)
             
-            long_score = (
-                c_mlofi * self.TRIG["w_mlofi"] +
-                c_mpar  * self.TRIG["w_mpar"]  +
-                c_vac   * self.TRIG["w_vac"]   +
-                c_lra   * self.TRIG["w_lra"]   +
-                c_dkla  * self.TRIG["w_dkla"]  +
-                c_micro * self.TRIG["w_micro"]
-            )
+            # Regime-adaptive conviction threshold
+            thresh = self._get_regime_conviction_threshold(regime, sym)
             
-            # --- SHORT CONVICTION ---
-            c_mlofi_s = max(0.0, min(self.TRIG["mlofi_cap"], -mlofi)) / self.TRIG["mlofi_cap"]
-            c_mpar_s  = max(0.0, min(self.TRIG["mpar_cap"], -mpar_score)) / self.TRIG["mpar_cap"]
-            c_vac_s   = max(0.0, min(self.TRIG["vac_cap"], -net_vac)) / self.TRIG["vac_cap"]
-            c_lra_s   = max(0.0, min(self.TRIG["lra_cap"], -lra_signal)) / self.TRIG["lra_cap"]
-            c_dkla_s  = max(0.0, min(self.TRIG["dkla_cap"], -dkla_asym)) / self.TRIG["dkla_cap"]
-            c_micro_s = 1.0 if micro_dev < -0.0002 else 0.0
-            
-            short_score = (
-                c_mlofi_s * self.TRIG["w_mlofi"] +
-                c_mpar_s  * self.TRIG["w_mpar"]  +
-                c_vac_s   * self.TRIG["w_vac"]   +
-                c_lra_s   * self.TRIG["w_lra"]   +
-                c_dkla_s  * self.TRIG["w_dkla"]  +
-                c_micro_s * self.TRIG["w_micro"]
-            )
-            
-            thresh = self.TRIG["conviction_threshold"]
             if long_score >= thresh and long_score > short_score:
                 signal_side = "BUY"
                 conviction = long_score
@@ -612,28 +832,36 @@ class CascadeValueEngine:
         
         # ULTRA-DETAILED TELEMETRY: Log Phase 2 Conviction Scores with component breakdown
         if hard_gate_pass:
+            long_ok = "OK" if long_score >= thresh else "FAIL"
+            short_ok = "OK" if short_score >= thresh else "FAIL"
             logger.info(
-                f"[CONVICTION] {sym} | LONG: {long_score:.2f}/{thresh} {'✅' if long_score >= thresh else '❌'} | "
-                f"SHORT: {short_score:.2f}/{thresh} {'✅' if short_score >= thresh else '❌'} | "
-                f"Signal: {signal_side or 'NONE'} | Conviction: {conviction:.2f}"
+                f"[CONVICTION] {sym} | LONG: {long_score:.2f}/{thresh} {long_ok} | "
+                f"SHORT: {short_score:.2f}/{thresh} {short_ok} | "
+                f"Signal: {signal_side or 'NONE'} | Conviction: {conviction:.2f} | Regime: {regime_names[regime]}"
             )
+            # Log interaction-aware conviction components (recompute for logging)
+            mlofi_t = np.clip(mlofi / self.CFG["mlofi_cap"], 0, 1)
+            mpar_t = np.clip(mpar_score / self.CFG["mpar_cap"], 0, 1)
+            vac_t = np.clip(net_vac / self.CFG["vac_cap"], 0, 1)
+            lra_t = np.clip(lra_signal / self.CFG["lra_cap"], 0, 1)
+            dkla_t = np.clip(dkla_asym / self.CFG["dkla_cap"], 0, 1)
+            micro_t = 1.0 if micro_dev > 0.0002 else 0.0
+            whale_t = np.clip(whale_z / 3.0, 0, 1)
+            beta_t = np.clip(branching / 0.5, 0, 1)
+            mom_t = np.clip(abs(mom_5m) / 0.5, 0, 1)
+            
+            base_long = (mlofi_t * self.CFG["w_mlofi"] + mpar_t * self.CFG["w_mpar"] + vac_t * self.CFG["w_vac"] +
+                         lra_t * self.CFG["w_lra"] + dkla_t * self.CFG["w_dkla"] + micro_t * self.CFG["w_micro"])
+            inter_long = 0.0
+            if mlofi_t > 0 and vac_t > 0: inter_long += self.CFG["interact_mlofi_vac"] * mlofi_t * vac_t
+            if mpar_t > 0 and lra_t > 0: inter_long += self.CFG["interact_mpar_lra"] * min(mpar_t, lra_t)
+            if whale_t > 0 and dkla_t > 0: inter_long += self.CFG["interact_whale_dkla"] * whale_t * dkla_t
+            if beta_t > 0 and mom_t > 0: inter_long += self.CFG["interact_beta_mom"] * beta_t * mom_t
+            
             logger.info(
-                f"[CONVICTION_DETAIL] {sym} | "
-                f"MLOFI: {c_mlofi:.3f}*{self.TRIG['w_mlofi']}={c_mlofi*self.TRIG['w_mlofi']:.2f} | "
-                f"MPAR: {c_mpar:.3f}*{self.TRIG['w_mpar']}={c_mpar*self.TRIG['w_mpar']:.2f} | "
-                f"VAC: {c_vac:.3f}*{self.TRIG['w_vac']}={c_vac*self.TRIG['w_vac']:.2f} | "
-                f"LRA: {c_lra:.3f}*{self.TRIG['w_lra']}={c_lra*self.TRIG['w_lra']:.2f} | "
-                f"DKLA: {c_dkla:.3f}*{self.TRIG['w_dkla']}={c_dkla*self.TRIG['w_dkla']:.2f} | "
-                f"MICRO: {c_micro:.3f}*{self.TRIG['w_micro']}={c_micro*self.TRIG['w_micro']:.2f}"
-            )
-            logger.info(
-                f"[CONVICTION_DETAIL] {sym} | "
-                f"MLOFI_s: {c_mlofi_s:.3f}*{self.TRIG['w_mlofi']}={c_mlofi_s*self.TRIG['w_mlofi']:.2f} | "
-                f"MPAR_s: {c_mpar_s:.3f}*{self.TRIG['w_mpar']}={c_mpar_s*self.TRIG['w_mpar']:.2f} | "
-                f"VAC_s: {c_vac_s:.3f}*{self.TRIG['w_vac']}={c_vac_s*self.TRIG['w_vac']:.2f} | "
-                f"LRA_s: {c_lra_s:.3f}*{self.TRIG['w_lra']}={c_lra_s*self.TRIG['w_lra']:.2f} | "
-                f"DKLA_s: {c_dkla_s:.3f}*{self.TRIG['w_dkla']}={c_dkla_s*self.TRIG['w_dkla']:.2f} | "
-                f"MICRO_s: {c_micro_s:.3f}*{self.TRIG['w_micro']}={c_micro_s*self.TRIG['w_micro']:.2f}"
+                f"[CONVICTION_DETAIL] {sym} | Base: {base_long:.2f} Inter: {inter_long:.2f} Total: {long_score:.2f} | "
+                f"MLOFI: {mlofi_t:.3f} MPAR: {mpar_t:.3f} VAC: {vac_t:.3f} LRA: {lra_t:.3f} DKLA: {dkla_t:.3f} | "
+                f"WHL: {whale_t:.3f} BETA: {beta_t:.3f} MOM: {mom_t:.3f}"
             )
         
         # ── COMPREHENSIVE LOG ENTRY ──
@@ -671,7 +899,7 @@ class CascadeValueEngine:
                 "metrics": log_entry
             }
             self.signal_queue.put(sig_payload)
-            logger.info(f"🚀 SIGNAL {signal_side} {sym} @ {lp:.2f} | Conv: {conviction:.2f} | Branching: {branching:.2f} WhaleZ: {whale_z:.2f}")
+            logger.info(f"SIGNAL {signal_side} {sym} @ {lp:.2f} | Conv: {conviction:.2f} | Branching: {branching:.2f} WhaleZ: {whale_z:.2f}")
             
             # ULTRA-DETAILED TELEMETRY: Log entry decision with full conviction metrics
             logger.info(
@@ -681,6 +909,37 @@ class CascadeValueEngine:
                 f"MPAR: {mpar_score:.3f}(align:{adv.get('mp_align',0):.1f}) | LRA: {lra_signal:.3f} | DKLA: {dkla_asym:.3f} | "
                 f"MicroDev: {micro_dev:.6f} | QueueDecay: Bid={adv.get('bid_queue_decay',0):.1f} Ask={adv.get('ask_queue_decay',0):.1f}bps"
             )
+        
+        # ── BAYESIAN POSTERIOR UPDATE & BUCKET COUNT (for adaptive thresholds) ──
+        # Track whether a signal was generated and whether it would have captured a move
+        signal_fired = hard_gate_pass and (signal_side is not None)
+        self.bucket_count[sym_idx] += 1
+        
+        # For posterior update, we need to know if a move happened in the next 15 min.
+        # We approximate by checking if price moved >0.52% from bucket close to next bucket open.
+        # This is a simplified proxy - full forward-check requires storing bucket-close prices.
+        move_captured = False
+        if signal_fired:
+            # Store bucket close price for forward check on next bucket
+            if not hasattr(self, '_bucket_close_prices'):
+                self._bucket_close_prices = {}
+            self._bucket_close_prices[sym] = lp
+        elif sym in getattr(self, '_bucket_close_prices', {}):
+            # Check if previous signal would have captured a move
+            prev_close = self._bucket_close_prices[sym]
+            if prev_close > 0:
+                move_pct = abs(lp - prev_close) / prev_close * 100.0
+                move_captured = move_pct >= 0.52
+                # Update posteriors
+                self._update_threshold_posteriors(sym_idx, True, move_captured)
+                # Track FP/TP for dynamic conviction threshold
+                if move_captured:
+                    self.recent_tp[sym].append(1)
+                    self.recent_fp[sym].append(0)
+                else:
+                    self.recent_tp[sym].append(0)
+                    self.recent_fp[sym].append(1)
+            del self._bucket_close_prices[sym]
         
         # ── RESET BUCKET ──
         # Preserve absolute overflow amount, not ratio
@@ -717,6 +976,12 @@ class CascadeValueEngine:
                     f"DKLA:{adv.get('dkla_asym',0):+.2f} "
                     f"WhaleZ:{self._calculate_whale_z(hottest, self.cur_max_tick_val.get(hottest,0)/max(self.cur_tot_val.get(hottest,1),1)):.1f}")
         except Exception: return "error"
+
+    # ─── TIER 2 INTEGRATION ───
+    def set_active_symbols(self, symbols: set):
+        """Set active symbols for adaptive engine (Tier 2 integration)."""
+        self._active_symbols = set(symbols) if symbols else set()
+        logger.info(f"[TIER2] Engine active symbols updated: {len(self._active_symbols)} symbols")
 
 def attach_cascade_engine(broker, token_to_symbol, bucket_map=None, vacuum_map=None, 
                           dkla_notional=1_00_00_000.0, trigger_config=None):

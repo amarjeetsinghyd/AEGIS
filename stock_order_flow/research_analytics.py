@@ -37,21 +37,30 @@ SCHEMA_COLS = [
 ]
 
 def load_universe():
+    """Load universe.json and return a flat symbol -> token mapping."""
     if UNIVERSE_PATH.exists():
         with open(UNIVERSE_PATH) as f:
-            return json.load(f)
+            data = json.load(f)
+        # universe.json has {"date": "...", "stocks": [{"symbol": "...", "token": "..."}, ...]}
+        stocks = data.get("stocks", [])
+        if isinstance(stocks, list):
+            return {s["symbol"]: s["token"] for s in stocks if "symbol" in s and "token" in s}
     return {}
 
 def load_tokens_cache():
+    """Load tokens_cache.json and return a flat symbol -> token mapping."""
     if TOKENS_CACHE.exists():
         with open(TOKENS_CACHE) as f:
-            return json.load(f)
+            data = json.load(f)
+        # tokens_cache.json has {"SYMBOL": {"token": "...", "tsym": "..."}, ...}
+        if isinstance(data, dict):
+            return {sym: info.get("token", "") for sym, info in data.items() if isinstance(info, dict) and "token" in info}
     return {}
 
 def get_token_for_symbol(symbol: str, universe: dict, tokens_cache: dict) -> str | None:
     """Resolve symbol -> token using universe.json then tokens_cache.json"""
     if symbol in universe:
-        return str(universe[symbol].get("token", ""))
+        return str(universe[symbol])
     if symbol in tokens_cache:
         return str(tokens_cache[symbol])
     return None
@@ -457,7 +466,43 @@ def run_research(symbol: str, target_date: str | None = None,
                         margin=dict(l=50, r=20, t=40, b=40),
                     ),
                 ).to_dict()
-        return {"meta": meta, "summary": summary, "time_series": ts_charts}
+
+        # ── Dashboard-compatible chart keys (range mode) ──
+        # Dashboard renderVortexCharts() expects: volume_profile, bid_depth,
+        # ask_depth, micro_dist, auction. Build these from aggregated daily rows
+        # so the Research Mode UI renders correctly in range/all-time mode.
+        def _ts_fig(y_col, title, color="#0969da"):
+            if y_col not in df.columns:
+                return None
+            return go.Figure(
+                data=[go.Scatter(x=x, y=df[y_col], mode="lines+markers",
+                                 line=dict(color=color, width=2))],
+                layout=go.Layout(
+                    title=title, height=320,
+                    template="plotly_dark",
+                    paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
+                    font=dict(color="#c9d1d9"),
+                    margin=dict(l=50, r=20, t=40, b=40),
+                ),
+            ).to_dict()
+
+        volume_profile = _ts_fig("oib_mean", "Daily Volume / OIB Profile", "#0969da")
+        bid_depth = _ts_fig("bid_queue_decay_mean", "Daily Bid Queue Decay (L1-L5)", "#2ea043")
+        ask_depth = _ts_fig("ask_queue_decay_mean", "Daily Ask Queue Decay (L1-L5)", "#d73a49")
+        micro_dist = _ts_fig("whale_conc", "Daily Microstructure (Whale Conc.)", "#f0883e")
+        auction = _ts_fig("spread_mean", "Daily Auction / Spread Mean", "#8957e5")
+
+        return {
+            "meta": meta,
+            "summary": summary,
+            "time_series": ts_charts,
+            # Dashboard-compatible keys (range mode)
+            "volume_profile": volume_profile,
+            "bid_depth": bid_depth,
+            "ask_depth": ask_depth,
+            "micro_dist": micro_dist,
+            "auction": auction,
+        }
 
     # ─── Single-date deep-dive (raw partitions) ───
     target_date = target_date or datetime.now().strftime("%Y-%m-%d")

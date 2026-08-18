@@ -26,6 +26,7 @@ from AEGIS.execution.data_fetcher import DataFetcher
 from AEGIS.aegis_execution_manager import AegisExecutionManager
 from AEGIS.aegis_gamma_engine import AegisGammaEngine, create_aegis_engine
 from AEGIS.l2_options_archiver import attach_aegis_archiver
+from stock_order_flow.tick_compiler import TickCompiler
 
 logger = get_logger("aegis_main")
 
@@ -126,12 +127,12 @@ def main():
         )
         
         # ─── Wire Tick Feed → AEGIS ───
-        # ShoonyaAdapter pushes ticks to registered listeners
-        if hasattr(broker, "market_data_provider"):
-            mdp = broker.market_data_provider
-            # Replace any existing footprint compiler with direct AEGIS feed
-            mdp.add_tick_listener(aegis_engine.on_tick_parsed)
-            logger.info("[AegisMain] Tick feed wired: Shoonya → AEGIS Engine (zero-copy)")
+        # Use TickCompiler for zero-copy ParsedTick parsing (same as stock_order_flow)
+        compiler = TickCompiler(broker)
+        compiler.set_symbol_map(token_to_symbol)
+        compiler.set_engine(aegis_engine)
+        compiler.subscribe(list(token_to_symbol.keys()))
+        logger.info("[AegisMain] Tick feed wired: Shoonya → TickCompiler → AEGIS Engine (zero-copy)")
         
         # ─── Attach AEGIS L2 Options Archiver (Raw Data Persistence) ───
         # Passive recorder: consumes the raw std_msg dict path (separate from the

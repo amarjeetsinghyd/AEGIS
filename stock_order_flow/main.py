@@ -325,6 +325,55 @@ class TradingSystem:
         logger.warning(f"Signal {signum} received. Initiating Graceful Shutdown...")
         self.shutdown_event.set()
 
+    # ─── TIER 2 INTRADAY FILTER (15-min rolling) ───
+    def _run_intraday_tier2(self):
+        """Run every 15 min: score active symbols, select top 30/15."""
+        # Collect stats for all symbols currently in compiler
+        all_stats = {}
+        for sym in self.compiler.token_to_symbol.values():
+            st = self.compiler.get_15min_stats(sym)
+            if not st or st['ticks_per_min'] < 3:  # minimum activity
+                continue
+            all_stats[sym] = st
+        
+        if len(all_stats) < 10:
+            return  # not enough data yet
+        
+        # Percentile normalization across all symbols
+        def pctile(vals, x):
+            return sum(1 for v in vals if v <= x) / len(vals)
+        
+        ticks = [s['ticks_per_min'] for s in all_stats.values()]
+        vols  = [s['vol_per_min'] for s in all_stats.values()]
+        sprds = [s['avg_spread_bps'] for s in all_stats.values()]
+        trades = [s['trade_value_per_min'] for s in all_stats.values()]
+        mvols = [s['microprice_vol'] for s in all_stats.values()]
+        
+        scores = {}
+        for sym, s in all_stats.items():
+            scores[sym] = (
+                0.25 * pctile(ticks, s['ticks_per_min']) +
+                0.20 * pctile(vols, s['vol_per_min']) +
+                0.20 * (1 - pctile(sprds, s['avg_spread_bps'])) +  # tight = good
+                0.20 * pctile(trades, s['trade_value_per_min']) +
+                0.10 * (1 - pctile(mvols, s['microprice_vol'])) +  # stable = good
+                0.05 * abs(s['oib'])
+            )
+        
+        ranked = sorted(scores, key=scores.get, reverse=True)
+        top30 = ranked[:30]
+        top15 = top30[:15]
+        
+        # Push to compiler + engine
+        self.compiler.set_tier2_symbols(top30)
+        self.compiler.set_engine_symbols(top15)
+        
+        # Reset 15-min stats for next window
+        self.compiler.reset_15min_stats()
+        
+        logger.info(f"[TIER2] {datetime.now().strftime('%H:%M')} | "
+                    f"Top15: {top15} | Next15: {top30[15:]}")
+
     def run(self):
         """Main Event Loop: Heartbeat, Price Updates, Signal Processing."""
         last_heartbeat_min = -1
@@ -361,6 +410,12 @@ class TradingSystem:
                                 gate_status.append(f"{sym}:{pct:.0f}% T:{tc} {'✅' if gate_ticks else '❌'}")
                             
                             logger.info(f"[GATE_STATUS] Active Buckets: {' | '.join(gate_status)}")
+
+                        # --- TIER 2 INTRADAY FILTER (Every 15 min: :00, :15, :30, :45) ---
+                        if now.minute % 15 == 0 and now.second < 10:
+                            if not hasattr(self, '_last_tier2_min') or self._last_tier2_min != now.minute:
+                                self._last_tier2_min = now.minute
+                                self._run_intraday_tier2()
 
                 # --- TIME GATES ---
                 if not is_bot_active_hours(now):

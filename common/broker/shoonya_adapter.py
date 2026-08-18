@@ -2,6 +2,7 @@ import os
 import json
 import time
 import logging
+import threading
 
 from common.broker.exceptions import BrokerFeatureUnavailableError
 from common.broker.manifest import BrokerManifest, IdentityCapability, AuthenticationCapability, RateLimitCapability, WebSocketCapability, MarketDataCapability, HistoricalDataCapability, OrderManagementCapability, ProductSupportCapability, ExchangeSupportCapability, FeatureFlagCapability, PerformanceRecommendation
@@ -439,7 +440,16 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
         def event_handler_order_update(message):
             pass
 
+        # Debounce state for close_callback to prevent storm from NorenApi's tight reconnect loop
+        self._close_debounce_timer = None
+        self._ws_connected = False
+
         def open_callback():
+            self._ws_connected = True
+            # Cancel any pending close debounce since we're connected
+            if self._close_debounce_timer is not None:
+                self._close_debounce_timer.cancel()
+                self._close_debounce_timer = None
             if on_open_callback:
                 on_open_callback()
 
@@ -448,16 +458,28 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                 on_error_callback(err)
 
         def close_callback():
-            # WS dropped (mid-session). Notify registered close listeners so an
-            # engine-level reconnect (exponential backoff re-subscribe) can fire.
-            # Weekend/holiday drops are expected; listeners must self-gate on
-            # is_trading_day before attempting a reconnect (AGENTS.md SHOONYA rule).
-            logger.warning("Shoonya WebSocket CLOSED — notifying close listeners (reconnect is listener-owned).")
-            for cb in list(getattr(self, "_close_listeners", []) or []):
-                try:
-                    cb()
-                except Exception as exc:
-                    logger.debug(f"close listener error: {exc}")
+            # WS dropped (mid-session). Debounce to prevent storm from NorenApi's
+            # internal tight reconnect loop (100ms sleep in __ws_run_forever).
+            # Only fire close listeners after a quiet period.
+            self._ws_connected = False
+            
+            def _fire_close_listeners():
+                logger.warning("Shoonya WebSocket CLOSED — notifying close listeners (reconnect is listener-owned).")
+                for cb in list(getattr(self, "_close_listeners", []) or []):
+                    try:
+                        cb()
+                    except Exception as exc:
+                        logger.debug(f"close listener error: {exc}")
+                self._close_debounce_timer = None
+            
+            # Cancel any existing debounce timer
+            if self._close_debounce_timer is not None:
+                self._close_debounce_timer.cancel()
+            
+            # Fire after 2 seconds of no reconnection (debounce)
+            self._close_debounce_timer = threading.Timer(2.0, _fire_close_listeners)
+            self._close_debounce_timer.daemon = True
+            self._close_debounce_timer.start()
 
         self._api.start_websocket(
             order_update_callback=event_handler_order_update,

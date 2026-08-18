@@ -408,7 +408,7 @@ def run_research(target_date: str, start_date: str | None = None, end_date: str 
         "iv_crush": create_iv_crush(df),
         "oi_buildup": create_oi_buildup(df),
         "premium_decay": create_premium_decay(df),
-        "oib_distribution": create_oib_distribution(df),
+        "oib_dist": create_oib_distribution(df),
     }
 
 
