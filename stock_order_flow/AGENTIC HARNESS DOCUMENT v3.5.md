@@ -531,7 +531,7 @@ module.exports = {
 
 | Version | Date | Author | Summary |
 | :--- | :--- | :--- | :--- |
-| **3.5** | 2026-08-16 | Agent | Doc-vs-code reconciliation: confirmed LA-2 (str normalization), MN-5 (universe-scoped calibrate) fixed; downgraded remaining bugs to MN-4 + MN-6. **MN-4 (WS reconnect) + MN-6 (breakeven gap-open) resolved 2026-08-16 follow-up — bug audit now 23/23 fixed, 0 remaining.** Renamed duplicate appended sections to §11–§16; removed duplicated section numbers. Updated PENDING markers in §2.1/2.2/2.4/2.5. |
+| **3.5** | 2026-08-19 | Agent | **Pre-Market State Machine + Delta-Baseline Math + Global 1-Trade Lock + NOISE Regime Gate + L2 Archiver Standalone**. Added §12 (5-phase state machine, delta-baseline math, global lock, adaptive gating, archiver decoupling). Updated §1 (Ten-thousand-foot view: 4 PM2 apps), §2.1 (Orchestrator init: archiver decoupled), §2.2 (Archiver: standalone PM2 app, 08:55 start), §2.3 (Engine: adaptive gating, pre-market phases, delta-baseline, global lock), §4.3 (Executor integration: handle_trade_closed), §6 (Runbook: 08:55 archiver start), §7.2 (PM2: 4 apps), §10 (File map: l2_archiver main()), §11 (Config: stock_calibration.json). |
 | **3.4** | 2026-08-16 | Agent | Added Shoonya API constraints (Sec 1.1.1), Weekend/holiday handling (Sec 6.1), VPS deployment architecture (Sec 7), Audit hardening patterns (Sec 8). Version bump from 3.3. |
 | **3.3** | 2026-08-15 | Agent | Post-audit: 15 bugs fixed, Zero-copy tick path, Queue position decay, Dual-path wiring, Single-path enforcement. |
 | **3.2** | 2026-08-14 | Agent | Pre-audit baseline: 4-pillar architecture, Microstructure dictionary, Data contracts, Entry/Exit specs. |
@@ -546,14 +546,15 @@ module.exports = {
 | :--- | :--- | :--- |
 | `main.py` | 2.1, 4.2, 4.3, 6, 7.2 | Orchestrator, Token maps, Wiring, Main loop, PM2 config |
 | `tick_compiler.py` | 2.7, 4.3 | WebSocket demux, Zero-copy `ParsedTick`, Engine dispatch |
-| `cascade/value_engine.py` | 2.3, 3, 4.3, 5.1 | Microstructure primitives, Conviction trigger, Bucket processing |
+| `cascade/value_engine.py` | 2.3, 3, 4.3, 5.1, **12** | Microstructure primitives, Conviction trigger, Bucket processing, **Pre-market state machine, Delta-baseline, Global lock** |
 | `execution_manager.py` | 2.4, 4.3, 5.2, 8.1 | Order management, Dynamic exits, Risk controls, Bug patterns |
-| `l2_archiver.py` | 2.2, 4.1, 6, 7.1 | Partitioned raw logging, 15-min flush, Auction logs |
+| `l2_archiver.py` | 2.2, 4.1, 6, 7.1, **12.5** | Partitioned raw logging, 15-min flush, Auction logs, **Standalone PM2 app** |
 | `universe_scanner.py` | 2.5, 4.1, 6, 6.1 | EOD microstructure aggregates, Conviction ranking, `universe.json` |
 | `common/symbols.py` | 2.6, 4.2 | Single source: `SUBSCRIPTION_UNIVERSE`, `NIFTY100` |
 | `common/config.py` | 1.2, 5, 8.3 | `CFG`, `TRIG`, `EXIT_CFG`, Monitoring thresholds |
 | `ecosystem.config.js` | 7.2 | PM2 process definitions, Resource limits |
 | `session_provider.py` | 1.1.1, 2.1 | Shoonya login/restore, 24h token expiry handling |
+| `stock_calibration.json` | **12**, 11 | **Extracted calibration params** (regime weights, thresholds, priors) |
 
 ---
 
@@ -572,7 +573,8 @@ module.exports = {
 │   └── trade_history.json   # Executor History
 ├── universe.json            # Scanner Output (Next Day Config) **REQUIRED FOR STARTUP**
 ├── tokens_cache.json        # Symbol -> Token/TSYM Map (Used by Orchestrator & Scanner)
-└── vol_profile.json         # (Legacy) Volume Profiles
+├── vol_profile.json         # (Legacy) Volume Profiles
+└── stock_calibration.json   # **Extracted calibration params** (regime weights, thresholds, priors)
 ```
 
 **Key Config Knobs (Tuning Targets)**:
@@ -580,10 +582,99 @@ module.exports = {
 *   `execution_manager.py`: `EXIT_CFG` dict (Decay Thresholds, Confirmation Thresholds), `MAX_OPEN_POSITIONS`, `LEVERAGE`, `MARGIN_SAFETY`.
 *   `universe_scanner.py`: `feats` list (Scoring Weights), `FORCE_BAND`/`KEEP_BAND`, `TOP_N`.
 *   `main.py`: `MAX_OPEN_POSITIONS` (via Executor), Entry Cutoff Time (14:45), Heartbeat Interval.
+*   `stock_calibration.json`: **Regime weights, dynamic threshold priors, conviction caps** — single source for calibration (future refactoring target).
 
 ---
 
-## 12. AI AGENT MAINTENANCE PROTOCOL
+## 12. PRE-MARKET STATE MACHINE & DELTA-BASELINE MATH (v3.5 Additions)
+
+### 12.1 Pre-Market State Machine (5 Phases)
+The engine now implements a **deterministic state machine** for NSE pre-open session handling. No hardcoded timestamps — transitions driven by **data-footprint detection** (exchange ticks can lag).
+
+| Phase | Enum Value | Time Window (IST) | Trigger / Detection Logic | Engine Behavior |
+| :--- | :--- | :--- | :--- | :--- |
+| **AUCTION_ENTRY** | 0 | 09:00 – 09:08 | First tick received after 09:00 | **Passive**: Accumulate auction ticks in dedicated buffer (`_auction_tick_count`). Bypass rolling buffers. |
+| **AUCTION_FREEZE** | 1 | 09:08 – 09:15 | **Freeze Detection**: `tick.ts >= 09:08:00` AND `tick.ts < 09:15:00` AND `tick.ltp == prev_ltp` for ≥ 3 consecutive ticks (matching engine freeze) | **Capture Baseline**: `_capture_baseline()` — Snapshot `baseline_price`, `baseline_bid`, `baseline_ask`, `baseline_spread_bps`, `baseline_depth_top5`, `baseline_turnover`, `baseline_toxicity` into immutable `BaselineTruth` dataclass. Set `_freeze_confirmed = True`. |
+| **AUCTION_BUFFER** | 2 | 09:15 – 09:15:30 | **Continuous Open Detection**: First tick with `tick.ts >= 09:15:00` AND `tick.ltp != baseline_price` (price movement) | **Delta Activation**: `_activate_continuous()` — Switch to delta-baseline math. Set `_phase = CONTINUOUS_LIVE`. |
+| **TRANSITION_DETECT** | 3 | 09:15:30 – 09:16:00 | 30-second grace after continuous open | **Adaptive**: `min_ticks = 1` for first 3 buckets (allows immediate signal generation). |
+| **CONTINUOUS_LIVE** | 4 | 09:16:00 – 15:30 | Normal market hours | **Full Logic**: Standard bucket processing, adaptive gating, conviction trigger. |
+
+**Key Implementation Details** (`value_engine.py`):
+- **`EnginePhase` enum** (IntEnum): `AUCTION_ENTRY=0`, `AUCTION_FREEZE=1`, `AUCTION_BUFFER=2`, `TRANSITION_DETECT=3`, `CONTINUOUS_LIVE=4`
+- **`BaselineTruth` frozen dataclass**: Immutable baseline capture at 09:08 freeze. Fields: `price`, `bid`, `ask`, `spread_bps`, `depth_top5`, `turnover`, `toxicity`, `captured_at_ns`, `symbol`.
+- **Per-symbol phase tracking**: `self._phase[sym]` — each symbol transitions independently.
+- **Routing**: `on_tick` / `on_tick_parsed` → `_route_tick_by_phase(pt, sym)` → dispatches to phase-specific handler.
+- **Auction tick buffer**: `self._auction_tick_count[sym]` counts ticks during AUCTION_ENTRY (09:00-09:08). Bypasses rolling buffers entirely.
+
+### 12.2 Delta-Baseline Math (First 3 Buckets)
+During `AUCTION_BUFFER` and `TRANSITION_DETECT` phases (first ~3 buckets after 09:15), the engine computes **delta-from-baseline** instead of absolute values:
+
+| Metric | Delta Formula | Purpose |
+| :--- | :--- | :--- |
+| **Price Delta** | `(current_price - baseline_price) / baseline_price * 10000` (bps) | Measures opening move from auction equilibrium |
+| **Vacuum Delta** | `current_net_vacuum_bps - baseline_toxicity` | Cancellation pressure relative to auction baseline |
+| **Toxicity Delta** | `current_toxicity - baseline_toxicity` | Adverse selection shift from opening |
+| **Depth Delta** | `current_depth_top5 - baseline_depth_top5` | Liquidity expansion/contraction |
+
+**Implementation** (`_process_bucket`):
+```python
+if phase in (EnginePhase.AUCTION_BUFFER, EnginePhase.TRANSITION_DETECT):
+    # Delta-baseline math for first 3 buckets
+    baseline = self._baseline_truth[sym]
+    if baseline:
+        price_delta_bps = (bucket_price - baseline.price) / baseline.price * 10000
+        vacuum_delta = net_vac - baseline.toxicity
+        # ... feed into conviction scoring
+```
+
+### 12.3 Global 1-Trade Lock
+**Hard Constraint**: Only **ONE** open position across **ALL** symbols at any time.
+
+**Implementation**:
+- **Engine-side**: `self._engine_active_trade` (bool), `self._active_trade_symbol` (str)
+- **Signal Generation Block** (`_process_bucket`):
+  ```python
+  if self._engine_active_trade and self._active_trade_symbol != sym:
+      return  # Hard block — no signal emitted
+  ```
+- **Executor Integration**: `handle_trade_closed(sym)` public method called from `execution_manager.py` `_book_close()` after trade exit:
+  ```python
+  def handle_trade_closed(self, sym: str):
+      if self._active_trade_symbol == sym:
+          self._engine_active_trade = False
+          self._active_trade_symbol = None
+  ```
+- **Executor Call Site** (`execution_manager.py` `_book_close`):
+  ```python
+  if hasattr(self, 'engine') and self.engine:
+      self.engine.handle_trade_closed(sym)
+  ```
+
+### 12.4 NOISE Regime Gate (Adaptive Gating)
+The **NOISE** regime (low volatility, low volume) now uses a **structural score** instead of hard gates:
+
+| Regime | Gate Logic | Threshold |
+| :--- | :--- | :--- |
+| **NOISE** | `struct_score ≥ 0.60` | `struct_score = 0.4 * (1 - branching) + 0.3 * (1 - |whale_z|/3) + 0.3 * (1 - toxicity_p75)` |
+| **BURST** | `0.25*β + 0.25*W + 0.20*M + 0.30*S ≥ 0.50` | Composite weighted |
+| **GRIND** | `0.15*β + 0.35*max(W,M) + 0.50*S ≥ 0.45` | Structure-weighted |
+| **WHALE** | `0.45*W + 0.55*S ≥ 0.55` | Whale/Structure dominant |
+
+**Phase-Adaptive `min_ticks`**:
+- `AUCTION_BUFFER`, `TRANSITION_DETECT`: `min_ticks = 1` (immediate signal eligibility)
+- `CONTINUOUS_LIVE`: `min_ticks = 3` (standard statistical significance)
+
+### 12.5 L2 Archiver — Standalone PM2 App
+- **PM2 Name**: `l2-archiver`
+- **Entry Point**: `stock_order_flow/l2_archiver.py:main()`
+- **Start Time**: **08:55 IST** (must be running before 09:00 auction window)
+- **Subscription**: Hardcoded 110 symbols from `common.symbols.SUBSCRIPTION_UNIVERSE`
+- **Output**: `data/l2_raw/` (15-min partitioned Parquet), `data/logs/` (auction JSONL)
+- **Decoupled**: No longer attached via `main.py` orchestrator — runs independently for auction capture.
+
+---
+
+## 14. AI AGENT MAINTENANCE PROTOCOL
 
 **If you modify ONE file, you MUST verify parity in others:**
 
@@ -594,9 +685,13 @@ module.exports = {
 | **Universe Symbol List** | `common/symbols.py` (`SUBSCRIPTION_UNIVERSE`, `NIFTY100`) | Single source of truth. All consumers import from here. |
 | **Schema/Columns** | `l2_archiver.py` (`SCHEMA_DTYPES`), `universe_scanner.py` (`cols` list in `run_scan`) | Column names **MUST** match exactly (case-sensitive). |
 | **Token/TSYM Mapping** | `universe_scanner.py` (writes `search` list), `main.py` (`build_tsym_map`), `execution_manager.py` (reads via `set_tsym_map`) | Verify `universe.json` `search[0]` matches Shoonya TSYM format (`SYMBOL-EQ`). |
-| **Orchestration Flow** | `main.py` (Initialization Order, Monkey-Patching, Loop Logic) | **Critical**: Initialization Order: Broker → Universe → Token Maps → Compiler → Executor → Archiver → Calibration → Engine → Wire → Subscribe. Monkey-patching `engine.on_tick` / `on_tick_parsed` / `_process_bucket` **MUST** happen *after* Engine creation and *before* Subscribe. |
+| **Orchestration Flow** | `main.py` (Initialization Order, Monkey-Patching, Loop Logic) | **Critical**: Initialization Order: Broker → Universe → Token Maps → Compiler → Executor → **Archiver Decoupled** → Calibration → Engine → Wire → Subscribe. Monkey-patching `engine.on_tick` / `on_tick_parsed` / `_process_bucket` **MUST** happen *after* Engine creation and *before* Subscribe. |
 | **Zero-Copy Path** | `tick_compiler.py` (`ParsedTick`, `_tick_pool`, `set_engine`), `value_engine.py` (`on_tick_parsed`), `main.py` (`compiler.set_engine`) | Verify `ParsedTick` object pool reuse (no allocation in hot path). Benchmark `on_tick` vs `on_tick_parsed` latency. |
 | **Shutdown Logic** | `main.py` (`shutdown`), `l2_archiver.py` (`shutdown`), `execution_manager.py` (`_save_open`) | Test `Ctrl+C` during market hours. Verify `l2_raw_...part_N.parquet` is written and readable. Verify `open_positions.json` updated. |
+| **Pre-Market State Machine** | `value_engine.py` (`EnginePhase`, `BaselineTruth`, `_route_tick_by_phase`, `_detect_auction_freeze`, `_detect_continuous_open`, `_capture_baseline`, `_activate_continuous`) | Verify phase transitions in logs: `PHASE_TRANSITION`, `BASELINE_CAPTURED`, `CONTINUOUS_OPEN`. Check delta-baseline math in first 3 buckets. |
+| **Global 1-Trade Lock** | `value_engine.py` (`_engine_active_trade`, `_active_trade_symbol`, `handle_trade_closed`), `execution_manager.py` (`_book_close` calls `engine.handle_trade_closed`) | Verify only 1 trade open at any time. Check `handle_trade_closed` releases lock on exit. |
+| **Adaptive Gating / NOISE Regime** | `value_engine.py` (`_evaluate_adaptive_gate`, `_get_regime_conviction_threshold`, `_get_dynamic_thresholds`) | Verify regime detection and composite scoring. Check `struct_score` in ADAPTIVE_GATE logs. |
+| **Calibration Params** | `stock_calibration.json` (future), `value_engine.py` (`CFG`, `TRIG`), `execution_manager.py` (`EXIT_CFG`) | Ensure extracted params match live config. Single source of truth for regime weights, thresholds, priors. |
 
 ---
 

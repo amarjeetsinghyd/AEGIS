@@ -99,6 +99,20 @@ def get_master_token_map(universe: Dict, archiver_tokens: Set[str]) -> Dict[str,
         
     return token_map
 
+STOCK_CALIB_PATH = os.path.join(os.path.dirname(__file__), "stock_calibration.json")
+
+def load_stock_calibration() -> Dict[str, dict]:
+    """Load per-symbol calibration overrides from stock_calibration.json."""
+    if os.path.exists(STOCK_CALIB_PATH):
+        try:
+            with open(STOCK_CALIB_PATH, "r") as f:
+                calib = json.load(f)
+                logger.info(f"Loaded stock_calibration.json for {len(calib)} symbols")
+                return calib
+        except Exception as e:
+            logger.warning(f"Failed to read stock_calibration.json: {e}")
+    return {}
+
 # ═══════════════════════════════════════════════════════════════════
 # HISTORICAL CALIBRATION (Bucket / Vacuum Thresholds)
 # ═══════════════════════════════════════════════════════════════════
@@ -275,26 +289,25 @@ class TradingSystem:
         self.executor.start()
         logger.info("[OK] Execution Manager Started")
 
-        # 6. L2 Archiver (Passive Raw Logger)
-        from stock_order_flow.l2_archiver import attach_archiver
-        self.archiver = attach_archiver(self.broker, master_token_map)
-        if not self.archiver:
-            logger.error("Archiver failed to attach. Continuing without raw archive.")
-        else:
-            logger.info("[OK] L2 Archiver Attached (110 Symbol Filter Active)")
+        # 6. L2 Archiver (Now runs as separate PM2 app 'l2-archiver' starting at 08:55 IST)
+        # This orchestrator no longer attaches the archiver to avoid startup delay
+        self.archiver = None
+        logger.info("[OK] L2 Archiver Decoupled - Runs as Independent PM2 App")
 
         # 7. Historical Calibration (Bucket/Vacuum)
         bucket_map, vacuum_map = calibrate_buckets(self.broker, token_to_symbol, self.universe)
 
         # 8. Value Engine (Signal Generator)
         from stock_order_flow.cascade.value_engine import attach_cascade_engine
+        stock_calib = load_stock_calibration()
         self.engine = attach_cascade_engine(
             self.broker, 
             token_to_symbol, 
             bucket_map=bucket_map, 
-            vacuum_map=vacuum_map
+            vacuum_map=vacuum_map,
+            stock_calibration=stock_calib
         )
-        logger.info("[OK] Cascade Value Engine Attached")
+        logger.info(f"[OK] Cascade Value Engine Attached (Per-Stock Calibration Active: {len(stock_calib)} profiles)")
 
         # 9. Zero-Copy Wiring: Compiler -> Engine (Hot Path Optimization)
         self.compiler.set_engine(self.engine)
@@ -311,6 +324,8 @@ class TradingSystem:
 
         # 10. Cross-Wire Engine -> Executor
         wire_engine_to_executor(self.engine, self.executor)
+        # Pass engine reference to executor for trade lock release
+        self.executor._cascade_engine = self.engine
 
         # 11. Subscribe WebSocket (Union of all tokens)
         subscribe_tokens = list(master_token_map.keys())
@@ -350,6 +365,7 @@ class TradingSystem:
         mvols = [s['microprice_vol'] for s in all_stats.values()]
         
         scores = {}
+        bias_map = {}
         for sym, s in all_stats.items():
             scores[sym] = (
                 0.25 * pctile(ticks, s['ticks_per_min']) +
@@ -359,20 +375,41 @@ class TradingSystem:
                 0.10 * (1 - pctile(mvols, s['microprice_vol'])) +  # stable = good
                 0.05 * abs(s['oib'])
             )
+            # Multi-Parameter 15-Minute Macro Directional Trend Bias
+            ret_15m = s.get('ret_15m', 0.0)
+            vwap_dist = s.get('vwap_dist', 0.0)
+            oib = s.get('oib', 0.0)
+            
+            # Composite Directional Score: Price Return (45%) + VWAP Distance (35%) + Order Imbalance (20%)
+            dir_score = 0.45 * (ret_15m / 0.15) + 0.35 * (vwap_dist / 0.10) + 0.20 * (oib / 0.20)
+            
+            if dir_score >= 1.0 and ret_15m > 0 and vwap_dist >= 0:
+                bias_map[sym] = "LONG_ONLY"
+            elif dir_score <= -1.0 and ret_15m < 0 and vwap_dist <= 0:
+                bias_map[sym] = "SHORT_ONLY"
+            else:
+                bias_map[sym] = "NO_TRADE"  # Pure flat noise or conflicting signals - reject
         
         ranked = sorted(scores, key=scores.get, reverse=True)
         top30 = ranked[:30]
-        top15 = top30[:15]
+        # Prioritize symbols with clear directional momentum (LONG_ONLY / SHORT_ONLY)
+        directional_top = [sym for sym in top30 if bias_map.get(sym) in ("LONG_ONLY", "SHORT_ONLY")]
+        top15 = directional_top[:15] if directional_top else top30[:15]
         
         # Push to compiler + engine
         self.compiler.set_tier2_symbols(top30)
         self.compiler.set_engine_symbols(top15)
+        if hasattr(self.engine, "set_symbol_bias_map"):
+            self.engine.set_symbol_bias_map(bias_map)
         
         # Reset 15-min stats for next window
         self.compiler.reset_15min_stats()
         
+        n_long = sum(1 for b in bias_map.values() if b == 'LONG_ONLY')
+        n_short = sum(1 for b in bias_map.values() if b == 'SHORT_ONLY')
+        n_flat = sum(1 for b in bias_map.values() if b == 'NO_TRADE')
         logger.info(f"[TIER2] {datetime.now().strftime('%H:%M')} | "
-                    f"Top15: {top15} | Next15: {top30[15:]}")
+                    f"Top15: {top15} | Macro Bias Summary: LONG={n_long}, SHORT={n_short}, FLAT(NO_TRADE)={n_flat}")
 
     def run(self):
         """Main Event Loop: Heartbeat, Price Updates, Signal Processing."""

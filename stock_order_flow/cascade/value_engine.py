@@ -5,6 +5,9 @@ Optimized for Indian Equities/Options HFT — Zero-Allocation Hot Path
 from __future__ import annotations
 import os
 import sys
+from enum import Enum
+from dataclasses import dataclass
+from typing import Optional
 
 # ─── BOOTSTRAP ───
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -15,6 +18,7 @@ import json, time as pytime, math
 from collections import deque
 from datetime import datetime
 import queue
+import logging
 import numpy as np
 from typing import Dict, Deque, List, Tuple, Any, TYPE_CHECKING
 from common.config import get_data_dir
@@ -24,6 +28,31 @@ if TYPE_CHECKING:
     from stock_order_flow.tick_compiler import ParsedTick
 
 logger = get_logger("cascade_engine")
+
+# ─── PRE-MARKET STATE MACHINE ───
+class EnginePhase(Enum):
+    AUCTION_ENTRY      = 0  # 09:00-09:04: Universe handoff, absorb only
+    AUCTION_FREEZE     = 1  # 09:04-09:08: L2 frozen, capture baseline
+    AUCTION_BUFFER     = 2  # 09:08-09:15: L2 frozen, wait for continuous
+    TRANSITION_DETECT  = 3  # First continuous tick detected
+    CONTINUOUS_LIVE    = 4  # Normal operation
+
+@dataclass(frozen=True)
+class BaselineTruth:
+    """Immutable baseline captured at 09:08 freeze."""
+    bids: Tuple[Tuple[float, int], ...]  # (price, qty) x 5
+    asks: Tuple[Tuple[float, int], ...]
+    equilibrium_price: float
+    equilibrium_qty: int
+    mid_price: float
+    microprice: float
+    book_pressure: float
+    lra_ema_bid: Tuple[float, ...]
+    lra_ema_ask: Tuple[float, ...]
+    dkla_lam_buy: float
+    dkla_lam_sell: float
+    dkla_asym: float
+    captured_at_ns: int
 
 # ──────────────────────────────────────────────────────────────
 # ZERO-ALLOCATION HOT PATH HELPERS
@@ -75,12 +104,15 @@ class CascadeValueEngine:
         log_path: str = None,
         dkla_notional: float = 1_00_00_000.0,
         # Trigger Tuning Parameters (Exposed for Config)
-        trigger_config: dict = None
+        trigger_config: dict = None,
+        # Per-Stock Calibration Overrides (Loaded from stock_calibration.json)
+        stock_calibration: dict = None
     ):
         self.t2s = {str(k): str(v) for k, v in token_to_symbol.items()}
         self.bucket_map = bucket_map or {}
         self.vacuum_map = vacuum_map or {}
         self.dkla_notional = dkla_notional
+        self.stock_calibration = stock_calibration or {}
         
         self.signal_queue = queue.Queue(maxsize=1000)
         
@@ -141,6 +173,16 @@ class CascadeValueEngine:
         self.idx_to_sym = {i: sym for sym, i in self.sym_to_idx.items()}
         self._n_symbols = len(self.sym_to_idx)
         
+        # ─── PRE-ALLOCATE ALL PER-SYMBOL STATE (Zero hot-path allocation, bounded memory) ───
+        self._init_symbol_state()
+        
+        # ─── REUSABLE HOT-PATH STRUCTURES (No allocation on tick/bucket) ───
+        self._curr_bids = {sym: {} for sym in self.t2s.values()}
+        self._curr_asks = {sym: {} for sym in self.t2s.values()}
+        self._adv_cache = {sym: {} for sym in self.t2s.values()}
+        self._hawkes_counts = np.zeros(self._hawkes_bins, dtype=np.int32)
+        self._regime_names = ("NOISE", "BURST", "GRIND", "WHALE")
+        
         # ─── ADAPTIVE GATING: Regime Classification State (pre-allocated arrays, zero hot-path allocation) ───
         self.regime_beta_ema = np.zeros(self._n_symbols, dtype=np.float32)
         self.regime_W_ema = np.zeros(self._n_symbols, dtype=np.float32)
@@ -159,9 +201,21 @@ class CascadeValueEngine:
         self.post_beta_W = np.ones(self._n_symbols) * 10.0
         self.bucket_count = np.zeros(self._n_symbols, dtype=np.int32)
         
+        # Apply symbol-specific Bayesian priors from stock_calibration.json if present
+        for sym, cfg in self.stock_calibration.items():
+            if sym in self.sym_to_idx:
+                idx = self.sym_to_idx[sym]
+                if "prior_alpha_beta" in cfg: self.post_alpha_beta[idx] = float(cfg["prior_alpha_beta"])
+                if "prior_beta_beta" in cfg: self.post_beta_beta[idx] = float(cfg["prior_beta_beta"])
+                if "prior_alpha_W" in cfg: self.post_alpha_W[idx] = float(cfg["prior_alpha_W"])
+                if "prior_beta_W" in cfg: self.post_beta_W[idx] = float(cfg["prior_beta_W"])
+        
         # ─── ADAPTIVE GATING: False Positive Rate Tracking (for dynamic conviction threshold) ───
         self.recent_fp = {sym: deque(maxlen=20) for sym in self.t2s.values()}
         self.recent_tp = {sym: deque(maxlen=20) for sym in self.t2s.values()}
+        
+        # ─── 15-MIN MACRO DIRECTIONAL BIAS MAP (LONG_ONLY / SHORT_ONLY / NO_TRADE) ───
+        self._symbol_bias: Dict[str, str] = {}
         
         # ─── TRIGGER CONFIG (The "Holy Grail" Thresholds) ───
         default_trigger = {
@@ -172,13 +226,13 @@ class CascadeValueEngine:
             "min_tox_pct": 75,          # Toxicity percentile
             
             # Long Conviction Weights (Sum > THRESHOLD triggers)
-            "w_mlofi": 1.5,             # Book Pressure vs Flow
+            "w_mlofi": 2.0,             # Book Pressure vs Flow
             "w_mpar": 2.0,              # Microprice Acceleration (Highest Alpha)
-            "w_vac": 1.5,               # Liquidity Vacuum
+            "w_vac": 2.0,               # Liquidity Vacuum
             "w_lra": 1.5,               # MM Retreat
-            "w_dkla": 1.5,              # Impact Asymmetry
-            "w_micro": 0.5,             # Microprice Stretch
-            "conviction_threshold": 7.5, # Out of ~10.5 max (base, regime-adaptive overrides)
+            "w_dkla": 2.0,              # Impact Asymmetry
+            "w_micro": 1.0,             # Microprice Stretch
+            "conviction_threshold": 5.5, # Out of ~10.5 max (base, regime-adaptive overrides)
             
             # Dynamic Normalization Clamps
             "mlofi_cap": 3.0,
@@ -187,35 +241,45 @@ class CascadeValueEngine:
             "lra_cap": 1.0,
             "dkla_cap": 1.0,
             
-            # ─── ADAPTIVE GATING CONFIG — CALIBRATED 2026-08-17 ───
-            # Regime classification thresholds (calibrated from 110-stock backtest)
-            "regime_burst_beta_min": 0.65,      # Beta EMA for burst: 0.65+ (was 0.50)
-            "regime_burst_W_min": 0.50,         # WhaleZ EMA for burst: 0.50+ (was 0.30)
-            "regime_burst_mom_min": 0.25,       # Momentum EMA for burst: 0.25%+ (was 0.15%)
-            "regime_grind_beta_min": 0.25,      # Beta EMA for grind: 0.25-0.65 (was 0.30)
-            "regime_grind_beta_max": 0.65,
-            "regime_grind_W_min": 0.40,         # WhaleZ EMA for grind: 0.40+ (was 0.30)
-            "regime_grind_mom_min": 0.35,       # Momentum EMA for grind: 0.35%+ (was 0.30%)
-            "regime_whale_W_min": 1.00,         # WhaleZ EMA for whale: 1.00+ (was 0.80)
+            # ─── ADAPTIVE GATING CONFIG — CALIBRATED 2026-08-18 ───
+            # Regime classification thresholds (calibrated from 2-day replay)
+            "regime_burst_beta_min": 0.15,      # Beta EMA for burst: 0.15+ (was 0.65)
+            "regime_burst_W_min": 0.80,         # WhaleZ EMA for burst: 0.80+ (was 0.50)
+            "regime_burst_mom_min": 0.20,       # Momentum EMA for burst: 0.20%+ (was 0.25%)
+            "regime_grind_beta_min": 0.08,      # Beta EMA for grind: 0.08-0.15 (was 0.25)
+            "regime_grind_beta_max": 0.15,
+            "regime_grind_W_min": 0.30,         # WhaleZ EMA for grind: 0.30+ (was 0.40)
+            "regime_grind_mom_min": 0.15,       # Momentum EMA for grind: 0.15%+ (was 0.35%)
+            "regime_whale_W_min": 0.60,         # WhaleZ EMA for whale: 0.60+ (was 1.00)
             
             # Bayesian priors (per symbol overrides allowed via trigger_config)
             "prior_alpha_beta": 3.0, "prior_beta_beta": 20.0,
             "prior_alpha_W": 2.0, "prior_beta_W": 10.0,
             
             # Minimax fallback (CALIBRATION-OPTIMAL from forensic sweep)
-            "minimax_beta": 0.10, "minimax_W": 0.50, "minimax_mom": 0.30, "minimax_tox_pct": 50,
+            "minimax_beta": 0.10, "minimax_W": 0.85, "minimax_mom": 0.20, "minimax_tox_pct": 60,
             
-            # Conviction thresholds per regime (RAISED for precision)
-            "conv_thresh_burst": 7.5, "conv_thresh_grind": 8.0, "conv_thresh_whale": 9.0,
+            # Conviction thresholds per regime (LOWERED for recall)
+            "conv_thresh_burst": 5.5, "conv_thresh_grind": 5.0, "conv_thresh_whale": 6.0,
+            "conv_thresh_noise": 6.5,  # Raised from 3.0 to 6.5: strict cutoff for NOISE regime (ML-calibrated)
             
-            # Interaction weights (REDUCED to prevent over-contribution)
-            "interact_mlofi_vac": 0.4, "interact_mpar_lra": 0.3,
-            "interact_whale_dkla": 0.4, "interact_beta_mom": 0.2,
+            # Interaction weights (BOOSTED structural)
+            "interact_mlofi_vac": 0.6, "interact_mpar_lra": 0.5,
+            "interact_whale_dkla": 0.5, "interact_beta_mom": 0.3,
             
             # Adaptation controls
             "ema_alpha_regime": 0.15, "ucb_exploration_c": 0.5,
             "min_buckets_for_bayes": 30, "min_buckets_for_omd": 50,
             "fpr_window": 20, "fpr_target": 0.15,
+            
+            # ─── PRE-MARKET STATE MACHINE CONFIG ───
+            "auction_entry_end_ns": 9 * 3600 + 4 * 60,      # 09:04 in seconds from midnight
+            "auction_freeze_end_ns": 9 * 3600 + 8 * 60,     # 09:08 in seconds from midnight
+            "continuous_open_ns": 9 * 3600 + 15 * 60,       # 09:15 in seconds from midnight
+            "auction_freeze_min_ticks": 5,                  # Min ticks to confirm freeze
+            "auction_freeze_timeout_sec": 300,              # 5 min max freeze wait
+            "baseline_delta_buckets": 3,                    # First 3 buckets use delta-from-baseline
+            "min_tick_size": 0.05,                          # NSE min tick for freeze detection
         }
         self.CFG.update(default_trigger)   # apply defaults FIRST
         if trigger_config: self.CFG.update(trigger_config)  # then apply any explicit overrides
@@ -226,6 +290,77 @@ class CascadeValueEngine:
             get_data_dir(), "logs", f"cascade_live_{datetime.now().strftime('%Y-%m-%d')}.jsonl"
         )
         os.makedirs(os.path.dirname(self.LOG_FILE), exist_ok=True)
+    
+    def _init_symbol_state(self):
+        """Pre-allocate all per-symbol state to fixed keys. No dynamic dict growth."""
+        for sym in self.t2s.values():
+            self.last_snap[sym] = {}
+            self.last_depth_state[sym] = {'bids': {}, 'asks': {}}
+            self.trade_times[sym] = deque(maxlen=50000)
+            self.completion_times[sym] = deque(maxlen=1000)
+            self.vpin_q[sym] = deque(maxlen=20)
+            self.whale_history[sym] = deque(maxlen=self.CFG["whale_window"])
+            self.vacuum_history[sym] = deque(maxlen=self.CFG["vacuum_window"])
+            self.mlofi_history[sym] = deque(maxlen=self.CFG["mlofi_window"])
+            self.toxicity_history[sym] = deque(maxlen=self.CFG["toxicity_window"])
+            self.mp_prev[sym] = 0.0
+            self.mp_vel[sym] = 0.0
+            self.mp_accel[sym] = 0.0
+            self.lra_ema[sym] = {'bid': [0.0]*5, 'ask': [0.0]*5}
+            self.lra_asym_prev[sym] = 0.0
+            self.dkla_asym_prev[sym] = 0.0
+            self.cur_buy_val[sym] = 0.0
+            self.cur_sell_val[sym] = 0.0
+            self.cur_tot_val[sym] = 0.0
+            self.cur_tick_count[sym] = 0
+            self.cur_max_tick_val[sym] = 0.0
+            self.cur_net_vacuum[sym] = 0.0
+        self._bucket_close_prices = {sym: 0.0 for sym in self.t2s.values()}
+        
+        # ─── PRE-MARKET STATE MACHINE STATE ───
+        self._phase = {sym: EnginePhase.AUCTION_ENTRY for sym in self.t2s.values()}
+        self._baseline_truth = {sym: None for sym in self.t2s.values()}
+        self._last_l2_snapshot = {sym: {'bids': {}, 'asks': {}} for sym in self.t2s.values()}
+        self._auction_tick_count = {sym: 0 for sym in self.t2s.values()}
+        self._freeze_confirmed = {sym: False for sym in self.t2s.values()}
+        self._baseline_bucket_count = {sym: 0 for sym in self.t2s.values()}
+        
+        # ─── GLOBAL 1-TRADE LOCK ───
+        self._engine_active_trade = False
+        self._active_trade_symbol = None
+        
+        # ─── ML CONVICTION MULTIPLIER ───
+        self._ml_predictor = None
+        self._ml_feature_computer = None
+        self._ml_calibration_dir = None
+        self._ml_regime_model_dir = None
+
+    def initialize_ml_predictor(self, calibration_dir: str, regime_model_dir: str) -> None:
+        """
+        Initialize ML predictor from EOD calibration artifacts.
+        Call this after engine creation but before starting live trading.
+        
+        Args:
+            calibration_dir: Path to calibration directory with predictor_global.py
+            regime_model_dir: Path to regime model directory
+        """
+        from pathlib import Path
+        from stock_order_flow.eod.live_inference import CompiledPredictor, LiveFeatureComputer
+        
+        self._ml_calibration_dir = Path(calibration_dir)
+        self._ml_regime_model_dir = Path(regime_model_dir)
+        
+        if not self._ml_calibration_dir.exists():
+            logger.warning(f"ML calibration dir not found: {calibration_dir}")
+            return
+        
+        self._ml_predictor = CompiledPredictor(self._ml_calibration_dir)
+        self._ml_feature_computer = LiveFeatureComputer()
+        
+        logger.info(f"ML predictor initialized: {self._ml_predictor.model_type}")
+        if self._ml_predictor.global_meta:
+            logger.info(f"  Symbols: {len(self._ml_predictor.global_meta.get('symbol_to_idx', {}))}")
+            logger.info(f"  Regimes: {list(self._ml_predictor.global_meta.get('regime_to_idx', {}).keys())}")
 
     # ═══════════════════════════════════════════════════════════
     # CORE MICROSTRUCTURE CALCULATIONS (FIXED & OPTIMIZED)
@@ -252,7 +387,11 @@ class CascadeValueEngine:
         total_depth = sum(p*q for p,q in curr_bids.items()) + sum(p*q for p,q in curr_asks.items())
         hist = self.vacuum_history.setdefault(sym, deque(maxlen=self.CFG["vacuum_window"]))
         hist.append(total_depth)
-        return (vacuum_raw / max(np.mean(hist) if hist else 1.0, 1.0)) * 10_000.0
+        if hist:
+            mean = sum(hist) / len(hist)
+        else:
+            mean = 1.0
+        return (vacuum_raw / max(mean, 1.0)) * 10_000.0
 
     def _calculate_mlofi(self, sym: str, snap: Dict, flow_imb: float) -> float:
         b_val = snap.get("bp1",0)*snap.get("bq1",0); s_val = snap.get("sp1",0)*snap.get("sq1",0)
@@ -414,29 +553,54 @@ class CascadeValueEngine:
         t_beta = self.post_alpha_beta[sym_idx] / n_beta + c * math.sqrt(math.log(self.bucket_count[sym_idx]) / n_beta)
         t_W = self.post_alpha_W[sym_idx] / n_W + c * math.sqrt(math.log(self.bucket_count[sym_idx]) / n_W)
         
-        return (float(np.clip(t_beta, 0.08, 0.35)), float(np.clip(t_W, 0.8, 2.5)),
+        return (float(max(0.08, min(t_beta, 0.22))), float(max(0.6, min(t_W, 2.5))),
                 self.CFG["minimax_mom"], self.CFG["minimax_tox_pct"])
 
     def _evaluate_adaptive_gate(self, sym_idx: int, beta: float, whale_z: float, mom_5m: float, 
-                                toxicity: float, tox_hist: deque, thresholds: tuple) -> bool:
-        """Regime-specific gate logic. Returns True if gate passes."""
+                                toxicity: float, tox_hist: deque, thresholds: tuple,
+                                mlofi: float, mpar_score: float, net_vac: float, lra_signal: float, 
+                                dkla_asym: float, micro_dev: float) -> bool:
+        """
+        Zero-allocation adaptive gate: continuous scoring with regime-adaptive weights.
+        Allows NOISE regime to pass when structural asymmetry is strong.
+        Maintains O(1) zero-allocation hot path.
+        """
         regime = self.regime_id[sym_idx]
         t_beta, t_W, t_mom, t_tox_pct = thresholds
         
-        if regime == 1:  # BURST: Standard AND with relaxed dynamic thresholds
-            tox_pass = (len(tox_hist) < 20 or toxicity >= np.percentile(tox_hist, t_tox_pct))
-            return (beta >= t_beta * 0.9) and (whale_z >= t_W * 0.9) and tox_pass
-        elif regime == 2:  # GRIND: OR-gate (whale OR momentum) + beta floor
-            whale_gate = whale_z >= t_W * 1.1
-            mom_gate = abs(mom_5m) >= t_mom * 0.8
-            beta_gate = beta >= 0.10
-            tox_pass = (len(tox_hist) < 20 or toxicity >= np.percentile(tox_hist, t_tox_pct))
-            return beta_gate and (whale_gate or mom_gate) and tox_pass
-        elif regime == 3:  # WHALE: Whale-only with higher threshold
-            tox_pass = (len(tox_hist) < 20 or toxicity >= np.percentile(tox_hist, t_tox_pct))
-            return (whale_z >= t_W * 1.3) and tox_pass
-        else:  # NOISE: Block all
-            return False
+        # O(1) Toxicity Gate without numpy overhead
+        if len(tox_hist) >= 20:
+            s_hist = sorted(tox_hist)
+            idx = int((t_tox_pct / 100.0) * (len(s_hist) - 1))
+            tox_thresh = s_hist[idx]
+            if toxicity < tox_thresh:
+                return False
+        
+        # Fast Scalar Clipping (Zero-Allocation, No Numpy)
+        beta_n = max(0.0, min(beta / max(t_beta * 2.5, 0.5), 1.0))
+        whale_n = max(0.0, min(whale_z / max(t_W * 2.5, 2.0), 1.0))
+        mom_n = max(0.0, min(abs(mom_5m) / max(t_mom * 2.5, 0.5), 1.0))
+        
+        vac_n = max(0.0, min(abs(net_vac) / self.CFG["vac_cap"], 1.0))
+        mlofi_n = max(0.0, min(abs(mlofi) / self.CFG["mlofi_cap"], 1.0))
+        micro_n = 1.0 if abs(micro_dev) > 0.0002 else 0.0
+        dkla_n = max(0.0, min(abs(dkla_asym) / self.CFG["dkla_cap"], 1.0))
+        lra_n = max(0.0, min(abs(lra_signal) / self.CFG["lra_cap"], 1.0))
+            
+        struct_score = (vac_n * 0.25 + mlofi_n * 0.25 + micro_n * 0.15 + dkla_n * 0.20 + lra_n * 0.15)
+        
+        if regime == 1:  # BURST: High clustering + whale + momentum + structure
+            # Weights: beta 25%, whale 25%, momentum 20%, structure 30%
+            return (0.25 * beta_n + 0.25 * whale_n + 0.20 * mom_n + 0.30 * struct_score) >= 0.50
+        elif regime == 2:  # GRIND: Moderate clustering, whale OR momentum, structure critical
+            # Weights: beta 15%, max(whale,momentum) 35%, structure 50%
+            return (0.15 * beta_n + 0.35 * max(whale_n, mom_n) + 0.50 * struct_score) >= 0.45 and beta_n >= 0.10
+        elif regime == 3:  # WHALE: Whale-dominated, structure confirms
+            # Weights: whale 45%, structure 55% (beta irrelevant)
+            return (0.45 * whale_n + 0.55 * struct_score) >= 0.55 and whale_n >= 0.35
+        else:  # NOISE (regime 0): Structure + Activity Gate (ML-Calibrated)
+            # Rejects dead range-bound noise (71.6% of market) while allowing explosive opening moves
+            return struct_score >= 0.50 and abs(mom_5m) >= 0.08
 
     def _update_threshold_posteriors(self, sym_idx: int, signal_fired: bool, move_captured: bool) -> None:
         """Beta-Binomial conjugate update for branching & whale thresholds."""
@@ -449,93 +613,417 @@ class CascadeValueEngine:
             self.post_beta_beta[sym_idx] += 1.0
             self.post_beta_W[sym_idx] += 1.0
 
-    def _compute_5m_momentum(self, sym: str, lp: float, nows: float) -> float:
-        """Compute 5-minute LTP momentum (%). Zero-allocation using pre-allocated deque."""
+    def set_symbol_bias_map(self, bias_map: Dict[str, str]) -> None:
+        """Update 15-minute macro directional bias map from Tier 2 filter (LONG_ONLY, SHORT_ONLY, NO_TRADE)."""
+        self._symbol_bias = dict(bias_map)
+        if logger.isEnabledFor(logging.INFO):
+            n_l = sum(1 for b in self._symbol_bias.values() if b == 'LONG_ONLY')
+            n_s = sum(1 for b in self._symbol_bias.values() if b == 'SHORT_ONLY')
+            n_f = sum(1 for b in self._symbol_bias.values() if b == 'NO_TRADE')
+            logger.info(f"[MACRO_BIAS] Updated bias map: LONG={n_l}, SHORT={n_s}, FLAT(NO_TRADE)={n_f}")
+
+    def _compute_5m_momentum(self, sym: str, lp: float, nows: float) -> Tuple[float, float]:
+        """Compute 5-minute and 1-minute LTP momentum (%). Zero-allocation using pre-allocated deque."""
         hist = self.regime_mom_history[sym]
         hist.append((nows, lp))
-        cutoff = nows - 300.0  # 5 minutes
-        # Find oldest entry within window
-        old_lp = lp
+        cutoff_5m = nows - 300.0  # 5 minutes
+        cutoff_1m = nows - 60.0   # 1 minute
+        old_lp_5m = lp
+        old_lp_1m = lp
+        found_5m = False
         for ts, price in hist:
-            if ts >= cutoff:
-                old_lp = price
+            if ts >= cutoff_5m and not found_5m:
+                old_lp_5m = price
+                found_5m = True
+            if ts >= cutoff_1m:
+                old_lp_1m = price
                 break
-        if old_lp > 0:
-            return (lp - old_lp) / old_lp * 100.0
-        return 0.0
+        m5 = (lp - old_lp_5m) / old_lp_5m * 100.0 if old_lp_5m > 0 else 0.0
+        m1 = (lp - old_lp_1m) / old_lp_1m * 100.0 if old_lp_1m > 0 else 0.0
+        return m5, m1
 
-    def _compute_interaction_conviction(self, signals: dict, regime: int) -> tuple:
-        """Interaction-aware conviction scoring. Returns (long_score, short_score)."""
+    def _compute_interaction_conviction(self, regime: int, mlofi: float, mpar: float, net_vac: float, 
+                                        lra_signal: float, dkla_asym: float, micro_dev: float, 
+                                        whale_z: float, branching: float, mom_5m: float) -> tuple:
+        """Zero-allocation interaction-aware conviction scoring with regime-adaptive weights. Returns (long_score, short_score)."""
         # Main effects (monotonic transforms for long: positive values; for short: negative values)
-        mlofi_long = np.clip(signals['mlofi'] / self.CFG["mlofi_cap"], 0, 1)
-        mpar_long = np.clip(signals['mpar'] / self.CFG["mpar_cap"], 0, 1)
-        vac_long = np.clip(signals['net_vac'] / self.CFG["vac_cap"], 0, 1)
-        lra_long = np.clip(signals['lra_signal'] / self.CFG["lra_cap"], 0, 1)
-        dkla_long = np.clip(signals['dkla_asym'] / self.CFG["dkla_cap"], 0, 1)
-        micro_long = 1.0 if signals['micro_dev'] > 0.0002 else 0.0
+        # Fast Scalar Clipping replacing np.clip
+        mlofi_long = max(0.0, min(mlofi / self.CFG["mlofi_cap"], 1.0))
+        mpar_long = max(0.0, min(mpar / self.CFG["mpar_cap"], 1.0))
+        vac_long = max(0.0, min(net_vac / self.CFG["vac_cap"], 1.0))
+        lra_long = max(0.0, min(lra_signal / self.CFG["lra_cap"], 1.0))
+        dkla_long = max(0.0, min(dkla_asym / self.CFG["dkla_cap"], 1.0))
+        micro_long = 1.0 if micro_dev > 0.0002 else 0.0
         
-        mlofi_short = np.clip(-signals['mlofi'] / self.CFG["mlofi_cap"], 0, 1)
-        mpar_short = np.clip(-signals['mpar'] / self.CFG["mpar_cap"], 0, 1)
-        vac_short = np.clip(-signals['net_vac'] / self.CFG["vac_cap"], 0, 1)
-        lra_short = np.clip(-signals['lra_signal'] / self.CFG["lra_cap"], 0, 1)
-        dkla_short = np.clip(-signals['dkla_asym'] / self.CFG["dkla_cap"], 0, 1)
-        micro_short = 1.0 if signals['micro_dev'] < -0.0002 else 0.0
+        mlofi_short = max(0.0, min(-mlofi / self.CFG["mlofi_cap"], 1.0))
+        mpar_short = max(0.0, min(-mpar / self.CFG["mpar_cap"], 1.0))
+        vac_short = max(0.0, min(-net_vac / self.CFG["vac_cap"], 1.0))
+        lra_short = max(0.0, min(-lra_signal / self.CFG["lra_cap"], 1.0))
+        dkla_short = max(0.0, min(-dkla_asym / self.CFG["dkla_cap"], 1.0))
+        micro_short = 1.0 if micro_dev < -0.0002 else 0.0
         
-        whale_t = np.clip(abs(signals['whale_z']) / 3.0, 0, 1)
-        beta_t = np.clip(signals['branching'] / 0.5, 0, 1)
-        mom_t = np.clip(abs(signals['mom_5m']) / 0.5, 0, 1)
+        whale_t = max(0.0, min(abs(whale_z) / 3.0, 1.0))
+        beta_t = max(0.0, min(branching / 0.5, 1.0))
+        mom_t = max(0.0, min(abs(mom_5m) / 0.5, 1.0))
+        
+        # Regime-adaptive main effect weights
+        if regime == 1:  # BURST: MPAR + Whale + Momentum dominant
+            w_mlofi, w_mpar, w_vac, w_lra, w_dkla, w_micro = 1.0, 2.5, 1.0, 1.0, 1.5, 0.5
+        elif regime == 2:  # GRIND: Vacuum + MLOFI + LRA dominant (structure over flow)
+            w_mlofi, w_mpar, w_vac, w_lra, w_dkla, w_micro = 2.0, 1.5, 2.5, 2.0, 1.0, 0.5
+        elif regime == 3:  # WHALE: Whale + DKLA + MLOFI dominant
+            w_mlofi, w_mpar, w_vac, w_lra, w_dkla, w_micro = 1.5, 1.0, 1.0, 1.0, 2.5, 0.5
+        else:  # NOISE: Vacuum + MLOFI + MicroDev dominant (localized imbalances)
+            w_mlofi, w_mpar, w_vac, w_lra, w_dkla, w_micro = 2.5, 0.5, 3.0, 1.0, 0.5, 1.5
         
         # Linear weighted sum (base conviction)
-        base_long = (mlofi_long * self.CFG["w_mlofi"] + mpar_long * self.CFG["w_mpar"] + vac_long * self.CFG["w_vac"] +
-                     lra_long * self.CFG["w_lra"] + dkla_long * self.CFG["w_dkla"] + micro_long * self.CFG["w_micro"])
-        base_short = (mlofi_short * self.CFG["w_mlofi"] + mpar_short * self.CFG["w_mpar"] + vac_short * self.CFG["w_vac"] +
-                      lra_short * self.CFG["w_lra"] + dkla_short * self.CFG["w_dkla"] + micro_short * self.CFG["w_micro"])
+        base_long = (mlofi_long * w_mlofi + mpar_long * w_mpar + vac_long * w_vac +
+                     lra_long * w_lra + dkla_long * w_dkla + micro_long * w_micro)
+        base_short = (mlofi_short * w_mlofi + mpar_short * w_mpar + vac_short * w_vac +
+                      lra_short * w_lra + dkla_short * w_dkla + micro_short * w_micro)
         
-        # Pairwise interactions (directional: long uses positive, short uses negative)
+        # Pairwise interactions (directional: long uses positive signals, short uses negative)
         inter_long = 0.0
         inter_short = 0.0
-        
+
         # MLOFI x VACUUM: bid pressure + ask vacuum = long; ask pressure + bid vacuum = short
         if mlofi_long > 0 and vac_long > 0:
             inter_long += self.CFG["interact_mlofi_vac"] * mlofi_long * vac_long
         if mlofi_short > 0 and vac_short > 0:
             inter_short += self.CFG["interact_mlofi_vac"] * mlofi_short * vac_short
-        
+
         # MPAR x LRA: microprice accel up + MM flee ask = long; accel down + MM flee bid = short
         if mpar_long > 0 and lra_long > 0:
             inter_long += self.CFG["interact_mpar_lra"] * min(mpar_long, lra_long)
         if mpar_short > 0 and lra_short > 0:
             inter_short += self.CFG["interact_mpar_lra"] * min(mpar_short, lra_short)
-        
+
         # WHALE x DKLA: large lots + buy-side impact = long; large lots + sell-side impact = short
         if whale_t > 0 and dkla_long > 0:
             inter_long += self.CFG["interact_whale_dkla"] * whale_t * dkla_long
         if whale_t > 0 and dkla_short > 0:
             inter_short += self.CFG["interact_whale_dkla"] * whale_t * dkla_short
-        
+
         # BRANCHING x MOMENTUM: clustering + trend = directional confirmation
         if beta_t > 0 and mom_t > 0:
-            # For long: positive momentum; for short: negative momentum
-            if signals['mom_5m'] > 0:
+            if mom_5m > 0:
                 inter_long += self.CFG["interact_beta_mom"] * beta_t * mom_t
             else:
                 inter_short += self.CFG["interact_beta_mom"] * beta_t * mom_t
+
+        # NEW: VACUUM x DKLA: liquidity removal + impact asymmetry (strong directional signal)
+        if vac_long > 0 and dkla_long > 0:
+            inter_long += 0.25 * vac_long * dkla_long
+        if vac_short > 0 and dkla_short > 0:
+            inter_short += 0.25 * vac_short * dkla_short
+
+        # NEW: MLOFI x MICRODEV: book-flow divergence + microprice stretch
+        if mlofi_long > 0 and micro_long > 0:
+            inter_long += 0.20 * mlofi_long * micro_long
+        if mlofi_short > 0 and micro_short > 0:
+            inter_short += 0.20 * mlofi_short * micro_short
         
         return base_long + inter_long, base_short + inter_short
 
     def _get_regime_conviction_threshold(self, regime: int, sym: str) -> float:
-        """Regime-adaptive conviction threshold with dynamic FPR adjustment."""
-        base_thresh = {1: self.CFG["conv_thresh_burst"], 
-                       2: self.CFG["conv_thresh_grind"], 
-                       3: self.CFG["conv_thresh_whale"], 
-                       0: float('inf')}[regime]
+        """Regime-adaptive conviction threshold with dynamic FPR adjustment and per-stock calibration."""
+        sym_cfg = self.stock_calibration.get(sym, {})
+        reg_name = self._regime_names[regime].lower()
+        custom_thresh = sym_cfg.get(f"conv_thresh_{reg_name}")
         
-        # Dynamic FPR adjustment
+        if custom_thresh is not None:
+            base_thresh = float(custom_thresh)
+        else:
+            base_thresh = {1: self.CFG["conv_thresh_burst"], 
+                           2: self.CFG["conv_thresh_grind"], 
+                           3: self.CFG["conv_thresh_whale"], 
+                           0: self.CFG["conv_thresh_noise"]}[regime]
+        
         if len(self.recent_fp[sym]) >= self.CFG["fpr_window"]:
             fpr = sum(self.recent_fp[sym]) / len(self.recent_fp[sym])
             base_thresh *= (1.0 + 0.5 * fpr / self.CFG["fpr_target"])
         
         return base_thresh
+
+    def _apply_ml_conviction_multiplier(self, conviction: float, ml_prob: float, regime: int) -> float:
+        """
+        Apply ML probability as multiplicative conviction multiplier.
+        
+        Args:
+            conviction: Base conviction score from interaction-aware scoring
+            ml_prob: ML model probability from EOD calibration (0.0 to 1.0)
+            regime: Current regime (0=NOISE, 1=BURST, 2=GRIND, 3=WHALE)
+        
+        Returns:
+            Adjusted conviction score
+        
+        Rules:
+            - Veto: if ml_prob < 0.40, conviction = 0 (hard veto)
+            - Boost: if ml_prob > 0.65, conviction *= (1.0 + (ml_prob - 0.65) * 2.0)
+            - Neutral: 0.40 <= ml_prob <= 0.65, conviction unchanged
+        """
+        if ml_prob < 0.40:
+            # Hard veto - ML model strongly disagrees
+            return 0.0
+        
+        if ml_prob > 0.65:
+            # Boost conviction proportionally to ML confidence
+            boost_factor = 1.0 + (ml_prob - 0.65) * 2.0  # 0.65->1.0x, 0.80->1.3x, 0.90->1.5x
+            return conviction * boost_factor
+        
+        # Neutral zone - no adjustment
+        return conviction
+
+    def _get_ml_probability(self, sym: str, regime: int) -> Optional[float]:
+        """
+        Get ML probability from EOD calibration for a symbol/regime.
+        Returns None if ML predictor not available or symbol not in calibration.
+        """
+        if self._ml_predictor is None or self._ml_feature_computer is None:
+            return None
+        
+        regime_name = self._regime_names[regime]
+        
+        try:
+            # Get features from the live feature computer
+            meta = self._ml_predictor.get_metadata(sym, regime_name)
+            feature_names = meta.get("feature_names", [])
+            
+            if not feature_names:
+                return None
+            
+            features = self._ml_feature_computer.get_features(feature_names)
+            
+            # Get ML probability
+            prob = self._ml_predictor.predict(sym, regime_name, features)
+            return float(prob)
+        except Exception:
+            return None
+
+    # ═══════════════════════════════════════════════════════════
+    # PRE-MARKET STATE MACHINE HANDLERS
+    # ═══════════════════════════════════════════════════════════
+
+    def _seconds_from_midnight(self, ts: float) -> int:
+        """Convert timestamp to seconds from midnight (IST)."""
+        dt = datetime.fromtimestamp(ts)
+        return dt.hour * 3600 + dt.minute * 60 + dt.second
+
+    def _detect_auction_freeze(self, sym: str, curr_bids: Dict, curr_asks: Dict) -> bool:
+        """Detect if L2 is frozen (no changes for min_ticks) and spread == min_tick_size."""
+        last = self._last_l2_snapshot[sym]
+        # Check if L2 unchanged
+        if curr_bids == last['bids'] and curr_asks == last['asks']:
+            self._auction_tick_count[sym] += 1
+        else:
+            self._auction_tick_count[sym] = 0
+            # Update snapshot
+            last['bids'].clear()
+            last['bids'].update(curr_bids)
+            last['asks'].clear()
+            last['asks'].update(curr_asks)
+        
+        # Check spread == min_tick_size
+        bp1 = next(iter(curr_bids)) if curr_bids else 0.0
+        ap1 = next(iter(curr_asks)) if curr_asks else 0.0
+        spread_ok = (ap1 - bp1) <= self.CFG["min_tick_size"] + 1e-6
+        
+        return self._auction_tick_count[sym] >= self.CFG["auction_freeze_min_ticks"] and spread_ok
+
+    def _detect_continuous_open(self, sym: str, msg: Dict, curr_bids: Dict, curr_asks: Dict) -> bool:
+        """Detect transition to continuous trading: trade print OR L2 mutation OR spread widened."""
+        # Trade print detection
+        lp = float(msg.get("last_traded_price") or msg.get("lp") or 0)
+        if lp > 0:
+            return True
+        
+        # L2 mutation detection
+        last = self._last_l2_snapshot[sym]
+        if curr_bids != last['bids'] or curr_asks != last['asks']:
+            return True
+        
+        # Spread widened beyond min_tick
+        bp1 = next(iter(curr_bids)) if curr_bids else 0.0
+        ap1 = next(iter(curr_asks)) if curr_asks else 0.0
+        if (ap1 - bp1) > self.CFG["min_tick_size"] + 1e-6:
+            return True
+        
+        return False
+
+    def _capture_baseline(self, sym: str, st: Dict, curr_bids: Dict, curr_asks: Dict, nows: float) -> None:
+        """Capture immutable BaselineTruth at 09:08 freeze."""
+        # Convert dicts to immutable tuples
+        bids_tuple = tuple(sorted(curr_bids.items()))
+        asks_tuple = tuple(sorted(curr_asks.items()))
+        
+        # Compute equilibrium (price with max total qty)
+        all_levels = {}
+        for p, q in curr_bids.items():
+            all_levels[p] = all_levels.get(p, 0) + q
+        for p, q in curr_asks.items():
+            all_levels[p] = all_levels.get(p, 0) - q
+        
+        eq_price = max(all_levels.items(), key=lambda x: abs(x[1]))[0] if all_levels else 0.0
+        eq_qty = all_levels.get(eq_price, 0)
+        
+        # Mid & Microprice
+        bp1 = next(iter(curr_bids)) if curr_bids else 0.0
+        ap1 = next(iter(curr_asks)) if curr_asks else 0.0
+        bq1 = curr_bids.get(bp1, 0)
+        aq1 = curr_asks.get(ap1, 0)
+        mid = (bp1 + ap1) * 0.5 if bp1 > 0 and ap1 > 0 else 0.0
+        micro = 0.0
+        if (bq1 + aq1) > 0 and bp1 > 0 and ap1 > 0:
+            b_val, s_val = bp1 * bq1, ap1 * aq1
+            imb = b_val / max(b_val + s_val, 1.0)
+            micro = (bp1 + ap1) * 0.5 + (ap1 - bp1) * (imb - 0.5)
+        
+        # Book Pressure
+        book_pressure = (sum(p*q for p,q in curr_bids.items()) - sum(p*q for p,q in curr_asks.items())) / \
+                        max(sum(p*q for p,q in curr_bids.items()) + sum(p*q for p,q in curr_asks.items()), 1.0)
+        
+        # LRA EMA (current state)
+        lra_state = self.lra_ema[sym]
+        lra_bid = tuple(lra_state['bid'])
+        lra_ask = tuple(lra_state['ask'])
+        
+        # DKLA lambdas
+        lam_buy, lam_sell, dkla_asym, _ = self._calculate_dkla(st, mid)
+        
+        self._baseline_truth[sym] = BaselineTruth(
+            bids=bids_tuple,
+            asks=asks_tuple,
+            equilibrium_price=eq_price,
+            equilibrium_qty=eq_qty,
+            mid_price=mid,
+            microprice=micro,
+            book_pressure=book_pressure,
+            lra_ema_bid=lra_bid,
+            lra_ema_ask=lra_ask,
+            dkla_lam_buy=lam_buy,
+            dkla_lam_sell=lam_sell,
+            dkla_asym=dkla_asym,
+            captured_at_ns=nows
+        )
+        self._freeze_confirmed[sym] = True
+        self._baseline_bucket_count[sym] = 0
+        
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(f"[BASELINE_CAPTURED] {sym} | Mid: {mid:.2f} | Micro: {micro:.2f} | "
+                       f"EqPrice: {eq_price:.2f} | BookPress: {book_pressure:.3f} | "
+                       f"DKLA_Asym: {dkla_asym:.3f} | LRA_Bid: {lra_bid[0]:.1f} LRA_Ask: {lra_ask[0]:.1f}")
+
+    def _activate_continuous(self, sym: str, lp: float, curr_bids: Dict, curr_asks: Dict, nows: float) -> None:
+        """Transition to CONTINUOUS_LIVE: compute deltas from baseline and seed adv cache."""
+        baseline = self._baseline_truth[sym]
+        if baseline is None:
+            # Fallback: no baseline captured, use current as baseline
+            self._capture_baseline(sym, self.last_snap[sym], curr_bids, curr_asks, nows)
+            baseline = self._baseline_truth[sym]
+        
+        # Compute deltas from baseline
+        bp1 = next(iter(curr_bids)) if curr_bids else 0.0
+        ap1 = next(iter(curr_asks)) if curr_asks else 0.0
+        bq1 = curr_bids.get(bp1, 0)
+        aq1 = curr_asks.get(ap1, 0)
+        
+        # MPAR acceleration delta from baseline
+        mp_accel_delta = self.mp_accel.get(sym, 0.0)  # Already computed in _update_mpar
+        
+        # Vacuum delta from baseline (baseline vacuum = 0 by definition)
+        vac_delta = self.cur_net_vacuum.get(sym, 0.0)
+        
+        # LRA asymmetry delta from baseline
+        lra_asym_delta = self.lra_asym_prev.get(sym, 0.0) - baseline.book_pressure
+        
+        # DKLA asymmetry delta from baseline
+        dkla_asym_delta = self.dkla_asym_prev.get(sym, 0.0) - baseline.dkla_asym
+        
+        # Seed adv cache with deltas for first 3 buckets
+        adv = self._adv_cache[sym]
+        adv["mpar_accel"] = mp_accel_delta
+        adv["vac_bps_tick"] = vac_delta
+        adv["lra_asym"] = lra_asym_delta
+        adv["dkla_asym"] = dkla_asym_delta
+        adv["baseline_delta_active"] = True
+        
+        self._phase[sym] = EnginePhase.CONTINUOUS_LIVE
+        self._baseline_bucket_count[sym] = 0
+        
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(f"[CONTINUOUS_OPEN] {sym} @ {lp:.2f} | MPAR_Accel_Delta: {mp_accel_delta:.4f} | "
+                       f"Vac_Delta: {vac_delta:.1f}bps | LRA_Delta: {lra_asym_delta:.3f} | "
+                       f"DKLA_Delta: {dkla_asym_delta:.3f}")
+
+    def _route_tick_by_phase(self, sym: str, msg: Dict, st: Dict, curr_bids: Dict, curr_asks: Dict, 
+                              lp: float, nows: float, dt: float) -> bool:
+        """
+        Route tick through pre-market state machine.
+        Returns True if tick should proceed to normal hot-path processing.
+        Returns False if tick should be absorbed/ignored (auction phases).
+        """
+        phase = self._phase[sym]
+        secs = self._seconds_from_midnight(nows)
+        
+        # Phase debug logging for first 30 minutes (until 09:45)
+        if secs <= 9 * 3600 + 45 * 60 and logger.isEnabledFor(logging.INFO):
+            logger.info(f"[PHASE_DEBUG] {sym} | Phase: {phase.name} | SecsFromMidnight: {secs} | "
+                       f"AuctionTicks: {self._auction_tick_count[sym]} | FreezeConfirmed: {self._freeze_confirmed[sym]} | "
+                       f"BaselineBuckets: {self._baseline_bucket_count[sym]}")
+        
+        if phase == EnginePhase.AUCTION_ENTRY:
+            # 09:00-09:04: Absorb L2 only, update snapshot, skip rolling buffers
+            self._last_l2_snapshot[sym]['bids'].clear()
+            self._last_l2_snapshot[sym]['bids'].update(curr_bids)
+            self._last_l2_snapshot[sym]['asks'].clear()
+            self._last_l2_snapshot[sym]['asks'].update(curr_asks)
+            
+            # Check for transition to AUCTION_FREEZE at 09:04 (auction_entry_end_ns)
+            if secs >= self.CFG["auction_entry_end_ns"]:  # 09:04
+                self._phase[sym] = EnginePhase.AUCTION_FREEZE
+                self._auction_tick_count[sym] = 0
+                if logger.isEnabledFor(logging.INFO):
+                    logger.info(f"[PHASE_TRANSITION] {sym}: AUCTION_ENTRY -> AUCTION_FREEZE at {secs}s")
+            return False  # Skip normal processing
+        
+        elif phase == EnginePhase.AUCTION_FREEZE:
+            # 09:04-09:08: Detect freeze, capture baseline
+            if self._detect_auction_freeze(sym, curr_bids, curr_asks):
+                self._capture_baseline(sym, st, curr_bids, curr_asks, nows)
+                self._phase[sym] = EnginePhase.AUCTION_BUFFER
+                if logger.isEnabledFor(logging.INFO):
+                    logger.info(f"[PHASE_TRANSITION] {sym}: AUCTION_FREEZE -> AUCTION_BUFFER (freeze confirmed)")
+            # Timeout fallback: force transition at 09:08 even if freeze not detected
+            elif secs >= self.CFG["auction_freeze_end_ns"]:  # 09:08
+                self._capture_baseline(sym, st, curr_bids, curr_asks, nows)
+                self._phase[sym] = EnginePhase.AUCTION_BUFFER
+                if logger.isEnabledFor(logging.INFO):
+                    logger.info(f"[PHASE_TRANSITION] {sym}: AUCTION_FREEZE -> AUCTION_BUFFER (timeout at 09:08)")
+            return False  # Skip normal processing
+        
+        elif phase == EnginePhase.AUCTION_BUFFER:
+            # 09:08-09:15: Wait for continuous open detection
+            if self._detect_continuous_open(sym, msg, curr_bids, curr_asks):
+                self._phase[sym] = EnginePhase.TRANSITION_DETECT
+                if logger.isEnabledFor(logging.INFO):
+                    logger.info(f"[PHASE_TRANSITION] {sym}: AUCTION_BUFFER -> TRANSITION_DETECT")
+            # Timeout fallback: force transition at 09:15 even if continuous not detected
+            elif secs >= self.CFG["continuous_open_ns"]:  # 09:15
+                self._phase[sym] = EnginePhase.TRANSITION_DETECT
+                if logger.isEnabledFor(logging.INFO):
+                    logger.info(f"[PHASE_TRANSITION] {sym}: AUCTION_BUFFER -> TRANSITION_DETECT (timeout at 09:15)")
+            return False  # Skip normal processing
+        
+        elif phase == EnginePhase.TRANSITION_DETECT:
+            # First continuous tick: activate delta-baseline mode
+            self._activate_continuous(sym, lp, curr_bids, curr_asks, nows)
+            return True  # Proceed to normal processing (first continuous bucket)
+        
+        elif phase == EnginePhase.CONTINUOUS_LIVE:
+            # Normal operation
+            return True
+        
+        return False
 
     # ═══════════════════════════════════════════════════════════
     # MAIN TICK LOOP
@@ -546,7 +1034,7 @@ class CascadeValueEngine:
             tok = str(msg.get("token", ""))
             sym = self.t2s.get(tok)
             if not sym: return
-            st = self.last_snap.setdefault(sym, {})
+            st = self.last_snap[sym]  # Pre-allocated, no setdefault
             lp = float(msg.get("last_traded_price") or msg.get("lp") or st.get("lp") or 0)
             if lp <= 0: return
             
@@ -562,8 +1050,11 @@ class CascadeValueEngine:
             exch_ts = float(msg.get("timestamp") or msg.get("exch_ts") or msg.get("tt") or nows)
             st["tick_latency"] = max(0.0, nows - exch_ts) if exch_ts > 1e9 else 0.0
 
-            # Parse Depth (Unrolled)
-            curr_bids, curr_asks = {}, {}
+            # Parse Depth (Unrolled) - Reuse pre-allocated dicts
+            curr_bids = self._curr_bids[sym]
+            curr_asks = self._curr_asks[sym]
+            curr_bids.clear()
+            curr_asks.clear()
             touch_bid = touch_ask = 0.0
             for i in range(1, 6):
                 b_p = float(msg.get(f"bp{i}") or st.get(f"bp{i}") or 0)
@@ -575,24 +1066,29 @@ class CascadeValueEngine:
                 if b_p>0: curr_bids[b_p]=int(b_q)
                 if a_p>0: curr_asks[a_p]=int(a_q)
 
+            # ─── PRE-MARKET STATE MACHINE ROUTING ───
+            if not self._route_tick_by_phase(sym, msg, st, curr_bids, curr_asks, lp, nows, dt):
+                return  # Absorbed by auction phase, skip normal processing
+
             trade_val = dVol * lp
             if trade_val > self.CFG["glitch_guard_cr"]*1_00_00_000.0: trade_val = self.CFG["glitch_guard_cr"]*1_00_00_000.0
             
             if trade_val > 0:
                 bp1, sp1 = st.get("bp1",0.0), st.get("sp1",0.0)
                 if bp1>0 and sp1>0:
-                    if lp >= sp1: self.cur_buy_val[sym] = self.cur_buy_val.get(sym,0.0) + trade_val
-                    elif lp <= bp1: self.cur_sell_val[sym] = self.cur_sell_val.get(sym,0.0) + trade_val
+                    if lp >= sp1: self.cur_buy_val[sym] += trade_val
+                    elif lp <= bp1: self.cur_sell_val[sym] += trade_val
                     else:
-                        self.cur_buy_val[sym] = self.cur_buy_val.get(sym,0.0) + trade_val*0.5
-                        self.cur_sell_val[sym] = self.cur_sell_val.get(sym,0.0) + trade_val*0.5
+                        self.cur_buy_val[sym] += trade_val*0.5
+                        self.cur_sell_val[sym] += trade_val*0.5
                 else:
-                    self.cur_buy_val[sym] = self.cur_buy_val.get(sym,0.0) + trade_val*0.5
-                    self.cur_sell_val[sym] = self.cur_sell_val.get(sym,0.0) + trade_val*0.5
-                self.cur_tot_val[sym] = self.cur_tot_val.get(sym,0.0) + trade_val
-                self.cur_tick_count[sym] = self.cur_tick_count.get(sym,0) + 1
-                self.cur_max_tick_val[sym] = max(self.cur_max_tick_val.get(sym,0.0), trade_val)
-                self.trade_times.setdefault(sym, deque(maxlen=50000)).append(nows)
+                    self.cur_buy_val[sym] += trade_val*0.5
+                    self.cur_sell_val[sym] += trade_val*0.5
+                self.cur_tot_val[sym] += trade_val
+                self.cur_tick_count[sym] += 1
+                if trade_val > self.cur_max_tick_val[sym]:
+                    self.cur_max_tick_val[sym] = trade_val
+                self.trade_times[sym].append(nows)
 
             # ── PER-TICK ADVANCED METRICS ──
             # NOTE: LRA must run BEFORE vacuum, since vacuum overwrites self.last_depth_state[sym]
@@ -600,7 +1096,7 @@ class CascadeValueEngine:
             # detect size adds. Reversing this order silently zeros LRA forever (oq==nq always).
             lra_asym, lra_vel = self._update_lra(sym, st, curr_bids, curr_asks, lp, dVol)
             vac_bps = self._calculate_vacuum_score(sym, curr_bids, curr_asks, dVol, lp, touch_bid, touch_ask) if dVol >= 0 else 0.0
-            self.cur_net_vacuum[sym] = self.cur_net_vacuum.get(sym, 0.0) + vac_bps
+            self.cur_net_vacuum[sym] += vac_bps
             
             # Queue Position Decay (Adverse Selection Signal)
             bid_queue_decay, ask_queue_decay = self._calculate_queue_decay(sym, st, curr_bids, curr_asks)
@@ -609,14 +1105,31 @@ class CascadeValueEngine:
             lam_buy, lam_sell, dkla_asym, eff_lam = self._calculate_dkla(st, mid)
             mp_accel, mp_align, mp_val = self._update_mpar(sym, st, dt)
             
-            st["_adv"] = {"vac_bps_tick": vac_bps, "lam_buy": lam_buy, "lam_sell": lam_sell, 
-                          "dkla_asym": dkla_asym, "eff_lam": eff_lam,
-                          "lra_asym": lra_asym, "lra_vel": lra_vel,
-                          "mp_accel": mp_accel, "mp_align": mp_align, "mp_val": mp_val,
-                          "bid_queue_decay": bid_queue_decay, "ask_queue_decay": ask_queue_decay}
+            # Reuse adv cache dict (no allocation)
+            adv = self._adv_cache[sym]
+            adv["vac_bps_tick"] = vac_bps
+            adv["lam_buy"] = lam_buy
+            adv["lam_sell"] = lam_sell
+            adv["dkla_asym"] = dkla_asym
+            adv["eff_lam"] = eff_lam
+            adv["lra_asym"] = lra_asym
+            adv["lra_vel"] = lra_vel
+            adv["mp_accel"] = mp_accel
+            adv["mp_align"] = mp_align
+            adv["mp_val"] = mp_val
+            adv["bid_queue_decay"] = bid_queue_decay
+            adv["ask_queue_decay"] = ask_queue_decay
+            st["_adv"] = adv
+
+            # Update last_depth_state in-place (no new dict allocation)
+            lds = self.last_depth_state[sym]
+            lds['bids'].clear()
+            lds['bids'].update(curr_bids)
+            lds['asks'].clear()
+            lds['asks'].update(curr_asks)
 
             # Bucket Check
-            if self.cur_tot_val.get(sym, 0) >= self.bucket_map.get(sym, self.CFG["bucket_turnover"]):
+            if self.cur_tot_val[sym] >= self.bucket_map.get(sym, self.CFG["bucket_turnover"]):
                 self._process_bucket(sym, lp, nows, dt)
         except Exception as e:
             logger.error(f"on_tick {sym}: {e}", exc_info=True)
@@ -632,7 +1145,7 @@ class CascadeValueEngine:
             # TIER 2 GATE: Skip symbols not in active set
             if hasattr(self, '_active_symbols') and self._active_symbols and sym not in self._active_symbols:
                 return
-            st = self.last_snap.setdefault(sym, {})
+            st = self.last_snap[sym]  # Pre-allocated, no setdefault
             lp = tick.lp
             if lp <= 0: return
             
@@ -647,8 +1160,11 @@ class CascadeValueEngine:
             if "bts" not in st: st["bts"] = nows
             # Note: tick_latency not available in zero-copy path (no exch_ts)
             
-            # Parse Depth from pre-filled arrays (Unrolled)
-            curr_bids, curr_asks = {}, {}
+            # Parse Depth from pre-filled arrays (Unrolled) - Reuse pre-allocated dicts
+            curr_bids = self._curr_bids[sym]
+            curr_asks = self._curr_asks[sym]
+            curr_bids.clear()
+            curr_asks.clear()
             touch_bid = touch_ask = 0.0
             for i in range(5):
                 b_p = tick.bp[i]
@@ -660,24 +1176,31 @@ class CascadeValueEngine:
                 if b_p>0: curr_bids[b_p]=int(b_q)
                 if a_p>0: curr_asks[a_p]=int(a_q)
 
+            # ─── PRE-MARKET STATE MACHINE ROUTING ───
+            # Create a minimal msg dict for phase routing
+            msg = {"last_traded_price": lp}
+            if not self._route_tick_by_phase(sym, msg, st, curr_bids, curr_asks, lp, nows, dt):
+                return  # Absorbed by auction phase, skip normal processing
+
             trade_val = dVol * lp
             if trade_val > self.CFG["glitch_guard_cr"]*1_00_00_000.0: trade_val = self.CFG["glitch_guard_cr"]*1_00_00_000.0
             
             if trade_val > 0:
                 bp1, sp1 = st.get("bp1",0.0), st.get("sp1",0.0)
                 if bp1>0 and sp1>0:
-                    if lp >= sp1: self.cur_buy_val[sym] = self.cur_buy_val.get(sym,0.0) + trade_val
-                    elif lp <= bp1: self.cur_sell_val[sym] = self.cur_sell_val.get(sym,0.0) + trade_val
+                    if lp >= sp1: self.cur_buy_val[sym] += trade_val
+                    elif lp <= bp1: self.cur_sell_val[sym] += trade_val
                     else:
-                        self.cur_buy_val[sym] = self.cur_buy_val.get(sym,0.0) + trade_val*0.5
-                        self.cur_sell_val[sym] = self.cur_sell_val.get(sym,0.0) + trade_val*0.5
+                        self.cur_buy_val[sym] += trade_val*0.5
+                        self.cur_sell_val[sym] += trade_val*0.5
                 else:
-                    self.cur_buy_val[sym] = self.cur_buy_val.get(sym,0.0) + trade_val*0.5
-                    self.cur_sell_val[sym] = self.cur_sell_val.get(sym,0.0) + trade_val*0.5
-                self.cur_tot_val[sym] = self.cur_tot_val.get(sym,0.0) + trade_val
-                self.cur_tick_count[sym] = self.cur_tick_count.get(sym,0) + 1
-                self.cur_max_tick_val[sym] = max(self.cur_max_tick_val.get(sym,0.0), trade_val)
-                self.trade_times.setdefault(sym, deque(maxlen=50000)).append(nows)
+                    self.cur_buy_val[sym] += trade_val*0.5
+                    self.cur_sell_val[sym] += trade_val*0.5
+                self.cur_tot_val[sym] += trade_val
+                self.cur_tick_count[sym] += 1
+                if trade_val > self.cur_max_tick_val[sym]:
+                    self.cur_max_tick_val[sym] = trade_val
+                self.trade_times[sym].append(nows)
 
             # ── PER-TICK ADVANCED METRICS ──
             # NOTE: LRA must run BEFORE vacuum, since vacuum overwrites self.last_depth_state[sym]
@@ -685,7 +1208,7 @@ class CascadeValueEngine:
             # detect size adds. Reversing this order silently zeros LRA forever (oq==nq always).
             lra_asym, lra_vel = self._update_lra(sym, st, curr_bids, curr_asks, lp, dVol)
             vac_bps = self._calculate_vacuum_score(sym, curr_bids, curr_asks, dVol, lp, touch_bid, touch_ask) if dVol >= 0 else 0.0
-            self.cur_net_vacuum[sym] = self.cur_net_vacuum.get(sym, 0.0) + vac_bps
+            self.cur_net_vacuum[sym] += vac_bps
             
             # Queue Position Decay (Adverse Selection Signal)
             bid_queue_decay, ask_queue_decay = self._calculate_queue_decay(sym, st, curr_bids, curr_asks)
@@ -694,14 +1217,31 @@ class CascadeValueEngine:
             lam_buy, lam_sell, dkla_asym, eff_lam = self._calculate_dkla(st, mid)
             mp_accel, mp_align, mp_val = self._update_mpar(sym, st, dt)
             
-            st["_adv"] = {"vac_bps_tick": vac_bps, "lam_buy": lam_buy, "lam_sell": lam_sell, 
-                          "dkla_asym": dkla_asym, "eff_lam": eff_lam,
-                          "lra_asym": lra_asym, "lra_vel": lra_vel,
-                          "mp_accel": mp_accel, "mp_align": mp_align, "mp_val": mp_val,
-                          "bid_queue_decay": bid_queue_decay, "ask_queue_decay": ask_queue_decay}
+            # Reuse adv cache dict (no allocation)
+            adv = self._adv_cache[sym]
+            adv["vac_bps_tick"] = vac_bps
+            adv["lam_buy"] = lam_buy
+            adv["lam_sell"] = lam_sell
+            adv["dkla_asym"] = dkla_asym
+            adv["eff_lam"] = eff_lam
+            adv["lra_asym"] = lra_asym
+            adv["lra_vel"] = lra_vel
+            adv["mp_accel"] = mp_accel
+            adv["mp_align"] = mp_align
+            adv["mp_val"] = mp_val
+            adv["bid_queue_decay"] = bid_queue_decay
+            adv["ask_queue_decay"] = ask_queue_decay
+            st["_adv"] = adv
+
+            # Update last_depth_state in-place (no new dict allocation)
+            lds = self.last_depth_state[sym]
+            lds['bids'].clear()
+            lds['bids'].update(curr_bids)
+            lds['asks'].clear()
+            lds['asks'].update(curr_asks)
 
             # Bucket Check
-            if self.cur_tot_val.get(sym, 0) >= self.bucket_map.get(sym, self.CFG["bucket_turnover"]):
+            if self.cur_tot_val[sym] >= self.bucket_map.get(sym, self.CFG["bucket_turnover"]):
                 self._process_bucket(sym, lp, nows, dt)
         except Exception as e:
             logger.error(f"on_tick_parsed {sym}: {e}", exc_info=True)
@@ -719,29 +1259,34 @@ class CascadeValueEngine:
         bv = self.cur_buy_val.get(sym, 0.0); sv = self.cur_sell_val.get(sym, 0.0); tv = self.cur_tot_val.get(sym, 0.0)
         tpin = (bv - sv) / max(target_bucket, 1.0)
         self.vpin_q.setdefault(sym, deque(maxlen=20)).append(abs(tpin))
-        avg_tpin = np.mean(self.vpin_q[sym]) if self.vpin_q[sym] else 0.0
+        avg_tpin = sum(self.vpin_q[sym]) / len(self.vpin_q[sym]) if self.vpin_q[sym] else 0.0
         
-        # Hawkes
+        # Hawkes - Reuse pre-allocated array (zero allocation)
         branching = 0.0
         if sym in self.trade_times:
             times = self.trade_times[sym]; cutoff = nows - self.CFG["hawkes_lookback_sec"]
             while times and times[0] < cutoff: times.popleft()
             if len(times) >= 10:
-                counts = np.zeros(self._hawkes_bins)
+                counts = self._hawkes_counts
+                counts.fill(0)
                 for t in times:
                     bi = int((t - cutoff) // self.CFG["hawkes_bin_sec"])
                     if 0 <= bi < self._hawkes_bins: counts[bi] += 1
-                mc, vc = np.mean(counts), np.var(counts)
-                if vc > 0 and mc > 0: branching = max(0.0, 1.0 - np.sqrt(mc / vc))
+                mc = sum(counts) / self._hawkes_bins
+                vc = sum((c - mc) ** 2 for c in counts) / self._hawkes_bins
+                if vc > 0 and mc > 0: branching = max(0.0, 1.0 - math.sqrt(mc / vc))
+        # Store branching in adv for monkey-patch access (main.py wiring)
+        adv["branching"] = branching
         
-        # Microprice Dev
+        # Microprice Dev - Guard division by zero
         bp1, bq1, sp1, sq1 = st.get("bp1",0), st.get("bq1",0), st.get("sp1",0), st.get("sq1",0)
         micro_dev = 0.0
         if (bq1+sq1)>0 and bp1>0 and sp1>0:
             b_val, s_val = bp1*bq1, sp1*sq1
             imb = b_val / max(b_val+s_val,1.0)
             mp = (bp1+sp1)*0.5 + (sp1-bp1)*(imb-0.5)
-            micro_dev = (lp - mp) / mp
+            if mp != 0.0:
+                micro_dev = (lp - mp) / mp
         
         # MLOFI (Fixed)
         mlofi = self._calculate_mlofi(sym, st, tpin)
@@ -760,19 +1305,27 @@ class CascadeValueEngine:
         
         # ── ADVANCED AGGREGATES ──
         spread_norm = spread / max(lp, 1e-6)
-        mp_accel_norm = adv.get("mp_accel",0.0) / max(spread_norm * math.sqrt(max(dt,1e-6)), 1e-6)
+        
+        # ─── DELTA-BASELINE MATH (First 3 buckets after continuous open) ───
+        phase = self._phase[sym]
+        baseline_delta_active = adv.get("baseline_delta_active", False)
+        if baseline_delta_active and self._baseline_bucket_count[sym] < self.CFG["baseline_delta_buckets"]:
+            # Use pre-seeded deltas from _activate_continuous
+            mp_accel_norm = adv.get("mpar_accel", 0.0) / max(spread_norm * math.sqrt(max(dt,1e-6)), 1e-6)
+            net_vac = adv.get("vac_bps_tick", 0.0)  # Delta from baseline
+            lra_asym = adv.get("lra_asym", 0.0)     # Delta from baseline
+            dkla_asym = adv.get("dkla_asym", 0.0)   # Delta from baseline
+            self._baseline_bucket_count[sym] += 1
+            if self._baseline_bucket_count[sym] >= self.CFG["baseline_delta_buckets"]:
+                adv["baseline_delta_active"] = False
+                if logger.isEnabledFor(logging.INFO):
+                    logger.info(f"[BASELINE_DELTA_COMPLETE] {sym} | Reverted to absolute math after {self.CFG['baseline_delta_buckets']} buckets")
+        else:
+            # Normal absolute math
+            mp_accel_norm = adv.get("mp_accel",0.0) / max(spread_norm * math.sqrt(max(dt,1e-6)), 1e-6)
+        
         divergence = mp_accel_norm - (tpin * spread_norm * 100)
         mpar_score = adv.get("mp_align",0.0) * divergence * abs(mlofi)
-        
-        toxicity = adv.get("eff_lam",0.0) * abs(tpin)
-        tox_hist = self.toxicity_history.setdefault(sym, deque(maxlen=self.CFG["toxicity_window"]))
-        tox_hist.append(toxicity)
-        tox_p90 = np.percentile(tox_hist, 90) if len(tox_hist) > 20 else toxicity
-        
-        lra_asym = adv.get("lra_asym", 0.0)
-        lra_vel = adv.get("lra_vel", 0.0)
-        lra_signal = lra_asym if tpin > 0.1 else (-lra_asym if tpin < -0.1 else 0.0)
-        dkla_asym = adv.get("dkla_asym", 0.0)
         
         # ═══════════════════════════════════════════════
         # ADAPTIVE GATING & INTERACTION-AWARE CONVICTION SCORING
@@ -780,75 +1333,185 @@ class CascadeValueEngine:
         
         # --- ADAPTIVE REGIME CLASSIFICATION & DYNAMIC THRESHOLDS ---
         sym_idx = self.sym_to_idx[sym]
-        mom_5m = self._compute_5m_momentum(sym, lp, nows)
+        mom_5m, mom_1m = self._compute_5m_momentum(sym, lp, nows)
         self._update_regime_state(sym_idx, branching, whale_z, mom_5m)
         
         t_beta, t_W, t_mom, t_tox_pct = self._get_dynamic_thresholds(sym_idx)
         
         # --- ADAPTIVE HARD GATES (Regime-Specific Logic) ---
-        gate_ticks = tc >= self.TRIG["min_ticks"]
+        # Phase-adaptive min_ticks: lower threshold during auction/transition phases
+        # AND for first 4 hours of CONTINUOUS_LIVE (low tick frequency at open and mid-day)
+        phase = self._phase[sym]
+        secs = self._seconds_from_midnight(nows)
+        market_open_secs = 9 * 3600 + 15 * 60  # 09:15
+        if phase in (EnginePhase.AUCTION_BUFFER, EnginePhase.TRANSITION_DETECT):
+            min_ticks_required = 1  # Lower threshold for opening minutes
+        elif phase == EnginePhase.CONTINUOUS_LIVE and secs <= market_open_secs + 4 * 3600:  # First 4 hours after 09:15 (until 13:15)
+            min_ticks_required = 1  # Low tick frequency at market open and mid-day
+        else:
+            min_ticks_required = self.TRIG["min_ticks"]
+        gate_ticks = tc >= min_ticks_required
+        
+        toxicity = adv.get("eff_lam",0.0) * abs(tpin)
+        tox_hist = self.toxicity_history[sym]  # Pre-allocated, no setdefault
+        tox_hist.append(toxicity)
+        if len(tox_hist) >= 20:
+            tox_thresh = sorted(tox_hist)[int((t_tox_pct / 100.0) * (len(tox_hist) - 1))]
+            tox_p90 = sorted(tox_hist)[int(0.9 * (len(tox_hist) - 1))]
+        else:
+            tox_thresh = toxicity
+            tox_p90 = toxicity
+        
+        lra_asym = adv.get("lra_asym", 0.0)
+        lra_vel = adv.get("lra_vel", 0.0)
+        lra_signal = lra_asym if tpin > 0.1 else (-lra_asym if tpin < -0.1 else 0.0)
+        dkla_asym = adv.get("dkla_asym", 0.0)
+        
+        # Compute struct_score for logging (replicate logic from _evaluate_adaptive_gate)
+        thresholds = (t_beta, t_W, t_mom, t_tox_pct)
+        beta_n = max(0.0, min(branching / max(t_beta * 2.5, 0.5), 1.0))
+        whale_n = max(0.0, min(whale_z / max(t_W * 2.5, 2.0), 1.0))
+        mom_n = max(0.0, min(abs(mom_5m) / max(t_mom * 2.5, 0.5), 1.0))
+        vac_n = max(0.0, min(abs(net_vac) / self.CFG["vac_cap"], 1.0))
+        mlofi_n = max(0.0, min(abs(mlofi) / self.CFG["mlofi_cap"], 1.0))
+        micro_n = 1.0 if abs(micro_dev) > 0.0002 else 0.0
+        dkla_n = max(0.0, min(abs(dkla_asym) / self.CFG["dkla_cap"], 1.0))
+        lra_n = max(0.0, min(abs(lra_signal) / self.CFG["lra_cap"], 1.0))
+        struct_score = (vac_n * 0.25 + mlofi_n * 0.25 + micro_n * 0.15 + dkla_n * 0.20 + lra_n * 0.15)
         
         hard_gate_pass = bool(gate_ticks and self._evaluate_adaptive_gate(
-            sym_idx, branching, whale_z, mom_5m, toxicity, tox_hist, (t_beta, t_W, t_mom, t_tox_pct)
+            sym_idx, branching, whale_z, mom_5m, toxicity, tox_hist, (t_beta, t_W, t_mom, t_tox_pct),
+            mlofi, mpar_score, net_vac, lra_signal, dkla_asym, micro_dev
         ))
         
         # ULTRA-DETAILED TELEMETRY: Log all Phase 1 Hard Gates with pass/fail
-        regime_names = {0: "NOISE", 1: "BURST", 2: "GRIND", 3: "WHALE"}
         regime = self.regime_id[sym_idx]
-        tox_thresh = np.percentile(tox_hist, t_tox_pct) if len(tox_hist) >= 20 else toxicity
+        tox_thresh = (sorted(tox_hist)[int((t_tox_pct / 100.0) * (len(tox_hist) - 1))] 
+                      if len(tox_hist) >= 20 else toxicity)
         tick_ok = "OK" if gate_ticks else "FAIL"
-        logger.info(
-            f"[ADAPTIVE_GATE] {sym} | Regime: {regime_names[regime]} (conf={self.regime_conf[sym_idx]:.1f}) | "
-            f"Ticks: {tc}/{self.TRIG['min_ticks']} {tick_ok} | "
-            f"Branching: {branching:.3f}/{t_beta:.3f} | WhaleZ: {whale_z:.2f}/{t_W:.2f} | "
-            f"Mom5m: {mom_5m:+.2f}%/{t_mom:.2f}% | Toxicity: {toxicity:.1f}/{tox_thresh:.1f}(P{t_tox_pct}) | "
-            f"HARD_GATE: {'PASS' if hard_gate_pass else 'FAIL'}"
-        )
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(
+                "[ADAPTIVE_GATE] %s | Phase: %s | Regime: %s (conf=%.1f) | "
+                "Ticks: %d/%d %s | StructScore: %.3f | "
+                "Branching: %.3f/%.3f | WhaleZ: %.2f/%.2f | "
+                "Mom5m: %+.2f%%/%.2f%% | Toxicity: %.1f/%.1f(P%d) | "
+                "HARD_GATE: %s"
+                % (sym, phase.name, self._regime_names[regime], self.regime_conf[sym_idx],
+                   tc, min_ticks_required, tick_ok, struct_score,
+                   branching, t_beta, whale_z, t_W,
+                   mom_5m, t_mom, toxicity, tox_thresh, t_tox_pct,
+                   'PASS' if hard_gate_pass else 'FAIL')
+            )
         
         signal_side = None
         conviction = 0.0
         long_score = 0.0
         short_score = 0.0
         
+        # ─── GLOBAL 1-TRADE LOCK ───
+        if self._engine_active_trade and self._active_trade_symbol != sym:
+            # Another symbol has an active trade - drop all entry signals
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(f"[TRADE_LOCK] {sym} signal blocked | Active trade on: {self._active_trade_symbol}")
+            hard_gate_pass = False  # Force gate failure
+        
+        # ─── LAYER 1: 15-MIN MACRO DIRECTIONAL BIAS GUARD ───
+        macro_bias = self._symbol_bias.get(sym)
+        if macro_bias == "NO_TRADE":
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(f"[MACRO_BIAS_DROP] {sym} | 15m Trend is FLAT / NO_TRADE — signal dropped.")
+            hard_gate_pass = False  # Directionless flat stock - reject
+        
         if hard_gate_pass:
             # --- INTERACTION-AWARE CONVICTION SCORING ---
-            signals = {
-                'mlofi': mlofi, 'mpar': mpar_score, 'net_vac': net_vac,
-                'lra_signal': lra_signal, 'dkla_asym': dkla_asym,
-                'micro_dev': micro_dev, 'whale_z': whale_z,
-                'branching': branching, 'mom_5m': mom_5m
-            }
-            long_score, short_score = self._compute_interaction_conviction(signals, regime)
+            long_score, short_score = self._compute_interaction_conviction(
+                regime, mlofi, mpar_score, net_vac, lra_signal, dkla_asym, micro_dev, whale_z, branching, mom_5m
+            )
             
             # Regime-adaptive conviction threshold
             thresh = self._get_regime_conviction_threshold(regime, sym)
             
             if long_score >= thresh and long_score > short_score:
-                signal_side = "BUY"
-                conviction = long_score
+                # ─── DIRECTIONAL CONFIRMATION: 15m MACRO BIAS + 5m/1m MOMENTUM ───
+                if macro_bias == "SHORT_ONLY":
+                    if logger.isEnabledFor(logging.INFO):
+                        logger.info(f"[MACRO_BIAS_BLOCKED] {sym} BUY rejected | 15m Macro Bias is SHORT_ONLY")
+                elif mom_5m >= 0.05 and mom_1m >= 0.0 and mpar_score >= 0:
+                    signal_side = "BUY"
+                    conviction = long_score
+                elif logger.isEnabledFor(logging.INFO):
+                    logger.info(
+                        "[MOM_GUARD_BLOCKED] %s BUY rejected | mom_5m=%+.2f%%, mom_1m=%+.2f%%, mpar=%+.2f"
+                        % (sym, mom_5m, mom_1m, mpar_score)
+                    )
             elif short_score >= thresh and short_score > long_score:
-                signal_side = "SELL"
-                conviction = short_score
+                # ─── DIRECTIONAL CONFIRMATION: 15m MACRO BIAS + 5m/1m MOMENTUM ───
+                if macro_bias == "LONG_ONLY":
+                    if logger.isEnabledFor(logging.INFO):
+                        logger.info(f"[MACRO_BIAS_BLOCKED] {sym} SELL rejected | 15m Macro Bias is LONG_ONLY")
+                elif mom_5m <= -0.05 and mom_1m <= 0.0 and mpar_score <= 0:
+                    signal_side = "SELL"
+                    conviction = short_score
+                elif logger.isEnabledFor(logging.INFO):
+                    logger.info(
+                        "[MOM_GUARD_BLOCKED] %s SELL rejected | mom_5m=%+.2f%%, mom_1m=%+.2f%%, mpar=%+.2f"
+                        % (sym, mom_5m, mom_1m, mpar_score)
+                    )
+            
+            # ─── ML CONVICTION MULTIPLIER HOOK ───
+            # Apply ML probability from EOD calibration as multiplicative conviction multiplier
+            if signal_side and hasattr(self, '_ml_predictor') and self._ml_predictor is not None:
+                try:
+                    # Get ML probability for this symbol/regime
+                    # This requires the feature computer to be available
+                    ml_prob = self._get_ml_probability(sym, regime)
+                    if ml_prob is not None:
+                        old_conviction = conviction
+                        conviction = self._apply_ml_conviction_multiplier(conviction, ml_prob, regime)
+                        if logger.isEnabledFor(logging.INFO):
+                            logger.info(
+                                "[ML_MULTIPLIER] %s | ML_Prob: %.3f | Conviction: %.2f -> %.2f | Regime: %s"
+                                % (sym, ml_prob, old_conviction, conviction, self._regime_names[regime])
+                            )
+                        # If ML vetoed, clear signal
+                        if conviction == 0.0:
+                            signal_side = None
+                            if logger.isEnabledFor(logging.INFO):
+                                logger.info(f"[ML_VETO] {sym} signal vetoed by ML (prob={ml_prob:.3f} < 0.40)")
+                except Exception as e:
+                    if logger.isEnabledFor(logging.INFO):
+                        logger.info(f"[ML_MULTIPLIER_ERROR] {sym} | {e}")
+            
+            # Acquire global trade lock on signal generation
+            if signal_side:
+                self._engine_active_trade = True
+                self._active_trade_symbol = sym
+                if logger.isEnabledFor(logging.INFO):
+                    logger.info(f"[TRADE_LOCK_ACQUIRED] {sym} | Lock engaged for {signal_side}")
         
         # ULTRA-DETAILED TELEMETRY: Log Phase 2 Conviction Scores with component breakdown
         if hard_gate_pass:
             long_ok = "OK" if long_score >= thresh else "FAIL"
             short_ok = "OK" if short_score >= thresh else "FAIL"
-            logger.info(
-                f"[CONVICTION] {sym} | LONG: {long_score:.2f}/{thresh} {long_ok} | "
-                f"SHORT: {short_score:.2f}/{thresh} {short_ok} | "
-                f"Signal: {signal_side or 'NONE'} | Conviction: {conviction:.2f} | Regime: {regime_names[regime]}"
-            )
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(
+                    "[CONVICTION] %s | LONG: %.2f/%.2f %s | "
+                    "SHORT: %.2f/%.2f %s | "
+                    "Signal: %s | Conviction: %.2f | Regime: %s"
+                    % (sym, long_score, thresh, long_ok,
+                       short_score, thresh, short_ok,
+                       signal_side or 'NONE', conviction, self._regime_names[regime])
+                )
             # Log interaction-aware conviction components (recompute for logging)
-            mlofi_t = np.clip(mlofi / self.CFG["mlofi_cap"], 0, 1)
-            mpar_t = np.clip(mpar_score / self.CFG["mpar_cap"], 0, 1)
-            vac_t = np.clip(net_vac / self.CFG["vac_cap"], 0, 1)
-            lra_t = np.clip(lra_signal / self.CFG["lra_cap"], 0, 1)
-            dkla_t = np.clip(dkla_asym / self.CFG["dkla_cap"], 0, 1)
+            mlofi_t = max(0.0, min(mlofi / self.CFG["mlofi_cap"], 1.0))
+            mpar_t = max(0.0, min(mpar_score / self.CFG["mpar_cap"], 1.0))
+            vac_t = max(0.0, min(net_vac / self.CFG["vac_cap"], 1.0))
+            lra_t = max(0.0, min(lra_signal / self.CFG["lra_cap"], 1.0))
+            dkla_t = max(0.0, min(dkla_asym / self.CFG["dkla_cap"], 1.0))
             micro_t = 1.0 if micro_dev > 0.0002 else 0.0
-            whale_t = np.clip(whale_z / 3.0, 0, 1)
-            beta_t = np.clip(branching / 0.5, 0, 1)
-            mom_t = np.clip(abs(mom_5m) / 0.5, 0, 1)
+            whale_t = max(0.0, min(whale_z / 3.0, 1.0))
+            beta_t = max(0.0, min(branching / 0.5, 1.0))
+            mom_t = max(0.0, min(abs(mom_5m) / 0.5, 1.0))
             
             base_long = (mlofi_t * self.CFG["w_mlofi"] + mpar_t * self.CFG["w_mpar"] + vac_t * self.CFG["w_vac"] +
                          lra_t * self.CFG["w_lra"] + dkla_t * self.CFG["w_dkla"] + micro_t * self.CFG["w_micro"])
@@ -858,11 +1521,15 @@ class CascadeValueEngine:
             if whale_t > 0 and dkla_t > 0: inter_long += self.CFG["interact_whale_dkla"] * whale_t * dkla_t
             if beta_t > 0 and mom_t > 0: inter_long += self.CFG["interact_beta_mom"] * beta_t * mom_t
             
-            logger.info(
-                f"[CONVICTION_DETAIL] {sym} | Base: {base_long:.2f} Inter: {inter_long:.2f} Total: {long_score:.2f} | "
-                f"MLOFI: {mlofi_t:.3f} MPAR: {mpar_t:.3f} VAC: {vac_t:.3f} LRA: {lra_t:.3f} DKLA: {dkla_t:.3f} | "
-                f"WHL: {whale_t:.3f} BETA: {beta_t:.3f} MOM: {mom_t:.3f}"
-            )
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(
+                    "[CONVICTION_DETAIL] %s | Base: %.2f Inter: %.2f Total: %.2f | "
+                    "MLOFI: %.3f MPAR: %.3f VAC: %.3f LRA: %.3f DKLA: %.3f | "
+                    "WHL: %.3f BETA: %.3f MOM: %.3f"
+                    % (sym, base_long, inter_long, long_score,
+                       mlofi_t, mpar_t, vac_t, lra_t, dkla_t,
+                       whale_t, beta_t, mom_t)
+                )
         
         # ── COMPREHENSIVE LOG ENTRY ──
         log_entry = {
@@ -902,13 +1569,20 @@ class CascadeValueEngine:
             logger.info(f"SIGNAL {signal_side} {sym} @ {lp:.2f} | Conv: {conviction:.2f} | Branching: {branching:.2f} WhaleZ: {whale_z:.2f}")
             
             # ULTRA-DETAILED TELEMETRY: Log entry decision with full conviction metrics
-            logger.info(
-                f"[ENTRY_DECISION] {sym} | Side: {signal_side} | LP: {lp:.2f} | Conviction: {conviction:.2f}/{thresh} | "
-                f"TPIN: {tpin:.5f} | Branching: {branching:.3f} | WhaleZ: {whale_z:.2f} | "
-                f"Toxicity: {toxicity:.1f}(P90:{tox_p90:.1f}) | NetVac: {net_vac:.1f}bps | "
-                f"MPAR: {mpar_score:.3f}(align:{adv.get('mp_align',0):.1f}) | LRA: {lra_signal:.3f} | DKLA: {dkla_asym:.3f} | "
-                f"MicroDev: {micro_dev:.6f} | QueueDecay: Bid={adv.get('bid_queue_decay',0):.1f} Ask={adv.get('ask_queue_decay',0):.1f}bps"
-            )
+            # tox_p90 already computed above
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(
+                    "[ENTRY_DECISION] %s | Side: %s | LP: %.2f | Conviction: %.2f/%.2f | "
+                    "TPIN: %.5f | Branching: %.3f | WhaleZ: %.2f | "
+                    "Toxicity: %.1f(P90:%.1f) | NetVac: %.1fbps | "
+                    "MPAR: %.3f(align:%.1f) | LRA: %.3f | DKLA: %.3f | "
+                    "MicroDev: %.6f | QueueDecay: Bid=%.1f Ask=%.1fbps"
+                    % (sym, signal_side, lp, conviction, thresh,
+                       tpin, branching, whale_z,
+                       toxicity, tox_p90, net_vac,
+                       mpar_score, adv.get('mp_align',0), lra_signal, dkla_asym,
+                       micro_dev, adv.get('bid_queue_decay',0), adv.get('ask_queue_decay',0))
+                )
         
         # ── BAYESIAN POSTERIOR UPDATE & BUCKET COUNT (for adaptive thresholds) ──
         # Track whether a signal was generated and whether it would have captured a move
@@ -921,10 +1595,8 @@ class CascadeValueEngine:
         move_captured = False
         if signal_fired:
             # Store bucket close price for forward check on next bucket
-            if not hasattr(self, '_bucket_close_prices'):
-                self._bucket_close_prices = {}
             self._bucket_close_prices[sym] = lp
-        elif sym in getattr(self, '_bucket_close_prices', {}):
+        elif sym in self._bucket_close_prices:
             # Check if previous signal would have captured a move
             prev_close = self._bucket_close_prices[sym]
             if prev_close > 0:
@@ -983,10 +1655,26 @@ class CascadeValueEngine:
         self._active_symbols = set(symbols) if symbols else set()
         logger.info(f"[TIER2] Engine active symbols updated: {len(self._active_symbols)} symbols")
 
+    # ─── GLOBAL TRADE LOCK MANAGEMENT ───
+    def handle_trade_closed(self, sym: str) -> None:
+        """
+        Release global 1-trade lock when a trade exits.
+        Called by execution_manager on TRADE_CLOSED event.
+        """
+        if self._engine_active_trade and self._active_trade_symbol == sym:
+            self._engine_active_trade = False
+            self._active_trade_symbol = None
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(f"[TRADE_LOCK_RELEASED] {sym} | Lock released")
+        elif self._engine_active_trade and self._active_trade_symbol != sym:
+            if logger.isEnabledFor(logging.WARNING):
+                logger.warning(f"[TRADE_LOCK_MISMATCH] Expected {self._active_trade_symbol}, got {sym}")
+
 def attach_cascade_engine(broker, token_to_symbol, bucket_map=None, vacuum_map=None, 
-                          dkla_notional=1_00_00_000.0, trigger_config=None):
+                          dkla_notional=1_00_00_000.0, trigger_config=None, stock_calibration=None):
     engine = CascadeValueEngine(token_to_symbol, bucket_map, vacuum_map, 
-                                dkla_notional=dkla_notional, trigger_config=trigger_config)
+                                dkla_notional=dkla_notional, trigger_config=trigger_config,
+                                stock_calibration=stock_calibration)
     candidates = [broker]
     for attr in ("market_data","mdp","market_data_provider","_mdp","_api","api","session_provider"):
         obj = getattr(broker, attr, None)

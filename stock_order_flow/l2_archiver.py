@@ -212,3 +212,68 @@ def attach_archiver(broker, token_to_symbol):
             return arch
     logger.warning("L2Archiver: No add_tick_listener found.")
     return arch
+
+
+def main():
+    """Standalone entry point for PM2 - runs archiver independently."""
+    import signal
+    from common.broker import ShoonyaAdapter
+    from common.config import configure_runtime
+    
+    configure_runtime("stock_order_flow")
+    
+    logger.info("=" * 60)
+    logger.info("L2 ARCHIVER STANDALONE MODE - Starting at 08:55 IST")
+    logger.info("=" * 60)
+    
+    # Initialize broker
+    broker = ShoonyaAdapter()
+    if not broker.connect():
+        logger.critical("Failed to connect to broker. Exiting.")
+        sys.exit(1)
+    
+    # Load token map from cache
+    from common.config import get_data_dir
+    import json
+    token_cache_path = os.path.join(get_data_dir(), "tokens_cache.json")
+    try:
+        with open(token_cache_path, "r") as f:
+            token_cache = json.load(f)
+        # Build token_to_symbol for our 110 symbols
+        token_to_symbol = {}
+        for sym in SUBSCRIPTION_UNIVERSE:
+            if sym in token_cache and "token" in token_cache[sym]:
+                token_to_symbol[str(token_cache[sym]["token"])] = sym
+        logger.info(f"Loaded {len(token_to_symbol)} tokens for archiver subscription")
+    except Exception as e:
+        logger.error(f"Failed to load token cache: {e}")
+        sys.exit(1)
+    
+    # Attach archiver
+    arch = attach_archiver(broker, token_to_symbol)
+    if not arch:
+        logger.critical("Failed to attach archiver. Exiting.")
+        sys.exit(1)
+    
+    # Signal handlers for graceful shutdown
+    def signal_handler(signum, frame):
+        logger.info(f"Signal {signum} received. Shutting down...")
+        arch.shutdown()
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    # Keep running
+    logger.info("L2 Archiver running. Press Ctrl+C to stop.")
+    try:
+        while True:
+            time.sleep(60)
+            # Log heartbeat
+            logger.info(f"[L2Archiver HB] Buffer: {len(arch.buffer)} rows | Partition: {arch.partition_seq}")
+    except KeyboardInterrupt:
+        arch.shutdown()
+
+
+if __name__ == "__main__":
+    main()

@@ -5,7 +5,7 @@ engine's own authoritative harness document.
 
 **Owner:** Amarjeet Singh · **Broker:** Shoonya (NorenApi), LMT only in F&O
 **Host:** Oracle Cloud VPS (Ubuntu), 100% autonomous via PM2
-**Last updated:** 2026-08-16
+**Last updated:** 2026-08-19
 
 ---
 
@@ -14,18 +14,16 @@ engine's own authoritative harness document.
 ```
                          Oracle Cloud VPS  (opc@137.23.41.38)
                          ┌─────────────────────────────────────────────┐
-   Shoonya broker ◀──WS──│   PM2 manages 3 apps                         │
-                         │   ┌─ shoonya-data-hub*  (tick daemon, 1st)    │
+   Shoonya broker ◀──WS──│   PM2 manages 4 apps                         │
+                         │   ┌─ l2-archiver        (Raw Logger, 1st)     │
                          │   ├─ astra-bot          (Engine 2, 2nd)      │
-                         │   ├─ stock-order-flow   (Engine 1)           │
+                         │   ├─ stock-order-flow   (Engine 1, 3rd)      │
                          │   └─ unified-dashboard  (Flask UI reader)    │
                          └─────────────────────────────────────────────┘
                                        common/  (shared library)
                                        /dev/shm/*.json  (IPC)
 ```
-`shoonya-data-hub` is the standalone WS→disk daemon; engines either read its
-shared tick file or open their own WS. All three PM2 apps share the root
-`common/` library and the unified dashboard reads state JSON off disk.
+`l2-archiver` is the standalone raw L2 logger (starts at 08:55 IST for auction capture); engines open their own WS via TickCompiler. All PM2 apps share the root `common/` library and the unified dashboard reads state JSON off disk.
 
 ---
 
@@ -43,12 +41,27 @@ engine's harness document — it overrides everything here for that engine.**
 
 ### 2.1 Engine 1 — VORTEX (Equities HFT)
 Zero-copy `ParsedTick` (`__slots__`), per-symbol object pool, unified
-conviction trigger (hard gates `min_ticks≥3`, `min_branching=0.35`,
-`min_whale_z=1.2`, tox P75; weighted composite; `conviction_threshold=7.5`
-of ~10.5), 4-pillar microstructure-decay exits
+conviction trigger with **adaptive regime gating** (NOISE/BURST/GRIND/WHALE),
+**pre-market state machine** (5 phases: AUCTION_ENTRY→AUCTION_FREEZE→AUCTION_BUFFER→TRANSITION_DETECT→CONTINUOUS_LIVE),
+**delta-baseline math** (first 3 buckets), **global 1-trade lock**,
+4-pillar microstructure-decay exits
 (`MPAR_DECEL`/`DKLA_FLIP`/`VAC_REVERSAL`/`LRA_VEL_FLIP` + confirmation
 `TOX_SPIKE`/`WHALE_EXIT`/`BRANCHING_COLLAPSE`, plus `TIME_STOP`/
 `EOD_FLATTEN`/`BREAKEVEN_LOCK`). Full spec → harness doc (§1.1).
+
+### 2.2 Engine 2 — Astra Bot (Options)
+5-factor Gamma-Burst Z-score composite offset-indexed ±10 strikes around ATM,
+fused with a Spot-Structure state machine (session VWAP, dynamic High/Low
+VWAP bands, 9-EMA trail, 200-EMA regime) and a price-confirm pending window.
+0DTE only, Nifty Mon/Tue/Fri + Sensex Wed/Thu, entry cutoff 15:00, hard flatten
+15:10, LMT only. Full spec → harness doc.
+
+### 2.3 L2 Archiver — Raw Data Logger (Passive)
+**PM2 process**: `l2-archiver` (starts at 08:55 IST, independent of engine).
+Subscribes to hardcoded 110 symbols (`SUBSCRIPTION_UNIVERSE` from `common/symbols.py`).
+Writes partitioned Snappy Parquet (15-min files) to `data/l2_raw/`.
+Logs auction data (09:00-09:15, 15:30-15:40) to `data/logs/`.
+**Critical**: Must start by 08:55 IST to capture 09:00-09:08 auction window.
 
 ### 2.2 Engine 2 — Astra Bot (Options)
 5-factor Gamma-Burst Z-score composite offset-indexed ±10 strikes around ATM,
@@ -125,8 +138,8 @@ panel. PM2 app `unified-dashboard`.
 | Repo path on VPS | `/home/opc` |
 | SSH key (local) | `Oracle SSH keys/ssh-key-2026-07-11.key` at **project repo root** — never buried inside an engine subfolder |
 | SSH command | `ssh -i "Oracle SSH keys/ssh-key-2026-07-11.key" opc@137.23.41.38` |
-| Process manager | PM2, config `ecosystem.config.js` (3 apps: `astra-bot`, `stock-order-flow`, `unified-dashboard`) |
-| Deploy rule | PM2 restart hub **before** `astra-bot`; deploy only after 15:30 IST or before 09:15 IST |
+| Process manager | PM2, config `ecosystem.config.js` (4 apps: `l2-archiver`, `astra-bot`, `stock-order-flow`, `unified-dashboard`) |
+| Deploy rule | PM2 restart `l2-archiver` **first** at 08:55 IST, then `astra-bot`, then `stock-order-flow`; deploy only after 15:30 IST or before 09:15 IST |
 
 Canonical layout + repo-hygiene rules enforced in [`AGENTS.md`](AGENTS.md).
 
@@ -144,6 +157,7 @@ quant-bot/
 ├── Oracle SSH keys/          # SSH key lives ONLY here (root)
 ├── common/                   # shared library (§3)
 ├── stock_order_flow/         # Engine 1 + its harness doc (+ docs/, archive/)
+│   └── stock_calibration.json  # Extracted calibration params (regime weights, thresholds, priors)
 ├── astra_bot/                # Engine 2 + its harness doc (+ core/, execution/, archive/)
 ├── unified_dashboard/        # Flask UI
 ├── institutional_memory/     # constituents.json etc.
@@ -155,6 +169,8 @@ quant-bot/
 - Engine-permanent files stay in that engine's folder; cross-engine only via `common/`.
 - Temp/scratch/scratch_state*.json never at repo root — keep scratch in `scratch/`.
 - Legacy/backup copies go into the relevant engine's `archive/` or root `_archive/`, never loose in the engine dir.
+- **Universe Scanner** runs at 15-min intervals during market hours (not 16:05 only) — see `scripts/universe_scanner.py`.
+- **L2 Archiver** must start by 08:55 IST to capture 09:00-09:08 auction window.
 
 ---
 

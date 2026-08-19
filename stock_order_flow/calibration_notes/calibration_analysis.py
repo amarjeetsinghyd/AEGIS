@@ -43,7 +43,7 @@ import os, json, glob, argparse
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from datetime import time as dt_time
+from datetime import time as dt_time, datetime, timedelta
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -70,13 +70,32 @@ def load_universe():
 
 # ── LOAD PARQUET PARTITIONS ───────────────────────────────────────────────────
 def load_day(date_str: str) -> pd.DataFrame:
-    folder = DATA_DIR / date_str
-    parts  = sorted(folder.glob(f"l2_raw_{date_str}_part_*.parquet"))
-    if not parts:
-        raise FileNotFoundError(f"No parquet files in {folder}")
+    """
+    Load L2 data for the given date and the previous trading day.
+    Returns combined DataFrame filtered to market hours (09:15-15:30 IST).
+    """
+    from datetime import datetime, timedelta
+    
+    # Convert to datetime
+    date_dt = datetime.strptime(date_str, "%Y-%m-%d")
+    prev_date_dt = date_dt - timedelta(days=1)
+    prev_date_str = prev_date_dt.strftime("%Y-%m-%d")
 
-    dfs = [pd.read_parquet(p) for p in parts]
-    df  = pd.concat(dfs, ignore_index=True).sort_values("ts").reset_index(drop=True)
+    # Load the given date and the previous date
+    dfs = []
+    for d in [date_str, prev_date_str]:
+        folder = DATA_DIR / d
+        if not folder.exists():
+            continue
+        parts = sorted(folder.glob(f"l2_raw_{d}_part_*.parquet"))
+        if not parts:
+            continue
+        dfs.append(pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True))
+
+    if not dfs:
+        raise FileNotFoundError(f"No parquet files for {date_str} or {prev_date_str}")
+
+    df = pd.concat(dfs, ignore_index=True).sort_values("ts").reset_index(drop=True)
 
     # Convert timestamp and filter to market hours only
     df["dt"] = (pd.to_datetime(df["ts"], unit="ms", utc=True)
@@ -84,7 +103,7 @@ def load_day(date_str: str) -> pd.DataFrame:
     t = df["dt"].dt.time
     df = df[(t >= MARKET_OPEN) & (t <= MARKET_CLOSE)].reset_index(drop=True)
 
-    print(f"  Loaded {len(df):,} rows from {len(parts)} partitions "
+    print(f"  Loaded {len(df):,} rows from {len(dfs)} days "
           f"| Unique tokens: {df['tok'].nunique()}")
     return df
 

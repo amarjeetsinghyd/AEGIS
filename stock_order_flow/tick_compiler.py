@@ -397,12 +397,20 @@ class TickCompiler:
         ticks_per_min = st['ticks'] / (elapsed / 60.0)
         vol_per_min = st['volume'] / (elapsed / 60.0)
         avg_spread_bps = (st['spread_sum'] / max(st['spread_cnt'], 1)) / max(st.get('mid', 1), 1) * 10000 if st['spread_cnt'] > 0 else 0
-        trade_value_per_min = st['trade_value'] / (elapsed / 60.0)
         mid_prices = st['mid_prices']
         microprice_vol = 0.0
+        ret_15m = 0.0
+        last_mid = mid_prices[-1] if mid_prices else 0.0
         if len(mid_prices) > 10:
             import numpy as np
             microprice_vol = float(np.std(mid_prices) / max(np.mean(mid_prices), 1) * 100)
+            if mid_prices[0] > 0:
+                ret_15m = float((mid_prices[-1] - mid_prices[0]) / mid_prices[0] * 100.0)
+        
+        # 15-minute VWAP & Distance from VWAP
+        vwap_15m = st['trade_value'] / max(st['volume'], 1.0) if st['volume'] > 0 else last_mid
+        vwap_dist = float((last_mid - vwap_15m) / vwap_15m * 100.0) if vwap_15m > 0 and last_mid > 0 else 0.0
+        
         oib = st['oib_sum'] / max(st['oib_cnt'], 1) if st['oib_cnt'] > 0 else 0.0
         return {
             'ticks_per_min': ticks_per_min,
@@ -410,6 +418,8 @@ class TickCompiler:
             'avg_spread_bps': avg_spread_bps,
             'trade_value_per_min': trade_value_per_min,
             'microprice_vol': microprice_vol,
+            'ret_15m': ret_15m,
+            'vwap_dist': vwap_dist,
             'oib': oib,
         }
 

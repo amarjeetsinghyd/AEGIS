@@ -48,18 +48,18 @@ HISTORY_PATH = os.path.join(TRADES_DIR, "trade_history.json")
 MAX_OPEN_POSITIONS = 1
 LEVERAGE = 5.0
 MARGIN_SAFETY = 1.0          # Set to 100% per user request
-TP_ATR_MULT = 1.0
-SL_ATR_MULT = 1.0
-CHANDELIER_ATR_MULT = 1.0
-BREAKEVEN_ATR_FRACTION = 0.5
+TP_ATR_MULT = 1.5            # Calibrated for 0.4% - 0.6% micro-trend capture
+SL_ATR_MULT = 1.0            # Initial ATR stop loss
+CHANDELIER_ATR_MULT = 1.2    # Dynamic trailing stop
+BREAKEVEN_ATR_FRACTION = 0.6 # Move stop to breakeven once 60% of ATR move achieved
 # MN-6: gap-open detection before breakeven floor lock. A single-tick move larger
 # than GAP_ATR_MULT * ATR past the entry is a discontinuous gap, not a trend advance
 # — locking the stop at breakeven on a gap would invert it exactly at entry right as
 # price gaps through it. Such ticks skip the breakeven lock (the stop stays at its
 # prior chandelier/init value) so the gap is treated as an exit signal, not a floor.
 GAP_ATR_MULT = 1.5
-FALLBACK_TP_PCT = 0.003
-FALLBACK_SL_PCT = 0.0015
+FALLBACK_TP_PCT = 0.005      # 0.50% target move (0.4% - 0.6% capture objective)
+FALLBACK_SL_PCT = 0.0025     # 0.25% stop loss (2:1 reward-to-risk ratio)
 DAILY_LOSS_CAP_PCT = 0.05
 MAX_HOLD_MINUTES = 35
 MKT_SLACK_PCT = 0.010
@@ -74,21 +74,25 @@ CONSEC_SL_LIMIT = 3
 
 EXIT_CFG = {
     # MPAR Deceleration
-    "mpar_accel_flip_mult": 1.5,
-    "mpar_accel_collapse_pct": 0.35,
+    "mpar_accel_flip_mult": 2.0,          # Increased from 1.5 - require stronger flip
+    "mpar_accel_collapse_pct": 0.50,      # Increased from 0.35 - allow more decay before exit
+    "mpar_min_hold_seconds": 30,          # NEW: Minimum hold time before MPAR exit can trigger
     # DKLA Asymmetry Flip
     "dkla_flip_threshold": 0.0,
-    "dkla_flip_confirm_bps": 5.0,
+    "dkla_flip_confirm_bps": 10.0,        # Increased from 5.0 - require stronger confirmation
+    "dkla_min_hold_seconds": 30,          # NEW: Minimum hold time before DKLA exit can trigger
     # Vacuum Exhaustion/Reversal
-    "vac_reversal_bps": 20.0,
-    "vac_exhaustion_z": 2.5,
+    "vac_reversal_bps": 30.0,             # Increased from 20.0 - allow more vacuum giveback
+    "vac_exhaustion_z": 3.0,              # Increased from 2.5 - require more extreme exhaustion
+    "vac_min_hold_seconds": 30,           # NEW: Minimum hold time before VAC exit can trigger
     # LRA Velocity Reversal
     "lra_vel_flip_threshold": 0.0,
-    "lra_vel_magnitude_min": 0.15,
+    "lra_vel_magnitude_min": 0.25,        # Increased from 0.15 - require stronger reversal
+    "lra_min_hold_seconds": 30,           # NEW: Minimum hold time before LRA exit can trigger
     # Confirmation Layer (require >= 2 of 3)
     "tox_spike_pct": 95,
-    "whale_exit_z": -1.0,
-    "branching_collapse": 0.15,
+    "whale_exit_z": -1.5,                 # More negative - require stronger whale exit
+    "branching_collapse": 0.10,           # Lowered from 0.15 - more sensitive to collapse
     # Hard Guards
     "max_hold_minutes": MAX_HOLD_MINUTES,
     "breakeven_atr_frac": BREAKEVEN_ATR_FRACTION,
@@ -188,30 +192,35 @@ def evaluate_exit(
             trade_state.breakeven_locked = True
 
     # ─── DECAY PILLAR 1: MPAR DECELERATION ───
-    accel_flipped = (mp_accel * side < 0) and (trade_state.entry_accel * side > 0)
-    accel_collapsed = abs(mp_accel) < EXIT_CFG["mpar_accel_collapse_pct"] * trade_state.peak_accel_mag
-    if accel_flipped and abs(mp_accel) > EXIT_CFG["mpar_accel_flip_mult"] * abs(trade_state.entry_accel):
-        return True, "MPAR_DECEL"
-    if accel_collapsed and trade_state.peak_accel_mag > 1e-6:
-        return True, "MPAR_DECEL"
+    seconds_held = now - trade_state.entry_time
+    if seconds_held >= EXIT_CFG["mpar_min_hold_seconds"]:
+        accel_flipped = (mp_accel * side < 0) and (trade_state.entry_accel * side > 0)
+        accel_collapsed = abs(mp_accel) < EXIT_CFG["mpar_accel_collapse_pct"] * trade_state.peak_accel_mag
+        if accel_flipped and abs(mp_accel) > EXIT_CFG["mpar_accel_flip_mult"] * abs(trade_state.entry_accel):
+            return True, "MPAR_DECEL"
+        if accel_collapsed and trade_state.peak_accel_mag > 1e-6:
+            return True, "MPAR_DECEL"
 
     # ─── DECAY PILLAR 2: DKLA ASYMMETRY FLIP ───
-    dkla_flipped = (dkla_asym * side < 0) and (trade_state.entry_dkla_asym * side > 0)
-    dkla_magnitude = abs(lam_buy - lam_sell)
-    if dkla_flipped and dkla_magnitude > EXIT_CFG["dkla_flip_confirm_bps"]:
-        return True, "DKLA_FLIP"
+    if seconds_held >= EXIT_CFG["dkla_min_hold_seconds"]:
+        dkla_flipped = (dkla_asym * side < 0) and (trade_state.entry_dkla_asym * side > 0)
+        dkla_magnitude = abs(lam_buy - lam_sell)
+        if dkla_flipped and dkla_magnitude > EXIT_CFG["dkla_flip_confirm_bps"]:
+            return True, "DKLA_FLIP"
 
     # ─── DECAY PILLAR 3: VACUUM EXHAUSTION/REVERSAL ───
-    vac_reversed = (trade_state.peak_vacuum - net_vacuum * side) > EXIT_CFG["vac_reversal_bps"]
-    vac_exhausted = (trade_state.peak_vacuum_z > EXIT_CFG["vac_exhaustion_z"]) and \
-                    (trade_state.peak_vacuum_z - vac_z * side > 1.0)
-    if vac_reversed or vac_exhausted:
-        return True, "VAC_REVERSAL"
+    if seconds_held >= EXIT_CFG["vac_min_hold_seconds"]:
+        vac_reversed = (trade_state.peak_vacuum - net_vacuum * side) > EXIT_CFG["vac_reversal_bps"]
+        vac_exhausted = (trade_state.peak_vacuum_z > EXIT_CFG["vac_exhaustion_z"]) and \
+                        (trade_state.peak_vacuum_z - vac_z * side > 1.0)
+        if vac_reversed or vac_exhausted:
+            return True, "VAC_REVERSAL"
 
     # ─── DECAY PILLAR 4: LRA VELOCITY REVERSAL ───
-    lra_flipped = (lra_vel * side < 0) and (trade_state.entry_lra_vel * side > 0)
-    if lra_flipped and abs(lra_vel) > EXIT_CFG["lra_vel_magnitude_min"]:
-        return True, "LRA_VEL_FLIP"
+    if seconds_held >= EXIT_CFG["lra_min_hold_seconds"]:
+        lra_flipped = (lra_vel * side < 0) and (trade_state.entry_lra_vel * side > 0)
+        if lra_flipped and abs(lra_vel) > EXIT_CFG["lra_vel_magnitude_min"]:
+            return True, "LRA_VEL_FLIP"
 
     # ─── CONFIRMATION LAYER (Require >= 2 of 3) ───
     confirm_signals = 0
@@ -544,6 +553,17 @@ class StockExecutionManager:
         if not keep_open:
             self.open_trades.pop(symbol, None)
         self._save_open()
+        
+        # ─── RELEASE GLOBAL TRADE LOCK ───
+        # Notify CascadeValueEngine that trade is closed so it can accept new signals
+        try:
+            from stock_order_flow.cascade.value_engine import CascadeValueEngine
+            # Find the engine instance (it's attached to the broker or accessible via module)
+            # We'll use a module-level reference or pass it during wiring
+            if hasattr(self, '_cascade_engine') and self._cascade_engine:
+                self._cascade_engine.handle_trade_closed(symbol)
+        except Exception:
+            pass  # Silent fail - lock release is best-effort
 
     def execute_entry(self, signal, symbol, spot_price, reason, metrics=None):
         if len(self.open_trades) >= MAX_OPEN_POSITIONS:
