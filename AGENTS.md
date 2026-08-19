@@ -49,7 +49,7 @@ the `common/` shared branches alone and ask. Never add new kronos code.**
 ## ACTIVE ENGINES (the only ones you should build on)
 
 1. **`ARGUS/`** — **ARGUS** (**A**lgorithmic **R**eal-time **G**ranular **U**ltra-microstructure **S**calper) — HFT microstructure equities engine (primary active system).
-   Architecture authority: `ARGUS/AGENTIC HARNESS DOCUMENT v3.5.md` (v3.6).
+   Architecture authority: `ARGUS/ARGUS_SYSTEM_ARCHITECTURE.md` (v3.7).
    Conform all Python edits to that document (init order, conviction trigger, adverse selection shield,
    Kyle's lambda limit engine, Kelly sizing, 4-pillar exits, zero-copy tick path, no heavy imports in tick handlers).
 2. **`AEGIS/`** (and `astra_bot/`) — **AEGIS** (**A**utonomous **E**xecution & **G**amma **I**mbalance **S**ystem) — options strategy bot (active).
