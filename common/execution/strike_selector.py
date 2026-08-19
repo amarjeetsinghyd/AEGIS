@@ -16,17 +16,19 @@ class StrikeSelector:
         return round(index_price / step) * step
 
     @staticmethod
-    def get_otm_strikes(atm_strike: float, signal_type: str, index_name: str, max_depth: int = 30) -> List[float]:
+    def get_otm_strikes(atm_strike: float, signal_type: str, index_name: str, max_depth: int = 4) -> List[float]:
         """
-        Returns a list of strikes starting from ATM and moving progressively OTM deeper.
+        Returns a list of strikes starting from OTM 1 moving to OTM 3 (high-gamma sweet spot).
         """
         step = 100 if "SENSEX" in str(index_name).upper() else 50
         strikes = []
-        for i in range(max_depth):
+        for i in range(1, max_depth):
             if signal_type == "CALL":
                 strikes.append(atm_strike + (i * step))
             else:
                 strikes.append(atm_strike - (i * step))
+        # Add ATM as final fallback
+        strikes.append(atm_strike)
         return strikes
 
     @staticmethod
@@ -41,8 +43,7 @@ class StrikeSelector:
         **kwargs
     ) -> List[Tuple[pd.Series, int, float]]:
         """
-        Human-like simple selection: Looks at available funds (₹1836) and 
-        finds the affordable OTM option that fits within the budget for 1 lot.
+        Selects the most affordable OTM contract within the OTM 1 to 3 sweet spot for 1 lot.
         """
         if weekly_opts.empty:
             logger.debug("[StrikeSelector] Option chain is empty. Aborting selection.")
@@ -52,8 +53,8 @@ class StrikeSelector:
         opts = weekly_opts[weekly_opts['symbol'].str.contains(pattern, regex=True)]
         
         atm_strike = StrikeSelector.calculate_atm_strike(index_price, index_name)
-        # Depth ko 30 tak kiya hai taaki saste OTM options (door ke) bhi mil sakein
-        otm_strikes = StrikeSelector.get_otm_strikes(atm_strike, signal_type, index_name, max_depth=30)
+        # Focus on OTM 1 to 3 (high gamma concentration zone)
+        otm_strikes = StrikeSelector.get_otm_strikes(atm_strike, signal_type, index_name, max_depth=4)
         
         market_data_provider = kwargs.get("market_data_provider")
         

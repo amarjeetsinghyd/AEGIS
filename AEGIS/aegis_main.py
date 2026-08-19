@@ -91,10 +91,22 @@ def main():
             fetcher = DataFetcher(broker)
         
         # ─── AEGIS Engine ───
-        # Build token maps for AEGIS
-        weekly_opts = fetcher.get_weekly_option_tokens()
+        # 1. Add Spot Cash Index Token
+        spot_token, spot_sym, spot_exch = fetcher.get_cash_index_token()
+        spot_token = str(spot_token)
+        inst_name, _ = fetcher.get_active_instrument()
+        strike_step = 100.0 if ("SENSEX" in inst_name.upper() or "BANKNIFTY" in inst_name.upper()) else 50.0
+        
         token_map = {}
         token_to_symbol = {}
+        
+        if spot_token and spot_sym:
+            token_to_symbol[spot_token] = spot_sym
+            token_map[spot_token] = {'side': 0, 'strike': 0.0, 'is_index': True}
+            logger.info(f"[AegisMain] Active instrument: {inst_name} | Spot Token: {spot_token} ({spot_sym}) | Strike Step: {strike_step}")
+        
+        # 2. Build token maps for AEGIS options
+        weekly_opts = fetcher.get_weekly_option_tokens()
         for _, row in weekly_opts.iterrows():
             tkn = str(row['token'])
             sym = str(row.get('symbol', ''))
@@ -114,9 +126,11 @@ def main():
             token_to_symbol=token_to_symbol,
             token_map=token_map,
             bucket_map=bucket_map,
-            strike_step=100.0,  # BankNifty; will be overridden per instrument
+            strike_step=strike_step,
             signal_queue=signal_queue,
         )
+        # Ensure underlying tokens are fully registered
+        aegis_engine.underlying_tokens.update({spot_token, "26000", "1", "99919000", "99926000"})
         
         # ─── Execution Manager ───
         trader = AegisExecutionManager(
@@ -132,7 +146,7 @@ def main():
         compiler.set_symbol_map(token_to_symbol)
         compiler.set_engine(aegis_engine)
         compiler.subscribe(list(token_to_symbol.keys()))
-        logger.info("[AegisMain] Tick feed wired: Shoonya → TickCompiler → AEGIS Engine (zero-copy)")
+        logger.info(f"[AegisMain] Tick feed wired: Shoonya → TickCompiler → AEGIS Engine ({len(token_to_symbol)} instruments)")
         
         # ─── Attach AEGIS L2 Options Archiver (Raw Data Persistence) ───
         # Passive recorder: consumes the raw std_msg dict path (separate from the

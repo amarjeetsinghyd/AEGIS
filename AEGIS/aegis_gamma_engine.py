@@ -200,6 +200,7 @@ class AegisGammaEngine:
 
         # Last spot & IV for warm-start
         self.last_spot           = 0.0
+        self.current_atm_strike  = 0.0
         self.last_atm_iv         = 0.15
 
         # Logging
@@ -214,7 +215,7 @@ class AegisGammaEngine:
     # PARAMETER LOADING
     # ═══════════════════════════════════════════════════════════
     def _load_or_default_params(self) -> Dict:
-        """Load calibrated params JSON; if missing, use BankNifty retail priors (medians of ranges)."""
+        """Load calibrated params JSON; if missing, use reverse-engineered OTM 1-5 prior medians."""
         if os.path.exists(PARAM_FILE):
             try:
                 with open(PARAM_FILE, 'r') as f:
@@ -224,7 +225,7 @@ class AegisGammaEngine:
             except Exception as e:
                 logger.warning(f"Failed to load {PARAM_FILE}: {e} — falling back to priors")
 
-        # ─── BANK NIFTY RETAIL PRIORS (medians of calibration ranges) ───
+        # ─── DATA-DRIVEN REVERSE-ENGINEERED PRIORS (from 1.15M L2 options ticks) ───
         priors = {
             # Structural
             "liquidity_decay_len": 2.0,          # ℓ
@@ -235,29 +236,29 @@ class AegisGammaEngine:
             "psi_meanrev": 0.1,                  # ψ (1/bucket)
 
             # Hard Gates (Phase 1)
-            "theta_1_csldt": 25.0,               # θ₁ bps
-            "theta_2_ngao": 1.2,                 # θ₂ bps/₹Cr
-            "theta_3_low": 0.72,                 # θ₃ˡ
-            "theta_3_high": 1.02,                # θ₃ᵘ
-            "theta_4_coherence": 3,              # θ₄ strikes
-            "theta_5_vpin_pct": 80,              # θ₅ percentile
+            "theta_1_csldt": 0.12,               # θ₁ bps (median of real blasts = 0.17)
+            "theta_2_ngao": 0.50,                # θ₂ bps/₹Cr
+            "theta_3_low": 0.40,                 # θ₃ˡ (median of real blasts = 0.52)
+            "theta_3_high": 1.25,                # θ₃ᵘ
+            "theta_4_coherence": 1,              # θ₄ strikes (1-3 OTM sweet spot)
+            "theta_5_vpin_pct": 75,              # θ₅ percentile
             "theta_6_short": 0.3,                # τ_short
             "theta_6_med": 0.4,                  # τ_med
             "theta_6_long": 0.5,                 # τ_long
-            "nu_max_iv_decay": 12.0,             # ν_max bps/bucket
-            "theta_theta_bleed": 1.0,            # θ_θ %/bucket
+            "nu_max_iv_decay": 15.0,             # ν_max bps/bucket
+            "theta_theta_bleed": 1.5,            # θ_θ %/bucket
 
             # Conviction Weights & Scales (Phase 2)
-            "w_csldt": 1.5, "sigma_csldt": 30.0,
-            "w_ngao": 2.0,  "sigma_ngao": 2.0,
-            "w_hawkes": 1.5, "sigma_hawkes": 0.15,
+            "w_csldt": 2.0, "sigma_csldt": 0.20,
+            "w_ngao": 1.5,  "sigma_ngao": 1.0,
+            "w_hawkes": 2.0, "sigma_hawkes": 0.50,
             "w_coherence": 1.0, "sigma_coherence": 1.0,
-            "w_vacuum": 1.5, "sigma_vacuum": 50.0,
-            "w_mmretreat": 1.5, "sigma_mmretreat": 0.5,
+            "w_vacuum": 1.5, "sigma_vacuum": 10.0,
+            "w_mmretreat": 1.0, "sigma_mmretreat": 0.5,
             "w_syndiv": 1.0, "sigma_syndiv": 5.0,
             "w_vega": 1.0, "sigma_vega": 10.0,
             "w_theta": 0.5, "sigma_theta": 1.0,
-            "conviction_threshold_frac": 0.65,   # τ_conv = frac * Σw
+            "conviction_threshold_frac": 0.45,   # τ_conv = frac * Σw
 
             # Exit / Decay
             "exit_w": [0.5, 0.3, 0.2],           # w_exit
@@ -267,7 +268,7 @@ class AegisGammaEngine:
             "hold_time_sec": 30.0,               # T_hold
             "cost_bps": 2.0,                     # round-trip cost buffer
         }
-        logger.info("Using BankNifty retail prior parameters (no calibrated file found)")
+        logger.info("Using reverse-engineered data-driven prior parameters (OTM 1-3 calibrated)")
         return priors
 
     def reload_params(self):
@@ -310,7 +311,8 @@ class AegisGammaEngine:
             # Map strike to index
             if self.last_spot <= 0:
                 return
-            offset = int(round((strike - self.last_spot) / self.strike_step))
+            atm = self.current_atm_strike if self.current_atm_strike > 0 else round(self.last_spot / self.strike_step) * self.strike_step
+            offset = int(round((strike - atm) / self.strike_step))
             if offset < -10 or offset > 10:
                 return
             idx = offset + ATM_IDX
@@ -370,11 +372,86 @@ class AegisGammaEngine:
             logger.error(f"AEGIS on_tick_parsed error: {e}", exc_info=True)
 
     def _on_underlying_tick(self, sym: str, lp: float, now: float):
+        """Processes underlying Spot price ticks and manages dynamic ATM realignment."""
+        if lp <= 0:
+            return
         self.last_spot = lp
-        # Spot IV calibration: use ATM straddle mid from last bucket
-        # (Actual IV tensor updated in _process_bucket)
-        # Here we just track spot for strike mapping
-        pass
+        new_atm = round(lp / self.strike_step) * self.strike_step
+        if self.current_atm_strike == 0.0:
+            self.current_atm_strike = new_atm
+        elif new_atm != self.current_atm_strike:
+            shift = int(round((new_atm - self.current_atm_strike) / self.strike_step))
+            if shift != 0:
+                self._roll_atm_state(shift)
+                self.current_atm_strike = new_atm
+
+    def _roll_atm_state(self, shift: int):
+        """
+        Dynamically shifts strike-indexed tensors when Spot moves across strike boundaries.
+        shift > 0 means Spot moved UP (new ATM is higher strike -> shifts grid left by shift).
+        shift < 0 means Spot moved DOWN (new ATM is lower strike -> shifts grid right by -shift).
+        """
+        try:
+            if abs(shift) >= N_STRIKES:
+                self.gamma_tensor.fill(0)
+                self.speed_tensor.fill(0)
+                self.iv_tensor.fill(np.nan)
+                self.vega_tensor.fill(0)
+                self.theta_tensor.fill(0)
+                self.vanna_tensor.fill(0)
+                self.vomma_tensor.fill(0)
+                self.hawkes_bins.fill(0)
+                self.hawkes_z.fill(0)
+                self.bucket_ofi.fill(0)
+                self.bucket_vacuum.fill(0)
+                self.bucket_whale.fill(0)
+            else:
+                # Roll state along strike dimension (-shift moves higher strikes to lower indices)
+                self.gamma_tensor = np.roll(self.gamma_tensor, -shift, axis=1)
+                self.speed_tensor = np.roll(self.speed_tensor, -shift, axis=1)
+                self.iv_tensor = np.roll(self.iv_tensor, -shift, axis=1)
+                self.vega_tensor = np.roll(self.vega_tensor, -shift, axis=1)
+                self.theta_tensor = np.roll(self.theta_tensor, -shift, axis=1)
+                self.vanna_tensor = np.roll(self.vanna_tensor, -shift, axis=1)
+                self.vomma_tensor = np.roll(self.vomma_tensor, -shift, axis=1)
+                self.hawkes_bins = np.roll(self.hawkes_bins, -shift, axis=1)
+                self.hawkes_z = np.roll(self.hawkes_z, -shift)
+                self.bucket_ofi = np.roll(self.bucket_ofi, -shift, axis=1)
+                self.bucket_vacuum = np.roll(self.bucket_vacuum, -shift, axis=1)
+                self.bucket_whale = np.roll(self.bucket_whale, -shift, axis=1)
+
+                # Zero out newly exposed edges
+                if shift > 0:
+                    self.gamma_tensor[:, -shift:] = 0
+                    self.speed_tensor[:, -shift:] = 0
+                    self.iv_tensor[:, -shift:] = np.nan
+                    self.vega_tensor[:, -shift:] = 0
+                    self.theta_tensor[:, -shift:] = 0
+                    self.vanna_tensor[:, -shift:] = 0
+                    self.vomma_tensor[:, -shift:] = 0
+                    self.hawkes_bins[:, -shift:] = 0
+                    self.hawkes_z[-shift:] = 0
+                    self.bucket_ofi[:, -shift:] = 0
+                    self.bucket_vacuum[:, -shift:] = 0
+                    self.bucket_whale[:, -shift:] = 0
+                else:
+                    self.gamma_tensor[:, :-shift] = 0
+                    self.speed_tensor[:, :-shift] = 0
+                    self.iv_tensor[:, :-shift] = np.nan
+                    self.vega_tensor[:, :-shift] = 0
+                    self.theta_tensor[:, :-shift] = 0
+                    self.vanna_tensor[:, :-shift] = 0
+                    self.vomma_tensor[:, :-shift] = 0
+                    self.hawkes_bins[:, :-shift] = 0
+                    self.hawkes_z[:-shift] = 0
+                    self.bucket_ofi[:, :-shift] = 0
+                    self.bucket_vacuum[:, :-shift] = 0
+                    self.bucket_whale[:, :-shift] = 0
+
+            self._route_dirty = True
+            logger.info(f"[AEGIS] Dynamic ATM roll performed: shift={shift:+d} strikes | New ATM={self.current_atm_strike}")
+        except Exception as e:
+            logger.error(f"[AEGIS] Error during dynamic ATM roll: {e}", exc_info=True)
 
     def _update_hawkes_bin(self, now: float, strike_idx: int):
         """Exponential kernel sufficient statistic update."""
