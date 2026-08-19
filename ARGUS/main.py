@@ -23,6 +23,7 @@ configure_runtime("argus")
 from common.broker import ShoonyaAdapter
 from common.logger import get_logger
 from common.ipc.live_state import update_argus_live_state
+from common.ipc.premarket_bridge import publish_premarket_state, NIFTY_WEIGHTS
 from common.market.market_calendar import (
     is_trading_day, is_market_open, MARKET_CLOSE_TIME,
     is_bot_active_hours, sleep_until_next_premarket, is_pre_market
@@ -412,6 +413,48 @@ class TradingSystem:
         logger.info(f"[TIER2] {datetime.now().strftime('%H:%M')} | "
                     f"Top15: {top15} | Macro Bias Summary: LONG={n_long}, SHORT={n_short}, FLAT(NO_TRADE)={n_flat}")
 
+    def _publish_premarket_bridge(self):
+        """Calculates 09:08-09:14 indicative index gap bias from constituent premarket prices and publishes to IPC."""
+        if not hasattr(self, 'compiler') or not self.compiler:
+            return
+        try:
+            weighted_gap = 0.0
+            total_w = 0.0
+            movers = {}
+            buy_cnt = 0
+            total_cnt = 0
+
+            for tok, sym in self.compiler.token_to_symbol.items():
+                if sym in NIFTY_WEIGHTS:
+                    depth = self.compiler.market_depth.get(tok, {})
+                    lp = depth.get("lp", 0.0)
+                    close_px = depth.get("close", 0.0) or depth.get("c", 0.0)
+                    if lp > 0 and close_px > 0:
+                        gap = (lp - close_px) / close_px * 100.0
+                        w = NIFTY_WEIGHTS[sym]
+                        weighted_gap += gap * w
+                        total_w += w
+                        movers[sym] = {"lp": lp, "gap_pct": round(gap, 2)}
+                        if gap > 0:
+                            buy_cnt += 1
+                        total_cnt += 1
+
+            if total_w > 0:
+                final_gap = weighted_gap / total_w
+                direction = "UP" if final_gap >= 0.15 else ("DOWN" if final_gap <= -0.15 else "NEUTRAL")
+                buy_bias = buy_cnt / total_cnt if total_cnt > 0 else 0.5
+                base_spot = 24000.0
+                ind_spot = base_spot * (1.0 + final_gap / 100.0)
+                publish_premarket_state(
+                    indicative_spot=ind_spot,
+                    gap_pct=final_gap,
+                    direction=direction,
+                    constituents_bias=buy_bias,
+                    movers=movers
+                )
+        except Exception as e:
+            logger.debug(f"[ARGUS] Premarket bridge calculation error: {e}")
+
     def run(self):
         """Main Event Loop: Heartbeat, Price Updates, Signal Processing."""
         last_heartbeat_min = -1
@@ -463,6 +506,11 @@ class TradingSystem:
                 if not is_trading_day(now.date()) or now.time() > MARKET_CLOSE_TIME:
                     time.sleep(60)
                     continue
+
+                # --- 09:08 - 09:14 PRE-MARKET IPC BRIDGE (ARGUS -> AEGIS) ---
+                if dt_time(9, 8, 0) <= now.time() <= dt_time(9, 14, 50):
+                    if now.second % 10 == 0:  # Publish every 10 seconds
+                        self._publish_premarket_bridge()
 
                 # Periodic live state broadcast for dashboard
                 if time.time() - last_state_push > 1.0:

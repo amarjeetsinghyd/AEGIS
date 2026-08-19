@@ -35,6 +35,7 @@ from common.execution.order_lifecycle import (
 from common.execution.strike_selector import StrikeSelector
 from common.execution.trade_context import TradeContext, TradeLeg
 from common.market.market_calendar import is_trading_day
+from common.ipc.premarket_bridge import read_premarket_state
 
 logger = get_logger("aegis_execution_manager")
 
@@ -232,9 +233,43 @@ class AegisExecutionManager:
                 if self.aegis_engine:
                     self.aegis_engine.check_pending_edges(time.time(), self._get_current_spot())
 
+                # 4. Check pre-market bridge (09:08 - 09:15:30)
+                now_t = datetime.now().time()
+                if dt_time(9, 8, 0) <= now_t <= dt_time(9, 15, 30):
+                    self._handle_premarket_bridge()
+
             except Exception as e:
                 logger.error(f"[AegisEM] Main loop error: {e}", exc_info=True)
                 time.sleep(1.0)
+
+    def _handle_premarket_bridge(self):
+        """Processes 09:08-09:14 Pre-Market equilibrium from ARGUS and arms opening trade."""
+        pm_state = read_premarket_state()
+        if not pm_state:
+            return
+        ind_spot = pm_state.get("indicative_spot", 0.0)
+        gap_pct = pm_state.get("gap_pct", 0.0)
+        direction = pm_state.get("direction", "NEUTRAL")
+        
+        if ind_spot > 0 and self.aegis_engine:
+            if self.aegis_engine.last_spot != ind_spot:
+                logger.info(f"[AegisEM] Pre-Market Bridge: Pre-aligning ATM to {ind_spot:.2f} (Gap: {gap_pct:+.2f}%)")
+                self.aegis_engine._on_underlying_tick("INDEX", ind_spot, time.time())
+
+        # If strong gap bias at market open (09:15:00 - 09:15:20) and no open trade, fire opening trade
+        now_t = datetime.now().time()
+        if dt_time(9, 15, 0) <= now_t <= dt_time(9, 15, 20) and not self.has_open_trade() and self.trades_today == 0:
+            if abs(gap_pct) >= 0.25 and direction in ("UP", "DOWN"):
+                if not getattr(self, "_opening_order_fired", False):
+                    self._opening_order_fired = True
+                    logger.info(f"[AegisEM] 🔥 Triggering Opening Momentum Trade based on 09:08 Gap ({gap_pct:+.2f}% {direction})!")
+                    self._process_aegis_signal({
+                        "type": "GAMMA_BURST_ENTRY",
+                        "signal": direction,
+                        "lp": ind_spot if ind_spot > 0 else self._get_current_spot(),
+                        "conviction": 5.0,
+                        "metrics": {"source": "09:08_PREMARKET_BRIDGE", "gap_pct": gap_pct}
+                    })
 
     def _get_current_spot(self) -> float:
         """Fetch current spot price for AEGIS edge measurement."""
