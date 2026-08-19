@@ -219,6 +219,8 @@ def main():
     import signal
     from common.broker import ShoonyaAdapter
     from common.config import configure_runtime
+    from common.market.market_calendar import is_bot_active_hours, sleep_until_next_premarket
+    from stock_order_flow.tick_compiler import TickCompiler
     
     configure_runtime("stock_order_flow")
     
@@ -226,34 +228,39 @@ def main():
     logger.info("L2 ARCHIVER STANDALONE MODE - Starting at 08:55 IST")
     logger.info("=" * 60)
     
-    # Initialize broker
+    # Initialize broker and restore session
     broker = ShoonyaAdapter()
-    if not broker.connect():
-        logger.critical("Failed to connect to broker. Exiting.")
-        sys.exit(1)
+    if hasattr(broker, "session_provider"):
+        broker.session_provider._restore_or_login()
     
     # Load token map from cache
     from common.config import get_data_dir
     import json
     token_cache_path = os.path.join(get_data_dir(), "tokens_cache.json")
+    token_to_symbol = {}
     try:
-        with open(token_cache_path, "r") as f:
-            token_cache = json.load(f)
-        # Build token_to_symbol for our 110 symbols
-        token_to_symbol = {}
-        for sym in SUBSCRIPTION_UNIVERSE:
-            if sym in token_cache and "token" in token_cache[sym]:
-                token_to_symbol[str(token_cache[sym]["token"])] = sym
-        logger.info(f"Loaded {len(token_to_symbol)} tokens for archiver subscription")
+        if os.path.exists(token_cache_path):
+            with open(token_cache_path, "r") as f:
+                token_cache = json.load(f)
+            for sym in SUBSCRIPTION_UNIVERSE:
+                if sym in token_cache and "token" in token_cache[sym]:
+                    token_to_symbol[str(token_cache[sym]["token"])] = sym
+            logger.info(f"Loaded {len(token_to_symbol)} tokens for archiver subscription")
     except Exception as e:
         logger.error(f"Failed to load token cache: {e}")
-        sys.exit(1)
     
-    # Attach archiver
+    # Compiler & Archiver wiring
+    compiler = TickCompiler(broker)
+    if token_to_symbol:
+        compiler.set_symbol_map(token_to_symbol)
+    
     arch = attach_archiver(broker, token_to_symbol)
     if not arch:
         logger.critical("Failed to attach archiver. Exiting.")
         sys.exit(1)
+        
+    if token_to_symbol:
+        compiler.subscribe(list(token_to_symbol.keys()))
     
     # Signal handlers for graceful shutdown
     def signal_handler(signum, frame):
@@ -264,12 +271,22 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
-    # Keep running
-    logger.info("L2 Archiver running. Press Ctrl+C to stop.")
+    # Keep running with market-hours sleep
+    logger.info("L2 Archiver running.")
     try:
         while True:
+            now = datetime.now()
+            if not is_bot_active_hours(now):
+                logger.info("Market is closed for trading. L2 Archiver deep sleeping until next pre-market at 08:55 IST...")
+                arch.shutdown()
+                sleep_until_next_premarket()
+                if hasattr(broker, "session_provider"):
+                    broker.session_provider._restore_or_login()
+                if token_to_symbol:
+                    compiler.subscribe(list(token_to_symbol.keys()))
+                continue
+            
             time.sleep(60)
-            # Log heartbeat
             logger.info(f"[L2Archiver HB] Buffer: {len(arch.buffer)} rows | Partition: {arch.partition_seq}")
     except KeyboardInterrupt:
         arch.shutdown()

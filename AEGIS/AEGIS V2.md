@@ -1,4 +1,5 @@
 # AEGIS V2.0 — AGENTIC MAINTENANCE HARNESS
+**System:** AEGIS (**A**utonomous **E**xecution & **G**amma **I**mbalance **S**ystem)  
 **Classification:** Principal Engineering Directive — Autonomous Agent Operations Manual  
 **Version:** 2.0 (Aligned with AEGIS V2.0 Whitepaper & Implementation)  
 **Target Audience:** Agentic Coding AI (Cursor, Devin, Custom SWE-Agent)  

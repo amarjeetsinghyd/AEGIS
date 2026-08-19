@@ -324,7 +324,7 @@ body { margin: 0; color: var(--ink); background: radial-gradient(1200px 500px at
 <body>
   <div class="shell">
     <div class="top">
-      <div class="brand">Quant Console<span>ARGUS (Algorithmic Real-Time Granular Ultra-Microstructure Scalper) × AEGIS</span></div>
+      <div class="brand">Quant Console<span>ARGUS × AEGIS</span></div>
       <div style="display:flex; align-items:center; gap:12px;">
         <div class="meta" style="text-align:left;">
           <div><strong id="clock">--:--:--</strong> IST</div>
