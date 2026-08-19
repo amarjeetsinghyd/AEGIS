@@ -456,7 +456,7 @@ class TradingSystem:
                                 self._run_intraday_tier2()
 
                 # --- TIME GATES ---
-                if not is_bot_active_hours(now.time()):
+                if not is_bot_active_hours(now):
                     sleep_until_next_premarket()
                     continue
 
