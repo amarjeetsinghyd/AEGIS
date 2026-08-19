@@ -88,9 +88,9 @@ def run_eod_calibration():
     logger.info(f"Using L2 Data for Days: {target_days}")
 
     tc_candidates = [
-        os.path.join(BASE_DIR, "stock_order_flow", "calibration_notes", "l2_data", "tokens_cache.json"),
-        os.path.join(BASE_DIR, "stock_order_flow", "data", "tokens_cache.json"),
-        "/home/opc/stock_order_flow/data/tokens_cache.json",
+        os.path.join(BASE_DIR, "ARGUS", "calibration_notes", "l2_data", "tokens_cache.json"),
+        os.path.join(BASE_DIR, "ARGUS", "data", "tokens_cache.json"),
+        "/home/opc/ARGUS/data/tokens_cache.json",
         os.path.join(get_data_dir(), "tokens_cache.json"),
     ]
     tc_path = next((p for p in tc_candidates if os.path.exists(p)), None)

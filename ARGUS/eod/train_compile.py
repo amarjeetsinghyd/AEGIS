@@ -442,7 +442,7 @@ class RegimeAwareCalibrator:
     
     def _compute_targets(self, tick_data: dict) -> Tuple[np.ndarray, np.ndarray]:
         """Compute forward 10m max up/down excursions."""
-        from stock_order_flow.eod.microstructure import compute_forward_excursions
+        from ARGUS.eod.microstructure import compute_forward_excursions
         return compute_forward_excursions(
             tick_data["prices"], 
             tick_data["timestamps"],
@@ -452,7 +452,7 @@ class RegimeAwareCalibrator:
     def _compute_daily_summary(self, symbol: str, df: pd.DataFrame, 
                                 tick_data: dict) -> pd.DataFrame:
         """Compute daily summary features for regime clustering."""
-        from stock_order_flow.eod.microstructure import (
+        from ARGUS.eod.microstructure import (
             compute_vpin, compute_kyle_lambda, compute_obi_l2,
             compute_trade_intensity_hawkes, compute_spread_volatility
         )

@@ -345,7 +345,7 @@ class CascadeValueEngine:
             regime_model_dir: Path to regime model directory
         """
         from pathlib import Path
-        from stock_order_flow.eod.live_inference import CompiledPredictor, LiveFeatureComputer
+        from ARGUS.eod.live_inference import CompiledPredictor, LiveFeatureComputer
         
         self._ml_calibration_dir = Path(calibration_dir)
         self._ml_regime_model_dir = Path(regime_model_dir)

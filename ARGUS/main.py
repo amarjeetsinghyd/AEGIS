@@ -121,7 +121,7 @@ def load_stock_calibration() -> Dict[str, dict]:
 def calibrate_buckets(broker, token_map: Dict[str, str], universe: Dict) -> tuple[Dict, Dict]:
     """Fetch 3M Daily History -> Calc Median Turnover -> Set Bucket (2x) & Vacuum (0.125x Bucket).
     Only fetches for ACTIVE UNIVERSE symbols to save API calls and time."""
-    from stock_order_flow.historical_data_manager import fetch_and_seed_history
+    from ARGUS.historical_data_manager import fetch_and_seed_history
     
     # Only calibrate for Active Trading Universe tokens
     # token_map is {token: symbol} — invert against the universe symbol set.
