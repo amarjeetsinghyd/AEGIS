@@ -1,5 +1,5 @@
 """
-End-of-Day (EOD) Automated ML Calibrator v4.0 (Nemotron-Enhanced)
+End-of-Day (EOD) Automated ML Calibrator v5.0 (Nemotron + Universal Data Discovery)
 Runs daily after market close (16:00 IST) to mathematically cluster regimes (GMM)
 and calibrate per-stock microstructure thresholds using 3-day rolling L2 raw data.
 """
@@ -29,33 +29,73 @@ from common.symbols import SUBSCRIPTION_UNIVERSE
 logger = get_logger("eod_calibrator")
 warnings.filterwarnings("ignore")
 
-DATA = get_data_dir()
-RAW_DIR = os.path.join(DATA, "l2_raw")
 CALIB_OUTPUT = os.path.join(BASE_DIR, "stock_order_flow", "stock_calibration.json")
 
-def get_last_n_trading_days(n=3):
-    """Find the N most recent daily folders in l2_raw."""
-    if not os.path.exists(RAW_DIR):
-        return []
-    all_dirs = [d for d in os.listdir(RAW_DIR) if os.path.isdir(os.path.join(RAW_DIR, d))]
-    date_dirs = sorted([d for d in all_dirs if len(d) == 10 and d.startswith("20")])
-    return date_dirs[-n:]
+def find_l2_raw_files() -> tuple[list[str], dict[str, list[str]]]:
+    """
+    Search all candidate directories on VPS / local machine for L2 parquet files.
+    Returns sorted date list and mapping: date_str -> list of parquet filepaths.
+    """
+    candidate_roots = [
+        os.path.join(BASE_DIR, "AEGIS", "data", "l2_raw"),
+        os.path.join(BASE_DIR, "data", "l2_raw"),
+        os.path.join(BASE_DIR, "stock_order_flow", "data", "l2_raw"),
+        os.path.join(BASE_DIR, "stock_order_flow", "calibration_notes", "l2_data"),
+        os.path.join(get_data_dir(), "l2_raw"),
+        "/home/opc/AEGIS/data/l2_raw",
+        "/home/opc/stock_order_flow/data/l2_raw",
+        "/home/opc/data/l2_raw",
+    ]
+    
+    date_to_files = {}
+    for root in candidate_roots:
+        if not os.path.exists(root):
+            continue
+        # Check subdirectories YYYY-MM-DD
+        for sub in os.listdir(root):
+            sub_path = os.path.join(root, sub)
+            if os.path.isdir(sub_path) and len(sub) == 10 and sub.startswith("20"):
+                p_files = sorted(glob.glob(os.path.join(sub_path, "*.parquet")))
+                if p_files:
+                    date_to_files.setdefault(sub, []).extend(p_files)
+        # Check direct parquet files with date in filename (e.g. aegis_l2_raw_2026-08-19_part_000.parquet)
+        direct_files = sorted(glob.glob(os.path.join(root, "*.parquet")))
+        for f in direct_files:
+            bname = os.path.basename(f)
+            # Find 10-char date
+            for part in bname.split("_"):
+                if len(part) == 10 and part.startswith("20"):
+                    date_to_files.setdefault(part, []).append(f)
+                    
+    # Deduplicate and sort
+    for dt in date_to_files:
+        date_to_files[dt] = sorted(list(set(date_to_files[dt])))
+        
+    sorted_dates = sorted(date_to_files.keys())
+    return sorted_dates, date_to_files
 
 def run_eod_calibration():
     logger.info("=" * 80)
     logger.info("STARTING EOD 3-DAY ML STOCK-BY-STOCK CALIBRATION (GMM + MICROSTRUCTURE)")
     logger.info("=" * 80)
     
-    target_days = get_last_n_trading_days(3)
-    if not target_days:
-        logger.error("No L2 raw data directories found!")
+    sorted_dates, date_to_files = find_l2_raw_files()
+    if not sorted_dates:
+        logger.error("No L2 raw data directories or parquet files found!")
         return
 
+    target_days = sorted_dates[-3:]
     logger.info(f"Using L2 Data for Days: {target_days}")
 
-    tc_path = os.path.join(DATA, "tokens_cache.json")
-    if not os.path.exists(tc_path):
-        logger.error(f"Tokens cache missing at {tc_path}")
+    tc_candidates = [
+        os.path.join(BASE_DIR, "stock_order_flow", "calibration_notes", "l2_data", "tokens_cache.json"),
+        os.path.join(BASE_DIR, "stock_order_flow", "data", "tokens_cache.json"),
+        "/home/opc/stock_order_flow/data/tokens_cache.json",
+        os.path.join(get_data_dir(), "tokens_cache.json"),
+    ]
+    tc_path = next((p for p in tc_candidates if os.path.exists(p)), None)
+    if not tc_path:
+        logger.error("Tokens cache missing!")
         return
         
     with open(tc_path, "r") as f:
@@ -66,8 +106,7 @@ def run_eod_calibration():
 
     all_day_dfs = []
     for dt_str in target_days:
-        dt_dir = os.path.join(RAW_DIR, dt_str)
-        files = sorted(glob.glob(os.path.join(dt_dir, "*.parquet")))
+        files = date_to_files.get(dt_str, [])
         if not files:
             continue
         dfs = [pd.read_parquet(f) for f in files]
@@ -101,7 +140,6 @@ def run_eod_calibration():
         mid[mid == 0] = 1.0
         spread_bps = (sp1 - bp1) / mid * 10000.0
 
-        # 5-Level Weighted Order Book Imbalance (Inverse depth weights)
         weights = np.array([1.0, 0.5, 0.333, 0.25, 0.2])
         w_bid = bq1 * weights[0]
         w_ask = sq1 * weights[0]
@@ -112,14 +150,12 @@ def run_eod_calibration():
         denom_obi[denom_obi == 0] = 1.0
         obi_l5 = (w_bid - w_ask) / denom_obi
 
-        # Kyle's Lambda (Price impact per volume delta)
         d_vol = np.diff(np.insert(vol, 0, vol[0]))
         d_vol[d_vol < 0] = 0
         d_price = np.diff(np.insert(lp, 0, lp[0]))
         v_sum = np.sum(d_vol)
         kyle_lambda = (np.sum(np.abs(d_price)) / v_sum * 1e4) if v_sum > 0 else 0.0
 
-        # Hawkes Trade Intensity
         dt_sec = np.diff(np.insert(ts_ms, 0, ts_ms[0])) / 1000.0
         dt_sec[dt_sec <= 0] = 0.05
         intensity = 1.0 / dt_sec
@@ -142,7 +178,6 @@ def run_eod_calibration():
 
     df_daily = pd.DataFrame(daily_summaries)
     
-    # Fit GMM for mathematical regime segmentation
     gmm_regimes = {}
     if len(df_daily) >= 10:
         feature_cols = ["avg_spread_bps", "spread_vol", "trade_intensity", "obi_mean", "kyle_lambda", "day_return_pct"]
@@ -167,7 +202,6 @@ def run_eod_calibration():
                 regime_mapping[c] = "QUIET_ACCUMULATION"
 
         df_daily["regime"] = df_daily["cluster"].map(regime_mapping)
-        # Store most recent regime per symbol
         for sym, sub in df_daily.groupby("symbol"):
             latest = sub.sort_values("date").iloc[-1]
             gmm_regimes[sym] = latest["regime"]
@@ -253,7 +287,6 @@ def run_eod_calibration():
                             best_opt["opt_whale_z"] = w_th
                             best_opt["mom_5m_min"] = m_th
 
-        # Assign Mathematical Profile from GMM if available
         gmm_reg = gmm_regimes.get(sym, "BALANCED_TREND_GRINDER")
         if gmm_reg == "CHOPPY_NOISE_REJECT":
             conv_burst, conv_grind, min_ticks = 6.2, 5.8, 4

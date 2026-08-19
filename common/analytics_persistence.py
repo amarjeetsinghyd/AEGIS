@@ -1,4 +1,4 @@
-"""Analytics Persistence Layer — Big-Data Aggregation Pipeline for VORTEX + AEGIS.
+"""Analytics Persistence Layer — Big-Data Aggregation Pipeline for ARGUS + AEGIS.
 
 Design goals
 ------------
@@ -9,18 +9,18 @@ Design goals
    It reads pre-aggregated daily snapshots (`analytics/daily/*.parquet`) which
    are tiny (a few KB per symbol per day). Range/All-Time views are just a
    `pd.concat` of N daily snapshots — O(days), not O(ticks).
-3. **Engine-specific metrics** — VORTEX snapshots carry microstructure
+3. **Engine-specific metrics** — ARGUS snapshots carry microstructure
    primitives (OIB, toxicity, queue decay, branching); AEGIS snapshots carry
    gamma/IV/strike-heatmap primitives. Both share the same storage shape so
    the dashboard can treat them uniformly.
 
 Storage layout
 --------------
-    <engine>/data/analytics/daily/vortex_YYYY-MM-DD.parquet   (per-symbol rows)
+    <engine>/data/analytics/daily/argus_YYYY-MM-DD.parquet    (per-symbol rows)
     <engine>/data/analytics/daily/aegis_YYYY-MM-DD.parquet    (per-strike rows)
     <engine>/data/analytics/manifest.json                     (run log)
 
-Each daily snapshot is a single parquet file with one row per symbol (VORTEX)
+Each daily snapshot is a single parquet file with one row per symbol (ARGUS)
 or per (strike, kind) (AEGIS), holding ~30 aggregated columns. A 250-trading-
 day All-Time view is therefore ~250 tiny files — concat takes <1s.
 """
@@ -52,18 +52,19 @@ AGG_TRIGGER_TIME = dtime(15, 40)  # 15:40 IST — after 15:30 close auction
 
 
 # ═══════════════════════════════════════════════════════════════════
-# VORTEX (Equities Microstructure) Daily Aggregation
+# ARGUS (Equities Microstructure) Daily Aggregation
 # ═══════════════════════════════════════════════════════════════════
 
-VORTEX_SCHEMA_COLS = [
+ARGUS_SCHEMA_COLS = [
     "ts", "tok", "lp", "vol",
     "bp1", "bq1", "bp2", "bq2", "bp3", "bq3", "bp4", "bq4", "bp5", "bq5",
     "sp1", "sq1", "sp2", "sq2", "sp3", "sq3", "sp4", "sq4", "sp5", "sq5",
 ]
+VORTEX_SCHEMA_COLS = ARGUS_SCHEMA_COLS
 
 
-def _load_vortex_partitions(target_date: str) -> pd.DataFrame:
-    """Load all VORTEX L2 partitions for a given date."""
+def _load_argus_partitions(target_date: str) -> pd.DataFrame:
+    """Load all ARGUS L2 partitions for a given date."""
     paths = get_runtime_paths("stock_order_flow")
     l2_dir = Path(paths["data_dir"]) / "l2_raw"
     files = sorted(l2_dir.glob(f"l2_raw_{target_date}_part_*.parquet"))
@@ -72,7 +73,7 @@ def _load_vortex_partitions(target_date: str) -> pd.DataFrame:
     dfs = []
     for f in files:
         try:
-            df = pd.read_parquet(f, columns=VORTEX_SCHEMA_COLS)
+            df = pd.read_parquet(f, columns=ARGUS_SCHEMA_COLS)
             if not df.empty:
                 dfs.append(df)
         except Exception:
@@ -81,8 +82,10 @@ def _load_vortex_partitions(target_date: str) -> pd.DataFrame:
         return pd.DataFrame()
     return pd.concat(dfs, ignore_index=True)
 
+_load_vortex_partitions = _load_argus_partitions
 
-def _vortex_symbol_map() -> dict[int, str]:
+
+def _argus_symbol_map() -> dict[int, str]:
     """Load token→symbol from universe.json + tokens_cache.json."""
     paths = get_runtime_paths("stock_order_flow")
     data_dir = Path(paths["data_dir"])
@@ -110,18 +113,20 @@ def _vortex_symbol_map() -> dict[int, str]:
             pass
     return t2s
 
+_vortex_symbol_map = _argus_symbol_map
 
-def aggregate_vortex_day(target_date: str) -> pd.DataFrame:
-    """Aggregate VORTEX raw L2 ticks for one day into a per-symbol snapshot.
+
+def aggregate_argus_day(target_date: str) -> pd.DataFrame:
+    """Aggregate ARGUS raw L2 ticks for one day into a per-symbol snapshot.
 
     Each row = one symbol with ~30 microstructure summary stats. This is the
     unit that Range/All-Time views concat — never the raw ticks.
     """
-    df = _load_vortex_partitions(target_date)
+    df = _load_argus_partitions(target_date)
     if df.empty:
         return pd.DataFrame()
 
-    t2s = _vortex_symbol_map()
+    t2s = _argus_symbol_map()
     df["symbol"] = df["tok"].map(t2s).fillna("")
 
     # Per-symbol vectorized aggregation (NumPy, no python loops over ticks)
@@ -322,19 +327,24 @@ def aggregate_aegis_day(target_date: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Persistence + Manifest
-# ═══════════════════════════════════════════════════════════════════
+def _normalize_engine_name(engine: str) -> str:
+    eng = (engine or "").strip().lower()
+    if eng in ("vortex", "stock_order_flow", "argus", "of"):
+        return "argus"
+    return eng
 
-def _analytics_dir(engine: Literal["vortex", "aegis"]) -> Path:
-    paths = get_runtime_paths("stock_order_flow" if engine == "vortex" else "aegis")
+
+def _analytics_dir(engine: Literal["argus", "vortex", "aegis"]) -> Path:
+    norm_engine = _normalize_engine_name(engine)
+    paths = get_runtime_paths("stock_order_flow" if norm_engine == "argus" else "aegis")
     d = Path(paths["data_dir"]) / "analytics" / "daily"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def _manifest_path(engine: Literal["vortex", "aegis"]) -> Path:
-    paths = get_runtime_paths("stock_order_flow" if engine == "vortex" else "aegis")
+def _manifest_path(engine: Literal["argus", "vortex", "aegis"]) -> Path:
+    norm_engine = _normalize_engine_name(engine)
+    paths = get_runtime_paths("stock_order_flow" if norm_engine == "argus" else "aegis")
     return Path(paths["data_dir"]) / "analytics" / "manifest.json"
 
 
@@ -356,18 +366,19 @@ def _write_manifest(engine: str, manifest: dict) -> None:
         json.dump(manifest, f, indent=2)
 
 
-def save_daily_snapshot(engine: Literal["vortex", "aegis"], target_date: str, df: pd.DataFrame) -> Path | None:
+def save_daily_snapshot(engine: Literal["argus", "vortex", "aegis"], target_date: str, df: pd.DataFrame) -> Path | None:
     """Persist a daily aggregated snapshot to parquet + update the manifest."""
+    norm_engine = _normalize_engine_name(engine)
     if df.empty:
-        logger.info(f"[{engine}] No data for {target_date} — skipping snapshot")
+        logger.info(f"[{norm_engine}] No data for {target_date} — skipping snapshot")
         return None
-    out_dir = _analytics_dir(engine)
-    out_path = out_dir / f"{engine}_{target_date}.parquet"
+    out_dir = _analytics_dir(norm_engine)
+    out_path = out_dir / f"{norm_engine}_{target_date}.parquet"
     df.to_parquet(out_path, index=False, compression="snappy")
     size_kb = out_path.stat().st_size / 1024
-    logger.info(f"[{engine}] Saved daily snapshot {out_path.name} | {len(df)} rows | {size_kb:.1f} KB")
+    logger.info(f"[{norm_engine}] Saved daily snapshot {out_path.name} | {len(df)} rows | {size_kb:.1f} KB")
 
-    manifest = _read_manifest(engine)
+    manifest = _read_manifest(norm_engine)
     runs = manifest.setdefault("runs", [])
     # De-dupe by date
     runs = [r for r in runs if r.get("date") != target_date]
@@ -379,24 +390,30 @@ def save_daily_snapshot(engine: Literal["vortex", "aegis"], target_date: str, df
     })
     runs.sort(key=lambda r: r["date"])
     manifest["runs"] = runs
-    _write_manifest(engine, manifest)
+    _write_manifest(norm_engine, manifest)
     return out_path
 
 
-def load_daily_snapshots(engine: Literal["vortex", "aegis"], start_date: str | None = None, end_date: str | None = None) -> pd.DataFrame:
+def load_daily_snapshots(engine: Literal["argus", "vortex", "aegis"], start_date: str | None = None, end_date: str | None = None) -> pd.DataFrame:
     """Load and concat daily snapshots for a date range (or all-time).
 
     This is the fast path the dashboard uses for Range/All-Time views: it
     reads N tiny parquet files (one per day) instead of scanning raw ticks.
     """
-    out_dir = _analytics_dir(engine)
-    files = sorted(out_dir.glob(f"{engine}_*.parquet"))
+    norm_engine = _normalize_engine_name(engine)
+    out_dir = _analytics_dir(norm_engine)
+    # Check both current prefix and legacy vortex_ prefix for full backward-compatibility
+    if norm_engine == "argus":
+        files = sorted(set(list(out_dir.glob("argus_*.parquet")) + list(out_dir.glob("vortex_*.parquet"))))
+    else:
+        files = sorted(out_dir.glob(f"{norm_engine}_*.parquet"))
+
     if not files:
         return pd.DataFrame()
 
     selected = []
     for f in files:
-        # filename: vortex_YYYY-MM-DD.parquet
+        # filename: argus_YYYY-MM-DD.parquet or vortex_YYYY-MM-DD.parquet
         date_str = f.stem.split("_", 1)[1] if "_" in f.stem else ""
         if start_date and date_str < start_date:
             continue
@@ -418,16 +435,20 @@ def load_daily_snapshots(engine: Literal["vortex", "aegis"], start_date: str | N
     return pd.concat(dfs, ignore_index=True)
 
 
-def list_available_dates(engine: Literal["vortex", "aegis"]) -> list[str]:
+def list_available_dates(engine: Literal["argus", "vortex", "aegis"]) -> list[str]:
     """Return sorted list of dates that have a daily snapshot."""
-    out_dir = _analytics_dir(engine)
-    files = sorted(out_dir.glob(f"{engine}_*.parquet"))
+    norm_engine = _normalize_engine_name(engine)
+    out_dir = _analytics_dir(norm_engine)
+    if norm_engine == "argus":
+        files = sorted(set(list(out_dir.glob("argus_*.parquet")) + list(out_dir.glob("vortex_*.parquet"))))
+    else:
+        files = sorted(out_dir.glob(f"{norm_engine}_*.parquet"))
     dates = []
     for f in files:
         date_str = f.stem.split("_", 1)[1] if "_" in f.stem else ""
-        if date_str:
+        if date_str and date_str not in dates:
             dates.append(date_str)
-    return dates
+    return sorted(dates)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -442,13 +463,20 @@ def run_daily_aggregation(target_date: str | None = None, engines: list[str] | N
     Returns a summary dict suitable for logging / dashboard status.
     """
     target_date = target_date or datetime.now().strftime("%Y-%m-%d")
-    engines = engines or ["vortex", "aegis"]
+    raw_engines = engines or ["argus", "aegis"]
+    # Normalize engine list while preserving order
+    engines = []
+    for e in raw_engines:
+        ne = _normalize_engine_name(e)
+        if ne not in engines:
+            engines.append(ne)
+
     summary = {"date": target_date, "engines": {}}
 
     for engine in engines:
         try:
-            if engine == "vortex":
-                df = aggregate_vortex_day(target_date)
+            if engine == "argus":
+                df = aggregate_argus_day(target_date)
             elif engine == "aegis":
                 df = aggregate_aegis_day(target_date)
             else:
@@ -470,7 +498,7 @@ def run_daily_aggregation(target_date: str | None = None, engines: list[str] | N
 def main():
     parser = argparse.ArgumentParser(description="Analytics Persistence — Daily Aggregation (15:40 IST)")
     parser.add_argument("--date", default=datetime.now().strftime("%Y-%m-%d"), help="Date YYYY-MM-DD (default: today)")
-    parser.add_argument("--engines", nargs="*", default=["vortex", "aegis"], help="Engines to aggregate (default: both)")
+    parser.add_argument("--engines", nargs="*", default=["argus", "aegis"], help="Engines to aggregate (default: both)")
     args = parser.parse_args()
     summary = run_daily_aggregation(args.date, args.engines)
     print(json.dumps(summary, indent=2, default=str))
@@ -478,3 +506,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

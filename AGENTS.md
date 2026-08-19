@@ -48,13 +48,12 @@ the `common/` shared branches alone and ask. Never add new kronos code.**
 
 ## ACTIVE ENGINES (the only ones you should build on)
 
-1. **`stock_order_flow/`** — HFT microstructure equities engine (primary active system).
-   Architecture authority: `stock_order_flow/AGENTIC HARNESS DOCUMENT v3.5.md`.
-   Conform all Python edits to that document (init order, conviction trigger, 4-pillar exits,
-   zero-copy tick path, no heavy imports in tick handlers).
-2. **`astra_bot/`** — options strategy bot (active).
-3. **`unified_dashboard/`** — monitoring UI, dual-brands: Quant Console × ORDER FLOW × ASTRA
-   (no Kronos).
+1. **`stock_order_flow/`** — **ARGUS** (**A**lgorithmic **R**eal-time **G**ranular **U**ltra-microstructure **S**calper) — HFT microstructure equities engine (primary active system).
+   Architecture authority: `stock_order_flow/AGENTIC HARNESS DOCUMENT v3.5.md` (v3.6).
+   Conform all Python edits to that document (init order, conviction trigger, adverse selection shield,
+   Kyle's lambda limit engine, Kelly sizing, 4-pillar exits, zero-copy tick path, no heavy imports in tick handlers).
+2. **`AEGIS/`** (and `astra_bot/`) — **AEGIS** (**A**utonomous **E**xecution & **G**amma **I**mbalance **S**ystem) — options strategy bot (active).
+3. **`unified_dashboard/`** — monitoring UI, dual-brands: Quant Console — ARGUS (Algorithmic Real-Time Granular Ultra-Microstructure Scalper) × AEGIS.
 
 Shared library: `common/` (broker / execution / market / ipc / runtime / config / symbols).
 

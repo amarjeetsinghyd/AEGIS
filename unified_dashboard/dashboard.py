@@ -1,5 +1,5 @@
 """
-Quant Console — dual-brand light precision dashboard for VORTEX + AEGIS.
+Quant Console — dual-brand light precision dashboard for ARGUS + AEGIS.
 UPDATED: Integrated Research Mode (On-Demand Microstructure Forensics).
 """
 
@@ -130,7 +130,7 @@ def api_research():
 
     script_path = BASE_DIR / "stock_order_flow" / "research_analytics.py"
     if not script_path.exists():
-        return jsonify({"error": "VORTEX research engine not found"}), 500
+        return jsonify({"error": "ARGUS research engine not found"}), 500
 
     cmd = [sys.executable, str(script_path), symbol]
     if all_time:
@@ -145,13 +145,13 @@ def api_research():
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, cwd=BASE_DIR)
         if result.returncode != 0:
-            return jsonify({"error": f"Research script failed: {result.stderr}"}), 500
+            return jsonify({"error": f"ARGUS research script failed: {result.stderr}"}), 500
         data = json.loads(result.stdout)
         return jsonify(data)
     except subprocess.TimeoutExpired:
-        return jsonify({"error": "Research timeout (120s)"}), 504
+        return jsonify({"error": "ARGUS research timeout (120s)"}), 504
     except json.JSONDecodeError:
-        return jsonify({"error": "Invalid JSON from research script", "raw": result.stdout[:500]}), 500
+        return jsonify({"error": "Invalid JSON from ARGUS research script", "raw": result.stdout[:500]}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -196,7 +196,7 @@ def api_research_aegis():
 @app.route("/api/analytics_dates")
 def api_analytics_dates():
     """Lists available aggregated snapshot dates for an engine (for date selector population)."""
-    engine = request.args.get("engine", "vortex").lower()
+    engine = request.args.get("engine", "argus").lower()
     try:
         from common.analytics_persistence import list_available_dates
         dates = list_available_dates(engine)
@@ -210,7 +210,7 @@ CONSOLE_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Quant Console — VORTEX × AEGIS / Research</title>
+<title>Quant Console — ARGUS × AEGIS / Research</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -303,6 +303,7 @@ body { margin: 0; color: var(--ink); background: radial-gradient(1200px 500px at
 .research-engine-tabs { display: flex; gap: 4px; padding: 8px 18px 0; }
 .research-engine-tab { padding: 10px 18px; font-weight: 700; font-size: 13px; color: var(--muted); cursor: pointer; border: 1px solid var(--line); border-bottom: none; border-radius: 10px 10px 0 0; background: #fbfcfd; transition: all 0.15s; }
 .research-engine-tab:hover { color: var(--ink); }
+.research-engine-tab.active[data-engine="argus"],
 .research-engine-tab.active[data-engine="vortex"] { color: var(--of); background: var(--of-soft); border-color: var(--of); }
 .research-engine-tab.active[data-engine="aegis"] { color: var(--aegis); background: var(--aegis-soft); border-color: var(--aegis); }
 .research-controls { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 14px 18px; background: #fafbfc; border-bottom: 1px solid var(--line); }
@@ -322,7 +323,7 @@ body { margin: 0; color: var(--ink); background: radial-gradient(1200px 500px at
 <body>
   <div class="shell">
     <div class="top">
-      <div class="brand">Quant Console<span>VORTEX × AEGIS</span></div>
+      <div class="brand">Quant Console<span>ARGUS (Algorithmic Real-Time Granular Ultra-Microstructure Scalper) × AEGIS</span></div>
       <div style="display:flex; align-items:center; gap:12px;">
         <div class="meta" style="text-align:left;">
           <div><strong id="clock">--:--:--</strong> IST</div>
@@ -339,7 +340,7 @@ body { margin: 0; color: var(--ink); background: radial-gradient(1200px 500px at
 
     <div class="grid">
       <section class="lane of">
-        <div class="lane-head"><div class="lane-title">VORTEX (Stocks)</div><div id="ofPill" class="pill">—</div></div>
+        <div class="lane-head"><div><div class="lane-title">ARGUS <span style="font-size:11px; font-weight:600; color:var(--muted); font-family:'IBM Plex Sans',sans-serif; text-transform:none;">(Algorithmic Real-Time Granular Ultra-Microstructure Scalper)</span></div></div><div id="ofPill" class="pill">—</div></div>
         <div class="lane-body">
           <div class="metrics">
             <div class="metric"><div class="label">Stocks</div><div class="value" id="ofIndex">15</div></div>
@@ -383,7 +384,7 @@ body { margin: 0; color: var(--ink); background: radial-gradient(1200px 500px at
         <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
           <div class="engine-switch" role="tablist" aria-label="Engine logs">
             <button type="button" id="logTabAegis" class="active aegis" data-engine="aegis" onclick="setEngine('aegis')">AEGIS</button>
-            <button type="button" id="logTabOF" class="of" data-engine="of" onclick="setEngine('of')">VORTEX</button>
+            <button type="button" id="logTabOF" class="of" data-engine="of" onclick="setEngine('of')" title="ARGUS: Algorithmic Real-Time Granular Ultra-Microstructure Scalper">ARGUS</button>
           </div>
           <div class="pill" id="logCount">0 lines</div>
         </div>
@@ -397,7 +398,7 @@ body { margin: 0; color: var(--ink); background: radial-gradient(1200px 500px at
         <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
           <div class="engine-switch" role="tablist" aria-label="Active trades engine">
             <button type="button" id="activeTabAegis" class="active aegis" data-engine="aegis" onclick="setEngine('aegis')">AEGIS</button>
-            <button type="button" id="activeTabOF" class="of" data-engine="of" onclick="setEngine('of')">VORTEX</button>
+            <button type="button" id="activeTabOF" class="of" data-engine="of" onclick="setEngine('of')" title="ARGUS: Algorithmic Real-Time Granular Ultra-Microstructure Scalper">ARGUS</button>
           </div>
           <div class="pill" id="activeCount">0 trades</div>
         </div>
@@ -411,7 +412,7 @@ body { margin: 0; color: var(--ink); background: radial-gradient(1200px 500px at
         <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
           <div class="engine-switch" role="tablist" aria-label="Trade history engine">
             <button type="button" id="histTabAegis" class="active aegis" data-engine="aegis" onclick="setEngine('aegis')">AEGIS</button>
-            <button type="button" id="histTabOF" class="of" data-engine="of" onclick="setEngine('of')">VORTEX</button>
+            <button type="button" id="histTabOF" class="of" data-engine="of" onclick="setEngine('of')" title="ARGUS: Algorithmic Real-Time Granular Ultra-Microstructure Scalper">ARGUS</button>
           </div>
           <div class="pill" id="histCount">0 trades · disk</div>
         </div>
@@ -419,7 +420,7 @@ body { margin: 0; color: var(--ink); background: radial-gradient(1200px 500px at
       <div class="trades-body" id="trades"></div>
     </section>
 
-    <!-- RESEARCH PANEL (DUAL-ENGINE: VORTEX + AEGIS) -->
+    <!-- RESEARCH PANEL (DUAL-ENGINE: ARGUS + AEGIS) -->
     <section id="researchPanel" class="panel research-panel">
       <div class="panel-head">
         <h2>🔬 Research Lab</h2>
@@ -428,7 +429,7 @@ body { margin: 0; color: var(--ink); background: radial-gradient(1200px 500px at
 
       <!-- Engine sub-tabs -->
       <div class="research-engine-tabs">
-        <button class="research-engine-tab active" data-engine="vortex" onclick="setResearchEngine('vortex')">VORTEX · Microstructure & Depth</button>
+        <button class="research-engine-tab active" data-engine="argus" onclick="setResearchEngine('argus')">ARGUS · Algorithmic Real-Time Granular Ultra-Microstructure Scalper (Depth & Forensics)</button>
         <button class="research-engine-tab" data-engine="aegis" onclick="setResearchEngine('aegis')">AEGIS · Gamma · IV · Strike Heatmaps</button>
       </div>
 
@@ -449,15 +450,15 @@ body { margin: 0; color: var(--ink); background: radial-gradient(1200px 500px at
         <div id="allTimeWrap" class="date-input-wrap" style="display:none;">
           <span class="hint">Aggregating all available daily snapshots…</span>
         </div>
-        <div id="vortexSymbolWrap" class="symbol-wrap">
+        <div id="argusSymbolWrap" class="symbol-wrap">
           <label>Symbol: <input type="text" id="researchSymbol" placeholder="RELIANCE" list="universeList"></label>
           <datalist id="universeList"></datalist>
         </div>
         <button id="researchRunBtn" class="research-run-btn" onclick="runResearch()">Run Research</button>
       </div>
 
-      <!-- VORTEX chart tabs -->
-      <div class="research-tabs" id="vortexTabs">
+      <!-- ARGUS chart tabs -->
+      <div class="research-tabs" id="argusTabs">
         <button class="research-tab active" data-tab="volume">Volume Profile</button>
         <button class="research-tab" data-tab="bid_depth">Bid Depth (L1-L5)</button>
         <button class="research-tab" data-tab="ask_depth">Ask Depth (L1-L5)</button>
@@ -509,13 +510,13 @@ function signalMetricClass(text) { const t = String(text || '').toUpperCase(); i
 function signalCellHtml(raw) { const label = signalLabel(raw); const t = String(label || '').toUpperCase(); if (t.includes('CALL')) return `<span class="sig-call">${label}</span>`; if (t.includes('PUT')) return `<span class="sig-put">${label}</span>`; return label || '—'; }
 function pnlClass(v) { const n = Number(v); if (Number.isNaN(n) || n === 0) return 'mono'; return n > 0 ? 'mono pnl-pos' : 'mono pnl-neg'; }
 
-function renderLogs() { if (window.getSelection && window.getSelection().toString().length > 0) return; const logs = latestLogs[activeLogEngine] || []; const box = document.getElementById('logs'); box.innerHTML = logs.map(l => `<div class="log-line ${activeLogEngine}">${l}</div>`).join('') || `<div class="log-line">No ${activeLogEngine} telemetry yet.</div>`; document.getElementById('logCount').textContent = logs.length + ' lines · ' + activeLogEngine.toUpperCase(); }
+function renderLogs() { if (window.getSelection && window.getSelection().toString().length > 0) return; const logs = latestLogs[activeLogEngine] || []; const box = document.getElementById('logs'); box.innerHTML = logs.map(l => `<div class="log-line ${activeLogEngine}">${l}</div>`).join('') || `<div class="log-line">No ${activeLogEngine} telemetry yet.</div>`; document.getElementById('logCount').textContent = logs.length + ' lines · ' + (activeLogEngine === 'of' ? 'ARGUS' : activeLogEngine.toUpperCase()); }
 
 function setEngine(engine) { activeLogEngine = engine; activeHistEngine = engine; activeTradeEngine = engine; document.getElementById('logTabAegis').className = engine === 'aegis' ? 'active aegis' : 'aegis'; document.getElementById('logTabOF').className = engine === 'of' ? 'active of' : 'of'; document.getElementById('histTabAegis').className = engine === 'aegis' ? 'active aegis' : 'aegis'; document.getElementById('histTabOF').className = engine === 'of' ? 'active of' : 'of'; document.getElementById('activeTabAegis').className = engine === 'aegis' ? 'active aegis' : 'aegis'; document.getElementById('activeTabOF').className = engine === 'of' ? 'active of' : 'of'; renderLogs(); renderHistory(); renderActiveTrades(); }
 
-function renderHistory() { const rows = latestHistory[activeHistEngine] || []; const box = document.getElementById('trades'); let totalPnlHtml = ''; if (rows.length > 0) { const today = new Date(); const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]; const datePrefix = ('0' + today.getDate()).slice(-2) + ' ' + monthNames[today.getMonth()] + ' ' + today.getFullYear(); const isoPrefix = today.getFullYear() + '-' + ('0' + (today.getMonth() + 1)).slice(-2) + '-' + ('0' + today.getDate()).slice(-2); let sum = 0; for (const t of rows) { if (t.date && (t.date.startsWith(datePrefix) || t.date.startsWith(isoPrefix))) { sum += Number(t.net_pl || 0); } } totalPnlHtml = ` &middot; Today's P&amp;L: <span class="${pnlClass(sum)}">${money(sum)}</span>`; } document.getElementById('histCount').innerHTML = rows.length + ' trades &middot; disk &middot; ' + activeHistEngine.toUpperCase() + totalPnlHtml; if (!rows.length) { const histPath = activeHistEngine === 'of' ? 'stock_order_flow/data/trades/trade_history.json' : (activeHistEngine === 'aegis' ? 'AEGIS/data/trades/trade_history.json' : `${activeHistEngine}_bot/data/trades/trade_history.json`); box.innerHTML = `<div class="empty">No closed ${activeHistEngine} trades on disk yet (<code>${histPath}</code>).</div>`; return; } const body = rows.map(t => ` <tr> <td class="mono" style="white-space:nowrap">${t.date || '—'}</td> <td class="mono" style="white-space:nowrap">${t.exit_time || '—'}</td> <td>${signalCellHtml(t.signal)}</td> <td class="mono">${t.symbol || '—'}</td> <td class="mono">${fmt(t.entry_price, 2)}</td> <td class="mono">${fmt(t.exit_price, 2)}</td> <td class="${pnlClass(t.net_pl)}">${money(t.net_pl)}</td> <td>${t.reason || '—'}</td> </tr>`).join(''); box.innerHTML = ` <table class="trades-table"> <thead> <tr> <th>Entry Time</th><th>Exit Time</th><th>Side</th><th>Symbol</th><th>Entry</th><th>Exit</th><th>P&amp;L</th><th>Exit reason</th> </tr> </thead> <tbody>${body}</tbody> </table>`; }
+function renderHistory() { const rows = latestHistory[activeHistEngine] || []; const box = document.getElementById('trades'); let totalPnlHtml = ''; if (rows.length > 0) { const today = new Date(); const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]; const datePrefix = ('0' + today.getDate()).slice(-2) + ' ' + monthNames[today.getMonth()] + ' ' + today.getFullYear(); const isoPrefix = today.getFullYear() + '-' + ('0' + (today.getMonth() + 1)).slice(-2) + '-' + ('0' + today.getDate()).slice(-2); let sum = 0; for (const t of rows) { if (t.date && (t.date.startsWith(datePrefix) || t.date.startsWith(isoPrefix))) { sum += Number(t.net_pl || 0); } } totalPnlHtml = ` &middot; Today's P&amp;L: <span class="${pnlClass(sum)}">${money(sum)}</span>`; } document.getElementById('histCount').innerHTML = rows.length + ' trades &middot; disk &middot; ' + (activeHistEngine === 'of' ? 'ARGUS' : activeHistEngine.toUpperCase()) + totalPnlHtml; if (!rows.length) { const histPath = activeHistEngine === 'of' ? 'stock_order_flow/data/trades/trade_history.json' : (activeHistEngine === 'aegis' ? 'AEGIS/data/trades/trade_history.json' : `${activeHistEngine}_bot/data/trades/trade_history.json`); box.innerHTML = `<div class="empty">No closed ${activeHistEngine === 'of' ? 'ARGUS' : activeHistEngine} trades on disk yet (<code>${histPath}</code>).</div>`; return; } const body = rows.map(t => ` <tr> <td class="mono" style="white-space:nowrap">${t.date || '—'}</td> <td class="mono" style="white-space:nowrap">${t.exit_time || '—'}</td> <td>${signalCellHtml(t.signal)}</td> <td class="mono">${t.symbol || '—'}</td> <td class="mono">${fmt(t.entry_price, 2)}</td> <td class="mono">${fmt(t.exit_price, 2)}</td> <td class="${pnlClass(t.net_pl)}">${money(t.net_pl)}</td> <td>${t.reason || '—'}</td> </tr>`).join(''); box.innerHTML = ` <table class="trades-table"> <thead> <tr> <th>Entry Time</th><th>Exit Time</th><th>Side</th><th>Symbol</th><th>Entry</th><th>Exit</th><th>P&amp;L</th><th>Exit reason</th> </tr> </thead> <tbody>${body}</tbody> </table>`; }
 
-function renderActiveTrades() { const activeObj = latestActive[activeTradeEngine] || {}; const rows = Object.values(activeObj); const box = document.getElementById('activeTrades'); document.getElementById('activeCount').textContent = rows.length + ' active trades · ' + activeTradeEngine.toUpperCase(); if (!rows.length) { box.innerHTML = `<div class="empty">No active ${activeTradeEngine} trades.</div>`; return; } const body = rows.map(t => { let price = t.entry_price; if (price === undefined && t.legs && t.legs.length) { price = t.legs[0].entry_price; } const symbol = t.symbol || (t.legs && t.legs.length ? t.legs[0].symbol : '—'); const type = t.type || t.signal_type || (t.legs && t.legs.length ? t.legs[0].signal_type : '—'); const qty = t.qty || (t.legs && t.legs.length ? t.legs[0].qty : '—'); return ` <tr> <td class="mono" style="white-space:nowrap">${(t.entry_time || '—').replace('T', ' ').substring(0, 19)}</td> <td>${signalCellHtml(type)}</td> <td class="mono">${symbol}</td> <td class="mono">${fmt(price, 2)}</td> <td class="mono">${qty}</td> <td class="mono">${money(t.margin || t.notional)}</td> <td>${t.reason || '—'}</td> </tr>`; }).join(''); box.innerHTML = ` <table class="trades-table"> <thead> <tr> <th>Entry Time</th><th>Side</th><th>Symbol</th><th>Entry Price</th><th>Qty</th><th>Margin / Notional</th><th>Reason</th> </tr> </thead> <tbody>${body}</tbody> </table>`; }
+function renderActiveTrades() { const activeObj = latestActive[activeTradeEngine] || {}; const rows = Object.values(activeObj); const box = document.getElementById('activeTrades'); document.getElementById('activeCount').textContent = rows.length + ' active trades · ' + (activeTradeEngine === 'of' ? 'ARGUS' : activeTradeEngine.toUpperCase()); if (!rows.length) { box.innerHTML = `<div class="empty">No active ${activeTradeEngine === 'of' ? 'ARGUS' : activeTradeEngine} trades.</div>`; return; } const body = rows.map(t => { let price = t.entry_price; if (price === undefined && t.legs && t.legs.length) { price = t.legs[0].entry_price; } const symbol = t.symbol || (t.legs && t.legs.length ? t.legs[0].symbol : '—'); const type = t.type || t.signal_type || (t.legs && t.legs.length ? t.legs[0].signal_type : '—'); const qty = t.qty || (t.legs && t.legs.length ? t.legs[0].qty : '—'); return ` <tr> <td class="mono" style="white-space:nowrap">${(t.entry_time || '—').replace('T', ' ').substring(0, 19)}</td> <td>${signalCellHtml(type)}</td> <td class="mono">${symbol}</td> <td class="mono">${fmt(price, 2)}</td> <td class="mono">${qty}</td> <td class="mono">${money(t.margin || t.notional)}</td> <td>${t.reason || '—'}</td> </tr>`; }).join(''); box.innerHTML = ` <table class="trades-table"> <thead> <tr> <th>Entry Time</th><th>Side</th><th>Symbol</th><th>Entry Price</th><th>Qty</th><th>Margin / Notional</th><th>Reason</th> </tr> </thead> <tbody>${body}</tbody> </table>`; }
 
 async function refresh() {
   const res = await fetch('/api/live_state'); const data = await res.json();
@@ -541,11 +542,11 @@ document.getElementById('logTabAegis').addEventListener('click', () => setEngine
 setEngine('aegis'); refresh(); setInterval(refresh, 2000);
 
 /* ═══════════════════════════════════════════════════════════════
-   RESEARCH MODE LOGIC — DUAL ENGINE (VORTEX + AEGIS) + DATE SELECTOR
+   RESEARCH MODE LOGIC — DUAL ENGINE (ARGUS + AEGIS) + DATE SELECTOR
    ═══════════════════════════════════════════════════════════════ */
 
 let researchMode = false;
-let researchEngine = 'vortex';  // 'vortex' | 'aegis'
+let researchEngine = 'argus';  // 'argus' | 'aegis'
 let plotlyLoaded = true; // CDN loaded in head
 
 function toggleResearchMode() {
@@ -573,7 +574,7 @@ function initResearchDefaults() {
 
 async function loadUniverseList() {
   try {
-    const res = await fetch('/api/analytics_dates?engine=vortex');
+    const res = await fetch('/api/analytics_dates?engine=argus');
     const data = await res.json();
     if (data.dates && data.dates.length) {
       const dl = document.getElementById('universeList');
@@ -583,21 +584,30 @@ async function loadUniverseList() {
 }
 
 function setResearchEngine(engine) {
-  researchEngine = engine;
+  researchEngine = (engine === 'vortex' || engine === 'of') ? 'argus' : engine;
   document.querySelectorAll('.research-engine-tab').forEach(t => t.classList.remove('active'));
-  document.querySelector(`.research-engine-tab[data-engine="${engine}"]`).classList.add('active');
+  const activeTabBtn = document.querySelector(`.research-engine-tab[data-engine="${engine}"]`) || document.querySelector(`.research-engine-tab[data-engine="${researchEngine}"]`);
+  if (activeTabBtn) activeTabBtn.classList.add('active');
+
   // Toggle tab strips + symbol input visibility
-  document.getElementById('vortexTabs').style.display = engine === 'vortex' ? 'flex' : 'none';
-  document.getElementById('aegisTabs').style.display = engine === 'aegis' ? 'flex' : 'none';
-  document.getElementById('vortexSymbolWrap').style.display = engine === 'vortex' ? 'inline-flex' : 'none';
+  const isArgus = researchEngine === 'argus';
+  const argusTabsEl = document.getElementById('argusTabs') || document.getElementById('vortexTabs');
+  const aegisTabsEl = document.getElementById('aegisTabs');
+  const argusSymbolEl = document.getElementById('argusSymbolWrap') || document.getElementById('vortexSymbolWrap');
+  
+  if (argusTabsEl) argusTabsEl.style.display = isArgus ? 'flex' : 'none';
+  if (aegisTabsEl) aegisTabsEl.style.display = isArgus ? 'none' : 'flex';
+  if (argusSymbolEl) argusSymbolEl.style.display = isArgus ? 'inline-flex' : 'none';
+
   // Reset chart visibility
   document.querySelectorAll('.chart-container').forEach(c => c.style.display = 'none');
   document.getElementById('researchLoader').style.display = 'flex';
   document.getElementById('researchLoader').innerHTML = `<div class="spinner"></div>Select date and click Run Research…`;
   // Activate first tab of the visible strip
-  const firstTab = document.querySelector(`#${engine}Tabs .research-tab`);
+  const stripId = isArgus ? (document.getElementById('argusTabs') ? 'argusTabs' : 'vortexTabs') : 'aegisTabs';
+  const firstTab = document.querySelector(`#${stripId} .research-tab`);
   if (firstTab) {
-    document.querySelectorAll(`#${engine}Tabs .research-tab`).forEach(t => t.classList.remove('active'));
+    document.querySelectorAll(`#${stripId} .research-tab`).forEach(t => t.classList.remove('active'));
     firstTab.classList.add('active');
   }
 }
@@ -631,9 +641,9 @@ async function runResearch() {
   document.querySelectorAll('.chart-container').forEach(c => c.style.display = 'none');
 
   let url;
-  if (researchEngine === 'vortex') {
+  if (researchEngine === 'argus' || researchEngine === 'vortex') {
     const symbol = (document.getElementById('researchSymbol').value || '').toUpperCase();
-    if (!symbol) { document.getElementById('researchLoader').innerHTML = `<span style="color:var(--bad)">Symbol required for VORTEX</span>`; btn.disabled = false; return; }
+    if (!symbol) { document.getElementById('researchLoader').innerHTML = `<span style="color:var(--bad)">Symbol required for ARGUS</span>`; btn.disabled = false; return; }
     const params = new URLSearchParams({ symbol });
     if (mode === 'alltime') params.set('all_time', '1');
     else if (mode === 'range') { params.set('start', document.getElementById('researchStart').value); params.set('end', document.getElementById('researchEnd').value); }
@@ -652,11 +662,13 @@ async function runResearch() {
     const data = await res.json();
     if (data.error) { document.getElementById('researchLoader').innerHTML = `<span style="color:var(--bad)">${data.error}</span>`; return; }
     renderResearchMeta(data.meta);
-    if (researchEngine === 'vortex') renderVortexCharts(data);
+    if (researchEngine === 'argus' || researchEngine === 'vortex') renderArgusCharts(data);
     else renderAegisCharts(data);
     document.getElementById('researchLoader').style.display = 'none';
     // Show active tab's chart
-    const activeTab = document.querySelector(`#${researchEngine}Tabs .research-tab.active`);
+    const isArgus = (researchEngine === 'argus' || researchEngine === 'vortex');
+    const stripId = isArgus ? (document.getElementById('argusTabs') ? 'argusTabs' : 'vortexTabs') : 'aegisTabs';
+    const activeTab = document.querySelector(`#${stripId} .research-tab.active`);
     if (activeTab) {
       const target = 'chart' + activeTab.dataset.tab.charAt(0).toUpperCase() + activeTab.dataset.tab.slice(1).replace(/_([a-z])/g, (_, c) => c.toUpperCase());
       document.querySelectorAll('.chart-container').forEach(c => c.style.display = 'none');
@@ -686,7 +698,7 @@ function renderResearchMeta(meta) {
   el.innerHTML = parts.join('');
 }
 
-function renderVortexCharts(data) {
+function renderArgusCharts(data) {
   renderPlotly('chartVolume', data.volume_profile);
   renderPlotly('chartBidDepth', data.bid_depth);
   renderPlotly('chartAskDepth', data.ask_depth);
@@ -694,12 +706,12 @@ function renderVortexCharts(data) {
   renderPlotly('chartAuction', data.auction);
   // Range/all-time: render time-series if present
   if (data.time_series) {
-    // Map time_series keys to chart containers (reuse volume container for oib_mean, etc.)
     const ts = data.time_series;
     if (ts.oib_mean) renderPlotly('chartMicroDist', ts.oib_mean);
     if (ts.spread_mean) renderPlotly('chartAuction', ts.spread_mean);
   }
 }
+const renderVortexCharts = renderArgusCharts;
 
 function renderAegisCharts(data) {
   renderPlotly('chartStrikeHeatmap', data.strike_heatmap);
@@ -716,9 +728,9 @@ function renderPlotly(containerId, figJson) {
   Plotly.react(el, figJson.data, figJson.layout, {responsive: true, displayModeBar: true, displaylogo: false});
 }
 
-// Quick Symbol Picker: Click any Symbol in Active/History tables to load VORTEX research
+// Quick Symbol Picker: Click any Symbol in Active/History tables to load ARGUS research
 document.addEventListener('click', (e) => {
-  if (researchMode && researchEngine === 'vortex' && e.target.tagName === 'TD' && e.target.classList.contains('mono')) {
+  if (researchMode && (researchEngine === 'argus' || researchEngine === 'vortex') && e.target.tagName === 'TD' && e.target.classList.contains('mono')) {
     const symbol = e.target.textContent.trim();
     if (/^[A-Z&]{2,15}$/.test(symbol)) {
       document.getElementById('researchSymbol').value = symbol;

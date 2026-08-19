@@ -11,17 +11,17 @@ engine's own authoritative harness document.
 
 ## 1. Ten-thousand-foot view
 
-```
-                         Oracle Cloud VPS  (opc@137.23.41.38)
-                         ┌─────────────────────────────────────────────┐
-   Shoonya broker ◀──WS──│   PM2 manages 4 apps                         │
-                         │   ┌─ l2-archiver        (Raw Logger, 1st)     │
-                         │   ├─ astra-bot          (Engine 2, 2nd)      │
-                         │   ├─ stock-order-flow   (Engine 1, 3rd)      │
-                         │   └─ unified-dashboard  (Flask UI reader)    │
-                         └─────────────────────────────────────────────┘
-                                       common/  (shared library)
-                                       /dev/shm/*.json  (IPC)
+`                          Oracle Cloud VPS  (opc@137.23.41.38)
+                          ┌─────────────────────────────────────────────┐
+    Shoonya broker ◀──WS──│   PM2 manages 5 apps                         │
+                          │   ├─ l2-archiver        (Raw Logger, 1st)     │
+                          │   ├─ aegis-bot          (Options Engine, 2nd) │
+                          │   ├─ argus              (Equities Engine, 3rd)│
+                          │   ├─ unified-dashboard  (Flask UI reader)    │
+                          │   └─ eod-calibrator     (Daily EOD ML Cron)   │
+                          └─────────────────────────────────────────────┘
+                                        common/  (shared library)
+                                        /dev/shm/*.json  (IPC)
 ```
 `l2-archiver` is the standalone raw L2 logger (starts at 08:55 IST for auction capture); engines open their own WS via TickCompiler. All PM2 apps share the root `common/` library and the unified dashboard reads state JSON off disk.
 
@@ -31,25 +31,26 @@ engine's own authoritative harness document.
 
 | # | Engine | PM2 process | Entry | State | Harness document (authoritative) |
 |---|---|---|---|---|---|
-| 1 | **VORTEX** — HFT microstructure equities (Nifty 100 cash) | `stock-order-flow` | `stock_order_flow/main.py` | active | [`stock_order_flow/AGENTIC HARNESS DOCUMENT v3.5.md`](stock_order_flow/AGENTIC%20HARNESS%20DOCUMENT%20v3.5.md) |
-| 2 | **Astra Bot** — options Gamma-Burst + Spot-Structure (Nifty/Sensex 0DTE) | `astra-bot` | `astra_bot/main.py` | active | [`astra_bot/AGENTIC HARNESS DOCUMENT Astra v4.3.md`](astra_bot/AGENTIC%20HARNESS%20DOCUMENT%20Astra%20v4.3.md) |
+| 1 | **ARGUS** — **A**lgorithmic **R**eal-time **G**ranular **U**ltra-microstructure **S**calper (Nifty 100 cash) | `argus` | `stock_order_flow/main.py` | active | [`stock_order_flow/AGENTIC HARNESS DOCUMENT v3.5.md`](stock_order_flow/AGENTIC%20HARNESS%20DOCUMENT%20v3.5.md) |
+| 2 | **AEGIS** — **A**utonomous **E**xecution & **G**amma **I**mbalance **S**ystem (Nifty/Sensex 0DTE Options) | `aegis-bot` | `AEGIS/aegis_main.py` | active | [`astra_bot/AGENTIC HARNESS DOCUMENT Astra v4.3.md`](astra_bot/AGENTIC%20HARNESS%20DOCUMENT%20Astra%20v4.3.md) |
 | ~~3~~ | ~~Kronos Bot~~ | — | — | **DECOMMISSIONED** — see §5 | (historical only — do not revive) |
 
 Each engine owns its detailed spec; this root file only maps them and the
 shared plumbing. **When an engine's behaviour is in question, read that
 engine's harness document — it overrides everything here for that engine.**
 
-### 2.1 Engine 1 — VORTEX (Equities HFT)
+### 2.1 Engine 1 — ARGUS (Algorithmic Real-Time Granular Ultra-Microstructure Scalper)
 Zero-copy `ParsedTick` (`__slots__`), per-symbol object pool, unified
 conviction trigger with **adaptive regime gating** (NOISE/BURST/GRIND/WHALE),
-**pre-market state machine** (5 phases: AUCTION_ENTRY→AUCTION_FREEZE→AUCTION_BUFFER→TRANSITION_DETECT→CONTINUOUS_LIVE),
-**delta-baseline math** (first 3 buckets), **global 1-trade lock**,
+**Adverse Selection Shield** (3-layer toxicity gate), **Kyle's Lambda Limit Price Engine**,
+**Kelly Criterion Dynamic Sizing**, **pre-market state machine** (5 phases),
+**delta-baseline math** (first 3 buckets),
 4-pillar microstructure-decay exits
 (`MPAR_DECEL`/`DKLA_FLIP`/`VAC_REVERSAL`/`LRA_VEL_FLIP` + confirmation
 `TOX_SPIKE`/`WHALE_EXIT`/`BRANCHING_COLLAPSE`, plus `TIME_STOP`/
 `EOD_FLATTEN`/`BREAKEVEN_LOCK`). Full spec → harness doc (§1.1).
 
-### 2.2 Engine 2 — Astra Bot (Options)
+### 2.2 Engine 2 — AEGIS (Autonomous Execution & Gamma Imbalance System)
 5-factor Gamma-Burst Z-score composite offset-indexed ±10 strikes around ATM,
 fused with a Spot-Structure state machine (session VWAP, dynamic High/Low
 VWAP bands, 9-EMA trail, 200-EMA regime) and a price-confirm pending window.
@@ -62,13 +63,6 @@ Subscribes to hardcoded 110 symbols (`SUBSCRIPTION_UNIVERSE` from `common/symbol
 Writes partitioned Snappy Parquet (15-min files) to `data/l2_raw/`.
 Logs auction data (09:00-09:15, 15:30-15:40) to `data/logs/`.
 **Critical**: Must start by 08:55 IST to capture 09:00-09:08 auction window.
-
-### 2.2 Engine 2 — Astra Bot (Options)
-5-factor Gamma-Burst Z-score composite offset-indexed ±10 strikes around ATM,
-fused with a Spot-Structure state machine (session VWAP, dynamic High/Low
-VWAP bands, 9-EMA trail, 200-EMA regime) and a price-confirm pending window.
-0DTE only, Nifty Mon/Tue/Fri + Sensex Wed/Thu, entry cutoff 15:00, hard flatten
-15:10, LMT only. Full spec → harness doc.
 
 ---
 

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-VORTEX On-Demand Microstructure Forensics — Research Analytics Engine
+ARGUS On-Demand Microstructure Forensics — Research Analytics Engine
+(Algorithmic Real-Time Granular Ultra-Microstructure Scalper)
 Reads partitioned L2 Parquet from l2_archiver, generates Plotly charts for dashboard Research Mode.
-Compatible with v3.3 data structures (includes QUEUE_DECAY, MPAR, DKLA, LRA, VAC, WHALE_Z, etc.)
+Compatible with v3.6 data structures (includes QUEUE_DECAY, MPAR, DKLA, LRA, VAC, WHALE_Z, etc.)
 
 Supports Single Date (raw partition deep-dive), Date Range, and All-Time
 (pre-aggregated daily snapshots via common.analytics_persistence for instant load).
@@ -539,7 +540,7 @@ def run_research(symbol: str, target_date: str | None = None,
 
 
 def main():
-    parser = argparse.ArgumentParser(description="VORTEX Microstructure Research Analytics")
+    parser = argparse.ArgumentParser(description="ARGUS (Algorithmic Real-Time Granular Ultra-Microstructure Scalper) Research Analytics")
     parser.add_argument("symbol", help="Symbol to analyze (e.g., RELIANCE)")
     parser.add_argument("--date", default=None, help="Single date YYYY-MM-DD (deep-dive raw partitions)")
     parser.add_argument("--start", default=None, help="Range start YYYY-MM-DD")

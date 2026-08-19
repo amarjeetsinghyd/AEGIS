@@ -31,7 +31,7 @@ module.exports = {
       }
     },
     {
-      name: "vortex",
+      name: "argus",
       script: "stock_order_flow/main.py",
       cwd: "/home/opc",
       interpreter: "python3",

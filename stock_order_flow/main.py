@@ -1,6 +1,6 @@
-"""Main Orchestrator — Stock Order Flow HFT System (v3.0 "Microstructure Cascade")
+"""Main Orchestrator — ARGUS: Algorithmic Real-Time Granular Ultra-Microstructure Scalper (v3.6)
 Wires: Shoonya Broker -> L2Archiver (Raw Logger) -> CascadeValueEngine (Signal Gen) -> StockExecutionManager (Exec & Dynamic Exits)
-Features: Unified Conviction Entry, 4-Pillar Microstructure Decay Exit, Partitioned Parquet Archival, EOD Universe Driven.
+Features: Unified Conviction Entry, Adverse Selection Shield, Kyle's Lambda Limit Price, Kelly Sizing, 4-Pillar Microstructure Decay Exit.
 Hardware Target: Oracle 1GB RAM / 1 OCPU (Zero-Allocation Hot Paths Enforced)."""
 from __future__ import annotations
 import os
@@ -253,9 +253,9 @@ class TradingSystem:
         self.archiver_symbols = SUBSCRIPTION_UNIVERSE
 
     def initialize(self):
-        logger.info("=" * 60)
-        logger.info("INITIALIZING HFT MICROSTRUCTURE CASCADE SYSTEM v3.0")
-        logger.info("=" * 60)
+        logger.info("=" * 70)
+        logger.info("INITIALIZING ARGUS — Algorithmic Real-Time Granular Ultra-Microstructure Scalper (v3.6)")
+        logger.info("=" * 70)
 
         # 1. Broker & Login
         self.broker = ShoonyaAdapter()

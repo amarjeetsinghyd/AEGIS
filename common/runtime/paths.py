@@ -10,15 +10,15 @@ def get_runtime_paths(runtime_name: str) -> dict:
 
     if runtime_name == "aegis":
         root_dir = get_project_root() / "AEGIS"
-    elif runtime_name in {"astra", "kronos", "stock_order_flow"}:
-        root_dir = get_project_root() / f"{runtime_name}_bot" if runtime_name != "stock_order_flow" else get_project_root() / runtime_name
+    elif runtime_name in {"astra", "kronos", "stock_order_flow", "argus", "vortex"}:
+        root_dir = get_project_root() / f"{runtime_name}_bot" if runtime_name not in {"stock_order_flow", "argus", "vortex"} else get_project_root() / "stock_order_flow"
     elif runtime_name == "dashboard":
         root_dir = get_project_root() / "unified_dashboard"
     elif runtime_name in {"hub", "shoonya_data_hub", "data_hub"}:
         root_dir = get_project_root() / "shoonya_data_hub"
     else:
         raise ValueError(
-            "runtime_name must be 'aegis', 'astra', 'kronos', 'stock_order_flow', 'dashboard', or 'hub'"
+            "runtime_name must be 'aegis', 'astra', 'kronos', 'stock_order_flow', 'argus', 'dashboard', or 'hub'"
         )
 
     data_dir = root_dir / "data"
