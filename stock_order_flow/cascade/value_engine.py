@@ -487,6 +487,72 @@ class CascadeValueEngine:
         
         return bid_decay_bps, ask_decay_bps
 
+    def _estimate_adverse_selection(self, sym: str, side: str, 
+                                     vpins: float, oimb: float, 
+                                     spread_bps: float, toxicity: float,
+                                     bid_queue_decay: float, ask_queue_decay: float,
+                                     whale_z: float, branching: float) -> float:
+        """
+        Estimate P(toxic_fill | features) ∈ [0,1]
+        
+        A toxic fill is one where 30s P&L < -spread/2 (i.e., we got picked off).
+        
+        Features used:
+        - VPIN: High VPIN = informed trading present
+        - |OIB|: Extreme order imbalance = one-sided flow
+        - Spread widening: Spread_bps > recent median = uncertainty
+        - Toxicity (DKLA): High impact asymmetry = adverse selection
+        - Queue decay: Fast queue consumption = we're at back of queue
+        - Whale Z: Large lot presence = institutional flow
+        - Branching: Low Hawkes branching = flow not self-exciting (random)
+        
+        Returns probability in [0, 1]. If > 0.6, veto signal or widen limit price.
+        """
+        # Normalize features to [0, 1] range
+        vpin_norm = min(max(vpins / 0.5, 0.0), 1.0)  # VPIN > 0.5 is very high
+        oimb_norm = min(max(abs(oimb - 1.0) / 2.0, 0.0), 1.0)  # OIB far from 1.0
+        spread_norm = min(max(spread_bps / 10.0, 0.0), 1.0)  # Spread > 10bps is wide
+        tox_norm = min(max(toxicity / 50.0, 0.0), 1.0)  # Toxicity > 50bps is high
+        
+        # Queue decay: use the side we're trading on
+        if side == "BUY":
+            queue_decay = min(max(ask_queue_decay / 100.0, 0.0), 1.0)  # Ask decay for buys
+        else:
+            queue_decay = min(max(bid_queue_decay / 100.0, 0.0), 1.0)  # Bid decay for sells
+        
+        whale_norm = min(max(abs(whale_z) / 3.0, 0.0), 1.0)  # Whale Z > 3 is extreme
+        branch_norm = min(max((0.3 - branching) / 0.3, 0.0), 1.0)  # Low branching = bad
+        
+        # Logistic regression weights (calibrated offline on historical fills)
+        # These weights should be calibrated on your specific fill data
+        # For now, using reasonable defaults based on microstructure literature
+        weights = {
+            'vpin': 0.25,      # VPIN is strongest predictor of adverse selection
+            'oimb': 0.15,      # Order imbalance
+            'spread': 0.10,    # Spread widening
+            'toxicity': 0.20,  # DKLA impact asymmetry
+            'queue_decay': 0.15,  # Queue position risk
+            'whale': 0.10,     # Whale presence
+            'branching': 0.05, # Low self-excitation
+        }
+        
+        # Linear combination
+        logit = (
+            weights['vpin'] * vpin_norm +
+            weights['oimb'] * oimb_norm +
+            weights['spread'] * spread_norm +
+            weights['toxicity'] * tox_norm +
+            weights['queue_decay'] * queue_decay +
+            weights['whale'] * whale_norm +
+            weights['branching'] * branch_norm
+        )
+        
+        # Convert to probability via sigmoid
+        # Center at 0.5: logit=0 -> P=0.5, logit=1 -> P=0.73, logit=2 -> P=0.88
+        prob = 1.0 / (1.0 + math.exp(-4.0 * (logit - 0.5)))
+        
+        return prob
+
     def _update_mpar(self, sym: str, snap: Dict, dt: float) -> Tuple[float, float, float]:
         bp1, bq1 = snap.get("bp1",0.0), snap.get("bq1",0.0)
         ap1, aq1 = snap.get("sp1",0.0), snap.get("sq1",0.0)
@@ -773,6 +839,80 @@ class CascadeValueEngine:
         
         # Neutral zone - no adjustment
         return conviction
+
+    def _calculate_kelly_fraction(self, sym: str, side: str, conviction: float, 
+                                   ml_prob: Optional[float], regime: int) -> float:
+        """
+        Calculate Kelly fraction for position sizing based on ML probability and historical metrics.
+        
+        Kelly Formula: f* = (p * b - q) / b
+        where:
+        - p = probability of win (from ML model)
+        - q = 1 - p = probability of loss
+        - b = win/loss ratio (from historical metrics)
+        
+        For our system:
+        - p = ML probability (if available) or conviction-based estimate
+        - b = average win / average loss from trade history
+        
+        Args:
+            sym: Symbol
+            side: BUY or SELL
+            conviction: Conviction score (0-10)
+            ml_prob: ML model probability (0.0-1.0) or None
+            regime: Current regime
+            
+        Returns:
+            Kelly fraction (0.0 to 1.0)
+        """
+        # Base win probability from ML or conviction
+        if ml_prob is not None:
+            p = ml_prob
+        else:
+            # Estimate from conviction: conviction 5.0 -> ~55% win rate, 10.0 -> ~70%
+            p = 0.5 + (conviction / 10.0) * 0.2
+        
+        # Get historical win/loss ratio from trade history
+        # Default to 1.5:1 (typical for microstructure strategies)
+        win_loss_ratio = self._get_historical_win_loss_ratio(sym, regime)
+        
+        # Kelly fraction: f = (p * b - (1-p)) / b
+        # where b = win_loss_ratio
+        b = win_loss_ratio
+        q = 1.0 - p
+        
+        kelly = (p * b - q) / b
+        
+        # Apply regime-specific scaling
+        regime_scaling = {
+            0: 0.5,   # NOISE - reduce size
+            1: 1.0,   # BURST - full Kelly
+            2: 0.75,  # GRIND - moderate
+            3: 1.25,  # WHALE - increase (high conviction regime)
+        }
+        kelly *= regime_scaling.get(regime, 1.0)
+        
+        # Apply conviction scaling (higher conviction = more Kelly)
+        conviction_scale = 0.5 + (conviction / 10.0) * 0.5  # 0.5x to 1.0x
+        kelly *= conviction_scale
+        
+        # Cap at reasonable bounds
+        return max(0.0, min(kelly, 1.0))
+
+    def _get_historical_win_loss_ratio(self, sym: str, regime: int) -> float:
+        """
+        Get historical win/loss ratio for a symbol/regime.
+        Returns default 1.5 if no history available.
+        """
+        # TODO: Implement actual trade history lookup
+        # For now, return regime-specific defaults
+        regime_defaults = {
+            0: 1.2,   # NOISE - lower win/loss
+            1: 1.8,   # BURST - higher win/loss
+            2: 1.5,   # GRIND - moderate
+            3: 2.0,   # WHALE - highest win/loss
+        }
+        return regime_defaults.get(regime, 1.5)
 
     def _get_ml_probability(self, sym: str, regime: int) -> Optional[float]:
         """
@@ -1458,6 +1598,42 @@ class CascadeValueEngine:
                         % (sym, mom_5m, mom_1m, mpar_score)
                     )
             
+            # ─── ADVERSE SELECTION FILTER ───
+            # Estimate probability of toxic fill (getting picked off)
+            if signal_side:
+                bid_queue_decay = adv.get("bid_queue_decay", 0.0)
+                ask_queue_decay = adv.get("ask_queue_decay", 0.0)
+                spread_bps = spread / max(lp, 1e-6) * 10000
+                
+                adv_sel_prob = self._estimate_adverse_selection(
+                    sym=sym,
+                    side=signal_side,
+                    vpins=avg_tpin,
+                    oimb=oimb,
+                    spread_bps=spread_bps,
+                    toxicity=toxicity,
+                    bid_queue_decay=bid_queue_decay,
+                    ask_queue_decay=ask_queue_decay,
+                    whale_z=whale_z,
+                    branching=branching
+                )
+                
+                # Log adverse selection probability
+                if logger.isEnabledFor(logging.INFO):
+                    logger.info(
+                        "[ADV_SEL] %s | Side: %s | P(toxic): %.3f | VPIN: %.3f | OIB: %.2f | "
+                        "Spread: %.1fbps | Tox: %.1f | QueueDecay: B=%.1f A=%.1f | WhaleZ: %.2f | Branch: %.3f"
+                        % (sym, signal_side, adv_sel_prob, avg_tpin, oimb, spread_bps, toxicity,
+                           bid_queue_decay, ask_queue_decay, whale_z, branching)
+                    )
+                
+                # Veto if adverse selection probability too high
+                if adv_sel_prob > 0.60:
+                    if logger.isEnabledFor(logging.INFO):
+                        logger.info(f"[ADV_SEL_VETO] {sym} {signal_side} vetoed | P(toxic)={adv_sel_prob:.3f} > 0.60")
+                    signal_side = None
+                    conviction = 0.0
+            
             # ─── ML CONVICTION MULTIPLIER HOOK ───
             # Apply ML probability from EOD calibration as multiplicative conviction multiplier
             if signal_side and hasattr(self, '_ml_predictor') and self._ml_predictor is not None:
@@ -1482,12 +1658,30 @@ class CascadeValueEngine:
                     if logger.isEnabledFor(logging.INFO):
                         logger.info(f"[ML_MULTIPLIER_ERROR] {sym} | {e}")
             
-            # Acquire global trade lock on signal generation
+            # ─── KELLY SIZING FROM ML PROB ───
+            # Replace global 1-trade lock with dynamic position sizing
             if signal_side:
+                # Calculate Kelly fraction based on ML probability and historical metrics
+                kelly_fraction = self._calculate_kelly_fraction(sym, signal_side, conviction, ml_prob if 'ml_prob' in locals() else None, regime)
+                
+                # Cap Kelly fraction at reasonable bounds
+                kelly_fraction = max(0.0, min(kelly_fraction, 1.0))
+                
+                # Log Kelly sizing decision
+                if logger.isEnabledFor(logging.INFO):
+                    logger.info(
+                        "[KELLY_SIZING] %s | Side: %s | Conviction: %.2f | ML_Prob: %s | "
+                        "Kelly_Fraction: %.3f | Max_Position_Pct: %.1f%%"
+                        % (sym, signal_side, conviction, 
+                           f"{ml_prob:.3f}" if 'ml_prob' in locals() and ml_prob is not None else "N/A",
+                           kelly_fraction, kelly_fraction * 100)
+                    )
+                
+                # Acquire global trade lock on signal generation (still used for single-position constraint)
                 self._engine_active_trade = True
                 self._active_trade_symbol = sym
                 if logger.isEnabledFor(logging.INFO):
-                    logger.info(f"[TRADE_LOCK_ACQUIRED] {sym} | Lock engaged for {signal_side}")
+                    logger.info(f"[TRADE_LOCK_ACQUIRED] {sym} | Lock engaged for {signal_side} | Kelly: {kelly_fraction:.3f}")
         
         # ULTRA-DETAILED TELEMETRY: Log Phase 2 Conviction Scores with component breakdown
         if hard_gate_pass:
@@ -1558,15 +1752,20 @@ class CascadeValueEngine:
         
         # ── PUSH ACTIONABLE SIGNAL ──
         if signal_side:
+            # Calculate Kelly fraction for position sizing
+            kelly_fraction = self._calculate_kelly_fraction(sym, signal_side, conviction, ml_prob if 'ml_prob' in locals() else None, regime)
+            kelly_fraction = max(0.0, min(kelly_fraction, 1.0))
+            
             sig_payload = {
                 "type": "ENTRY_SIGNAL",
                 "sym": sym, "signal": signal_side, "lp": lp,
                 "conviction": round(conviction, 2),
+                "kelly_fraction": round(kelly_fraction, 3),
                 "reason": f"Unified_Conviction_v3",
                 "metrics": log_entry
             }
             self.signal_queue.put(sig_payload)
-            logger.info(f"SIGNAL {signal_side} {sym} @ {lp:.2f} | Conv: {conviction:.2f} | Branching: {branching:.2f} WhaleZ: {whale_z:.2f}")
+            logger.info(f"SIGNAL {signal_side} {sym} @ {lp:.2f} | Conv: {conviction:.2f} | Kelly: {kelly_fraction:.3f} | Branching: {branching:.2f} WhaleZ: {whale_z:.2f}")
             
             # ULTRA-DETAILED TELEMETRY: Log entry decision with full conviction metrics
             # tox_p90 already computed above

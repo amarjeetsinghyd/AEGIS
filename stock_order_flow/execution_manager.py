@@ -99,6 +99,84 @@ EXIT_CFG = {
     "eod_flatten_time": "14:55",
 }
 
+# ═══════════════════════════════════════════════════════════════════
+# KYLE'S λ LIMIT PRICE ENGINE — Optimal Limit Order Placement
+# ═══════════════════════════════════════════════════════════════════
+
+def calculate_kyle_limit_price(
+    side: str,
+    mid_price: float,
+    lam_buy: float,
+    lam_sell: float,
+    target_notional: float,
+    conviction: float,
+    max_slippage_bps: float = 5.0
+) -> float:
+    """
+    Calculate optimal limit price using Kyle's λ (market impact coefficient).
+    
+    Kyle's model: optimal limit price = mid ± (target_notional * λ / 2)
+    where λ is the price impact per unit notional (in bps per notional).
+    
+    For BUY:  limit = mid + (target_notional * lam_buy / 2)  -> pay up to λ/2 impact
+    For SELL: limit = mid - (target_notional * lam_sell / 2) -> receive down to λ/2 impact
+    
+    The conviction parameter scales the aggressiveness:
+    - High conviction (>0.7): Use full Kyle λ pricing (capture spread as maker)
+    - Medium conviction (0.5-0.7): Use 50% of Kyle λ
+    - Low conviction (<0.5): Fall back to marketable limit (current behavior)
+    
+    Args:
+        side: "BUY" or "SELL"
+        mid_price: Current mid price
+        lam_buy: Kyle's λ for buy side (bps per notional) from DKLA
+        lam_sell: Kyle's λ for sell side (bps per notional) from DKLA
+        target_notional: Target notional for the order (e.g., 1 Cr)
+        conviction: Signal conviction score (0-10+)
+        max_slippage_bps: Maximum slippage tolerance in bps
+    
+    Returns:
+        Optimal limit price aligned to tick size
+    """
+    # Normalize conviction to [0, 1] range (typical conviction range 0-10)
+    conv_norm = min(max(conviction / 10.0, 0.0), 1.0)
+    
+    # Scale factor based on conviction
+    if conv_norm >= 0.7:
+        kyle_scale = 1.0  # Full Kyle pricing - be maker
+    elif conv_norm >= 0.5:
+        kyle_scale = 0.5  # Half Kyle pricing
+    else:
+        kyle_scale = 0.0  # Marketable limit (current behavior)
+    
+    if side == "BUY":
+        lam = lam_buy
+        # Kyle optimal: mid + (notional * λ / 2) * scale
+        # λ is in bps, so convert: λ_bps * notional / 10000 = price impact
+        impact = (target_notional * lam / 2.0) / 10000.0 * kyle_scale
+        limit_price = mid_price + impact
+    else:
+        lam = lam_sell
+        impact = (target_notional * lam / 2.0) / 10000.0 * kyle_scale
+        limit_price = mid_price - impact
+    
+    # Cap at max slippage
+    max_impact = mid_price * max_slippage_bps / 10000.0
+    if side == "BUY":
+        limit_price = min(limit_price, mid_price + max_impact)
+    else:
+        limit_price = max(limit_price, mid_price - max_impact)
+    
+    # Align to tick size
+    steps = limit_price / TICK_SIZE
+    if side == "BUY":
+        aligned = math.ceil(steps - 1e-9) * TICK_SIZE
+    else:
+        aligned = math.floor(steps + 1e-9) * TICK_SIZE
+    
+    return round(aligned, 2)
+
+
 class ExitState:
     __slots__ = (
         "entry_time", "entry_accel", "peak_accel_mag", "peak_vacuum",
@@ -585,9 +663,26 @@ class StockExecutionManager:
             logger.warning(f"Daily loss cap hit ({self._day_loss:.2f} <= {loss_cap_limit:.2f}) — no new entries today.")
             return
         notional_budget = margin_budget * self.leverage
-        qty = int((notional_budget * MARGIN_SAFETY) / max(spot_price, 0.01))
+        
+        # ─── KELLY SIZING FROM ML PROB ───
+        # Get Kelly fraction from metrics (passed from value_engine signal)
+        kelly_fraction = float(metrics.get("kelly_fraction", 1.0)) if metrics else 1.0
+        # Cap Kelly fraction at reasonable bounds
+        kelly_fraction = max(0.0, min(kelly_fraction, 1.0))
+        
+        # Apply Kelly sizing to notional budget
+        kelly_notional = notional_budget * kelly_fraction
+        qty = int((kelly_notional * MARGIN_SAFETY) / max(spot_price, 0.01))
         if qty <= 0:
             return
+        
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(
+                "[KELLY_EXEC] %s | Margin: %.0f | Leverage: %.1f | Notional: %.0f | "
+                "Kelly: %.3f | Kelly_Notional: %.0f | Qty: %d"
+                % (symbol, margin_budget, self.leverage, notional_budget, 
+                   kelly_fraction, kelly_notional, qty)
+            )
         atr = float(metrics.get("atr", 0.0)) if metrics else 0.0
         if atr > 0:
             logger.info(f"ATR15 exits: TP={atr*TP_ATR_MULT:.2f}, InitSL={atr*SL_ATR_MULT:.2f}, Chandelier={atr*CHANDELIER_ATR_MULT:.2f}")
@@ -600,7 +695,40 @@ class StockExecutionManager:
                 tp_dist = min(tp_dist, d_opp * 0.9) if tp_dist > 0 else d_opp * 0.9
         action = "B" if signal == "BUY" else "S"
         tsym = self._resolve_tsym(symbol)
-        limit_price = self._marketable_limit(action, spot_price)
+        
+        # ─── KYLE'S λ LIMIT PRICE ENGINE ───
+        # Get DKLA lambdas from entry-time microstructure metrics
+        entry_adv = self.adv_metrics_dict.get(symbol, {})
+        lam_buy = entry_adv.get("lam_buy", 0.0)
+        lam_sell = entry_adv.get("lam_sell", 0.0)
+        mid_price = entry_adv.get("mp_val", spot_price)  # Microprice if available, else spot
+        
+        # Get conviction from metrics (passed from value_engine)
+        conviction = float(metrics.get("conviction", 5.0)) if metrics else 5.0
+        
+        # Target notional for this order
+        target_notional = qty * spot_price
+        
+        # Calculate optimal limit price using Kyle's λ
+        limit_price = calculate_kyle_limit_price(
+            side=signal,
+            mid_price=mid_price,
+            lam_buy=lam_buy,
+            lam_sell=lam_sell,
+            target_notional=target_notional,
+            conviction=conviction,
+            max_slippage_bps=5.0
+        )
+        
+        # Log Kyle pricing decision
+        if logger.isEnabledFor(logging.INFO):
+            kyle_impact_bps = (target_notional * (lam_buy if signal == "BUY" else lam_sell) / 2.0) / 10000.0
+            logger.info(
+                "[KYLE_LIMIT] %s | Side: %s | Mid: %.2f | λ_buy: %.1fbps | λ_sell: %.1fbps | "
+                "Conviction: %.1f | KyleImpact: %.1fbps | Limit: %.2f | Marketable: %.2f"
+                % (symbol, signal, mid_price, lam_buy, lam_sell, conviction, 
+                   kyle_impact_bps, limit_price, self._marketable_limit(action, spot_price))
+            )
         
         attempt_qty = qty
         for attempt in range(2):
