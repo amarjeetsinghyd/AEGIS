@@ -17,7 +17,7 @@ module.exports = {
     },
     {
       name: "l2-archiver",
-      script: "stock_order_flow/l2_archiver.py",
+      script: "ARGUS/l2_archiver.py",
       cwd: "/home/opc",
       interpreter: "python3",
       autorestart: true,
@@ -27,12 +27,12 @@ module.exports = {
       restart_delay: 5000,
       env: {
         PYTHONPATH: "/home/opc",
-        BOT_RUNTIME: "stock_order_flow"
+        BOT_RUNTIME: "ARGUS"
       }
     },
     {
       name: "argus",
-      script: "stock_order_flow/main.py",
+      script: "ARGUS/main.py",
       cwd: "/home/opc",
       interpreter: "python3",
       autorestart: true,
@@ -42,7 +42,7 @@ module.exports = {
       restart_delay: 5000,
       env: {
         PYTHONPATH: "/home/opc",
-        BOT_RUNTIME: "stock_order_flow"
+        BOT_RUNTIME: "ARGUS"
       }
     },
     {
@@ -61,7 +61,7 @@ module.exports = {
     },
     {
       name: "eod-calibrator",
-      script: "stock_order_flow/eod_calibrator.py",
+      script: "ARGUS/eod_calibrator.py",
       args: "--cron",
       cwd: "/home/opc",
       interpreter: "python3",
@@ -71,7 +71,7 @@ module.exports = {
       restart_delay: 5000,
       env: {
         PYTHONPATH: "/home/opc",
-        BOT_RUNTIME: "stock_order_flow"
+        BOT_RUNTIME: "ARGUS"
       }
     }
   ]

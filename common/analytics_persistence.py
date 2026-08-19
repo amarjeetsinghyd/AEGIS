@@ -65,7 +65,7 @@ VORTEX_SCHEMA_COLS = ARGUS_SCHEMA_COLS
 
 def _load_argus_partitions(target_date: str) -> pd.DataFrame:
     """Load all ARGUS L2 partitions for a given date."""
-    paths = get_runtime_paths("stock_order_flow")
+    paths = get_runtime_paths("argus")
     l2_dir = Path(paths["data_dir"]) / "l2_raw"
     files = sorted(l2_dir.glob(f"l2_raw_{target_date}_part_*.parquet"))
     if not files:
@@ -87,7 +87,7 @@ _load_vortex_partitions = _load_argus_partitions
 
 def _argus_symbol_map() -> dict[int, str]:
     """Load token→symbol from universe.json + tokens_cache.json."""
-    paths = get_runtime_paths("stock_order_flow")
+    paths = get_runtime_paths("argus")
     data_dir = Path(paths["data_dir"])
     t2s: dict[int, str] = {}
     uni_path = data_dir / "universe.json"
@@ -336,7 +336,7 @@ def _normalize_engine_name(engine: str) -> str:
 
 def _analytics_dir(engine: Literal["argus", "vortex", "aegis"]) -> Path:
     norm_engine = _normalize_engine_name(engine)
-    paths = get_runtime_paths("stock_order_flow" if norm_engine == "argus" else "aegis")
+    paths = get_runtime_paths("argus" if norm_engine == "argus" else "aegis")
     d = Path(paths["data_dir"]) / "analytics" / "daily"
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -344,7 +344,7 @@ def _analytics_dir(engine: Literal["argus", "vortex", "aegis"]) -> Path:
 
 def _manifest_path(engine: Literal["argus", "vortex", "aegis"]) -> Path:
     norm_engine = _normalize_engine_name(engine)
-    paths = get_runtime_paths("stock_order_flow" if norm_engine == "argus" else "aegis")
+    paths = get_runtime_paths("argus" if norm_engine == "argus" else "aegis")
     return Path(paths["data_dir"]) / "analytics" / "manifest.json"
 
 

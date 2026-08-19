@@ -29,7 +29,7 @@ from common.symbols import SUBSCRIPTION_UNIVERSE
 logger = get_logger("eod_calibrator")
 warnings.filterwarnings("ignore")
 
-CALIB_OUTPUT = os.path.join(BASE_DIR, "stock_order_flow", "stock_calibration.json")
+CALIB_OUTPUT = os.path.join(BASE_DIR, "ARGUS", "stock_calibration.json")
 
 def find_l2_raw_files() -> tuple[list[str], dict[str, list[str]]]:
     """
@@ -37,13 +37,13 @@ def find_l2_raw_files() -> tuple[list[str], dict[str, list[str]]]:
     Returns sorted date list and mapping: date_str -> list of parquet filepaths.
     """
     candidate_roots = [
+        os.path.join(BASE_DIR, "ARGUS", "data", "l2_raw"),
         os.path.join(BASE_DIR, "AEGIS", "data", "l2_raw"),
         os.path.join(BASE_DIR, "data", "l2_raw"),
-        os.path.join(BASE_DIR, "stock_order_flow", "data", "l2_raw"),
-        os.path.join(BASE_DIR, "stock_order_flow", "calibration_notes", "l2_data"),
+        os.path.join(BASE_DIR, "ARGUS", "calibration_notes", "l2_data"),
         os.path.join(get_data_dir(), "l2_raw"),
+        "/home/opc/ARGUS/data/l2_raw",
         "/home/opc/AEGIS/data/l2_raw",
-        "/home/opc/stock_order_flow/data/l2_raw",
         "/home/opc/data/l2_raw",
     ]
     

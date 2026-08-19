@@ -15,7 +15,7 @@ import time
 from collections import defaultdict
 from datetime import datetime
 from common.logger import get_logger
-from stock_order_flow.bar_book import ThreeMinuteBarBook, BarBook
+from ARGUS.bar_book import ThreeMinuteBarBook, BarBook
 
 logger = get_logger("tick_compiler")
 

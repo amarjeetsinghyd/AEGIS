@@ -48,12 +48,12 @@ the `common/` shared branches alone and ask. Never add new kronos code.**
 
 ## ACTIVE ENGINES (the only ones you should build on)
 
-1. **`stock_order_flow/`** — **ARGUS** (**A**lgorithmic **R**eal-time **G**ranular **U**ltra-microstructure **S**calper) — HFT microstructure equities engine (primary active system).
-   Architecture authority: `stock_order_flow/AGENTIC HARNESS DOCUMENT v3.5.md` (v3.6).
+1. **`ARGUS/`** — **ARGUS** (**A**lgorithmic **R**eal-time **G**ranular **U**ltra-microstructure **S**calper) — HFT microstructure equities engine (primary active system).
+   Architecture authority: `ARGUS/AGENTIC HARNESS DOCUMENT v3.5.md` (v3.6).
    Conform all Python edits to that document (init order, conviction trigger, adverse selection shield,
    Kyle's lambda limit engine, Kelly sizing, 4-pillar exits, zero-copy tick path, no heavy imports in tick handlers).
 2. **`AEGIS/`** (and `astra_bot/`) — **AEGIS** (**A**utonomous **E**xecution & **G**amma **I**mbalance **S**ystem) — options strategy bot (active).
-3. **`unified_dashboard/`** — monitoring UI, dual-brands: Quant Console — ARGUS (Algorithmic Real-Time Granular Ultra-Microstructure Scalper) × AEGIS.
+3. **`unified_dashboard/`** — monitoring UI, dual-brands: Quant Console — ARGUS × AEGIS.
 
 Shared library: `common/` (broker / execution / market / ipc / runtime / config / symbols).
 
@@ -96,10 +96,10 @@ Shared library: `common/` (broker / execution / market / ipc / runtime / config 
 - **Host:** `137.23.41.38` (Oracle Cloud, Ubuntu). **User:** `opc`. Repo on VPS: `/home/opc`.
 - **SSH key location (local):** repo-root `Oracle SSH keys/ssh-key-2026-07-11.key`.
   It is the ONLY copy — never replicate it into an engine subfolder (e.g. do **not**
-  copy it into `stock_order_flow/`).
+  copy it into `ARGUS/`).
 - **SSH command:** `ssh -i "Oracle SSH keys/ssh-key-2026-07-11.key" opc@137.23.41.38`
-- **Process manager:** PM2, config `ecosystem.config.js` — 3 apps: `astra-bot`,
-  `stock-order-flow`, `unified-dashboard`.
+- **Process manager:** PM2, config `ecosystem.config.js` — active apps: `aegis-bot`,
+  `argus`, `unified-dashboard`, `l2-archiver`, `eod-calibrator`.
 - **Deploy rule:** restart `shoonya-data-hub` *before* `astra-bot`; deploy only after
   15:30 IST or before 09:15 IST.
 

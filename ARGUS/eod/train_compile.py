@@ -196,8 +196,8 @@ class RegimeAwareCalibrator:
         Run full EOD calibration pipeline (Global Pooled + Platt Scaling).
         Returns summary dict.
         """
-        from stock_order_flow.eod.microstructure import compute_all_features
-        from stock_order_flow.eod.regime import fit_gmm_hmm, predict_next_day_regime
+        from ARGUS.eod.microstructure import compute_all_features
+        from ARGUS.eod.regime import fit_gmm_hmm, predict_next_day_regime
         
         # 1. Load and prepare data
         print("Loading raw L2 data...")

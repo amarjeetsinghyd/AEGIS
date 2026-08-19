@@ -23,9 +23,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-DATA_DIR = PROJECT_ROOT / "stock_order_flow" / "data"
+DATA_DIR = PROJECT_ROOT / "ARGUS" / "data"
 L2_RAW_DIR = DATA_DIR / "l2_raw"
-UNIVERSE_PATH = PROJECT_ROOT / "stock_order_flow" / "universe.json"
+UNIVERSE_PATH = DATA_DIR / "universe.json"
 TOKENS_CACHE = DATA_DIR / "tokens_cache.json"
 
 from common.analytics_persistence import load_daily_snapshots

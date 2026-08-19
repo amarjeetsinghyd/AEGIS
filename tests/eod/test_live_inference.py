@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from stock_order_flow.eod.live_inference import (
+from ARGUS.eod.live_inference import (
     CompiledPredictor,
     LiveFeatureComputer,
     CalibratedSignalEngine,

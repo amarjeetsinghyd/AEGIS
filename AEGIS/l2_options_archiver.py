@@ -4,7 +4,7 @@ Subscribes to ALL option tokens AEGIS is tracking (dynamic ATM±10 CE/PE) plus
 the underlying cash index. Writes raw L2 ticks to partitioned Snappy Parquet
 (15-min files) under AEGIS/data/l2_raw/.
 
-ZERO Greeks math. Pure Passive Recorder. Mirrors stock_order_flow/l2_archiver.py
+ZERO Greeks math. Pure Passive Recorder. Mirrors ARGUS/l2_archiver.py
 discipline (no heavy imports in hot path, partitioned writes, no in-memory
 accumulation) but is enriched with the options-specific OI column and a
 `kind` discriminator (index/CE/PE) so post-market forensics can reconstruct

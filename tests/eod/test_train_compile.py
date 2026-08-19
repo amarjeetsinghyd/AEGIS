@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from stock_order_flow.eod.train_compile import (
+from ARGUS.eod.train_compile import (
     select_features_mi_lgb,
     train_lightgbm_binary,
     compile_model_to_python,

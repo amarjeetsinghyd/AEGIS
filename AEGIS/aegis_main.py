@@ -26,7 +26,7 @@ from AEGIS.execution.data_fetcher import DataFetcher
 from AEGIS.aegis_execution_manager import AegisExecutionManager
 from AEGIS.aegis_gamma_engine import AegisGammaEngine, create_aegis_engine
 from AEGIS.l2_options_archiver import attach_aegis_archiver
-from stock_order_flow.tick_compiler import TickCompiler
+from ARGUS.tick_compiler import TickCompiler
 
 logger = get_logger("aegis_main")
 
@@ -127,7 +127,7 @@ def main():
         )
         
         # ─── Wire Tick Feed → AEGIS ───
-        # Use TickCompiler for zero-copy ParsedTick parsing (same as stock_order_flow)
+        # Use TickCompiler for zero-copy ParsedTick parsing (same as ARGUS)
         compiler = TickCompiler(broker)
         compiler.set_symbol_map(token_to_symbol)
         compiler.set_engine(aegis_engine)

@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from stock_order_flow.eod.regime import (
+from ARGUS.eod.regime import (
     fit_gmm_hmm,
     predict_next_day_regime,
     get_regime_params,

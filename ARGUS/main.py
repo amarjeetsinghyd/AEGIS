@@ -18,7 +18,7 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 from common.config import configure_runtime, get_data_dir
-configure_runtime("stock_order_flow")
+configure_runtime("argus")
 
 from common.broker import ShoonyaAdapter
 from common.logger import get_logger
@@ -279,12 +279,12 @@ class TradingSystem:
         logger.info(f"Universe Symbols: {len(self.universe)} | Master Subscription Tokens: {len(master_token_map)}")
 
         # 4. Tick Compiler (WebSocket Demux)
-        from stock_order_flow.tick_compiler import TickCompiler
+        from ARGUS.tick_compiler import TickCompiler
         self.compiler = TickCompiler(self.broker)
         self.compiler.set_symbol_map(master_token_map)
 
         # 5. Execution Manager (Start Background Thread)
-        from stock_order_flow.execution_manager import StockExecutionManager
+        from ARGUS.execution_manager import StockExecutionManager
         self.executor = StockExecutionManager(self.broker)
         self.executor.set_tsym_map(tsym_map)
         self.executor.start()
@@ -299,7 +299,7 @@ class TradingSystem:
         bucket_map, vacuum_map = calibrate_buckets(self.broker, token_to_symbol, self.universe)
 
         # 8. Value Engine (Signal Generator)
-        from stock_order_flow.cascade.value_engine import attach_cascade_engine
+        from ARGUS.cascade.value_engine import attach_cascade_engine
         stock_calib = load_stock_calibration()
         self.engine = attach_cascade_engine(
             self.broker, 

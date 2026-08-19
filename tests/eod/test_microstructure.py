@@ -4,7 +4,7 @@ Unit tests for EOD microstructure feature kernels.
 import numpy as np
 import pytest
 
-from stock_order_flow.eod.microstructure import (
+from ARGUS.eod.microstructure import (
     compute_vpin,
     compute_kyle_lambda,
     compute_obi_l2,

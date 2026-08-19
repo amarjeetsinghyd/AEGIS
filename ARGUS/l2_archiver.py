@@ -220,9 +220,9 @@ def main():
     from common.broker import ShoonyaAdapter
     from common.config import configure_runtime
     from common.market.market_calendar import is_bot_active_hours, sleep_until_next_premarket
-    from stock_order_flow.tick_compiler import TickCompiler
+    from ARGUS.tick_compiler import TickCompiler
     
-    configure_runtime("stock_order_flow")
+    configure_runtime("argus")
     
     logger.info("=" * 60)
     logger.info("L2 ARCHIVER STANDALONE MODE - Starting at 08:55 IST")

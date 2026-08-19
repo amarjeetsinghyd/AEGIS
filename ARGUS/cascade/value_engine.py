@@ -25,7 +25,7 @@ from common.config import get_data_dir
 from common.logger import get_logger
 
 if TYPE_CHECKING:
-    from stock_order_flow.tick_compiler import ParsedTick
+    from ARGUS.tick_compiler import ParsedTick
 
 logger = get_logger("cascade_engine")
 

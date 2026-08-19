@@ -31,7 +31,7 @@ engine's own authoritative harness document.
 
 | # | Engine | PM2 process | Entry | State | Harness document (authoritative) |
 |---|---|---|---|---|---|
-| 1 | **ARGUS** — **A**lgorithmic **R**eal-time **G**ranular **U**ltra-microstructure **S**calper (Nifty 100 cash) | `argus` | `stock_order_flow/main.py` | active | [`stock_order_flow/AGENTIC HARNESS DOCUMENT v3.5.md`](stock_order_flow/AGENTIC%20HARNESS%20DOCUMENT%20v3.5.md) |
+| 1 | **ARGUS** — **A**lgorithmic **R**eal-time **G**ranular **U**ltra-microstructure **S**calper (Nifty 100 cash) | `argus` | `ARGUS/main.py` | active | [`ARGUS/AGENTIC HARNESS DOCUMENT v3.5.md`](ARGUS/AGENTIC%20HARNESS%20DOCUMENT%20v3.5.md) |
 | 2 | **AEGIS** — **A**utonomous **E**xecution & **G**amma **I**mbalance **S**ystem (Nifty/Sensex 0DTE Options) | `aegis-bot` | `AEGIS/aegis_main.py` | active | [`astra_bot/AGENTIC HARNESS DOCUMENT Astra v4.3.md`](astra_bot/AGENTIC%20HARNESS%20DOCUMENT%20Astra%20v4.3.md) |
 | ~~3~~ | ~~Kronos Bot~~ | — | — | **DECOMMISSIONED** — see §5 | (historical only — do not revive) |
 

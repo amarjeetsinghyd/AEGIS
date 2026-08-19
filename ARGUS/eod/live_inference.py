@@ -322,7 +322,7 @@ class LiveFeatureComputer:
         Compute requested features from current buffers.
         Returns array of latest feature values.
         """
-        from stock_order_flow.eod.microstructure import (
+        from ARGUS.eod.microstructure import (
             compute_vpin, compute_kyle_lambda, compute_obi_l2,
             compute_microprice_accel, compute_microprice_jerk,
             compute_spread_volatility, compute_effective_spread,
@@ -389,7 +389,7 @@ class CalibratedSignalEngine:
         self.feature_computer = LiveFeatureComputer()
         
         # Load regime model
-        from stock_order_flow.eod.regime import load_regime_model, predict_next_day_regime
+        from ARGUS.eod.regime import load_regime_model, predict_next_day_regime
         self.gmm, self.hmm, self.scaler, self.regime_features = load_regime_model(
             Path(regime_model_dir)
         )

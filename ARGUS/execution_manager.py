@@ -624,7 +624,7 @@ class StockExecutionManager:
             "gross_pl": round(gross_pnl, 2), "txn_cost": round(txn_cost, 2),
             "net_pl": round(net_pnl, 2), "exit_reason": reason,
             "mfe": round(mfe, 2), "mae": round(mae, 2),
-            "strategy": "stock_order_flow",
+            "strategy": "ARGUS",
         })
         self._day_loss += net_pnl
         self._save_history(trade)
@@ -635,7 +635,7 @@ class StockExecutionManager:
         # ─── RELEASE GLOBAL TRADE LOCK ───
         # Notify CascadeValueEngine that trade is closed so it can accept new signals
         try:
-            from stock_order_flow.cascade.value_engine import CascadeValueEngine
+            from ARGUS.cascade.value_engine import CascadeValueEngine
             # Find the engine instance (it's attached to the broker or accessible via module)
             # We'll use a module-level reference or pass it during wiring
             if hasattr(self, '_cascade_engine') and self._cascade_engine:
