@@ -22,6 +22,7 @@ configure_runtime("stock_order_flow")
 
 from common.broker import ShoonyaAdapter
 from common.logger import get_logger
+from common.ipc.live_state import update_argus_live_state
 from common.market.market_calendar import (
     is_trading_day, is_market_open, MARKET_CLOSE_TIME,
     is_bot_active_hours, sleep_until_next_premarket, is_pre_market
@@ -455,23 +456,54 @@ class TradingSystem:
                                 self._run_intraday_tier2()
 
                 # --- TIME GATES ---
-                if not is_bot_active_hours(now):
-                    logger.info("Active Hours Closed. Sleeping until Pre-Market...")
+                if not is_bot_active_hours(now.time()):
                     sleep_until_next_premarket()
-                    # Re-login & Resubscribe on Wake
-                    if hasattr(self.broker, "session_provider"):
-                        self.broker.session_provider._restore_or_login()
-                    self.compiler.subscribe(list(self.master_token_map.keys()))
-                    last_heartbeat_min = -1 # Force HB log
-                    continue
-                    
-                if is_pre_market(now):
-                    time.sleep(1)
                     continue
 
                 if not is_trading_day(now.date()) or now.time() > MARKET_CLOSE_TIME:
                     time.sleep(60)
                     continue
+
+                # Periodic live state broadcast for dashboard
+                if time.time() - last_state_push > 1.0:
+                    last_state_push = time.time()
+                    try:
+                        top_sym = "—"
+                        top_price = 0.0
+                        top_conv = 0.0
+                        top_shield = "CLEAR"
+                        top_lambda = 0.0
+                        top_branching = 1.0
+                        top_whale = 0.0
+                        
+                        if self.engine and getattr(self.engine, "last_snap", None):
+                            for sym, snap in self.engine.last_snap.items():
+                                conv = snap.get("conviction", 0.0)
+                                if conv > top_conv:
+                                    top_conv = conv
+                                    top_sym = sym
+                                    top_price = snap.get("lp", 0.0)
+                                    adv = snap.get("_adv", {})
+                                    top_lambda = adv.get("eff_lam", 0.0)
+                                    top_branching = adv.get("branching", 1.0)
+                                    top_whale = snap.get("whale_z", 0.0)
+                                    top_shield = snap.get("regime", "CLEAR")
+
+                        update_argus_live_state({
+                            "universe_count": len(self.universe),
+                            "active_symbol": top_sym,
+                            "spot_price": top_price,
+                            "conviction": top_conv,
+                            "adv_shield": top_shield,
+                            "kyle_lambda": top_lambda,
+                            "branching": top_branching,
+                            "whale_z": top_whale,
+                            "trades_today": len(self.executor.trade_history) + len(self.executor.open_trades),
+                            "has_open_trade": len(self.executor.open_trades) > 0,
+                            "active_trade": self.executor.open_trades,
+                        })
+                    except Exception:
+                        pass
 
                 # --- PRICE UPDATE (Executor Needs Fresh Prices for Exits) ---
                 current_prices = {}

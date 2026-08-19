@@ -30,6 +30,7 @@ SHARED_TICK_FILE = _shm_path("shoonya_live_ticks.json")
 ASTRA_STATE_FILE = _shm_path("kdo_live_state.json")
 KRONOS_STATE_FILE = _shm_path("kronos_live_state.json")
 AEGIS_STATE_FILE = _shm_path("aegis_live_state.json")
+ARGUS_STATE_FILE = _shm_path("argus_live_state.json")
 KILL_SWITCH_FILE = _shm_path("KILL_SWITCH_ACTIVE")
 
 _DEFAULT_ASTRA = {
@@ -76,13 +77,31 @@ _DEFAULT_AEGIS = {
     "speed_sum": 0.0,
     "hawkes_B": 0.0,
     "conviction_eff": 0.0,
+    "params_source": "priors",
+    "engine": "aegis",
+}
+
+# ARGUS V3.6 live-state schema (Equities Microstructure Scalper)
+_DEFAULT_ARGUS = {
+    "timestamp": "",
+    "active_symbol": "—",
+    "spot_price": 0.0,
+    "signal": "WAITING",
+    "conviction": 0.0,
+    "adv_shield": "CLEAR",
+    "regime": "BURST",
+    "kyle_lambda": 0.0,
+    "branching": 0.0,
+    "whale_z": 0.0,
+    "universe_count": 15,
     "trades_today": 0,
     "daily_pnl": 0.0,
     "has_open_trade": False,
     "active_trade": None,
     "available_funds": 0.0,
-    "params_source": "priors",
-    "engine": "aegis",
+    "params_source": "EOD ML 3-Day",
+    "reasoning": "Scanning universe for microstructure conviction…",
+    "engine": "argus",
 }
 
 
@@ -140,6 +159,14 @@ def update_aegis_live_state(data: dict) -> dict:
 
 def get_aegis_live_state() -> dict:
     return _read_json(AEGIS_STATE_FILE, _DEFAULT_AEGIS)
+
+
+def update_argus_live_state(data: dict) -> dict:
+    return _update_state(ARGUS_STATE_FILE, _DEFAULT_ARGUS, data)
+
+
+def get_argus_live_state() -> dict:
+    return _read_json(ARGUS_STATE_FILE, _DEFAULT_ARGUS)
 
 
 # Back-compat aliases used by Astra KDO loop

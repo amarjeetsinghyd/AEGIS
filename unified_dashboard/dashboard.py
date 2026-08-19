@@ -24,6 +24,7 @@ from common.config import INITIAL_PAPER_CAPITAL
 from common.ipc import (
     get_kronos_live_state,
     get_aegis_live_state,
+    get_argus_live_state,
     SHARED_TICK_FILE,
 )
 from common.runtime.paths import get_runtime_paths
@@ -343,14 +344,22 @@ body { margin: 0; color: var(--ink); background: radial-gradient(1200px 500px at
         <div class="lane-head"><div><div class="lane-title">ARGUS <span style="font-size:11px; font-weight:600; color:var(--muted); font-family:'IBM Plex Sans',sans-serif; text-transform:none;">(Algorithmic Real-Time Granular Ultra-Microstructure Scalper)</span></div></div><div id="ofPill" class="pill">—</div></div>
         <div class="lane-body">
           <div class="metrics">
-            <div class="metric"><div class="label">Stocks</div><div class="value" id="ofIndex">15</div></div>
+            <div class="metric"><div class="label">Universe</div><div class="value" id="ofUniverse">15</div></div>
             <div class="metric"><div class="label">Top Setup</div><div class="value" id="ofSpot">—</div></div>
+            <div class="metric"><div class="label">Spot Price</div><div class="value" id="ofPrice">—</div></div>
             <div class="metric" id="ofSignalMetric"><div class="label">Signal</div><div class="value" id="ofSignal">—</div><div class="hint" id="ofSignalHint">Top setup signal</div></div>
-            <div class="metric"><div class="label">Live funds</div><div class="value" id="ofFunds">—</div><div class="hint">Live Shoonya cash margin</div></div>
-            <div class="metric"><div class="label">Open PnL</div><div class="value" id="ofPred">—</div></div>
-            <div class="metric"><div class="label">Data</div><div class="value" id="ofRet">—</div></div>
+            <div class="metric"><div class="label">Conviction</div><div class="value" id="ofConviction">—</div></div>
+            <div class="metric"><div class="label">Adv. Shield</div><div class="value" id="ofShield">CLEAR</div></div>
+            <div class="metric"><div class="label">Kyle's λ</div><div class="value" id="ofKyle">—</div></div>
+            <div class="metric"><div class="label">Branching</div><div class="value" id="ofBranching">—</div></div>
+            <div class="metric"><div class="label">Whale Z</div><div class="value" id="ofWhale">—</div></div>
+            <div class="metric"><div class="label">Live Funds</div><div class="value" id="ofFunds">—</div><div class="hint">Live Shoonya margin</div></div>
+            <div class="metric"><div class="label">Fills Today</div><div class="value" id="ofFills">0</div></div>
+            <div class="metric"><div class="label">Daily P&amp;L</div><div class="value" id="ofPnl">₹0.00</div></div>
           </div>
           <div class="reason" id="ofReason">Waiting for live state…</div>
+          <hr style="border: 0; border-top: 1px dashed var(--line); margin: 10px 0;" />
+          <div class="row" id="argus-ctx" style="font-size:11px; margin-bottom:4px; font-weight:600;">Active Trade: —</div>
         </div>
       </section>
 
@@ -383,8 +392,8 @@ body { margin: 0; color: var(--ink); background: radial-gradient(1200px 500px at
         <h2>Telemetry</h2>
         <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
           <div class="engine-switch" role="tablist" aria-label="Engine logs">
-            <button type="button" id="logTabAegis" class="active aegis" data-engine="aegis" onclick="setEngine('aegis')">AEGIS</button>
-            <button type="button" id="logTabOF" class="of" data-engine="of" onclick="setEngine('of')" title="ARGUS: Algorithmic Real-Time Granular Ultra-Microstructure Scalper">ARGUS</button>
+            <button type="button" id="logTabOF" class="active of" data-engine="of" onclick="setEngine('of')" title="ARGUS: Algorithmic Real-Time Granular Ultra-Microstructure Scalper">ARGUS</button>
+            <button type="button" id="logTabAegis" class="aegis" data-engine="aegis" onclick="setEngine('aegis')">AEGIS</button>
           </div>
           <div class="pill" id="logCount">0 lines</div>
         </div>
@@ -397,8 +406,8 @@ body { margin: 0; color: var(--ink); background: radial-gradient(1200px 500px at
         <h2>Active trades</h2>
         <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
           <div class="engine-switch" role="tablist" aria-label="Active trades engine">
-            <button type="button" id="activeTabAegis" class="active aegis" data-engine="aegis" onclick="setEngine('aegis')">AEGIS</button>
-            <button type="button" id="activeTabOF" class="of" data-engine="of" onclick="setEngine('of')" title="ARGUS: Algorithmic Real-Time Granular Ultra-Microstructure Scalper">ARGUS</button>
+            <button type="button" id="activeTabOF" class="active of" data-engine="of" onclick="setEngine('of')" title="ARGUS: Algorithmic Real-Time Granular Ultra-Microstructure Scalper">ARGUS</button>
+            <button type="button" id="activeTabAegis" class="aegis" data-engine="aegis" onclick="setEngine('aegis')">AEGIS</button>
           </div>
           <div class="pill" id="activeCount">0 trades</div>
         </div>
@@ -411,8 +420,8 @@ body { margin: 0; color: var(--ink); background: radial-gradient(1200px 500px at
         <h2>Trade history</h2>
         <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
           <div class="engine-switch" role="tablist" aria-label="Trade history engine">
-            <button type="button" id="histTabAegis" class="active aegis" data-engine="aegis" onclick="setEngine('aegis')">AEGIS</button>
-            <button type="button" id="histTabOF" class="of" data-engine="of" onclick="setEngine('of')" title="ARGUS: Algorithmic Real-Time Granular Ultra-Microstructure Scalper">ARGUS</button>
+            <button type="button" id="histTabOF" class="active of" data-engine="of" onclick="setEngine('of')" title="ARGUS: Algorithmic Real-Time Granular Ultra-Microstructure Scalper">ARGUS</button>
+            <button type="button" id="histTabAegis" class="aegis" data-engine="aegis" onclick="setEngine('aegis')">AEGIS</button>
           </div>
           <div class="pill" id="histCount">0 trades · disk</div>
         </div>
@@ -499,7 +508,7 @@ body { margin: 0; color: var(--ink); background: radial-gradient(1200px 500px at
 const fmt = (n, d=2) => (n === null || n === undefined || Number.isNaN(Number(n))) ? '—' : Number(n).toLocaleString(undefined, {maximumFractionDigits:d, minimumFractionDigits:0});
 const money = (n) => (n === null || n === undefined) ? '—' : '₹' + fmt(n, 2);
 
-let activeLogEngine = 'aegis'; let activeHistEngine = 'aegis'; let activeTradeEngine = 'aegis';
+let activeLogEngine = 'of'; let activeHistEngine = 'of'; let activeTradeEngine = 'of';
 let latestLogs = { kronos: [], aegis: [], of: [] };
 let latestHistory = { kronos: [], aegis: [], of: [] };
 let latestActive = { kronos: {}, aegis: {}, of: {} };
@@ -510,7 +519,7 @@ function signalMetricClass(text) { const t = String(text || '').toUpperCase(); i
 function signalCellHtml(raw) { const label = signalLabel(raw); const t = String(label || '').toUpperCase(); if (t.includes('CALL')) return `<span class="sig-call">${label}</span>`; if (t.includes('PUT')) return `<span class="sig-put">${label}</span>`; return label || '—'; }
 function pnlClass(v) { const n = Number(v); if (Number.isNaN(n) || n === 0) return 'mono'; return n > 0 ? 'mono pnl-pos' : 'mono pnl-neg'; }
 
-function renderLogs() { if (window.getSelection && window.getSelection().toString().length > 0) return; const logs = latestLogs[activeLogEngine] || []; const box = document.getElementById('logs'); box.innerHTML = logs.map(l => `<div class="log-line ${activeLogEngine}">${l}</div>`).join('') || `<div class="log-line">No ${activeLogEngine} telemetry yet.</div>`; document.getElementById('logCount').textContent = logs.length + ' lines · ' + (activeLogEngine === 'of' ? 'ARGUS' : activeLogEngine.toUpperCase()); }
+function renderLogs() { if (window.getSelection && window.getSelection().toString().length > 0) return; const logs = latestLogs[activeLogEngine] || []; const box = document.getElementById('logs'); box.innerHTML = logs.map(l => `<div class="log-line ${activeLogEngine}">${l}</div>`).join('') || `<div class="log-line">No ${activeLogEngine === 'of' ? 'ARGUS' : activeLogEngine.toUpperCase()} telemetry yet.</div>`; document.getElementById('logCount').textContent = logs.length + ' lines · ' + (activeLogEngine === 'of' ? 'ARGUS' : activeLogEngine.toUpperCase()); }
 
 function setEngine(engine) { activeLogEngine = engine; activeHistEngine = engine; activeTradeEngine = engine; document.getElementById('logTabAegis').className = engine === 'aegis' ? 'active aegis' : 'aegis'; document.getElementById('logTabOF').className = engine === 'of' ? 'active of' : 'of'; document.getElementById('histTabAegis').className = engine === 'aegis' ? 'active aegis' : 'aegis'; document.getElementById('histTabOF').className = engine === 'of' ? 'active of' : 'of'; document.getElementById('activeTabAegis').className = engine === 'aegis' ? 'active aegis' : 'aegis'; document.getElementById('activeTabOF').className = engine === 'of' ? 'active of' : 'of'; renderLogs(); renderHistory(); renderActiveTrades(); }
 
@@ -526,7 +535,26 @@ async function refresh() {
   
   const a = data.aegis || {}; const o = data.of || {};
   const oSig = signalLabel(o.signal || o.signal_status);
-  document.getElementById('ofFunds').textContent = money(o.available_funds); document.getElementById('ofSpot').textContent = o.top_setup || '—'; document.getElementById('ofSignal').textContent = oSig; document.getElementById('ofSignalMetric').className = signalMetricClass(oSig); document.getElementById('ofPred').textContent = o.open_pnl ? money(o.open_pnl) : '—'; document.getElementById('ofRet').textContent = o.data_seeded ? "Seeded" : "Fetching..."; document.getElementById('ofReason').textContent = o.reasoning || 'Waiting for live state...'; const op = document.getElementById('ofPill'); op.textContent = oSig; op.className = pillClass(oSig);
+  document.getElementById('ofUniverse').textContent = (o.universe_count || 15) + ' Stocks';
+  document.getElementById('ofSpot').textContent = o.top_setup || o.active_symbol || '—';
+  document.getElementById('ofPrice').textContent = o.spot_price ? fmt(o.spot_price, 2) : '—';
+  document.getElementById('ofSignal').textContent = oSig;
+  document.getElementById('ofSignalMetric').className = signalMetricClass(oSig);
+  document.getElementById('ofConviction').textContent = o.conviction ? fmt(o.conviction, 2) : '—';
+  document.getElementById('ofShield').textContent = o.adv_shield || (o.regime || 'CLEAR');
+  document.getElementById('ofKyle').textContent = o.kyle_lambda ? fmt(o.kyle_lambda, 4) : '—';
+  document.getElementById('ofBranching').textContent = o.branching ? fmt(o.branching, 2) : '—';
+  document.getElementById('ofWhale').textContent = o.whale_z ? fmt(o.whale_z, 2) + 'σ' : '—';
+  document.getElementById('ofFunds').textContent = money(o.available_funds);
+  document.getElementById('ofFills').textContent = fmt(o.trades_today, 0);
+  document.getElementById('ofPnl').textContent = money(o.daily_pnl);
+  document.getElementById('ofReason').textContent = o.reasoning || 'Waiting for live state…';
+  const op = document.getElementById('ofPill'); op.textContent = oSig; op.className = pillClass(oSig);
+  
+  const oCtxEl = document.getElementById('argus-ctx');
+  const ot = o.active_trade ? (Object.values(o.active_trade)[0] || {}) : {};
+  const hasOpenArgus = o.has_open_trade || Boolean(Object.keys(o.active_trade || {}).length);
+  oCtxEl.textContent = 'Active Trade: ' + (hasOpenArgus ? (ot.symbol || '—') + ' · ' + (ot.type || ot.signal || '—') + ' · entry ' + fmt(ot.entry_price || ot.price, 2) + (ot.reason ? ' · ' + ot.reason : '') : '—');
   
   document.getElementById('aegisIndex').textContent = a.active_index || '—'; document.getElementById('aegisSpot').textContent = fmt(a.spot_price, 2); document.getElementById('aegisAtm').textContent = fmt(a.atm_strike, 0); document.getElementById('aegisAtmIv').textContent = fmt(a.atm_iv, 2); document.getElementById('aegisGammaSum').textContent = fmt(a.gamma_sum, 2); document.getElementById('aegisSpeedSum').textContent = fmt(a.speed_sum, 2); document.getElementById('aegisHawkesB').textContent = fmt(a.hawkes_B, 3); document.getElementById('aegisConviction').textContent = fmt(a.conviction_eff, 2); document.getElementById('aegisFunds').textContent = money(a.available_funds); document.getElementById('aegisFills').textContent = fmt(a.trades_today, 0); document.getElementById('aegisPnl').textContent = money(a.daily_pnl); document.getElementById('aegisParamsSource').textContent = a.params_source || '—'; document.getElementById('aegisReason').textContent = a.has_open_trade ? 'Open trade active' : 'Idle — scanning for gamma burst'; const ap = document.getElementById('aegisPill'); ap.textContent = a.has_open_trade ? 'ACTIVE' : 'IDLE'; ap.className = a.has_open_trade ? 'pill ok' : 'pill warn';
   const ctxEl = document.getElementById('aegis-ctx'); const at = a.active_trade || {}; ctxEl.textContent = 'Active Trade: ' + (a.has_open_trade ? (at.symbol || '—') + ' · ' + (at.signal_type || at.type || '—') + ' · entry ' + fmt(at.entry_price, 2) : '—');
@@ -537,9 +565,9 @@ async function refresh() {
   renderLogs(); renderHistory(); renderActiveTrades();
 }
 
-document.getElementById('logTabAegis').addEventListener('click', () => setEngine('aegis')); document.getElementById('logTabOF').addEventListener('click', () => setEngine('of')); document.getElementById('histTabAegis').addEventListener('click', () => setEngine('aegis')); document.getElementById('histTabOF').addEventListener('click', () => setEngine('of')); document.getElementById('activeTabAegis').addEventListener('click', () => setEngine('aegis')); document.getElementById('activeTabOF').addEventListener('click', () => setEngine('of'));
+document.getElementById('logTabOF').addEventListener('click', () => setEngine('of')); document.getElementById('logTabAegis').addEventListener('click', () => setEngine('aegis')); document.getElementById('histTabOF').addEventListener('click', () => setEngine('of')); document.getElementById('histTabAegis').addEventListener('click', () => setEngine('aegis')); document.getElementById('activeTabOF').addEventListener('click', () => setEngine('of')); document.getElementById('activeTabAegis').addEventListener('click', () => setEngine('aegis'));
 
-setEngine('aegis'); refresh(); setInterval(refresh, 2000);
+setEngine('of'); refresh(); setInterval(refresh, 2000);
 
 /* ═══════════════════════════════════════════════════════════════
    RESEARCH MODE LOGIC — DUAL ENGINE (ARGUS + AEGIS) + DATE SELECTOR
@@ -754,6 +782,8 @@ def health(): return jsonify({ "ok": True, "server_time": datetime.now().strftim
 def live_state():
     kronos = get_kronos_live_state()
     aegis = get_aegis_live_state()
+    argus = get_argus_live_state()
+
     kronos["available_funds"] = _capital(KRONOS_DATA, force_paper=True)
     aegis["available_funds"] = _capital(AEGIS_DATA, force_paper=True)
     of_funds = _capital(ORDERFLOW_DATA)
@@ -763,6 +793,7 @@ def live_state():
         try:
             of_open_pnl = sum(float(v.get("margin", 0)) for v in of_positions.values() if isinstance(v, dict))
         except Exception: pass
+
     of_log_path = os.path.join(ORDERFLOW_LOGS, "stock_order_flow.log")
     of_logs = [html.escape(line) for line in _tail_log(of_log_path, 80)]
     of_hist = _trade_history(ORDERFLOW_DATA)
@@ -776,11 +807,83 @@ def live_state():
         for row in rows:
             for key in ("date", "exit_time", "signal", "symbol", "strategy", "reason", "result"):
                 if key in row and row[key] is not None: row[key] = html.escape(str(row[key]))
-    of_signal = None; of_reason = "Engine idle — no open position"; of_top_setup = "—"
+
+    # Compute ARGUS today stats
+    today_iso = datetime.now().strftime("%Y-%m-%d")
+    today_fmt = datetime.now().strftime("%d %b %Y")
+    of_today_fills = len(of_positions)
+    of_daily_pnl = 0.0
+    for t in of_hist:
+        d = str(t.get("date", ""))
+        if d.startswith(today_iso) or d.startswith(today_fmt):
+            of_today_fills += 1
+            try:
+                of_daily_pnl += float(t.get("net_pl") or 0.0)
+            except Exception:
+                pass
+
+    # Read universe count if universe.json exists
+    uni_path = os.path.join(ORDERFLOW_DATA, "universe.json")
+    uni_count = 15
+    if os.path.exists(uni_path):
+        try:
+            with open(uni_path, "r") as f:
+                ud = json.load(f)
+                uni_count = len(ud.get("stocks", [])) or 15
+        except Exception:
+            pass
+
+    of_signal = argus.get("signal", "WAITING")
+    of_reason = argus.get("reasoning", "Scanning universe for microstructure conviction…")
+    of_top_setup = argus.get("active_symbol", "—")
+    of_price = argus.get("spot_price", 0.0)
+    of_conv = argus.get("conviction", 0.0)
+
     if of_positions:
         first = next(iter(of_positions.values()))
-        if isinstance(first, dict): of_signal = first.get("type"); of_reason = first.get("reason", ""); of_top_setup = first.get("symbol", "—")
-    return jsonify({ "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "tick_age_sec": _tick_age_seconds(), "initial_paper_capital": INITIAL_PAPER_CAPITAL, "kronos": kronos, "aegis": aegis, "of": { "available_funds": of_funds, "active_trade": of_positions, "signal": of_signal, "reasoning": of_reason, "top_setup": of_top_setup, "open_pnl": of_open_pnl, "data_seeded": bool(of_logs) }, "of_logs": of_logs, "kronos_logs": kronos_logs, "aegis_logs": aegis_logs, "of_trade_history": of_hist, "kronos_trade_history": kronos_hist, "aegis_trade_history": aegis_hist, "default_log_engine": "aegis" })
+        if isinstance(first, dict):
+            of_signal = first.get("type") or first.get("signal", "BUY")
+            of_reason = first.get("reason", "Open position active")
+            of_top_setup = first.get("symbol", "—")
+            of_price = float(first.get("entry_price") or first.get("price") or 0.0)
+            of_conv = float(first.get("conviction") or (first.get("metrics") or {}).get("conviction") or 0.0)
+
+    argus_payload = {
+        "available_funds": of_funds,
+        "active_trade": of_positions,
+        "signal": of_signal,
+        "reasoning": of_reason,
+        "top_setup": of_top_setup,
+        "spot_price": of_price,
+        "conviction": of_conv,
+        "adv_shield": argus.get("adv_shield", "CLEAR"),
+        "regime": argus.get("regime", "BURST"),
+        "kyle_lambda": argus.get("kyle_lambda", 0.0),
+        "branching": argus.get("branching", 0.0),
+        "whale_z": argus.get("whale_z", 0.0),
+        "universe_count": uni_count,
+        "trades_today": of_today_fills,
+        "daily_pnl": of_daily_pnl,
+        "open_pnl": of_open_pnl,
+        "data_seeded": bool(of_logs),
+        "has_open_trade": bool(of_positions),
+    }
+
+    return jsonify({
+        "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "tick_age_sec": _tick_age_seconds(),
+        "initial_paper_capital": INITIAL_PAPER_CAPITAL,
+        "kronos": kronos,
+        "aegis": aegis,
+        "of": argus_payload,
+        "of_logs": of_logs,
+        "kronos_logs": kronos_logs,
+        "aegis_logs": aegis_logs,
+        "of_trade_history": of_hist,
+        "kronos_trade_history": kronos_hist,
+        "aegis_trade_history": aegis_hist,
+        "default_log_engine": "of",
+    })
 
 def main(): app.run(host="0.0.0.0", port=5000, debug=False)
 

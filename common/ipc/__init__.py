@@ -5,6 +5,8 @@ from common.ipc.live_state import (
     get_kronos_live_state,
     update_aegis_live_state,
     get_aegis_live_state,
+    update_argus_live_state,
+    get_argus_live_state,
     update_kdo_live_state,
     get_kdo_live_state,
     is_kill_switch_active,
@@ -13,6 +15,7 @@ from common.ipc.live_state import (
     ASTRA_STATE_FILE,
     KRONOS_STATE_FILE,
     AEGIS_STATE_FILE,
+    ARGUS_STATE_FILE,
     KILL_SWITCH_FILE,
 )
 
@@ -23,6 +26,8 @@ __all__ = [
     "get_kronos_live_state",
     "update_aegis_live_state",
     "get_aegis_live_state",
+    "update_argus_live_state",
+    "get_argus_live_state",
     "update_kdo_live_state",
     "get_kdo_live_state",
     "is_kill_switch_active",
@@ -31,5 +36,6 @@ __all__ = [
     "ASTRA_STATE_FILE",
     "KRONOS_STATE_FILE",
     "AEGIS_STATE_FILE",
+    "ARGUS_STATE_FILE",
     "KILL_SWITCH_FILE",
 ]
