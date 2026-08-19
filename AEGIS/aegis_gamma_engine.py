@@ -191,6 +191,18 @@ class AegisGammaEngine:
         self.bucket_theta_bleed = 0.0
         self.bucket_start_iv_atm = 0.0
 
+        # ─── L1-L5 Depth Tensors (shape: [2, N_STRIKES, N_LEVELS]) ───
+        self.bid_px            = np.zeros((N_TYPES, N_STRIKES, N_LEVELS), dtype=np.float32)
+        self.bid_qty           = np.zeros((N_TYPES, N_STRIKES, N_LEVELS), dtype=np.float32)
+        self.ask_px            = np.zeros((N_TYPES, N_STRIKES, N_LEVELS), dtype=np.float32)
+        self.ask_qty           = np.zeros((N_TYPES, N_STRIKES, N_LEVELS), dtype=np.float32)
+        self.prev_bid_px       = np.zeros((N_TYPES, N_STRIKES, N_LEVELS), dtype=np.float32)
+        self.prev_ask_px       = np.zeros((N_TYPES, N_STRIKES, N_LEVELS), dtype=np.float32)
+
+        # Realized vol tracking & Spot history
+        self.ema_sigma         = 0.15
+        self._last_spot_for_vol = 0.0
+
         # Latency / fill tracking (circular buffers, 500 trades)
         self.fill_latency_buf    = np.zeros(500, dtype=np.float32)
         self.post_fill_edge_buf  = np.zeros(500, dtype=np.float32)
@@ -317,6 +329,14 @@ class AegisGammaEngine:
                 return
             idx = offset + ATM_IDX
 
+            # ─── L1-L5 Depth Update ───
+            if hasattr(tick, 'bp') and hasattr(tick, 'bq') and hasattr(tick, 'sp') and hasattr(tick, 'sq'):
+                for l in range(min(len(tick.bp), N_LEVELS)):
+                    self.bid_px[side, idx, l] = tick.bp[l]
+                    self.bid_qty[side, idx, l] = tick.bq[l]
+                    self.ask_px[side, idx, l] = tick.sp[l]
+                    self.ask_qty[side, idx, l] = tick.sq[l]
+
             # ─── Bucket accumulators ───
             tv = tick.vol * lp if tick.vol > 0 else 0.0
             self.cur_tot_val[sym] = self.cur_tot_val.get(sym, 0.0) + tv
@@ -371,11 +391,23 @@ class AegisGammaEngine:
         except Exception as e:
             logger.error(f"AEGIS on_tick_parsed error: {e}", exc_info=True)
 
+    def _update_realized_vol(self, spot: float):
+        """High-frequency realized volatility smoothing directly from spot price returns."""
+        if self._last_spot_for_vol > 0 and spot > 0:
+            ret = math.log(spot / self._last_spot_for_vol)
+            # 1-sec annualized return variance proxy
+            inst_vol = abs(ret) * math.sqrt(252 * 375 * 60)
+            inst_vol = min(max(inst_vol, 0.08), 0.75)
+            self.ema_sigma = 0.95 * self.ema_sigma + 0.05 * inst_vol
+            self.last_atm_iv = self.ema_sigma
+        self._last_spot_for_vol = spot
+
     def _on_underlying_tick(self, sym: str, lp: float, now: float):
         """Processes underlying Spot price ticks and manages dynamic ATM realignment."""
         if lp <= 0:
             return
         self.last_spot = lp
+        self._update_realized_vol(lp)
         new_atm = round(lp / self.strike_step) * self.strike_step
         if self.current_atm_strike == 0.0:
             self.current_atm_strike = new_atm
@@ -405,6 +437,12 @@ class AegisGammaEngine:
                 self.bucket_ofi.fill(0)
                 self.bucket_vacuum.fill(0)
                 self.bucket_whale.fill(0)
+                self.bid_px.fill(0)
+                self.bid_qty.fill(0)
+                self.ask_px.fill(0)
+                self.ask_qty.fill(0)
+                self.prev_bid_px.fill(0)
+                self.prev_ask_px.fill(0)
             else:
                 # Roll state along strike dimension (-shift moves higher strikes to lower indices)
                 self.gamma_tensor = np.roll(self.gamma_tensor, -shift, axis=1)
@@ -420,6 +458,14 @@ class AegisGammaEngine:
                 self.bucket_vacuum = np.roll(self.bucket_vacuum, -shift, axis=1)
                 self.bucket_whale = np.roll(self.bucket_whale, -shift, axis=1)
 
+                # Roll L1-L5 Depth tensors (shape [2, N_STRIKES, N_LEVELS]) along axis 1
+                self.bid_px = np.roll(self.bid_px, -shift, axis=1)
+                self.bid_qty = np.roll(self.bid_qty, -shift, axis=1)
+                self.ask_px = np.roll(self.ask_px, -shift, axis=1)
+                self.ask_qty = np.roll(self.ask_qty, -shift, axis=1)
+                self.prev_bid_px = np.roll(self.prev_bid_px, -shift, axis=1)
+                self.prev_ask_px = np.roll(self.prev_ask_px, -shift, axis=1)
+
                 # Zero out newly exposed edges
                 if shift > 0:
                     self.gamma_tensor[:, -shift:] = 0
@@ -434,6 +480,12 @@ class AegisGammaEngine:
                     self.bucket_ofi[:, -shift:] = 0
                     self.bucket_vacuum[:, -shift:] = 0
                     self.bucket_whale[:, -shift:] = 0
+                    self.bid_px[:, -shift:, :] = 0
+                    self.bid_qty[:, -shift:, :] = 0
+                    self.ask_px[:, -shift:, :] = 0
+                    self.ask_qty[:, -shift:, :] = 0
+                    self.prev_bid_px[:, -shift:, :] = 0
+                    self.prev_ask_px[:, -shift:, :] = 0
                 else:
                     self.gamma_tensor[:, :-shift] = 0
                     self.speed_tensor[:, :-shift] = 0
@@ -447,6 +499,12 @@ class AegisGammaEngine:
                     self.bucket_ofi[:, :-shift] = 0
                     self.bucket_vacuum[:, :-shift] = 0
                     self.bucket_whale[:, :-shift] = 0
+                    self.bid_px[:, :-shift, :] = 0
+                    self.bid_qty[:, :-shift, :] = 0
+                    self.ask_px[:, :-shift, :] = 0
+                    self.ask_qty[:, :-shift, :] = 0
+                    self.prev_bid_px[:, :-shift, :] = 0
+                    self.prev_ask_px[:, :-shift, :] = 0
 
             self._route_dirty = True
             logger.info(f"[AEGIS] Dynamic ATM roll performed: shift={shift:+d} strikes | New ATM={self.current_atm_strike}")
@@ -521,27 +579,30 @@ class AegisGammaEngine:
             # 11. Vanna alignment (G9)
             vanna_ok = self._vanna_alignment()
 
-            # ─── Phase 1 Hard Gates ───
-            gates = {
+            # ─── Phase 1 Hard Structural Gates ───
+            hard_gates = {
                 'G1_csldt': csldt_mag > self.P["theta_1_csldt"],
                 'G2_ngao':  ngAO > self.P["theta_2_ngao"],
                 'G3_hawkes': self.P["theta_3_low"] <= B <= self.P["theta_3_high"],
+                'G7_vega_veto': vega_veto,
+            }
+            gates = {
+                **hard_gates,
                 'G4_coherence': n_coherent >= self.P["theta_4_coherence"],
                 'G5_vpin': vpin_gate,
                 'G6_align': align_ok,
-                'G7_vega_veto': vega_veto,
                 'G8_theta': theta_ok,
                 'G9_vanna': vanna_ok,
             }
 
-            gate_pass = all(gates.values())
+            gate_pass = all(hard_gates.values())
 
-            # ─── Phase 2 Conviction ───
+            # ─── Phase 2 Conviction (Multi-factor score) ───
             conviction = 0.0
             if gate_pass:
                 conviction = self._compute_conviction(
                     csldt_mag, ngAO, B, n_coherent,
-                    vpin_gate, align_ok, vega_veto, theta_ok, vanna_ok
+                    vpin_gate, align_ok, vega_veto, theta_ok, vanna_ok, spot=self.last_spot
                 )
 
             # ─── Latency-aware effective conviction ───
@@ -711,33 +772,65 @@ class AegisGammaEngine:
             return True
         return np.sign(vanna_ofi) == np.sign(gamma_ofi)
 
-    def _compute_conviction(self, csldt, ngAO, B, n_coherent, vpin_gate, align_ok, vega_veto, theta_ok, vanna_ok) -> float:
-        """Phase 2 weighted conviction score."""
+    def _synthetic_divergence(self, spot: float) -> float:
+        """Put-Call Parity synthetic index divergence: S_synthetic = P_CE - P_PE + K_ATM - Spot"""
+        if spot <= 0:
+            return 0.0
+        call_mid = (self.bid_px[0, ATM_IDX, 0] + self.ask_px[0, ATM_IDX, 0]) * 0.5
+        put_mid  = (self.bid_px[1, ATM_IDX, 0] + self.ask_px[1, ATM_IDX, 0]) * 0.5
+        if call_mid > 0 and put_mid > 0:
+            atm_k = self.current_atm_strike if self.current_atm_strike > 0 else round(spot / self.strike_step) * self.strike_step
+            synthetic = call_mid - put_mid + atm_k
+            return float(synthetic - spot)
+        return 0.0
+
+    def _microprice_deviation(self) -> float:
+        """ATM Call vs Put order book microprice deviation."""
+        b_px = self.bid_px[:, ATM_IDX, 0]
+        a_px = self.ask_px[:, ATM_IDX, 0]
+        b_qty = self.bid_qty[:, ATM_IDX, 0]
+        a_qty = self.ask_qty[:, ATM_IDX, 0]
+        denom_ce = b_qty[0] + a_qty[0]
+        denom_pe = b_qty[1] + a_qty[1]
+        ce_mp = (b_px[0] * a_qty[0] + a_px[0] * b_qty[0]) / max(denom_ce, 1e-6) if denom_ce > 0 else 0.0
+        pe_mp = (b_px[1] * a_qty[1] + a_px[1] * b_qty[1]) / max(denom_pe, 1e-6) if denom_pe > 0 else 0.0
+        return float(ce_mp - pe_mp)
+
+    def _compute_conviction(self, csldt, ngAO, B, n_coherent, vpin_gate, align_ok, vega_veto, theta_ok, vanna_ok, spot: float = 0.0) -> float:
+        """Phase 2 multi-factor conviction score with mature metrics."""
         P = self.P
         # Normalized components (tanh)
         c1 = math.tanh(csldt / P["sigma_csldt"]) * P["w_csldt"]
         c2 = math.tanh(ngAO / P["sigma_ngao"]) * P["w_ngao"]
-        c3 = math.tanh((B - 0.7) / P["sigma_hawkes"]) * P["w_hawkes"] if B > 0.7 else 0
+        c3 = math.tanh((B - 0.45) / P["sigma_hawkes"]) * P["w_hawkes"] if B > 0.40 else 0
         c4 = math.tanh(n_coherent / P["sigma_coherence"]) * P["w_coherence"]
         c5 = math.tanh(abs(self.bucket_vacuum).sum() / P["sigma_vacuum"]) * P["w_vacuum"]
         c6 = P["w_mmretreat"] if align_ok else 0
         c7 = math.tanh(abs(self.bucket_iv_change) / P["sigma_vega"]) * P["w_vega"] if self.bucket_iv_change > 0 else 0
         c8 = math.tanh(max(0, P["theta_theta_bleed"] - self.bucket_theta_bleed) / P["sigma_theta"]) * P["w_theta"]
 
-        return c1 + c2 + c3 + c4 + c5 + c6 + c7 + c8
+        # Synthetic Put-Call parity divergence (options leading underlying cash)
+        syn_div = self._synthetic_divergence(spot)
+        c_syn = math.tanh(abs(syn_div) / P.get("sigma_syndiv", 5.0)) * P.get("w_syndiv", 1.0)
+
+        # Microprice deviation
+        mp_dev = self._microprice_deviation()
+        c_mp = math.tanh(abs(mp_dev) / 2.0) * 0.5
+
+        return c1 + c2 + c3 + c4 + c5 + c6 + c7 + c8 + c_syn + c_mp
 
     def _effective_conviction(self, C0) -> float:
-        """Latency-adjusted conviction using post-fill edge survival."""
-        n = self.fill_ptr if self.fill_ptr < 500 else 500
-        if n < 100:
-            return C0 * 0.5
+        """Latency-adjusted conviction using post-fill edge survival (no warmup dead-lock)."""
+        n = min(self.fill_ptr, 500)
+        if n < 10:
+            return C0
 
         cost = self.P["cost_bps"]
         survives = np.sum(self.post_fill_edge_buf[:n] > cost)
-        S_hat = survives / n
+        S_hat = max(0.5, survives / n)
         lam = self.P["lambda_decay"]
         T = self.P["hold_time_sec"]
-        return C0 * S_hat * math.exp(-lam * T)
+        return C0 * S_hat * math.exp(-lam * min(T, 30.0))
 
     # ═══════════════════════════════════════════════════════════
     # SIGNAL EMISSION & LOGGING
