@@ -16,21 +16,6 @@ module.exports = {
       }
     },
     {
-      name: "l2-archiver",
-      script: "ARGUS/l2_archiver.py",
-      cwd: "/home/opc",
-      interpreter: "python3",
-      autorestart: true,
-      watch: false,
-      max_memory_restart: "500M",
-      max_restarts: 10,
-      restart_delay: 5000,
-      env: {
-        PYTHONPATH: "/home/opc",
-        BOT_RUNTIME: "ARGUS"
-      }
-    },
-    {
       name: "argus",
       script: "ARGUS/main.py",
       cwd: "/home/opc",

@@ -291,10 +291,10 @@ class TradingSystem:
         self.executor.start()
         logger.info("[OK] Execution Manager Started")
 
-        # 6. L2 Archiver (Now runs as separate PM2 app 'l2-archiver' starting at 08:55 IST)
-        # This orchestrator no longer attaches the archiver to avoid startup delay
-        self.archiver = None
-        logger.info("[OK] L2 Archiver Decoupled - Runs as Independent PM2 App")
+        # 6. L2 Archiver (Unified In-Memory Passive Recorder — Single WebSocket Feed)
+        from ARGUS.l2_archiver import attach_archiver
+        self.archiver = attach_archiver(self.broker, master_token_map)
+        logger.info("[OK] L2 Archiver Attached to Single WebSocket Feed (Zero-Copy Passive)")
 
         # 7. Historical Calibration (Bucket/Vacuum)
         bucket_map, vacuum_map = calibrate_buckets(self.broker, token_to_symbol, self.universe)
