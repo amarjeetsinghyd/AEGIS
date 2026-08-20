@@ -534,6 +534,11 @@ class TradingSystem:
                         logger.info(f"[GATE] Max Positions Reached. Ignoring Signal: {signal_data}")
                         continue
                     
+                    # Daily Trade Limit Guard (Max 5 Trades per Day during testing)
+                    if hasattr(self.executor, "get_today_trades_count") and self.executor.get_today_trades_count() >= 5:
+                        logger.info(f"[GATE] 🛑 Daily Trade Cap (5 Trades) Reached. Ignoring Signal on {signal_data.get('sym')}")
+                        continue
+                    
                     # Worker Health Check
                     if not self.executor.worker_thread.is_alive():
                         logger.critical("Executor Worker Thread DEAD. Halting Entries.")

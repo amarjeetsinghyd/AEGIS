@@ -48,6 +48,7 @@ OPEN_PATH = os.path.join(TRADES_DIR, "open_positions.json")
 HISTORY_PATH = os.path.join(TRADES_DIR, "trade_history.json")
 
 MAX_OPEN_POSITIONS = 1
+MAX_TRADES_PER_DAY = 5           # Hard safety limit for testing: max 5 trades per day
 LEVERAGE = 5.0
 MARGIN_SAFETY = 1.0          # Set to 100% per user request
 TP_ATR_MULT = 1.5            # Calibrated for 0.4% - 0.6% micro-trend capture
@@ -556,6 +557,22 @@ class StockExecutionManager:
         except Exception as e:
             logger.warning(f"trade_history save failed: {e}")
 
+    def get_today_trades_count(self) -> int:
+        """Count completed + active trades executed today."""
+        count = 0
+        today_str = datetime.now().date().isoformat()
+        try:
+            if os.path.exists(HISTORY_PATH):
+                with open(HISTORY_PATH, "r") as f:
+                    history = json.load(f)
+                    for t in history:
+                        entry_time = str(t.get("entry_time", ""))
+                        if entry_time.startswith(today_str):
+                            count += 1
+        except Exception:
+            pass
+        return count + len(self.open_trades)
+
     def _ensure_day_snapshot(self):
         _today = datetime.now().date()
         if self._day_key != _today:
@@ -740,6 +757,10 @@ class StockExecutionManager:
         self._ensure_day_snapshot()
         if self._day_paused:
             logger.warning("[StockExecution] Circuit breaker active — skipping entry.")
+            return
+        today_trades = self.get_today_trades_count()
+        if today_trades >= MAX_TRADES_PER_DAY:
+            logger.warning(f"[StockExecution] 🛑 Daily trade limit reached ({today_trades}/{MAX_TRADES_PER_DAY}) — no new entries today.")
             return
         margin_budget = float(self.capital_engine.get_available_funds())
         if margin_budget < 50:
