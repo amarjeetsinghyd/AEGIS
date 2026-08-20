@@ -250,7 +250,11 @@ def wire_engine_to_executor(engine, executor):
     engine.on_tick = wrapped_on_tick
     engine.on_tick_parsed = wrapped_on_tick_parsed
     engine._process_bucket = wrapped_process_bucket
-    logger.info("[WIRING] Engine -> Executor Metrics Feed Active (Adv + Bucket Aggregates) [Zero-Copy Compatible]")
+    executor._cascade_engine = engine
+    if not executor.open_trades:
+        engine._engine_active_trade = False
+        engine._active_trade_symbol = None
+    logger.info("[WIRING] Engine -> Executor Metrics Feed & Trade Lock Sync Active [Zero-Copy Compatible]")
 
 # ═══════════════════════════════════════════════════════════════════
 # MAIN ORCHESTRATOR CLASS
