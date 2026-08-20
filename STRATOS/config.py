@@ -8,7 +8,7 @@ from datetime import time
 STRATOS_CONFIG = {
     # Universe & Execution
     "universe_size": 110,
-    "max_open_positions": 2,
+    "max_open_positions": 1,
     "max_trades_per_day": 8,
     "leverage": 5.0,
     "margin_safety": 1.0,

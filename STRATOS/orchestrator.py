@@ -58,6 +58,7 @@ class StratosOrchestrator:
                 logger.info(f"[STRATOS_EXIT] 🛑 Triggered {exit_side} on {symbol} @ {price:.2f} | Reason: {exit_signal['reason']}")
                 self.executor.place_order(symbol, exit_side, trade["qty"], price, exit_signal["reason"])
                 self.trades.close_trade(symbol, exit_signal)
+                self.structure.state[symbol] = "IDLE"
             return
 
         # 3. Only evaluate new entries when a bar/bucket completes
@@ -120,6 +121,7 @@ class StratosOrchestrator:
                 "support_level": support_line, "entry_time": datetime.now().isoformat(),
                 "highest_price": price, "order_info": order_res
             }
+            self.structure.state[symbol] = "IN_TRADE"
             self.trades.register_trade(symbol, trade_record)
 
         # ─── SHORT SETUP (BEARISH) ───
@@ -157,4 +159,5 @@ class StratosOrchestrator:
                 "resistance_level": resistance_line, "entry_time": datetime.now().isoformat(),
                 "lowest_price": price, "order_info": order_res
             }
+            self.structure.state[symbol] = "IN_TRADE"
             self.trades.register_trade(symbol, trade_record)
