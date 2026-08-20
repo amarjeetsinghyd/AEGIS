@@ -1638,12 +1638,12 @@ class CascadeValueEngine:
                 "[S_FLOW] %s | Phase: %s | Regime: %s (conf=%.1f) | "
                 "S_Flow_L: %.3f S_Flow_S: %.3f | "
                 "Ticks: %d | Branching: %.3f | WhaleZ: %.2f | "
-                "Mom1m: %+.2f%% Mom5m: %+.2f%% | Toxicity: %.1f/%.1f(P%d) | "
+                "Mom1m: %+.2f%% Mom5m: %+.2f%% | Toxicity: %.1f | "
                 "Signal: %s | Conviction: %.2f | AdvSel: %.3f"
                 % (sym, phase.name, self._regime_names[regime], self.regime_conf[sym_idx],
                    s_flow_long, s_flow_short,
                    tc, branching, whale_z,
-                   mom_1m, mom_5m, toxicity, tox_thresh, t_tox_pct,
+                   mom_1m, mom_5m, toxicity,
                    signal_side or 'NONE', conviction, adv_sel_prob if signal_side else 0.0)
             )
         
@@ -1673,9 +1673,9 @@ class CascadeValueEngine:
         
         # ── PUSH ACTIONABLE SIGNAL ──
         if signal_side:
-            # Calculate Kelly fraction for position sizing
-            kelly_fraction = self._calculate_kelly_fraction(sym, signal_side, conviction, ml_prob if 'ml_prob' in locals() else None, regime)
-            kelly_fraction = max(0.0, min(kelly_fraction, 1.0))
+            # Calculate Kelly fraction for position sizing (bounded 5% to 25%)
+            kelly_fraction = self._calculate_kelly_fraction(sym, signal_side, conviction, None, regime)
+            kelly_fraction = max(0.05, min(kelly_fraction, 0.25))
             
             sig_payload = {
                 "type": "ENTRY_SIGNAL",
