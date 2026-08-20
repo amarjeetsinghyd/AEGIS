@@ -214,9 +214,6 @@ class CascadeValueEngine:
         self.recent_fp = {sym: deque(maxlen=20) for sym in self.t2s.values()}
         self.recent_tp = {sym: deque(maxlen=20) for sym in self.t2s.values()}
         
-        # ─── 15-MIN MACRO DIRECTIONAL BIAS MAP (LONG_ONLY / SHORT_ONLY / NO_TRADE) ───
-        self._symbol_bias: Dict[str, str] = {}
-        
         # ─── TRIGGER CONFIG (The "Holy Grail" Thresholds) ───
         default_trigger = {
             # Core Gates (Must Pass All) - BASE VALUES (adaptive overrides these)
@@ -582,7 +579,8 @@ class CascadeValueEngine:
     # ═══════════════════════════════════════════════════════════
 
     def _update_regime_state(self, sym_idx: int, beta: float, whale_z: float, mom_5m: float) -> None:
-        """EMA-based regime classifier: 0=NOISE, 1=BURST, 2=GRIND, 3=WHALE. O(1), zero allocation."""
+        """EMA-based regime classifier: 0=NOISE, 1=BURST, 2=GRIND, 3=WHALE. O(1), zero allocation.
+        Kept for telemetry/logging only. Core gating now uses Flow Impetus metric."""
         alpha = self.CFG["ema_alpha_regime"]  # 0.15
         b_ema = self.regime_beta_ema[sym_idx]
         w_ema = self.regime_W_ema[sym_idx]
@@ -599,7 +597,7 @@ class CascadeValueEngine:
         self.regime_beta_var[sym_idx] = alpha * (beta - self.regime_beta_ema[sym_idx])**2 + (1 - alpha) * b_var
         self.regime_W_var[sym_idx] = alpha * (whale_z - self.regime_W_ema[sym_idx])**2 + (1 - alpha) * w_var
         
-        # Classify
+        # Classify (for telemetry only)
         b, w, m = self.regime_beta_ema[sym_idx], self.regime_W_ema[sym_idx], abs(self.regime_mom_ema[sym_idx])
         if b >= self.CFG["regime_burst_beta_min"] and w >= self.CFG["regime_burst_W_min"] and m >= self.CFG["regime_burst_mom_min"]:
             self.regime_id[sym_idx] = 1  # BURST
@@ -631,16 +629,37 @@ class CascadeValueEngine:
         return (float(max(0.08, min(t_beta, 0.22))), float(max(0.6, min(t_W, 2.5))),
                 self.CFG["minimax_mom"], self.CFG["minimax_tox_pct"])
 
+    def _compute_flow_impetus(self, mpar_accel: float, net_vac: float, whale_z: float, mom_1m: float) -> float:
+        """
+        Core Flow Metric — single continuous score replacing 4-regime branching.
+        
+        Flow Impetus = w_mpar * MPAR_accel + w_vac * Vacuum + w_whale * W_z + w_mom * Mom_1m
+        
+        All inputs normalized to [0,1] range. Weights calibrated for 0.40%-0.60% spike capture.
+        """
+        # Normalize inputs to [0,1] using calibrated caps
+        mpar_n = max(0.0, min(abs(mpar_accel) / self.CFG["mpar_cap"], 1.0))
+        vac_n = max(0.0, min(abs(net_vac) / self.CFG["vac_cap"], 1.0))
+        whale_n = max(0.0, min(abs(whale_z) / 3.0, 1.0))
+        mom_n = max(0.0, min(abs(mom_1m) / 0.5, 1.0))
+        
+        # Core weights (sum = 1.0 for interpretability)
+        w_mpar = 0.35   # Microprice acceleration — highest alpha signal
+        w_vac = 0.25    # Liquidity vacuum — pure cancellation pressure
+        w_whale = 0.25  # Whale presence — large lot clustering
+        w_mom = 0.15    # 1-min momentum — directional confirmation
+        
+        return w_mpar * mpar_n + w_vac * vac_n + w_whale * whale_n + w_mom * mom_n
+
     def _evaluate_adaptive_gate(self, sym_idx: int, beta: float, whale_z: float, mom_5m: float, 
                                 toxicity: float, tox_hist: deque, thresholds: tuple,
                                 mlofi: float, mpar_score: float, net_vac: float, lra_signal: float, 
                                 dkla_asym: float, micro_dev: float, mom_1m: float = 0.0) -> bool:
         """
-        Zero-allocation adaptive gate: continuous scoring with regime-adaptive weights.
-        Allows NOISE regime to pass when structural asymmetry is strong.
+        Zero-allocation adaptive gate using Core Flow Metric (Flow Impetus).
+        Replaces 4-regime branching with single continuous score.
         Maintains O(1) zero-allocation hot path.
         """
-        regime = self.regime_id[sym_idx]
         t_beta, t_W, t_mom, t_tox_pct = thresholds
         
         # O(1) Toxicity Gate without numpy overhead (Toxicity Ceiling: reject if toxicity exceeds P60/P80 cutoff)
@@ -651,12 +670,10 @@ class CascadeValueEngine:
             if toxicity > tox_thresh and tox_thresh > 0:
                 return False
         
-        # Fast Scalar Clipping (Zero-Allocation, No Numpy)
-        beta_n = max(0.0, min(beta / max(t_beta * 2.5, 0.5), 1.0))
-        whale_n = max(0.0, min(whale_z / max(t_W * 2.5, 2.0), 1.0))
-        eff_mom = max(abs(mom_5m), abs(mom_1m))
-        mom_n = max(0.0, min(eff_mom / max(t_mom * 2.5, 0.5), 1.0))
+        # Core Flow Metric — single continuous score
+        flow_impetus = self._compute_flow_impetus(mpar_score, net_vac, whale_z, mom_1m)
         
+        # Structural confirmation score (unchanged from before)
         vac_n = max(0.0, min(abs(net_vac) / self.CFG["vac_cap"], 1.0))
         mlofi_n = max(0.0, min(abs(mlofi) / self.CFG["mlofi_cap"], 1.0))
         micro_n = 1.0 if abs(micro_dev) > 0.0002 else 0.0
@@ -665,18 +682,9 @@ class CascadeValueEngine:
             
         struct_score = (vac_n * 0.25 + mlofi_n * 0.25 + micro_n * 0.15 + dkla_n * 0.20 + lra_n * 0.15)
         
-        if regime == 1:  # BURST: High clustering + whale + momentum + structure
-            # Weights: beta 25%, whale 25%, momentum 20%, structure 30%
-            return (0.25 * beta_n + 0.25 * whale_n + 0.20 * mom_n + 0.30 * struct_score) >= 0.50
-        elif regime == 2:  # GRIND: Moderate clustering, whale OR momentum, structure critical
-            # Weights: beta 15%, max(whale,momentum) 35%, structure 50%
-            return (0.15 * beta_n + 0.35 * max(whale_n, mom_n) + 0.50 * struct_score) >= 0.45 and beta_n >= 0.10
-        elif regime == 3:  # WHALE: Whale-dominated, structure confirms
-            # Weights: whale 45%, structure 55% (beta irrelevant)
-            return (0.45 * whale_n + 0.55 * struct_score) >= 0.55 and whale_n >= 0.35
-        else:  # NOISE (regime 0): Structure + Activity Gate (ML-Calibrated)
-            # Rejects dead range-bound noise while allowing fast micro-bursts
-            return struct_score >= 0.45 and eff_mom >= 0.04
+        # Unified gate: Flow Impetus + Structural Confirmation
+        # Threshold calibrated for 0.40%-0.60% spike capture
+        return flow_impetus >= 0.42 and struct_score >= 0.35
 
     def _update_threshold_posteriors(self, sym_idx: int, signal_fired: bool, move_captured: bool) -> None:
         """Beta-Binomial conjugate update for branching & whale thresholds."""
@@ -688,15 +696,6 @@ class CascadeValueEngine:
         else:
             self.post_beta_beta[sym_idx] += 1.0
             self.post_beta_W[sym_idx] += 1.0
-
-    def set_symbol_bias_map(self, bias_map: Dict[str, str]) -> None:
-        """Update 15-minute macro directional bias map from Tier 2 filter (LONG_ONLY, SHORT_ONLY, NO_TRADE)."""
-        self._symbol_bias = dict(bias_map)
-        if logger.isEnabledFor(logging.INFO):
-            n_l = sum(1 for b in self._symbol_bias.values() if b == 'LONG_ONLY')
-            n_s = sum(1 for b in self._symbol_bias.values() if b == 'SHORT_ONLY')
-            n_f = sum(1 for b in self._symbol_bias.values() if b == 'NO_TRADE')
-            logger.info(f"[MACRO_BIAS] Updated bias map: LONG={n_l}, SHORT={n_s}, FLAT(NO_TRADE)={n_f}")
 
     def _compute_5m_momentum(self, sym: str, lp: float, nows: float) -> Tuple[float, float]:
         """Compute 5-minute and 1-minute LTP momentum (%). Zero-allocation using pre-allocated deque."""
@@ -721,7 +720,8 @@ class CascadeValueEngine:
     def _compute_interaction_conviction(self, regime: int, mlofi: float, mpar: float, net_vac: float, 
                                         lra_signal: float, dkla_asym: float, micro_dev: float, 
                                         whale_z: float, branching: float, mom_5m: float) -> tuple:
-        """Zero-allocation interaction-aware conviction scoring with regime-adaptive weights. Returns (long_score, short_score)."""
+        """Zero-allocation interaction-aware conviction scoring with unified weights.
+        Regime parameter kept for API compatibility (telemetry only). Returns (long_score, short_score)."""
         # Main effects (monotonic transforms for long: positive values; for short: negative values)
         # Fast Scalar Clipping replacing np.clip
         mlofi_long = max(0.0, min(mlofi / self.CFG["mlofi_cap"], 1.0))
@@ -742,15 +742,8 @@ class CascadeValueEngine:
         beta_t = max(0.0, min(branching / 0.5, 1.0))
         mom_t = max(0.0, min(abs(mom_5m) / 0.5, 1.0))
         
-        # Regime-adaptive main effect weights
-        if regime == 1:  # BURST: MPAR + Whale + Momentum dominant
-            w_mlofi, w_mpar, w_vac, w_lra, w_dkla, w_micro = 1.0, 2.5, 1.0, 1.0, 1.5, 0.5
-        elif regime == 2:  # GRIND: Vacuum + MLOFI + LRA dominant (structure over flow)
-            w_mlofi, w_mpar, w_vac, w_lra, w_dkla, w_micro = 2.0, 1.5, 2.5, 2.0, 1.0, 0.5
-        elif regime == 3:  # WHALE: Whale + DKLA + MLOFI dominant
-            w_mlofi, w_mpar, w_vac, w_lra, w_dkla, w_micro = 1.5, 1.0, 1.0, 1.0, 2.5, 0.5
-        else:  # NOISE: Vacuum + MLOFI + MicroDev dominant (localized imbalances)
-            w_mlofi, w_mpar, w_vac, w_lra, w_dkla, w_micro = 2.5, 0.5, 3.0, 1.0, 0.5, 1.5
+        # Unified main effect weights (regime-agnostic, calibrated for 0.40%-0.60% spike capture)
+        w_mlofi, w_mpar, w_vac, w_lra, w_dkla, w_micro = 1.8, 2.2, 2.0, 1.5, 1.8, 1.0
         
         # Linear weighted sum (base conviction)
         base_long = (mlofi_long * w_mlofi + mpar_long * w_mpar + vac_long * w_vac +
@@ -1292,9 +1285,6 @@ class CascadeValueEngine:
         try:
             sym = self.t2s.get(tick.tok)
             if not sym: return
-            # TIER 2 GATE: Skip symbols not in active set
-            if hasattr(self, '_active_symbols') and self._active_symbols and sym not in self._active_symbols:
-                return
             st = self.last_snap[sym]  # Pre-allocated, no setdefault
             lp = tick.lp
             if lp <= 0: return
@@ -1544,6 +1534,9 @@ class CascadeValueEngine:
         lra_n = max(0.0, min(abs(lra_signal) / self.CFG["lra_cap"], 1.0))
         struct_score = (vac_n * 0.25 + mlofi_n * 0.25 + micro_n * 0.15 + dkla_n * 0.20 + lra_n * 0.15)
         
+        # Compute Flow Impetus for logging
+        flow_impetus = self._compute_flow_impetus(mpar_score, net_vac, whale_z, mom_1m)
+        
         hard_gate_pass = bool(gate_ticks and self._evaluate_adaptive_gate(
             sym_idx, branching, whale_z, mom_5m, toxicity, tox_hist, (t_beta, t_W, t_mom, t_tox_pct),
             mlofi, mpar_score, net_vac, lra_signal, dkla_asym, micro_dev, mom_1m=mom_1m
@@ -1556,12 +1549,12 @@ class CascadeValueEngine:
         tick_ok = "OK" if gate_ticks else "FAIL"
         if logger.isEnabledFor(logging.INFO):
             logger.info(
-                "[ADAPTIVE_GATE] %s | Phase: %s | Regime: %s (conf=%.1f) | "
+                "[ADAPTIVE_GATE] %s | Phase: %s | Regime: %s (conf=%.1f) | FlowImpetus: %.3f | "
                 "Ticks: %d/%d %s | StructScore: %.3f | "
                 "Branching: %.3f/%.3f | WhaleZ: %.2f/%.2f | "
                 "Mom1m: %+.2f%% Mom5m: %+.2f%% | Toxicity: %.1f/%.1f(P%d) | "
                 "HARD_GATE: %s"
-                % (sym, phase.name, self._regime_names[regime], self.regime_conf[sym_idx],
+                % (sym, phase.name, self._regime_names[regime], self.regime_conf[sym_idx], flow_impetus,
                    tc, min_ticks_required, tick_ok, struct_score,
                    branching, t_beta, whale_z, t_W,
                    mom_1m, mom_5m, toxicity, tox_thresh, t_tox_pct,
@@ -1582,11 +1575,12 @@ class CascadeValueEngine:
         
         if hard_gate_pass:
             # --- INTERACTION-AWARE CONVICTION SCORING ---
+            # regime is now telemetry-only; pass 0 (NOISE) as neutral for conviction weights
             long_score, short_score = self._compute_interaction_conviction(
-                regime, mlofi, mpar_score, net_vac, lra_signal, dkla_asym, micro_dev, whale_z, branching, mom_1m
+                0, mlofi, mpar_score, net_vac, lra_signal, dkla_asym, micro_dev, whale_z, branching, mom_1m
             )
             
-            # Regime-adaptive conviction threshold
+            # Regime-adaptive conviction threshold (using telemetry regime)
             thresh = self._get_regime_conviction_threshold(regime, sym)
             
             if long_score >= thresh and long_score > short_score:
@@ -1859,12 +1853,6 @@ class CascadeValueEngine:
                     f"DKLA:{adv.get('dkla_asym',0):+.2f} "
                     f"WhaleZ:{self._calculate_whale_z(hottest, self.cur_max_tick_val.get(hottest,0)/max(self.cur_tot_val.get(hottest,1),1)):.1f}")
         except Exception: return "error"
-
-    # ─── TIER 2 INTEGRATION ───
-    def set_active_symbols(self, symbols: set):
-        """Set active symbols for adaptive engine (Tier 2 integration)."""
-        self._active_symbols = set(symbols) if symbols else set()
-        logger.info(f"[TIER2] Engine active symbols updated: {len(self._active_symbols)} symbols")
 
     # ─── GLOBAL TRADE LOCK MANAGEMENT ───
     def handle_trade_closed(self, sym: str) -> None:
