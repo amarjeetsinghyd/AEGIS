@@ -462,11 +462,10 @@ class CascadeValueEngine:
         self.lra_asym_prev[sym] = asym
         return asym, vel
 
-    def _calculate_queue_decay(self, sym: str, snap: Dict, curr_bids: Dict, curr_asks: Dict) -> Tuple[float, float]:
+    def _calculate_queue_decay(self, sym: str, snap: Dict, curr_bids: Dict[float, int], 
+                               curr_asks: Dict[float, int], dVol: float = 0.0, lp: float = 0.0) -> Tuple[float, float]:
         """
-        Returns (bid_queue_decay_bps, ask_queue_decay_bps)
-        Measures how fast the queue ahead of a hypothetical new limit order is being consumed.
-        High decay = liquidity vanishing = adverse selection risk.
+        Calculate queue position decay in bps for Bid and Ask.
         """
         bp1, bq1 = snap.get("bp1", 0.0), snap.get("bq1", 0)
         sp1, sq1 = snap.get("sp1", 0.0), snap.get("sq1", 0)
@@ -478,18 +477,17 @@ class CascadeValueEngine:
         
         # Bid queue consumption = cancellations at bid + trades hitting bid (aggressive sells)
         bid_cancelled = max(0, last['bids'].get(bp1, 0) - curr_bids.get(bp1, 0))
-        # Trade at bid proxy: sell volume when lp <= bp1
-        trade_at_bid = max(0, -self.cur_sell_val.get(sym, 0)) if self.cur_sell_val.get(sym, 0) < 0 else 0
+        trade_at_bid = dVol if (dVol > 0 and lp <= bp1) else 0.0
         
         # Ask queue consumption = cancellations at ask + trades hitting ask (aggressive buys)
         ask_cancelled = max(0, last['asks'].get(sp1, 0) - curr_asks.get(sp1, 0))
-        trade_at_ask = max(0, self.cur_buy_val.get(sym, 0)) if self.cur_buy_val.get(sym, 0) > 0 else 0
+        trade_at_ask = dVol if (dVol > 0 and lp >= sp1) else 0.0
         
         bid_consumption = bid_cancelled + trade_at_bid
         ask_consumption = ask_cancelled + trade_at_ask
         
-        bid_decay_bps = (bid_consumption / max(bq1, 1)) * 10000
-        ask_decay_bps = (ask_consumption / max(sq1, 1)) * 10000
+        bid_decay_bps = (bid_consumption / max(bq1, 1)) * 100.0
+        ask_decay_bps = (ask_consumption / max(sq1, 1)) * 100.0
         
         return bid_decay_bps, ask_decay_bps
 
@@ -499,65 +497,33 @@ class CascadeValueEngine:
                                      bid_queue_decay: float, ask_queue_decay: float,
                                      whale_z: float, branching: float) -> float:
         """
-        Estimate P(toxic_fill | features) ∈ [0,1]
-        
-        A toxic fill is one where 30s P&L < -spread/2 (i.e., we got picked off).
-        
-        Features used:
-        - VPIN: High VPIN = informed trading present
-        - |OIB|: Extreme order imbalance = one-sided flow
-        - Spread widening: Spread_bps > recent median = uncertainty
-        - Toxicity (DKLA): High impact asymmetry = adverse selection
-        - Queue decay: Fast queue consumption = we're at back of queue
-        - Whale Z: Large lot presence = institutional flow
-        - Branching: Low Hawkes branching = flow not self-exciting (random)
-        
-        Returns probability in [0, 1]. If > 0.6, veto signal or widen limit price.
+        Estimate P(adverse_selection | signal_side) ∈ [0, 1].
+        Adverse selection occurs when order book dynamics OPPOSE the signal direction:
+        - For BUY: Sellers dumping, whale selling (WhaleZ < 0), bid collapsing, wide spread.
+        - For SELL: Buyers surging, whale buying (WhaleZ > 0), ask collapsing, wide spread.
+        Whale in the direction of the trade is ALPHA, NOT toxicity.
         """
-        # Normalize features to [0, 1] range
-        vpin_norm = min(max(vpins / 0.5, 0.0), 1.0)  # VPIN > 0.5 is very high
-        oimb_norm = min(max(abs(oimb - 1.0) / 2.0, 0.0), 1.0)  # OIB far from 1.0
-        spread_norm = min(max(spread_bps / 10.0, 0.0), 1.0)  # Spread > 10bps is wide
-        tox_norm = min(max(toxicity / 50.0, 0.0), 1.0)  # Toxicity > 50bps is high
-        
-        # Queue decay: use the side we're trading on
         if side == "BUY":
-            queue_decay = min(max(ask_queue_decay / 100.0, 0.0), 1.0)  # Ask decay for buys
+            flow_opposing = max(0.0, min(1.0, (1.0 - oimb))) if oimb < 1.0 else 0.0
+            whale_opposing = max(0.0, min(1.0, -whale_z / 2.0)) if whale_z < 0 else 0.0
+            queue_risk = min(max(bid_queue_decay / 100.0, 0.0), 1.0)
         else:
-            queue_decay = min(max(bid_queue_decay / 100.0, 0.0), 1.0)  # Bid decay for sells
+            flow_opposing = max(0.0, min(1.0, (oimb - 1.0))) if oimb > 1.0 else 0.0
+            whale_opposing = max(0.0, min(1.0, whale_z / 2.0)) if whale_z > 0 else 0.0
+            queue_risk = min(max(ask_queue_decay / 100.0, 0.0), 1.0)
+            
+        spread_risk = min(max((spread_bps - 5.0) / 10.0, 0.0), 1.0)
+        branch_risk = min(max((0.15 - branching) / 0.15, 0.0), 1.0)
         
-        whale_norm = min(max(abs(whale_z) / 3.0, 0.0), 1.0)  # Whale Z > 3 is extreme
-        branch_norm = min(max((0.3 - branching) / 0.3, 0.0), 1.0)  # Low branching = bad
-        
-        # Logistic regression weights (calibrated offline on historical fills)
-        # These weights should be calibrated on your specific fill data
-        # For now, using reasonable defaults based on microstructure literature
-        weights = {
-            'vpin': 0.25,      # VPIN is strongest predictor of adverse selection
-            'oimb': 0.15,      # Order imbalance
-            'spread': 0.10,    # Spread widening
-            'toxicity': 0.20,  # DKLA impact asymmetry
-            'queue_decay': 0.15,  # Queue position risk
-            'whale': 0.10,     # Whale presence
-            'branching': 0.05, # Low self-excitation
-        }
-        
-        # Linear combination
-        logit = (
-            weights['vpin'] * vpin_norm +
-            weights['oimb'] * oimb_norm +
-            weights['spread'] * spread_norm +
-            weights['toxicity'] * tox_norm +
-            weights['queue_decay'] * queue_decay +
-            weights['whale'] * whale_norm +
-            weights['branching'] * branch_norm
+        # Weighted adverse selection probability
+        p_adv = (
+            0.35 * flow_opposing +
+            0.25 * whale_opposing +
+            0.20 * spread_risk +
+            0.10 * queue_risk +
+            0.10 * branch_risk
         )
-        
-        # Convert to probability via sigmoid
-        # Center at 0.5: logit=0 -> P=0.5, logit=1 -> P=0.73, logit=2 -> P=0.88
-        prob = 1.0 / (1.0 + math.exp(-4.0 * (logit - 0.5)))
-        
-        return prob
+        return float(min(max(p_adv, 0.0), 1.0))
 
     def _update_mpar(self, sym: str, snap: Dict, dt: float) -> Tuple[float, float, float]:
         bp1, bq1 = snap.get("bp1",0.0), snap.get("bq1",0.0)
@@ -1389,7 +1355,7 @@ class CascadeValueEngine:
             self.cur_net_vacuum[sym] += vac_bps
             
             # Queue Position Decay (Adverse Selection Signal)
-            bid_queue_decay, ask_queue_decay = self._calculate_queue_decay(sym, st, curr_bids, curr_asks)
+            bid_queue_decay, ask_queue_decay = self._calculate_queue_decay(sym, st, curr_bids, curr_asks, dVol, lp)
             
             mid = (touch_bid + touch_ask)*0.5 if touch_bid>0 and touch_ask>0 else lp
             lam_buy, lam_sell, dkla_asym, eff_lam = self._calculate_dkla(st, mid)

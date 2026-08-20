@@ -37,7 +37,7 @@ N_TYPES   = 2           # 0=CE, 1=PE
 ATM_IDX   = N_STRIKES // 2
 
 # Bucket & timing
-BUCKET_TURNOVER_DEFAULT = 2_00_00_000.0   # ₹2 Cr
+BUCKET_TURNOVER_DEFAULT = 5_00_000.0   # ₹5 Lakhs for options contracts
 HAWKE_LOOKBACK_SEC      = 600
 HAWKE_BIN_SEC           = 10
 HAWKE_BINS              = HAWKE_LOOKBACK_SEC // HAWKE_BIN_SEC   # 60
@@ -385,7 +385,7 @@ class AegisGammaEngine:
 
             # ─── Bucket boundary check ───
             target = self.bucket_map.get(sym, BUCKET_TURNOVER_DEFAULT)
-            if self.cur_tot_val[sym] >= target:
+            if self.cur_tot_val[sym] >= target or self.cur_tick_count.get(sym, 0) >= 20:
                 self._process_bucket(sym, lp, now)
 
         except Exception as e:

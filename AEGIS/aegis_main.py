@@ -116,8 +116,8 @@ def main():
                 token_map[tkn] = {'side': side, 'strike': stk, 'expiry': row.get('expiry')}
                 token_to_symbol[tkn] = sym
         
-        # Bucket mapping (₹2Cr default)
-        bucket_map = {sym: 2_00_00_000.0 for sym in token_to_symbol.values()}
+        # Bucket mapping (₹5 Lakhs for options contracts)
+        bucket_map = {sym: 5_00_00_0.0 for sym in token_to_symbol.values()}
         
         # Signal queue: AEGIS → Execution
         signal_queue = queue.Queue(maxsize=1000)
