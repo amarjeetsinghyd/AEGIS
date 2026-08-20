@@ -1,7 +1,8 @@
 """
-pullback_analyzer.py — Two-Way Pullback & Absorption Validator for STRATOS.
-1. Long: Retracement to HH2 Support Floor with volume contraction.
-2. Short: Retracement up to LL2 Resistance Ceiling with volume contraction.
+pullback_analyzer.py — Pure Price Action & Market Structure Retest Engine for STRATOS.
+Evaluates:
+1. Long: Retracement into HH2 Support Floor with strict invalidation guard & lowest wick detection.
+2. Short: Retracement up into LL2 Resistance Ceiling with strict invalidation guard & highest wick detection.
 """
 from __future__ import annotations
 import numpy as np
@@ -20,7 +21,8 @@ class PullbackAnalyzer:
         support_level: float = None
     ) -> dict:
         """
-        Analyze recent bars/buckets approaching the support (Long) or resistance (Short) level.
+        Pure Price Action Retest Validator:
+        Verifies clean touch of the horizontal support/resistance floor/ceiling without invalidation breach.
         """
         if level is None:
             level = support_level if support_level is not None else 0.0
@@ -29,38 +31,19 @@ class PullbackAnalyzer:
         highs = arrays.get("high", np.empty(0))
         lows = arrays.get("low", np.empty(0))
         volumes = arrays.get("volume", np.empty(0))
-        deltas = arrays.get("delta", np.empty(0))
 
         n = len(closes)
         if n < 2:
-            return {"valid": False, "reason": "Insufficient bars for pullback check"}
+            return {"valid": False, "reason": "Insufficient bars for retest check"}
 
-        lookback = min(self.cfg.get("max_pullback_buckets", 8), n)
-        pb_vols = volumes[-lookback:]
+        lookback = min(self.cfg.get("max_pullback_buckets", 12), n)
         pb_lows = lows[-lookback:]
         pb_highs = highs[-lookback:]
         pb_closes = closes[-lookback:]
+        pb_vols = volumes[-lookback:] if len(volumes) > 0 else np.ones(lookback)
 
         avg_pb_vol = float(np.mean(pb_vols)) if len(pb_vols) > 0 else 1.0
-        vol_ratio = avg_pb_vol / max(breakout_vol, 1.0) if breakout_vol > 0 else 0.6
-
-        # 1. Human-Adaptive Volume Gate: Ensure healthy retracement, NO aggressive dump spike
-        max_ratio = self.cfg.get("max_pullback_vol_ratio", 0.90)
-        max_pb_bar_vol = float(np.max(pb_vols)) if len(pb_vols) > 0 else 1.0
-
-        # Disqualify ONLY if there is a massive institutional dumping spike (>1.25x breakout volume)
-        if breakout_vol > 0 and max_pb_bar_vol > breakout_vol * 1.25 and len(pb_vols) >= 2:
-            return {
-                "valid": False, "vol_ratio": vol_ratio,
-                "reason": f"Heavy Selling Volume Spike ({max_pb_bar_vol:.0f} > 1.25x {breakout_vol:.0f}) — Dump Risk!"
-            }
-
-        # Average retracement volume should generally stay below breakout impulse volume
-        if vol_ratio > max_ratio and len(pb_vols) >= 4:
-            return {
-                "valid": False, "vol_ratio": vol_ratio,
-                "reason": f"Elevated Retracement Volume ({vol_ratio*100:.1f}% > {max_ratio*100:.0f}%)"
-            }
+        vol_ratio = avg_pb_vol / max(breakout_vol, 1.0) if breakout_vol > 0 else 0.5
 
         tol = self.cfg.get("retest_touch_tolerance_pct", 0.0025)
         inval_buf = self.cfg.get("strict_invalidation_buffer_pct", 0.0020)
@@ -72,11 +55,14 @@ class PullbackAnalyzer:
             invalidated = (cur_close < level * (1.0 - inval_buf))
 
             if invalidated:
-                return {"valid": False, "reason": f"Support Breakdown! Close {cur_close:.2f} < Floor {level:.2f}"}
+                return {"valid": False, "vol_ratio": vol_ratio, "reason": f"Support Breakdown! Close {cur_close:.2f} < Floor {level:.2f}"}
             if not touched:
-                return {"valid": False, "reason": f"Not in Support Zone (MinLow: {min_low:.2f} vs Floor: {level:.2f})"}
+                return {"valid": False, "vol_ratio": vol_ratio, "reason": f"Not in Support Zone (MinLow: {min_low:.2f} vs Floor: {level:.2f})"}
 
-            return {"valid": True, "vol_ratio": vol_ratio, "lowest_wick": min_low, "reason": f"Clean Support Retest at {level:.2f}"}
+            return {
+                "valid": True, "vol_ratio": vol_ratio, "lowest_wick": min_low,
+                "reason": f"Clean Pure Price Action Support Retest @ {level:.2f}"
+            }
 
         else: # SELL (Short)
             max_high = float(np.max(pb_highs))
@@ -85,8 +71,11 @@ class PullbackAnalyzer:
             invalidated = (cur_close > level * (1.0 + inval_buf))
 
             if invalidated:
-                return {"valid": False, "reason": f"Resistance Breakout! Close {cur_close:.2f} > Ceiling {level:.2f}"}
+                return {"valid": False, "vol_ratio": vol_ratio, "reason": f"Resistance Breakout! Close {cur_close:.2f} > Ceiling {level:.2f}"}
             if not touched:
-                return {"valid": False, "reason": f"Not in Resistance Zone (MaxHigh: {max_high:.2f} vs Ceiling: {level:.2f})"}
+                return {"valid": False, "vol_ratio": vol_ratio, "reason": f"Not in Resistance Zone (MaxHigh: {max_high:.2f} vs Ceiling: {level:.2f})"}
 
-            return {"valid": True, "vol_ratio": vol_ratio, "highest_wick": max_high, "reason": f"Clean Resistance Retest at {level:.2f}"}
+            return {
+                "valid": True, "vol_ratio": vol_ratio, "highest_wick": max_high,
+                "reason": f"Clean Pure Price Action Resistance Retest @ {level:.2f}"
+            }
