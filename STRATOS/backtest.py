@@ -1,13 +1,12 @@
 """
-backtest.py — STRATOS Historical Parquet Backtest Runner.
-Replays raw L2 parquet files through the complete STRATOS engine:
-- Multi-Timeframe Resampler (1H, 15m, 5m)
-- 1H 20/50 EMA Ribbon Trend Filter
-- 15m 2x HH/HL Breakout & Support Level Detector
-- 5m Pullback Volume Contraction Validator
-- TA-Lib Bullish Engulfing & Hammer Candlestick + RSI + 9 EMA Cross Trigger
-- Anti-Liquidity Hunting Stop Loss (0.15% below wick floor)
-- Session-Adaptive Trailing Engine (Morning 20 EMA vs Afternoon 9 EMA)
+backtest.py — STRATOS Pure Turnover Bucket Backtest Runner.
+Replays raw L2 parquet files through Information-Time Turnover Buckets:
+- Turnover Bucket Aggregator (Rs. 20,000,000 / Rs. 2 Cr per bucket)
+- Turnover-Wave Market Structure (HH2 Breakout Support Detector)
+- Pullback Volume Contraction Validator
+- Order-Flow Positive Delta & Absorption Trigger
+- Anti-Liquidity Hunting Stop Loss (0.15% below lowest pullback wick)
+- Session-Adaptive Trailing Engine
 """
 from __future__ import annotations
 
@@ -17,12 +16,12 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, time as dt_time
 import numpy as np
 import pandas as pd
 
 from STRATOS.config import STRATOS_CONFIG
-from STRATOS.candle_resampler import MultiTimeframeResampler
+from STRATOS.turnover_bucket_engine import TurnoverBucketEngine
 from STRATOS.structure_engine import MarketStructureEngine
 from STRATOS.pullback_analyzer import PullbackAnalyzer
 from STRATOS.flip_trigger import FlipTriggerEngine
@@ -49,7 +48,7 @@ def load_token_symbol_map(data_dir: str) -> dict:
                 pass
     return {}
 
-def run_backtest(data_dir: str, outdir: str = "./stratos_backtest_out"):
+def run_backtest(data_dir: str, outdir: str = "./stratos_backtest_out", bucket_size: float = 20_000_000.0):
     files = sorted(glob.glob(os.path.join(data_dir, "**", "*.parquet"), recursive=True))
     if not files:
         print(f"[error] No *.parquet files found under {data_dir}")
@@ -93,8 +92,10 @@ def run_backtest(data_dir: str, outdir: str = "./stratos_backtest_out"):
     symbols = sorted(full["symbol"].unique())
     print(f"[backtest] Replaying {len(full):,} ticks across {len(symbols)} symbols and {full['trade_date'].nunique()} day(s)...")
 
-    cfg = STRATOS_CONFIG
-    resampler = MultiTimeframeResampler(symbols)
+    cfg = dict(STRATOS_CONFIG)
+    cfg["turnover_bucket_inr"] = bucket_size
+
+    bucket_engine = TurnoverBucketEngine(symbols, default_turnover_inr=bucket_size, max_history=200)
     structure = MarketStructureEngine(cfg)
     pullback = PullbackAnalyzer(cfg)
     trigger = FlipTriggerEngine(cfg)
@@ -122,21 +123,25 @@ def run_backtest(data_dir: str, outdir: str = "./stratos_backtest_out"):
             if p <= 0:
                 continue
 
-            # 1. Update Resampler
-            events = resampler.on_tick(symbol, t, p, v, is_buy=True)
+            # 1. Update Turnover Bucket Accumulator
+            bucket = bucket_engine.on_tick(symbol, t, p, v, is_buy=True)
 
             # 2. Check Exits on tick
             if symbol in trades_mgr.open_trades:
-                arr_5m = resampler.get_arrays(symbol, "5m")
-                exit_res = trades_mgr.evaluate_exits(symbol, p, arr_5m, tod)
+                arrays = bucket_engine.get_arrays(symbol)
+                exit_res = trades_mgr.evaluate_exits(symbol, p, arrays, tod)
                 if exit_res:
                     closed = trades_mgr.close_trade(symbol, exit_res)
                     if closed:
                         all_trades.append(closed)
                 continue
 
-            # 3. Only evaluate entry on 5m candle close
-            if not events["closed_5m"]:
+            # 3. Only evaluate entry when a Turnover Bucket completes
+            if not bucket:
+                continue
+
+            # Time Gate: Only trade between 09:20 and 14:30 IST
+            if tod < cfg.get("entry_start_time", dt_time(9, 20)) or tod > cfg.get("entry_cutoff_time", dt_time(14, 30)):
                 continue
 
             if trades_mgr.get_open_count() >= cfg["max_open_positions"]:
@@ -144,34 +149,33 @@ def run_backtest(data_dir: str, outdir: str = "./stratos_backtest_out"):
             if trades_mgr.get_today_trades_count() >= cfg["max_trades_per_day"]:
                 continue
 
-            # 1H Macro Trend
-            arr_1h = resampler.get_arrays(symbol, "1h")
-            macro = structure.check_macro_trend_1h(arr_1h)
+            arrays = bucket_engine.get_arrays(symbol)
+
+            # Macro Trend
+            macro = structure.check_macro_trend(arrays)
             if macro["trend"] != "BULLISH":
                 continue
 
-            # 15m Structure Swings
-            arr_15m = resampler.get_arrays(symbol, "15m")
-            arr_5m = resampler.get_arrays(symbol, "5m")
-            struct = structure.update_structure(symbol, arr_15m, arr_5m)
+            # Structure Swings
+            struct = structure.update_structure(symbol, arrays)
             if struct["status"] != "AWAITING_RETEST":
                 continue
 
             support_line = struct["support_level"]
-            bk_vol = structure.breakout_candle.get(symbol, {}).get("volume", 1000.0)
+            bk_vol = structure.breakout_bucket.get(symbol, {}).get("volume", 1000.0)
 
-            # 5m Pullback Volume Contraction
-            pb = pullback.analyze_pullback_quality(arr_5m, support_line, bk_vol)
+            # Pullback Volume Contraction
+            pb = pullback.analyze_pullback_quality(arrays, support_line, bk_vol)
             if not pb["valid"]:
                 continue
 
-            # Candlestick & 9 EMA Trigger
-            trig = trigger.evaluate_trigger(arr_5m, support_line)
+            # Order Flow Trigger
+            trig = trigger.evaluate_trigger(arrays, support_line)
             if not trig["triggered"]:
                 continue
 
             # Risk Sizing
-            levels = risk.calculate_trade_levels(p, support_line, pb["lowest_wick"], arr_5m)
+            levels = risk.calculate_trade_levels(p, support_line, pb["lowest_wick"], arrays)
             qty = risk.calculate_position_size(capital, p, levels["risk_dist"])
             if qty <= 0:
                 continue
@@ -182,13 +186,13 @@ def run_backtest(data_dir: str, outdir: str = "./stratos_backtest_out"):
                 "stop_loss": levels["stop_loss"], "tp1_price": levels["tp1_price"],
                 "tp2_price": levels["tp2_price"], "risk_dist": levels["risk_dist"],
                 "risk_pct": levels["risk_pct"], "support_level": support_line,
-                "candle_type": trig["candle_type"], "rsi": trig["rsi"],
+                "pattern": trig["pattern"], "delta": trig["delta"],
                 "highest_price": p
             }
             trades_mgr.register_trade(symbol, trade_entry)
 
     print("\n" + "=" * 90)
-    print(f"STRATOS HISTORICAL BACKTEST RESULTS ({len(all_trades)} Trades Executed)")
+    print(f"STRATOS TURNOVER BUCKET BACKTEST RESULTS ({len(all_trades)} Trades Executed)")
     print("=" * 90)
 
     if not all_trades:
@@ -216,22 +220,23 @@ def run_backtest(data_dir: str, outdir: str = "./stratos_backtest_out"):
     print(f"Average Loss (%)   : {avg_loss:.2f}%")
 
     print("\n--- INDIVIDUAL TRADE LOG ---")
-    log_cols = ["symbol", "trade_date", "entry_time_ist", "candle_type", "entry_price", "exit_price", "pnl_pct", "reason"]
+    log_cols = ["symbol", "trade_date", "entry_time_ist", "pattern", "entry_price", "exit_price", "pnl_pct", "reason"]
     avail_cols = [c for c in log_cols if c in tdf.columns]
     print(tdf[avail_cols].to_string())
 
     if outdir:
         os.makedirs(outdir, exist_ok=True)
-        csv_path = os.path.join(outdir, "stratos_backtest_trades.csv")
+        csv_path = os.path.join(outdir, "stratos_bucket_backtest_trades.csv")
         tdf.to_csv(csv_path, index=False)
         print(f"\n[saved] Full trade log exported -> {csv_path}")
 
 def main():
-    ap = argparse.ArgumentParser(description="STRATOS Backtester")
+    ap = argparse.ArgumentParser(description="STRATOS Pure Turnover Bucket Backtester")
     ap.add_argument("--data-dir", default="/home/opc/ARGUS/data/l2_raw", help="Path to raw L2 parquet files")
     ap.add_argument("--outdir", default="./stratos_backtest_out", help="Output directory for CSV log")
+    ap.add_argument("--bucket-size", type=float, default=20000000.0, help="Turnover Bucket Size in INR")
     args = ap.parse_args()
-    run_backtest(args.data_dir, args.outdir)
+    run_backtest(args.data_dir, args.outdir, args.bucket_size)
 
 if __name__ == "__main__":
     main()

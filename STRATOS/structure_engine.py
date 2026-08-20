@@ -1,14 +1,14 @@
 """
-structure_engine.py — Market Structure and Multi-Timeframe Trend Engine.
-1. Macro Trend Filter (1-Hour 20/50 EMA Ribbon Expansion).
-2. Swing Structure Analyzer (2x Higher Highs / Higher Lows Detection & Breakout Registration).
+structure_engine.py — Turnover Bucket Market Structure Engine for STRATOS.
+Tracks Higher Highs (HH), Higher Lows (HL), and Breakout Support Floors directly across
+Information-Time Turnover Buckets (no time slicing).
 """
 from __future__ import annotations
 import numpy as np
 from STRATOS.config import STRATOS_CONFIG
 
 def compute_ema(prices: np.ndarray, period: int) -> np.ndarray:
-    """O(N) fast Exponential Moving Average."""
+    """Fast Exponential Moving Average across Turnover Buckets."""
     n = len(prices)
     if n < period:
         return np.array([])
@@ -22,47 +22,44 @@ def compute_ema(prices: np.ndarray, period: int) -> np.ndarray:
 class MarketStructureEngine:
     def __init__(self, cfg: dict = None):
         self.cfg = cfg or STRATOS_CONFIG
-        
-        # State per symbol: structure state, swing highs, swing lows, active support line
-        # States: "IDLE", "UPTREND_CONFIRMED", "BREAKOUT_ACTIVE", "AWAITING_RETEST"
-        self.state = {}
-        self.support_level = {}
-        self.breakout_candle = {}
-        self.swing_highs = {}
-        self.swing_lows = {}
+        self.state: dict[str, str] = {}
+        self.support_level: dict[str, float] = {}
+        self.breakout_bucket: dict[str, dict] = {}
+        self.swing_highs: dict[str, list] = {}
+        self.swing_lows: dict[str, list] = {}
 
-    def check_macro_trend_1h(self, arrays_1h: dict) -> dict:
+    def check_macro_trend(self, arrays: dict) -> dict:
         """
-        Check 1-Hour Chart Trend Alignment:
-        Bullish: Price > 20 EMA > 50 EMA and (20 EMA - 50 EMA) spread is widening.
-        Bearish: Price < 20 EMA < 50 EMA and (50 EMA - 20 EMA) spread is widening.
+        Check Trend Alignment across Turnover Buckets:
+        Bullish: Price > 20 EMA and 20 EMA is sloping upward.
         """
-        if not arrays_1h or arrays_1h["count"] < 15:
-            return {"trend": "NEUTRAL", "spread_bps": 0.0, "reason": "Insufficient 1H bars"}
+        closes = arrays.get("close", np.empty(0))
+        n = len(closes)
+        if n < self.cfg.get("macro_ema_fast", 20):
+            # Not enough buckets yet for 20 EMA, check basic price progression
+            if n >= 3 and closes[-1] >= closes[0]:
+                return {"trend": "BULLISH", "spread_bps": 10.0, "reason": "Early bucket bullish momentum"}
+            return {"trend": "NEUTRAL", "spread_bps": 0.0, "reason": "Warming up turnover buckets"}
 
-        closes = arrays_1h["close"]
-        ema20 = compute_ema(closes, self.cfg["macro_ema_fast"])
-        ema50 = compute_ema(closes, self.cfg["macro_ema_slow"])
-
-        if len(ema20) == 0 or len(ema50) == 0:
+        ema20 = compute_ema(closes, self.cfg.get("macro_ema_fast", 20))
+        if len(ema20) == 0:
             return {"trend": "NEUTRAL", "spread_bps": 0.0, "reason": "EMA warming up"}
 
         cur_close = closes[-1]
-        cur_e20, cur_e50 = ema20[-1], ema50[-1]
-        prev_e20, prev_e50 = ema20[-2] if len(ema20) > 1 else cur_e20, ema50[-2] if len(ema50) > 1 else cur_e50
+        cur_e20 = ema20[-1]
+        prev_e20 = ema20[-2] if len(ema20) > 1 else cur_e20
 
-        spread_cur = (cur_e20 - cur_e50) / max(cur_close, 1e-6) * 10000.0
-        spread_prev = (prev_e20 - prev_e50) / max(cur_close, 1e-6) * 10000.0
+        if cur_close >= cur_e20 and cur_e20 >= prev_e20:
+            spread_bps = (cur_close - cur_e20) / max(cur_close, 1e-6) * 10000.0
+            return {"trend": "BULLISH", "spread_bps": spread_bps, "reason": "Price > 20-Bucket EMA & Rising"}
+        elif cur_close < cur_e20:
+            spread_bps = (cur_e20 - cur_close) / max(cur_close, 1e-6) * 10000.0
+            return {"trend": "BEARISH", "spread_bps": spread_bps, "reason": "Price below 20-Bucket EMA"}
 
-        if cur_close > cur_e20 > cur_e50 and spread_cur > spread_prev and spread_cur >= self.cfg["min_macro_spread_bps"]:
-            return {"trend": "BULLISH", "spread_bps": spread_cur, "reason": "20/50 EMA Ribbon Expanding Up"}
-        elif cur_close < cur_e20 < cur_e50 and spread_cur < spread_prev and abs(spread_cur) >= self.cfg["min_macro_spread_bps"]:
-            return {"trend": "BEARISH", "spread_bps": spread_cur, "reason": "20/50 EMA Ribbon Expanding Down"}
+        return {"trend": "NEUTRAL", "spread_bps": 0.0, "reason": "Chop/Flat EMA"}
 
-        return {"trend": "NEUTRAL", "spread_bps": spread_cur, "reason": "Ribbon not cleanly expanding"}
-
-    def find_pivots(self, highs: np.ndarray, lows: np.ndarray, lookback: int = 3):
-        """Identify local swing highs and swing lows with lookback window."""
+    def find_pivots(self, highs: np.ndarray, lows: np.ndarray, lookback: int = 2):
+        """Identify local swing highs and swing lows across turnover buckets."""
         n = len(highs)
         pivot_highs, pivot_lows = [], []
         for i in range(lookback, n - lookback):
@@ -72,52 +69,56 @@ class MarketStructureEngine:
                 pivot_lows.append((i, lows[i]))
         return pivot_highs, pivot_lows
 
-    def update_structure(self, symbol: str, arrays_15m: dict, arrays_5m: dict) -> dict:
+    def update_structure(self, symbol: str, arrays: dict) -> dict:
         """
-        Evaluate 15m/5m structure for 2x Higher Highs + 2x Higher Lows and Breakout.
+        Evaluate turnover-bucket structure for 2x Higher Highs + Breakout.
         """
-        if not arrays_15m or arrays_15m["count"] < 10:
-            return {"status": "NO_STRUCTURE", "reason": "Insufficient 15m bars"}
+        highs = arrays.get("high", np.empty(0))
+        lows = arrays.get("low", np.empty(0))
+        closes = arrays.get("close", np.empty(0))
+        volumes = arrays.get("volume", np.empty(0))
+        deltas = arrays.get("delta", np.empty(0))
+        n = len(closes)
 
-        highs_15 = arrays_15m["high"]
-        lows_15 = arrays_15m["low"]
-        closes_15 = arrays_15m["close"]
+        if n < 5:
+            return {"status": "NO_STRUCTURE", "reason": "Need at least 5 turnover buckets"}
 
-        p_highs, p_lows = self.find_pivots(highs_15, lows_15, self.cfg["swing_lookback_bars"])
+        lookback = self.cfg.get("swing_lookback_buckets", 2)
+        p_highs, p_lows = self.find_pivots(highs, lows, lookback)
         self.swing_highs[symbol] = p_highs
         self.swing_lows[symbol] = p_lows
 
-        # ── 1. Check for 2x Higher Highs and 2x Higher Lows (Bullish Structure) ──
-        if len(p_highs) >= 2 and len(p_lows) >= 2:
+        # If we already have an active support level awaiting retest, verify it
+        cur_state = self.state.get(symbol, "IDLE")
+        cur_price = closes[-1]
+
+        if len(p_highs) >= 2:
             hh1, hh2 = p_highs[-2][1], p_highs[-1][1]
-            hl1, hl2 = p_lows[-2][1], p_lows[-1][1]
-
-            if hh2 > hh1 and hl2 > hl1:
-                cur_state = self.state.get(symbol, "IDLE")
-                cur_price = closes_15[-1]
-
-                # Check breakout above HH2
-                if cur_price > hh2 * (1.0 + self.cfg["breakout_buffer_pct"]):
+            # Verify bullish swing progression: HH2 > HH1
+            if hh2 > hh1:
+                # Check for breakout close above HH2
+                if cur_price > hh2 * (1.0 + self.cfg.get("breakout_buffer_pct", 0.0005)):
                     self.state[symbol] = "AWAITING_RETEST"
                     self.support_level[symbol] = hh2
-                    self.breakout_candle[symbol] = {
+                    self.breakout_bucket[symbol] = {
                         "price": cur_price,
-                        "volume": arrays_15m["volume"][-1],
-                        "bar_idx": len(closes_15) - 1,
+                        "volume": volumes[-1] if len(volumes) > 0 else 1000.0,
+                        "delta": deltas[-1] if len(deltas) > 0 else 0.0,
+                        "bucket_idx": n - 1,
                         "hh2_level": hh2
                     }
                     return {
                         "status": "AWAITING_RETEST",
                         "support_level": hh2,
                         "hh1": hh1, "hh2": hh2,
-                        "hl1": hl1, "hl2": hl2,
-                        "reason": f"Clean Breakout above HH2 ({hh2:.2f}) -> Support Floor Registered"
-                    }
-                elif cur_state == "AWAITING_RETEST":
-                    return {
-                        "status": "AWAITING_RETEST",
-                        "support_level": self.support_level[symbol],
-                        "reason": f"Active Support Floor ({self.support_level[symbol]:.2f}) being tracked"
+                        "reason": f"Turnover Breakout above HH2 ({hh2:.2f}) -> Support Floor Set"
                     }
 
-        return {"status": "NO_CLEAN_BREAKOUT", "reason": "Structure not yet in qualified 2x HH/HL breakout"}
+        if cur_state == "AWAITING_RETEST" and symbol in self.support_level:
+            return {
+                "status": "AWAITING_RETEST",
+                "support_level": self.support_level[symbol],
+                "reason": f"Active Support Floor ({self.support_level[symbol]:.2f}) being tracked"
+            }
+
+        return {"status": "NO_CLEAN_BREAKOUT", "reason": "Structure not yet in qualified HH2 breakout"}

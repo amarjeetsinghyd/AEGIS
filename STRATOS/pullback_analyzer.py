@@ -1,8 +1,8 @@
 """
-pullback_analyzer.py — Evaluates the Quality of the Retracement.
-1. Volume Contraction Validator (Volume must dry up on the pullback).
-2. Retracement Momentum (Small-bodied candles vs massive institutional dumps).
-3. Support Line Proximity Check.
+pullback_analyzer.py — Turnover-Bucket Pullback & Absorption Validator for STRATOS.
+1. Validates that the retracement to the HH2 Support Floor has volume/delta contraction.
+2. Checks proximity to the Support Level and finds the lowest rejection wick.
+3. Enforces strict invalidation if a bucket closes materially below support.
 """
 from __future__ import annotations
 import numpy as np
@@ -12,46 +12,50 @@ class PullbackAnalyzer:
     def __init__(self, cfg: dict = None):
         self.cfg = cfg or STRATOS_CONFIG
 
-    def analyze_pullback_quality(self, arrays_5m: dict, support_level: float, breakout_vol: float) -> dict:
+    def analyze_pullback_quality(self, arrays: dict, support_level: float, breakout_vol: float) -> dict:
         """
-        Analyze 5-minute pullback candles approaching the support_level.
+        Analyze recent turnover buckets approaching the support_level.
         """
-        if not arrays_5m or arrays_5m["count"] < 3:
-            return {"valid": False, "reason": "Insufficient 5m bars for pullback"}
+        closes = arrays.get("close", np.empty(0))
+        highs = arrays.get("high", np.empty(0))
+        lows = arrays.get("low", np.empty(0))
+        volumes = arrays.get("volume", np.empty(0))
+        deltas = arrays.get("delta", np.empty(0))
 
-        highs = arrays_5m["high"]
-        lows = arrays_5m["low"]
-        closes = arrays_5m["close"]
-        volumes = arrays_5m["volume"]
+        n = len(closes)
+        if n < 2:
+            return {"valid": False, "reason": "Insufficient buckets for pullback check"}
 
-        # Check last 3-5 candles during the retest approach
-        lookback = min(5, len(closes))
+        lookback = min(self.cfg.get("max_pullback_buckets", 8), n)
         pb_vols = volumes[-lookback:]
-        pb_closes = closes[-lookback:]
         pb_lows = lows[-lookback:]
+        pb_closes = closes[-lookback:]
+        pb_deltas = deltas[-lookback:]
 
-        avg_pb_vol = float(np.mean(pb_vols))
-        vol_ratio = avg_pb_vol / max(breakout_vol, 1.0) if breakout_vol > 0 else 0.5
+        avg_pb_vol = float(np.mean(pb_vols)) if len(pb_vols) > 0 else 1.0
+        vol_ratio = avg_pb_vol / max(breakout_vol, 1.0) if breakout_vol > 0 else 0.6
 
-        # ── 1. Volume Contraction Gate ──
-        # Volume during pullback must be smaller than breakout volume
-        if vol_ratio > self.cfg["max_pullback_vol_ratio"]:
+        # 1. Volume Contraction Gate
+        max_ratio = self.cfg.get("max_pullback_vol_ratio", 0.85)
+        if vol_ratio > max_ratio and len(pb_vols) >= 3:
             return {
                 "valid": False,
                 "vol_ratio": vol_ratio,
-                "reason": f"High Volume Pullback ({vol_ratio*100:.1f}% > {self.cfg['max_pullback_vol_ratio']*100:.0f}%) — Institutional Dump Risk!"
+                "reason": f"High Volume Pullback ({vol_ratio*100:.1f}% > {max_ratio*100:.0f}%) — Institutional Dump Risk!"
             }
 
-        # ── 2. Support Proximity & Invalidation Gate ──
+        # 2. Support Proximity & Invalidation Gate
         cur_low = pb_lows[-1]
         cur_close = pb_closes[-1]
         min_low = float(np.min(pb_lows))
 
         # Check if price touched within tolerance of support level
-        touched_support = (min_low <= support_level * (1.0 + self.cfg["retest_touch_tolerance_pct"]))
+        tol = self.cfg.get("retest_touch_tolerance_pct", 0.0025)
+        touched_support = (min_low <= support_level * (1.0 + tol))
 
         # Strict invalidation: Close cannot break below support level minus buffer
-        breakdown = (cur_close < support_level * (1.0 - self.cfg["strict_invalidation_buffer_pct"]))
+        inval_buf = self.cfg.get("strict_invalidation_buffer_pct", 0.0020)
+        breakdown = (cur_close < support_level * (1.0 - inval_buf))
 
         if breakdown:
             return {
@@ -71,5 +75,5 @@ class PullbackAnalyzer:
             "valid": True,
             "vol_ratio": vol_ratio,
             "lowest_wick": min_low,
-            "reason": f"Healthy Low-Volume Retest (VolRatio: {vol_ratio*100:.1f}%) cleanly testing Support {support_level:.2f}"
+            "reason": f"Clean Low-Volume Retest (VolRatio: {vol_ratio*100:.1f}%) testing Support {support_level:.2f}"
         }

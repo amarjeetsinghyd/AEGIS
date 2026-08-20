@@ -1,54 +1,58 @@
 """
-STRATOS Configuration — Parameters for Market Structure, Multi-Timeframe Confluence,
-TA-Lib Candlestick Detection, Order-Flow Absorption, and Anti-Hunt Risk.
+config.py — STRATOS Central Configuration.
+Pure Information-Time (Turnover / Volume Bucket) Architecture.
+No clock-based candle slicing.
 """
 from datetime import time
 
 STRATOS_CONFIG = {
     # Universe & Execution
     "universe_size": 110,
-    "max_open_positions": 1,
-    "max_trades_per_day": 5,
+    "max_open_positions": 2,
+    "max_trades_per_day": 8,
     "leverage": 5.0,
     "margin_safety": 1.0,
     
-    # Macro Trend (1-Hour Chart)
+    # Information-Time Turnover Bucket Engine
+    # ₹2.0 Crore (Rs. 20,000,000) default bucket size for institutional wave resolution
+    "turnover_bucket_inr": 20_000_000.0,
+    "min_bucket_ticks": 10,
+    "max_history_buckets": 200,
+    
+    # Macro Trend (20-Bucket Trend EMA)
     "macro_ema_fast": 20,
     "macro_ema_slow": 50,
-    "min_macro_spread_bps": 2.0,      # Minimum widening spread between 20 and 50 EMA
+    "min_macro_spread_bps": 1.5,
     
-    # Market Structure (15-Min & 5-Min Swings)
-    "swing_lookback_bars": 3,         # Bars to the left/right for pivot high/low detection
-    "min_hh_count": 2,                # Minimum consecutive Higher Highs required
-    "min_hl_count": 2,                # Minimum consecutive Higher Lows required
-    "breakout_buffer_pct": 0.0005,    # 0.05% clean close above prior high
+    # Turnover-Wave Market Structure (HH2 & HL Tracking)
+    "swing_lookback_buckets": 2,       # Buckets to the left/right for pivot detection
+    "min_hh_count": 2,                 # Minimum consecutive Higher Highs on turnover waves
+    "min_hl_count": 1,                 # Minimum Higher Lows
+    "breakout_buffer_pct": 0.0005,     # 0.05% clean break above prior high
     
-    # Pullback & Retest Quality (5-Min Bars)
-    "max_pullback_bars": 12,          # Max 5-min candles allowed for retest (1 hour)
-    "max_pullback_vol_ratio": 0.70,   # Pullback volume must be < 70% of breakout volume
-    "retest_touch_tolerance_pct": 0.0015, # Within 0.15% of support line
-    "strict_invalidation_buffer_pct": 0.0005, # Max 0.05% breach allowed before invalidation
+    # Pullback & Volume Contraction
+    "max_pullback_buckets": 12,        # Max buckets allowed for pullback to support
+    "max_pullback_vol_ratio": 0.85,    # Pullback volume must contract relative to breakout wave
+    "retest_touch_tolerance_pct": 0.0025, # Within 0.25% of support line
+    "strict_invalidation_buffer_pct": 0.0020, # Max 0.20% breach below support before invalidation
     
-    # Candlestick & Confluence Trigger
-    "rsi_period": 14,
-    "rsi_oversold_max": 45.0,         # RSI on pullback must be <= 45.0 (oversold territory)
-    "rsi_oversold_min": 25.0,
-    "trigger_ema": 9,                 # Price must cross & close above 9 EMA
-    
-    # Order Flow & Microstructure (On-Demand at Support Line)
-    "min_support_delta_ticks": 15,    # Last 15 ticks delta check
-    "min_whale_z_score": 0.6,         # Institutional buying footprint at support
-    "min_bid_replenishment_ratio": 1.1, # Bid depth expanding over ask depth
+    # Order Flow & Reversal Trigger on Support Retest
+    "require_positive_delta": True,    # Trigger bucket must have positive buyer delta
+    "min_delta_ratio": 0.05,           # Delta / Total Volume >= 5%
+    "min_rejection_wick_ratio": 0.35,  # Lower wick >= 35% of bucket range for absorption
+    "require_close_above_open": True,  # Bullish closing bucket
     
     # Anti-Liquidity Hunting & Risk Rules
-    "anti_hunt_buffer_pct": 0.0015,   # 0.15% breathing room below rejection wick
-    "anti_hunt_atr_fraction": 0.30,   # 0.3x ATR15 floor buffer
-    "min_reward_risk_ratio": 2.0,     # Minimum 1:2 RR for TP1
-    "tp2_target_rr": 3.0,             # 1:3 RR for runner
+    "anti_hunt_buffer_pct": 0.0015,    # 0.15% breathing room below lowest pullback wick
+    "anti_hunt_atr_fraction": 0.25,    # 0.25x ATR floor buffer
+    "min_reward_risk_ratio": 2.0,      # Minimum 1:2 RR for TP1
+    "tp2_target_rr": 3.0,              # 1:3 RR for runner
     
     # Session-Adaptive Trailing Engine
+    "entry_start_time": time(9, 20),   # No entry in first 5 mins (opening volatility)
+    "entry_cutoff_time": time(14, 30),  # No new entries after 14:30 IST
     "session_split_time": time(13, 30), # 13:30 IST split
-    "morning_trailing_ema": 20,       # 20 EMA on 5-min for wide multi-hour ride (09:15-13:30)
-    "afternoon_trailing_ema": 9,      # 9 EMA on 5-min for tight profit lock (13:30-15:15)
-    "eod_squareoff_time": time(15, 10),# Force close remaining runners at 15:10
+    "morning_trailing_ema": 20,        # 20-bucket EMA for wide trend ride (09:15-13:30)
+    "afternoon_trailing_ema": 9,       # 9-bucket EMA for tight profit lock (13:30-15:15)
+    "eod_squareoff_time": time(15, 10), # Force close remaining positions at 15:10
 }
