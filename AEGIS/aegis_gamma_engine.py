@@ -648,11 +648,19 @@ class AegisGammaEngine:
         # Time to expiry (seconds → years)
         expiry = None
         for info in self.token_map.values():
-            if 'expiry' in info:
-                expiry = info['expiry']
-                break
+            if 'expiry' in info and info['expiry']:
+                exp_val = info['expiry']
+                if isinstance(exp_val, str):
+                    try:
+                        expiry = pd.to_datetime(exp_val).to_pydatetime()
+                    except Exception:
+                        expiry = None
+                elif isinstance(exp_val, datetime):
+                    expiry = exp_val
+                if expiry is not None:
+                    break
         if expiry is None:
-            expiry = datetime.now().replace(hour=15, minute=30, second=0, microsecond=0)
+            expiry = datetime.fromtimestamp(now).replace(hour=15, minute=30, second=0, microsecond=0)
         T = max((expiry - datetime.fromtimestamp(now)).total_seconds(), 300) / (365*24*3600)
 
         # Strikes array
