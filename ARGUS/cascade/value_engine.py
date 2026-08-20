@@ -369,20 +369,29 @@ class CascadeValueEngine:
     def _calculate_vacuum_score(self, sym: str, curr_bids: Dict, curr_asks: Dict, 
                                 trade_qty: float, trade_price: float, 
                                 touch_bid: float, touch_ask: float) -> float:
+        """
+        Calculate net vacuum (cancellation pressure) in bps.
+        Tracks PURE cancellations only — trades are distinct events and must NOT be
+        subtracted from cancellations (the last_state snapshot is pre-trade, so old_qty
+        already includes filled quantity; subtracting trade_qty again double-counts).
+        """
         vacuum_raw = 0.0
         last_state = self.last_depth_state.get(sym, {'bids': {}, 'asks': {}})
         for price, old_qty in last_state['bids'].items():
             if price in curr_bids:
                 dropped = old_qty - curr_bids[price]
                 if dropped > 0:
-                    if abs(price - trade_price) < 1e-6: dropped = max(0, dropped - trade_qty)
-                    if dropped > 0: vacuum_raw -= dropped * price
+                    # Pure cancellation: price level dropped but NO trade at this price
+                    # (trade at this price is a fill, not a cancellation)
+                    if not (abs(price - trade_price) < 1e-6 and trade_qty > 0):
+                        vacuum_raw -= dropped * price
         for price, old_qty in last_state['asks'].items():
             if price in curr_asks:
                 dropped = old_qty - curr_asks[price]
                 if dropped > 0:
-                    if abs(price - trade_price) < 1e-6: dropped = max(0, dropped - trade_qty)
-                    if dropped > 0: vacuum_raw += dropped * price
+                    # Pure cancellation: price level dropped but NO trade at this price
+                    if not (abs(price - trade_price) < 1e-6 and trade_qty > 0):
+                        vacuum_raw += dropped * price
         self.last_depth_state[sym] = {'bids': curr_bids, 'asks': curr_asks}
         total_depth = sum(p*q for p,q in curr_bids.items()) + sum(p*q for p,q in curr_asks.items())
         hist = self.vacuum_history.setdefault(sym, deque(maxlen=self.CFG["vacuum_window"]))
@@ -1372,6 +1381,11 @@ class CascadeValueEngine:
             adv["mp_val"] = mp_val
             adv["bid_queue_decay"] = bid_queue_decay
             adv["ask_queue_decay"] = ask_queue_decay
+            # P1 FIX: Real-time TPIN for tick-level toxicity computation in exit brain
+            target_bucket = self.bucket_map.get(sym, self.CFG["bucket_turnover"])
+            bv = self.cur_buy_val.get(sym, 0.0)
+            sv = self.cur_sell_val.get(sym, 0.0)
+            adv["tpin"] = (bv - sv) / max(target_bucket, 1.0)
             st["_adv"] = adv
 
             # Update last_depth_state in-place (no new dict allocation)
@@ -1407,7 +1421,11 @@ class CascadeValueEngine:
         if sym in self.trade_times:
             times = self.trade_times[sym]; cutoff = nows - self.CFG["hawkes_lookback_sec"]
             while times and times[0] < cutoff: times.popleft()
-            if len(times) >= 10:
+            # P0 FIX: Robust Hawkes guard for sparse/lull periods
+            # Require minimum 30 ticks in lookback window AND variance epsilon
+            # to prevent unstable branching estimates during low-activity periods
+            min_ticks_for_hawkes = 30
+            if len(times) >= min_ticks_for_hawkes:
                 counts = self._hawkes_counts
                 counts.fill(0)
                 for t in times:
@@ -1415,7 +1433,13 @@ class CascadeValueEngine:
                     if 0 <= bi < self._hawkes_bins: counts[bi] += 1
                 mc = sum(counts) / self._hawkes_bins
                 vc = sum((c - mc) ** 2 for c in counts) / self._hawkes_bins
-                if vc > 0 and mc > 0: branching = max(0.0, 1.0 - math.sqrt(mc / vc))
+                # Variance epsilon guard: vc must be > 1e-6 to avoid division by near-zero
+                if vc > 1e-6 and mc > 0: 
+                    branching = max(0.0, 1.0 - math.sqrt(mc / vc))
+                else:
+                    branching = 0.0  # Fallback: no self-excitation signal
+            else:
+                branching = 0.0  # Fallback: insufficient data for reliable estimate
         # Store branching in adv for monkey-patch access (main.py wiring)
         adv["branching"] = branching
         

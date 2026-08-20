@@ -110,7 +110,11 @@ def calculate_kyle_limit_price(
     lam_sell: float,
     target_notional: float,
     conviction: float,
-    max_slippage_bps: float = 5.0
+    max_slippage_bps: float = 5.0,
+    # P1 FIX: Queue position risk & spread tightness parameters
+    bid_queue_decay: float = 0.0,
+    ask_queue_decay: float = 0.0,
+    spread_bps: float = 0.0,
 ) -> float:
     """
     Calculate optimal limit price using Kyle's λ (market impact coefficient).
@@ -126,6 +130,11 @@ def calculate_kyle_limit_price(
     - Medium conviction (0.5-0.7): Use 50% of Kyle λ
     - Low conviction (<0.5): Fall back to marketable limit (current behavior)
     
+    P1 FIX: Queue position risk & spread tightness adjustments:
+    - High queue decay (fast consumption) = widen limit to avoid adverse selection
+    - Tight spread = more aggressive (smaller queue risk premium)
+    - Wide spread = less aggressive (larger queue risk premium)
+    
     Args:
         side: "BUY" or "SELL"
         mid_price: Current mid price
@@ -134,6 +143,9 @@ def calculate_kyle_limit_price(
         target_notional: Target notional for the order (e.g., 1 Cr)
         conviction: Signal conviction score (0-10+)
         max_slippage_bps: Maximum slippage tolerance in bps
+        bid_queue_decay: Bid queue consumption rate in bps (from adv_metrics)
+        ask_queue_decay: Ask queue consumption rate in bps (from adv_metrics)
+        spread_bps: Current bid-ask spread in bps
     
     Returns:
         Optimal limit price aligned to tick size
@@ -149,16 +161,45 @@ def calculate_kyle_limit_price(
     else:
         kyle_scale = 0.0  # Marketable limit (current behavior)
     
+    # P1 FIX: Queue position risk adjustment
+    # High queue decay = liquidity vanishing fast = widen limit to avoid being picked off
+    # Use the queue decay for the side we're trading on
     if side == "BUY":
+        queue_decay = ask_queue_decay  # We're buying at ask, so ask queue decay matters
         lam = lam_buy
-        # Kyle optimal: mid + (notional * λ / 2) * scale
-        # λ is in bps, so convert: λ_bps * notional / 10000 = price impact
-        impact = (target_notional * lam / 2.0) / 10000.0 * kyle_scale
-        limit_price = mid_price + impact
     else:
+        queue_decay = bid_queue_decay  # We're selling at bid, so bid queue decay matters
         lam = lam_sell
-        impact = (target_notional * lam / 2.0) / 10000.0 * kyle_scale
+    
+    # Queue risk premium: scale by queue decay (bps)
+    # High decay (>50 bps) adds up to 2 bps premium to limit price
+    queue_risk_premium_bps = min(queue_decay * 0.04, 2.0)  # Cap at 2 bps
+    
+    # P1 FIX: Spread tightness adjustment
+    # Tight spread (< 2 bps) = more aggressive (reduce premium)
+    # Wide spread (> 10 bps) = less aggressive (increase premium)
+    if spread_bps > 0:
+        if spread_bps < 2.0:
+            spread_adjustment = -0.5  # Tight spread: be more aggressive
+        elif spread_bps > 10.0:
+            spread_adjustment = 1.0   # Wide spread: be less aggressive
+        else:
+            spread_adjustment = 0.0
+    else:
+        spread_adjustment = 0.0
+    
+    # Kyle optimal: mid ± (notional * λ / 2) * scale
+    # λ is in bps, so convert: λ_bps * notional / 10000 = price impact
+    impact = (target_notional * lam / 2.0) / 10000.0 * kyle_scale
+    
+    if side == "BUY":
+        limit_price = mid_price + impact
+        # Add queue risk premium (widen limit = pay more to ensure fill)
+        limit_price += mid_price * (queue_risk_premium_bps + spread_adjustment) / 10000.0
+    else:
         limit_price = mid_price - impact
+        # Subtract queue risk premium (widen limit = receive less to ensure fill)
+        limit_price -= mid_price * (queue_risk_premium_bps + spread_adjustment) / 10000.0
     
     # Cap at max slippage
     max_impact = mid_price * max_slippage_bps / 10000.0
@@ -703,6 +744,14 @@ class StockExecutionManager:
         lam_sell = entry_adv.get("lam_sell", 0.0)
         mid_price = entry_adv.get("mp_val", spot_price)  # Microprice if available, else spot
         
+        # P1 FIX: Get queue decay and spread for queue risk adjustment
+        bid_queue_decay = entry_adv.get("bid_queue_decay", 0.0)
+        ask_queue_decay = entry_adv.get("ask_queue_decay", 0.0)
+        # Calculate spread in bps
+        bp1 = entry_adv.get("bp1", 0.0)
+        sp1 = entry_adv.get("sp1", 0.0)
+        spread_bps = ((sp1 - bp1) / max(mid_price, 1e-6)) * 10000.0 if bp1 > 0 and sp1 > 0 else 0.0
+        
         # Get conviction from metrics (passed from value_engine)
         conviction = float(metrics.get("conviction", 5.0)) if metrics else 5.0
         
@@ -717,17 +766,24 @@ class StockExecutionManager:
             lam_sell=lam_sell,
             target_notional=target_notional,
             conviction=conviction,
-            max_slippage_bps=5.0
+            max_slippage_bps=5.0,
+            bid_queue_decay=bid_queue_decay,
+            ask_queue_decay=ask_queue_decay,
+            spread_bps=spread_bps,
         )
         
         # Log Kyle pricing decision
         if logger.isEnabledFor(logging.INFO):
             kyle_impact_bps = (target_notional * (lam_buy if signal == "BUY" else lam_sell) / 2.0) / 10000.0
+            queue_decay_used = ask_queue_decay if signal == "BUY" else bid_queue_decay
+            queue_risk_bps = min(queue_decay_used * 0.04, 2.0)
             logger.info(
                 "[KYLE_LIMIT] %s | Side: %s | Mid: %.2f | λ_buy: %.1fbps | λ_sell: %.1fbps | "
-                "Conviction: %.1f | KyleImpact: %.1fbps | Limit: %.2f | Marketable: %.2f"
+                "Conviction: %.1f | KyleImpact: %.1fbps | QueueDecay: %.1fbps | QueueRisk: %.1fbps | "
+                "SpreadBps: %.1f | Limit: %.2f | Marketable: %.2f"
                 % (symbol, signal, mid_price, lam_buy, lam_sell, conviction, 
-                   kyle_impact_bps, limit_price, self._marketable_limit(action, spot_price))
+                   kyle_impact_bps, queue_decay_used, queue_risk_bps,
+                   spread_bps, limit_price, self._marketable_limit(action, spot_price))
             )
         
         attempt_qty = qty
