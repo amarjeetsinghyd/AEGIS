@@ -442,7 +442,8 @@ class TradingSystem:
             buy_cnt = 0
             total_cnt = 0
 
-            for tok, sym in self.compiler.token_to_symbol.items():
+            t2s = getattr(self.compiler, "_t2s", {}) or getattr(self.compiler, "token_to_symbol", {})
+            for tok, sym in t2s.items():
                 if sym in NIFTY_WEIGHTS:
                     depth = self.compiler.market_depth.get(tok, {})
                     lp = depth.get("lp", 0.0)
