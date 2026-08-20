@@ -193,6 +193,7 @@ class CascadeValueEngine:
         self.regime_conf = np.zeros(self._n_symbols, dtype=np.float32)
         self.regime_mom_history = {sym: deque(maxlen=1200) for sym in self.t2s.values()}  # 15-min LTP history (for 10s, 1m, 5m, 15m multi-horizon alignment)
         self.s_flow_history = {sym: deque(maxlen=30) for sym in self.t2s.values()}         # S_flow history for SVI exit computation
+        self.bucket_aggregates = {sym: {} for sym in self.t2s.values()}                     # Live bucket aggregates for execution manager
         
         # ─── ADAPTIVE GATING: Bayesian Threshold Posteriors (bucket-level only) ───
         # Beta-Binomial conjugate priors per symbol: branching threshold & whale_z threshold
