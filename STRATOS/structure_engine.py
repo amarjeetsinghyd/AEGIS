@@ -1,15 +1,14 @@
 """
-structure_engine.py — Two-Way (Long & Short) Market Structure Engine for STRATOS.
+structure_engine.py — Two-Way (Long & Short) High-Low Market Structure & Zone Engine for STRATOS.
 Tracks:
-- Bullish: Higher Highs (HH1 -> HH2 Breakout) -> Support Floor
-- Bearish: Lower Lows (LL1 -> LL2 Breakdown) -> Resistance Ceiling
+- Bullish: 15m HH1 -> HH2 Breakout -> Generates High-Low Support Zone [HH2 * 0.9970, HH2 * 1.0025]
+- Bearish: 15m LL1 -> LL2 Breakdown -> Generates High-Low Resistance Zone [LL2 * 0.9975, LL2 * 1.0030]
 """
 from __future__ import annotations
 import numpy as np
 from STRATOS.config import STRATOS_CONFIG
 
 def compute_ema(prices: np.ndarray, period: int) -> np.ndarray:
-    """Fast Exponential Moving Average."""
     n = len(prices)
     if n < period:
         return np.array([])
@@ -24,6 +23,8 @@ class MarketStructureEngine:
     def __init__(self, cfg: dict = None):
         self.cfg = cfg or STRATOS_CONFIG
         self.state: dict[str, str] = {}
+        self.support_zone: dict[str, tuple[float, float]] = {}       # (zone_low, zone_high)
+        self.resistance_zone: dict[str, tuple[float, float]] = {}    # (zone_low, zone_high)
         self.support_level: dict[str, float] = {}
         self.resistance_level: dict[str, float] = {}
         self.breakout_bucket: dict[str, dict] = {}
@@ -32,40 +33,28 @@ class MarketStructureEngine:
         self.swing_lows: dict[str, list] = {}
 
     def check_macro_trend(self, arrays: dict) -> dict:
-        """
-        Check Trend Alignment across Candles / Buckets:
-        Bullish: Price > 20 EMA and 20 EMA is sloping upward.
-        Bearish: Price < 20 EMA and 20 EMA is sloping downward.
-        """
         closes = arrays.get("close", np.empty(0))
         n = len(closes)
         if n < self.cfg.get("macro_ema_fast", 20):
             if n >= 3:
-                if closes[-1] >= closes[0]:
-                    return {"trend": "BULLISH", "spread_bps": 10.0, "reason": "Early bullish momentum"}
-                else:
-                    return {"trend": "BEARISH", "spread_bps": 10.0, "reason": "Early bearish momentum"}
-            return {"trend": "NEUTRAL", "spread_bps": 0.0, "reason": "Warming up"}
+                return {"trend": "BULLISH" if closes[-1] >= closes[0] else "BEARISH", "spread_bps": 10.0}
+            return {"trend": "NEUTRAL", "spread_bps": 0.0}
 
         ema20 = compute_ema(closes, self.cfg.get("macro_ema_fast", 20))
         if len(ema20) == 0:
-            return {"trend": "NEUTRAL", "spread_bps": 0.0, "reason": "EMA warming up"}
+            return {"trend": "NEUTRAL", "spread_bps": 0.0}
 
-        cur_close = closes[-1]
-        cur_e20 = ema20[-1]
+        cur_close, cur_e20 = closes[-1], ema20[-1]
         prev_e20 = ema20[-2] if len(ema20) > 1 else cur_e20
 
         if cur_close >= cur_e20 and cur_e20 >= prev_e20:
-            spread_bps = (cur_close - cur_e20) / max(cur_close, 1e-6) * 10000.0
-            return {"trend": "BULLISH", "spread_bps": spread_bps, "reason": "Price > 20 EMA & Rising"}
+            return {"trend": "BULLISH", "spread_bps": (cur_close - cur_e20) / cur_close * 10000.0}
         elif cur_close <= cur_e20 and cur_e20 <= prev_e20:
-            spread_bps = (cur_e20 - cur_close) / max(cur_close, 1e-6) * 10000.0
-            return {"trend": "BEARISH", "spread_bps": spread_bps, "reason": "Price < 20 EMA & Falling"}
+            return {"trend": "BEARISH", "spread_bps": (cur_e20 - cur_close) / cur_close * 10000.0}
 
-        return {"trend": "NEUTRAL", "spread_bps": 0.0, "reason": "Chop/Flat EMA"}
+        return {"trend": "NEUTRAL", "spread_bps": 0.0}
 
     def find_pivots(self, highs: np.ndarray, lows: np.ndarray, lookback: int = 1):
-        """Identify local swing highs and swing lows."""
         n = len(highs)
         pivot_highs, pivot_lows = [], []
         for i in range(lookback, n - lookback):
@@ -78,11 +67,6 @@ class MarketStructureEngine:
         return pivot_highs, pivot_lows
 
     def update_structure(self, symbol: str, arrays: dict) -> dict:
-        """
-        Evaluate market structure for Two-Way setups:
-        1. Bullish HH1 -> HH2 Breakout
-        2. Bearish LL1 -> LL2 Breakdown
-        """
         highs = arrays.get("high", np.empty(0))
         lows = arrays.get("low", np.empty(0))
         closes = arrays.get("close", np.empty(0))
@@ -100,43 +84,61 @@ class MarketStructureEngine:
 
         cur_price = closes[-1]
 
-        # ── 1. Check Bullish Breakout (HH1 -> HH2) ──
+        # ── 1. Check Bullish Breakout (HH1 -> HH2) & Build High-Low Support Zone ──
         if len(p_highs) >= 2:
             hh1, hh2 = p_highs[-2][1], p_highs[-1][1]
             if hh2 >= hh1 and cur_price >= hh2 * 1.0002:
+                # High-Low Support Zone around HH2
+                zone_low = round(hh2 * 0.9970, 2)
+                zone_high = round(hh2 * 1.0025, 2)
                 self.state[symbol] = "AWAITING_LONG_RETEST"
                 self.support_level[symbol] = hh2
+                self.support_zone[symbol] = (zone_low, zone_high)
                 self.breakout_bucket[symbol] = {
                     "price": cur_price, "volume": volumes[-1] if len(volumes) > 0 else 1000.0,
                     "delta": deltas[-1] if len(deltas) > 0 else 0.0, "hh2_level": hh2
                 }
                 return {
                     "status": "AWAITING_LONG_RETEST", "side": "BUY",
-                    "support_level": hh2, "hh1": hh1, "hh2": hh2,
-                    "reason": f"Breakout above HH2 ({hh2:.2f}) -> Support Floor Set"
+                    "support_level": hh2, "support_zone": (zone_low, zone_high),
+                    "reason": f"Breakout above HH2 ({hh2:.2f}) -> Support Zone [{zone_low:.2f} - {zone_high:.2f}]"
                 }
 
-        # ── 2. Check Bearish Breakdown (LL1 -> LL2) ──
+        # ── 2. Check Bearish Breakdown (LL1 -> LL2) & Build High-Low Resistance Zone ──
         if len(p_lows) >= 2:
             ll1, ll2 = p_lows[-2][1], p_lows[-1][1]
             if ll2 <= ll1 and cur_price <= ll2 * 0.9998:
+                # High-Low Resistance Zone around LL2
+                zone_low = round(ll2 * 0.9975, 2)
+                zone_high = round(ll2 * 1.0030, 2)
                 self.state[symbol] = "AWAITING_SHORT_RETEST"
                 self.resistance_level[symbol] = ll2
+                self.resistance_zone[symbol] = (zone_low, zone_high)
                 self.breakdown_bucket[symbol] = {
                     "price": cur_price, "volume": volumes[-1] if len(volumes) > 0 else 1000.0,
                     "delta": deltas[-1] if len(deltas) > 0 else 0.0, "ll2_level": ll2
                 }
                 return {
                     "status": "AWAITING_SHORT_RETEST", "side": "SELL",
-                    "resistance_level": ll2, "ll1": ll1, "ll2": ll2,
-                    "reason": f"Breakdown below LL2 ({ll2:.2f}) -> Resistance Ceiling Set"
+                    "resistance_level": ll2, "resistance_zone": (zone_low, zone_high),
+                    "reason": f"Breakdown below LL2 ({ll2:.2f}) -> Resistance Zone [{zone_low:.2f} - {zone_high:.2f}]"
                 }
 
-        # Return active state if awaiting retest
+        # Return active zone if awaiting retest
         cur_state = self.state.get(symbol, "IDLE")
         if cur_state == "AWAITING_LONG_RETEST" and symbol in self.support_level:
-            return {"status": "AWAITING_LONG_RETEST", "side": "BUY", "support_level": self.support_level[symbol], "reason": "Tracking Support Floor"}
+            return {
+                "status": "AWAITING_LONG_RETEST", "side": "BUY",
+                "support_level": self.support_level[symbol],
+                "support_zone": self.support_zone.get(symbol, (self.support_level[symbol]*0.997, self.support_level[symbol]*1.0025)),
+                "reason": "Tracking Support Zone"
+            }
         elif cur_state == "AWAITING_SHORT_RETEST" and symbol in self.resistance_level:
-            return {"status": "AWAITING_SHORT_RETEST", "side": "SELL", "resistance_level": self.resistance_level[symbol], "reason": "Tracking Resistance Ceiling"}
+            return {
+                "status": "AWAITING_SHORT_RETEST", "side": "SELL",
+                "resistance_level": self.resistance_level[symbol],
+                "resistance_zone": self.resistance_zone.get(symbol, (self.resistance_level[symbol]*0.9975, self.resistance_level[symbol]*1.003)),
+                "reason": "Tracking Resistance Zone"
+            }
 
         return {"status": "NO_CLEAN_BREAKOUT", "reason": "Structure awaiting clean HH2 or LL2"}

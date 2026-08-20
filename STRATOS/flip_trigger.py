@@ -1,7 +1,8 @@
 """
-flip_trigger.py — Two-Way Order Flow & Absorption Trigger Engine for STRATOS.
-1. Long: Positive Delta + Bullish Close / Lower Rejection Wick at Support.
-2. Short: Negative Delta + Bearish Close / Upper Rejection Wick at Resistance.
+flip_trigger.py — High-Low Zone Reversal & Order Flow Trigger Engine for STRATOS.
+Triggers:
+1. Long: Rejection Wick (>=35%) or Bullish Close + Positive Delta inside/touching the Support Zone.
+2. Short: Rejection Wick (>=35%) or Bearish Close + Negative Delta inside/touching the Resistance Zone.
 """
 from __future__ import annotations
 import numpy as np
@@ -17,7 +18,8 @@ class FlipTriggerEngine:
         level: float = None,
         side: str = "BUY",
         live_order_flow: dict = None,
-        support_level: float = None
+        support_level: float = None,
+        zone: tuple[float, float] = None
     ) -> dict:
         if level is None:
             level = support_level if support_level is not None else 0.0
@@ -26,7 +28,6 @@ class FlipTriggerEngine:
         highs = arrays.get("high", np.empty(0))
         lows = arrays.get("low", np.empty(0))
         closes = arrays.get("close", np.empty(0))
-        volumes = arrays.get("volume", np.empty(0))
         deltas = arrays.get("delta", np.empty(0))
 
         n = len(closes)
@@ -37,12 +38,13 @@ class FlipTriggerEngine:
         cur_high = highs[-1]
         cur_low = lows[-1]
         cur_close = closes[-1]
-        cur_vol = volumes[-1] if len(volumes) > 0 else 1.0
         cur_delta = deltas[-1] if len(deltas) > 0 else 0.0
-
         bar_range = max(cur_high - cur_low, 1e-4)
 
         if side == "BUY":
+            zone_low = zone[0] if zone else level * 0.9970
+            zone_high = zone[1] if zone else level * 1.0025
+
             lower_wick = min(cur_open, cur_close) - cur_low
             lower_wick_ratio = lower_wick / bar_range
             is_bullish_close = cur_close >= cur_open
@@ -53,17 +55,19 @@ class FlipTriggerEngine:
             if live_order_flow and live_order_flow.get("delta", 0.0) > 0:
                 is_delta_valid = True
 
-            tol = self.cfg.get("retest_touch_tolerance_pct", 0.0025)
-            near_level = (cur_low <= level * (1.0 + tol)) and (cur_close >= level * (1.0 - self.cfg.get("strict_invalidation_buffer_pct", 0.0020)))
+            in_zone = (cur_low <= zone_high) and (cur_close >= zone_low * 0.9980)
 
-            if near_level and has_action and is_delta_valid:
+            if in_zone and has_action and is_delta_valid:
                 pattern = "BULLISH_BUCKET_CLOSE" if is_bullish_close else "ABSORPTION_REJECTION_WICK"
                 return {
                     "triggered": True, "side": "BUY", "pattern": pattern, "delta": cur_delta,
-                    "reason": f"Absorption @ Support {level:.2f} | {pattern} | Delta: {cur_delta:+.0f}"
+                    "reason": f"Absorption @ Support Zone [{zone_low:.2f}-{zone_high:.2f}] | {pattern} | Delta: {cur_delta:+.0f}"
                 }
 
         else: # SELL (Short)
+            zone_low = zone[0] if zone else level * 0.9975
+            zone_high = zone[1] if zone else level * 1.0030
+
             upper_wick = cur_high - max(cur_open, cur_close)
             upper_wick_ratio = upper_wick / bar_range
             is_bearish_close = cur_close <= cur_open
@@ -74,14 +78,13 @@ class FlipTriggerEngine:
             if live_order_flow and live_order_flow.get("delta", 0.0) < 0:
                 is_delta_valid = True
 
-            tol = self.cfg.get("retest_touch_tolerance_pct", 0.0025)
-            near_level = (cur_high >= level * (1.0 - tol)) and (cur_close <= level * (1.0 + self.cfg.get("strict_invalidation_buffer_pct", 0.0020)))
+            in_zone = (cur_high >= zone_low) and (cur_close <= zone_high * 1.0020)
 
-            if near_level and has_action and is_delta_valid:
-                pattern = "BEARISH_CLOSE" if is_bearish_close else "ABSORPTION_UPPER_WICK"
+            if in_zone and has_action and is_delta_valid:
+                pattern = "BEARISH_BUCKET_CLOSE" if is_bearish_close else "ABSORPTION_UPPER_WICK"
                 return {
                     "triggered": True, "side": "SELL", "pattern": pattern, "delta": cur_delta,
-                    "reason": f"Rejection @ Resistance {level:.2f} | {pattern} | Delta: {cur_delta:+.0f}"
+                    "reason": f"Rejection @ Resistance Zone [{zone_low:.2f}-{zone_high:.2f}] | {pattern} | Delta: {cur_delta:+.0f}"
                 }
 
         return {"triggered": False, "reason": "Criteria unmet"}
