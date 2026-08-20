@@ -266,5 +266,53 @@ def run_eod_calibration():
     logger.info("=" * 80)
 
 
+def get_next_eod_time(now_dt: Optional[datetime] = None) -> datetime:
+    """Returns the exact datetime for the next 16:00:00 IST EOD calibration run."""
+    from common.market.market_calendar import is_trading_day
+    from datetime import date, time as dt_time, timedelta
+    
+    if now_dt is None:
+        now_dt = datetime.now()
+    current_date = now_dt.date()
+    eod_target_time = dt_time(16, 0, 0)
+    
+    if is_trading_day(current_date) and now_dt.time() < eod_target_time:
+        return datetime.combine(current_date, eod_target_time)
+        
+    candidate_date = current_date + timedelta(days=1)
+    while not is_trading_day(candidate_date):
+        candidate_date += timedelta(days=1)
+    return datetime.combine(candidate_date, eod_target_time)
+
+
+def run_cron_service():
+    """Runs EOD Calibrator as a long-lived service that triggers at 16:00:00 IST every trading day."""
+    logger.info("EOD Calibrator Service Started. Target Trigger: 16:00:00 IST every trading day.")
+    while True:
+        now_dt = datetime.now()
+        next_run = get_next_eod_time(now_dt)
+        sleep_sec = (next_run - now_dt).total_seconds()
+        hours = sleep_sec / 3600.0
+        logger.info(f"EOD Calibrator sleeping for {hours:.2f} hours until {next_run.strftime('%Y-%m-%d %H:%M:%S')} IST...")
+        
+        target_ts = next_run.timestamp()
+        while datetime.now().timestamp() < target_ts:
+            remaining = target_ts - datetime.now().timestamp()
+            if remaining <= 0:
+                break
+            time.sleep(min(60.0, remaining))
+            
+        logger.info("Triggering scheduled 16:00 IST EOD Calibration...")
+        try:
+            run_eod_calibration()
+        except Exception as e:
+            logger.error(f"Scheduled EOD calibration failed: {e}", exc_info=True)
+            
+        time.sleep(60.0)
+
+
 if __name__ == "__main__":
-    run_eod_calibration()
+    if "--cron" in sys.argv:
+        run_cron_service()
+    else:
+        run_eod_calibration()
