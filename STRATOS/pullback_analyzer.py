@@ -44,13 +44,19 @@ class PullbackAnalyzer:
         avg_pb_vol = float(np.mean(pb_vols)) if len(pb_vols) > 0 else 1.0
         vol_ratio = avg_pb_vol / max(breakout_vol, 1.0) if breakout_vol > 0 else 0.6
 
-        # 1. Volume Contraction Gate
+        # 1. Volume Contraction & Drying Up Gate (Retracement vs Dump)
         max_ratio = self.cfg.get("max_pullback_vol_ratio", 0.85)
         if vol_ratio > max_ratio and len(pb_vols) >= 3:
             return {
                 "valid": False, "vol_ratio": vol_ratio,
                 "reason": f"High Volume Pullback ({vol_ratio*100:.1f}% > {max_ratio*100:.0f}%) — Dump/Spike Risk!"
             }
+
+        # Check that volume is progressively drying up (last bars have less volume than initial breakout/retrace bar)
+        is_drying_up = True
+        if len(pb_vols) >= 3:
+            # Recent pullback volume should be lower than peak volume of the move
+            is_drying_up = pb_vols[-1] <= np.max(pb_vols) * 0.90 or pb_vols[-1] <= pb_vols[0]
 
         tol = self.cfg.get("retest_touch_tolerance_pct", 0.0025)
         inval_buf = self.cfg.get("strict_invalidation_buffer_pct", 0.0020)
