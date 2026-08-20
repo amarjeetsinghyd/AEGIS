@@ -856,6 +856,14 @@ class CascadeValueEngine:
         w_micro = 0.03  # Microprice stretch (mean reversion risk)
         w_branch = 0.02 # Self-excitation (cluster confirmation)
         
+        # Directional signs
+        mpar_sign = 1.0 if mpar_accel >= 0 else -1.0
+        vac_sign = 1.0 if net_vac >= 0 else -1.0
+        lra_sign = 1.0 if lra_signal >= 0 else -1.0
+        dkla_sign = 1.0 if dkla_asym >= 0 else -1.0
+        mom_sign = 1.0 if mom_1m >= 0 else -1.0
+        mlofi_sign = 1.0 if mlofi >= 0 else -1.0
+        
         # Truly directional linear base
         linear_long = (
             w_mpar * mpar_long +
