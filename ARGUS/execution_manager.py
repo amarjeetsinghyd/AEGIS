@@ -34,6 +34,7 @@ from datetime import datetime, time
 import concurrent.futures
 from typing import Dict, Any, Tuple, List, Deque
 from collections import deque
+import numpy as np
 
 from common.config import get_data_dir
 from common.execution.capital_engine import CapitalEngine
@@ -223,7 +224,9 @@ class ExitState:
     __slots__ = (
         "entry_time", "entry_accel", "peak_accel_mag", "peak_vacuum",
         "peak_vacuum_z", "entry_dkla_asym", "entry_lra_vel",
-        "confirmed_decay_count", "breakeven_locked"
+        "confirmed_decay_count", "breakeven_locked",
+        # Q4: Peak-lock trackers (only increase, never decrease)
+        "locked_peak_accel", "locked_peak_vacuum", "locked_peak_vacuum_z"
     )
     def __init__(self):
         self.entry_time = 0.0
@@ -235,6 +238,10 @@ class ExitState:
         self.entry_lra_vel = 0.0
         self.confirmed_decay_count = 0
         self.breakeven_locked = False
+        # Q4: Peak-lock trackers
+        self.locked_peak_accel = 0.0
+        self.locked_peak_vacuum = 0.0
+        self.locked_peak_vacuum_z = 0.0
 
 def evaluate_exit(
     position_direction: str,
@@ -251,6 +258,12 @@ def evaluate_exit(
     Reason codes: "MPAR_DECEL", "DKLA_FLIP", "VAC_REVERSAL", "LRA_VEL_FLIP",
                   "TOX_SPIKE", "WHALE_EXIT", "BRANCHING_COLLAPSE",
                   "BREAKEVEN_LOCK", "TIME_STOP", "EOD_FLATTEN", "NONE"
+    
+    Q4 OPTIMIZATION: SVI-based adaptive sensitivity + peak-lock mechanism
+    - SVI (S_flow Volatility Index) computed from recent S_flow variance
+    - Adaptive thresholds: base_threshold * (1 + SVI * sensitivity_factor)
+    - Peak-lock: once peak_accel_mag/peak_vacuum set, they only increase (never decrease)
+    - Prevents premature exits during normal volatility expansion
     """
     now = current_time or pytime.time()
     side = 1 if position_direction == "BUY" else -1
@@ -271,6 +284,15 @@ def evaluate_exit(
     branching_ratio = bucket_aggregates.get("branching", 1.0)
     whale_z = bucket_aggregates.get("whale_z", 0.0)
     dkla_toxicity = bucket_aggregates.get("dkla_toxicity", 0.0)
+    
+    # Q4: SVI (S_flow Volatility Index) - compute from recent S_flow variance
+    s_flow_history = bucket_aggregates.get("s_flow_history", [])
+    svi = 0.0
+    if s_flow_history and len(s_flow_history) >= 10:
+        import numpy as np
+        s_flow_vals = np.array(s_flow_history[-20:])  # Last 20 buckets
+        svi = float(np.std(s_flow_vals) / max(np.mean(np.abs(s_flow_vals)), 1e-6))
+        svi = min(svi, 2.0)  # Cap SVI at 2.0
 
     # Initialize state on first call
     if trade_state.entry_time == 0.0:
@@ -281,9 +303,18 @@ def evaluate_exit(
         trade_state.entry_lra_vel = lra_vel
         trade_state.peak_vacuum = net_vacuum * side
         trade_state.peak_vacuum_z = 0.0
+        # Q4: Peak-lock trackers (only increase, never decrease)
+        trade_state.locked_peak_accel = abs(mp_accel)
+        trade_state.locked_peak_vacuum = net_vacuum * side
+        trade_state.locked_peak_vacuum_z = 0.0
         return False, "NONE"
 
-    # Update peak trackers
+    # Q4: PEAK-LOCK MECHANISM - peaks only increase, never decrease
+    # This prevents premature exits during normal volatility expansion
+    trade_state.locked_peak_accel = max(trade_state.locked_peak_accel, abs(mp_accel))
+    trade_state.locked_peak_vacuum = max(trade_state.locked_peak_vacuum, net_vacuum * side)
+    
+    # Also update legacy peak trackers for backward compatibility
     trade_state.peak_accel_mag = max(trade_state.peak_accel_mag, abs(mp_accel))
     trade_state.peak_vacuum = max(trade_state.peak_vacuum, net_vacuum * side)
 
@@ -295,6 +326,7 @@ def evaluate_exit(
         vac_std = max(np.std(toxicity_history), 1e-6)
         vac_z = (net_vacuum - vac_mean) / vac_std
         trade_state.peak_vacuum_z = max(trade_state.peak_vacuum_z, vac_z * side)
+        trade_state.locked_peak_vacuum_z = max(trade_state.locked_peak_vacuum_z, vac_z * side)
 
     # ─── HARD GUARDS ───
     minutes_held = (now - trade_state.entry_time) / 60.0
@@ -311,56 +343,71 @@ def evaluate_exit(
         if pnl >= EXIT_CFG["breakeven_atr_frac"] * atr:
             trade_state.breakeven_locked = True
 
-    # ─── DECAY PILLAR 1: MPAR DECELERATION ───
+    # Q4: ADAPTIVE THRESHOLDS based on SVI
+    # Higher SVI = more volatile regime = wider thresholds to avoid whipsaws
+    svi_sensitivity = 0.3  # How much SVI widens thresholds
+    adaptive_mult = 1.0 + svi * svi_sensitivity
+    
+    mpar_accel_flip_mult = EXIT_CFG["mpar_accel_flip_mult"] * adaptive_mult
+    mpar_accel_collapse_pct = EXIT_CFG["mpar_accel_collapse_pct"] / adaptive_mult  # Tighter collapse in high SVI
+    dkla_flip_confirm_bps = EXIT_CFG["dkla_flip_confirm_bps"] * adaptive_mult
+    vac_reversal_bps = EXIT_CFG["vac_reversal_bps"] * adaptive_mult
+    vac_exhaustion_z = EXIT_CFG["vac_exhaustion_z"] * adaptive_mult
+    lra_vel_magnitude_min = EXIT_CFG["lra_vel_magnitude_min"] * adaptive_mult
+    tox_spike_pct = min(99, EXIT_CFG["tox_spike_pct"] + int(svi * 2))  # Higher percentile in high SVI
+    whale_exit_z = EXIT_CFG["whale_exit_z"] * adaptive_mult
+    branching_collapse = EXIT_CFG["branching_collapse"] / adaptive_mult  # More sensitive in high SVI
+
+    # ─── DECAY PILLAR 1: MPAR DECELERATION (with peak-lock) ───
     seconds_held = now - trade_state.entry_time
     if seconds_held >= EXIT_CFG["mpar_min_hold_seconds"]:
         accel_flipped = (mp_accel * side < 0) and (trade_state.entry_accel * side > 0)
-        accel_collapsed = abs(mp_accel) < EXIT_CFG["mpar_accel_collapse_pct"] * trade_state.peak_accel_mag
-        if accel_flipped and abs(mp_accel) > EXIT_CFG["mpar_accel_flip_mult"] * abs(trade_state.entry_accel):
+        # Q4: Use locked peak (never decreases) for collapse detection
+        accel_collapsed = abs(mp_accel) < mpar_accel_collapse_pct * trade_state.locked_peak_accel
+        if accel_flipped and abs(mp_accel) > mpar_accel_flip_mult * abs(trade_state.entry_accel):
             return True, "MPAR_DECEL"
-        if accel_collapsed and trade_state.peak_accel_mag > 1e-6:
+        if accel_collapsed and trade_state.locked_peak_accel > 1e-6:
             return True, "MPAR_DECEL"
 
-    # ─── DECAY PILLAR 2: DKLA ASYMMETRY FLIP ───
+    # ─── DECAY PILLAR 2: DKLA ASYMMETRY FLIP (adaptive) ───
     if seconds_held >= EXIT_CFG["dkla_min_hold_seconds"]:
         dkla_flipped = (dkla_asym * side < 0) and (trade_state.entry_dkla_asym * side > 0)
         dkla_magnitude = abs(lam_buy - lam_sell)
-        if dkla_flipped and dkla_magnitude > EXIT_CFG["dkla_flip_confirm_bps"]:
+        if dkla_flipped and dkla_magnitude > dkla_flip_confirm_bps:
             return True, "DKLA_FLIP"
 
-    # ─── DECAY PILLAR 3: VACUUM EXHAUSTION/REVERSAL ───
+    # ─── DECAY PILLAR 3: VACUUM EXHAUSTION/REVERSAL (with peak-lock) ───
     if seconds_held >= EXIT_CFG["vac_min_hold_seconds"]:
-        vac_reversed = (trade_state.peak_vacuum - net_vacuum * side) > EXIT_CFG["vac_reversal_bps"]
-        vac_exhausted = (trade_state.peak_vacuum_z > EXIT_CFG["vac_exhaustion_z"]) and \
-                        (trade_state.peak_vacuum_z - vac_z * side > 1.0)
+        # Q4: Use locked peak vacuum for reversal detection
+        vac_reversed = (trade_state.locked_peak_vacuum - net_vacuum * side) > vac_reversal_bps
+        vac_exhausted = (trade_state.locked_peak_vacuum_z > vac_exhaustion_z) and \
+                        (trade_state.locked_peak_vacuum_z - vac_z * side > 1.0)
         if vac_reversed or vac_exhausted:
             return True, "VAC_REVERSAL"
 
-    # ─── DECAY PILLAR 4: LRA VELOCITY REVERSAL ───
+    # ─── DECAY PILLAR 4: LRA VELOCITY REVERSAL (adaptive) ───
     if seconds_held >= EXIT_CFG["lra_min_hold_seconds"]:
         lra_flipped = (lra_vel * side < 0) and (trade_state.entry_lra_vel * side > 0)
-        if lra_flipped and abs(lra_vel) > EXIT_CFG["lra_vel_magnitude_min"]:
+        if lra_flipped and abs(lra_vel) > lra_vel_magnitude_min:
             return True, "LRA_VEL_FLIP"
 
-    # ─── CONFIRMATION LAYER (Require >= 2 of 3) ───
+    # ─── CONFIRMATION LAYER (Require >= 2 of 3, adaptive) ───
     confirm_signals = 0
     confirm_reasons = []
 
     if toxicity_history and len(toxicity_history) > 20:
         import numpy as np
-        tox_p95 = np.percentile(toxicity_history, EXIT_CFG["tox_spike_pct"])
-        # dkla_toxicity is a bucket-level aggregate (computed in _process_bucket
-        # wrapper), not a per-tick adv metric — read it from bucket_aggregates.
+        tox_p95 = np.percentile(toxicity_history, tox_spike_pct)
         current_tox = bucket_aggregates.get("dkla_toxicity", 0.0)
         if current_tox > tox_p95:
             confirm_signals += 1
             confirm_reasons.append("TOX_SPIKE")
 
-    if whale_z < EXIT_CFG["whale_exit_z"]:
+    if whale_z < whale_exit_z:
         confirm_signals += 1
         confirm_reasons.append("WHALE_EXIT")
 
-    if branching_ratio < EXIT_CFG["branching_collapse"]:
+    if branching_ratio < branching_collapse:
         confirm_signals += 1
         confirm_reasons.append("BRANCHING_COLLAPSE")
 

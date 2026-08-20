@@ -236,12 +236,16 @@ def wire_engine_to_executor(engine, executor):
             eff_lam = adv.get("eff_lam", 0.0)
             dkla_tox = eff_lam * abs(tpin)
             
+            # Q4: Include S_flow history for SVI computation
+            s_flow_hist = engine.bucket_aggregates.get(sym, {}).get("s_flow_history", [])
+            
             bucket_aggs = {
                 "net_vacuum_bps": net_vac,
                 "branching": branching,
                 "whale_z": whale_z,
                 "toxicity_history": tox_hist,
                 "dkla_toxicity": dkla_tox,
+                "s_flow_history": s_flow_hist,
             }
             executor.update_bucket_aggregates(sym, bucket_aggs)
         except Exception:

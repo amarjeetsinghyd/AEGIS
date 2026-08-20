@@ -191,7 +191,7 @@ class CascadeValueEngine:
         self.regime_W_var = np.zeros(self._n_symbols, dtype=np.float32)
         self.regime_id = np.zeros(self._n_symbols, dtype=np.int8)  # 0=NOISE, 1=BURST, 2=GRIND, 3=WHALE
         self.regime_conf = np.zeros(self._n_symbols, dtype=np.float32)
-        self.regime_mom_history = {sym: deque(maxlen=300) for sym in self.t2s.values()}  # 5-min LTP history
+        self.regime_mom_history = {sym: deque(maxlen=1200) for sym in self.t2s.values()}  # 15-min LTP history (for 10s, 1m, 5m, 15m multi-horizon alignment)
         
         # ─── ADAPTIVE GATING: Bayesian Threshold Posteriors (bucket-level only) ───
         # Beta-Binomial conjugate priors per symbol: branching threshold & whale_z threshold
@@ -522,6 +522,202 @@ class CascadeValueEngine:
             0.20 * spread_risk +
             0.10 * queue_risk +
             0.10 * branch_risk
+        )
+        return float(min(max(p_adv, 0.0), 1.0))
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Q1: MULTI-HORIZON MOMENTUM ALIGNMENT (Continuous, No Hard Gates)
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _compute_multi_horizon_alignment(self, sym: str, lp: float, nows: float, 
+                                          signal_side: str) -> float:
+        """
+        Continuous multi-horizon momentum alignment factor M_align ∈ [0, 1].
+        
+        Replaces hard gate (mom_1m >= 0) with smooth discounting of counter-trend signals
+        while preserving explosive V-shape reversals.
+        
+        Horizons: 10s, 1m, 5m, 15m with weights [0.15, 0.30, 0.35, 0.20]
+        Sensitivities: [8.0, 6.0, 4.0, 3.0] (shorter = sharper)
+        
+        Returns:
+            M_align ∈ [0, 1]: 1.0 = perfect alignment, 0.0 = strong counter-trend
+        """
+        hist = self.regime_mom_history[sym]  # Pre-allocated deque of (ts, price)
+        
+        # Extract prices at horizons
+        horizons = [(10, 'mom_10s'), (60, 'mom_1m'), (300, 'mom_5m'), (900, 'mom_15m')]
+        moments = {}
+        for window_sec, key in horizons:
+            cutoff = nows - window_sec
+            old_price = lp
+            for ts, price in hist:
+                if ts >= cutoff:
+                    old_price = price
+                    break
+            moments[key] = (lp - old_price) / old_price if old_price > 0 else 0.0
+        
+        # Directional alignment
+        direction = 1.0 if signal_side == "BUY" else -1.0
+        
+        # Weighted tanh sum
+        weights = [0.15, 0.30, 0.35, 0.20]
+        sensitivities = [8.0, 6.0, 4.0, 3.0]
+        keys = ['mom_10s', 'mom_1m', 'mom_5m', 'mom_15m']
+        
+        aligned_sum = 0.0
+        for w, k, key in zip(weights, sensitivities, keys):
+            aligned_sum += w * math.tanh(k * moments[key] * direction)
+        
+        # Sigmoid squashing to [0, 1]
+        return 1.0 / (1.0 + math.exp(-aligned_sum))
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Q2: DYNAMIC S_FLOW THRESHOLD CALIBRATION
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _compute_dynamic_sflow_threshold(self, sym: str, regime: int, nows: float) -> float:
+        """
+        Dynamic S_flow threshold θ_dynamic = θ_base · V_regime · L_tod · C_symbol
+        
+        Components:
+        1. V_regime: Volatility regime factor (ATR/Spread ratio vs baseline)
+        2. L_tod: Time-of-day liquidity profile
+        3. C_symbol: Symbol/regime calibration from stock_calibration.json
+        
+        Returns:
+            Dynamic threshold ∈ [0.35, 0.60]
+        """
+        # 1. Volatility regime factor
+        cal = self.stock_calibration.get(sym, {})
+        spread_bps = cal.get("spread_median_bps", 5.0)
+        atr_15 = cal.get("atr_15_median", 0.003) * 10000  # Convert to bps
+        
+        if spread_bps > 0:
+            ratio = atr_15 / spread_bps
+            ratio_baseline = cal.get("atr_spread_ratio_baseline", ratio)
+            v_regime = 1.0 + 0.15 * (ratio - ratio_baseline) / max(ratio_baseline, 0.1)
+        else:
+            v_regime = 1.0
+        
+        # 2. Time-of-day liquidity factor
+        dt = datetime.fromtimestamp(nows)
+        hour, minute = dt.hour, dt.minute
+        mins_from_open = (hour - 9) * 60 + minute - 15
+        
+        if mins_from_open < 60:           # 09:15-10:15 Opening Rush
+            l_tod = 0.85
+        elif 135 <= mins_from_open < 225: # 11:30-13:00 Midday Lull
+            l_tod = 1.15
+        elif 225 <= mins_from_open < 315: # 13:00-14:30 European Open
+            l_tod = 0.95
+        elif mins_from_open >= 315:       # 14:30-15:15 EOD Closing
+            l_tod = 1.05
+        else:
+            l_tod = 1.00
+        
+        # 3. Symbol/regime calibration factor
+        reg_name = self._regime_names[regime].lower()
+        conv_thresh = cal.get(f"conv_thresh_{reg_name}", 
+                              self.CFG.get(f"conv_thresh_{reg_name}", 5.5))
+        c_symbol = conv_thresh / 5.5
+        
+        # Combined dynamic threshold
+        theta = 0.45 * v_regime * l_tod * c_symbol
+        return max(0.35, min(0.60, theta))
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Q3: QUEUE DEPLETION VELOCITY & SPOOFING DETECTION
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _calculate_queue_depletion_metrics(self, sym: str, curr_bids: Dict, 
+                                            curr_asks: Dict, dVol: float, 
+                                            lp: float, dt: float) -> Dict:
+        """
+        Calculate L2 cancellation velocity, queue depletion speed, and spoofing detection.
+        
+        Returns dict with:
+        - cv_bid, cv_ask: Cancellation velocity (shares/sec) at all 5 levels
+        - qds_bid, qds_ask: Queue depletion speed (fraction/sec) at touch
+        - sds_bid, sds_ask: Spoofing detection score (cancellations >> trades at touch)
+        """
+        last = self.last_depth_state[sym]
+        
+        # Cancellation velocity at each level (all 5 levels)
+        cv_bid = 0.0
+        cv_ask = 0.0
+        for price, old_qty in last['bids'].items():
+            new_qty = curr_bids.get(price, 0)
+            if old_qty > new_qty:
+                cv_bid += (old_qty - new_qty) / max(dt, 1e-6)
+        for price, old_qty in last['asks'].items():
+            new_qty = curr_asks.get(price, 0)
+            if old_qty > new_qty:
+                cv_ask += (old_qty - new_qty) / max(dt, 1e-6)
+        
+        # Queue depletion speed at touch (L1)
+        bp1 = next(iter(curr_bids)) if curr_bids else 0
+        ap1 = next(iter(curr_asks)) if curr_asks else 0
+        bq1 = curr_bids.get(bp1, 1)
+        aq1 = curr_asks.get(ap1, 1)
+        
+        trade_at_bid = dVol if (dVol > 0 and lp <= bp1) else 0
+        trade_at_ask = dVol if (dVol > 0 and lp >= ap1) else 0
+        
+        qds_bid = (trade_at_bid + cv_bid) / max(bq1, 1)
+        qds_ask = (trade_at_ask + cv_ask) / max(aq1, 1)
+        
+        # Spoofing detection: cancellations >> trades at touch
+        cv_bid_touch = max(0, last['bids'].get(bp1, 0) - bq1) / max(dt, 1e-6)
+        cv_ask_touch = max(0, last['asks'].get(ap1, 0) - aq1) / max(dt, 1e-6)
+        
+        sds_bid = max(0, (cv_bid_touch - trade_at_bid) / max(cv_bid_touch, 1))
+        sds_ask = max(0, (cv_ask_touch - trade_at_ask) / max(cv_ask_touch, 1))
+        
+        return {
+            'cv_bid': cv_bid, 'cv_ask': cv_ask,
+            'qds_bid': qds_bid, 'qds_ask': qds_ask,
+            'sds_bid': sds_bid, 'sds_ask': sds_ask
+        }
+
+    def _estimate_adverse_selection_enhanced(self, sym: str, side: str, 
+                                              vpins: float, oimb: float, 
+                                              spread_bps: float, toxicity: float,
+                                              bid_queue_decay: float, ask_queue_decay: float,
+                                              whale_z: float, branching: float,
+                                              qds_bid: float, qds_ask: float,
+                                              sds_bid: float, sds_ask: float) -> float:
+        """
+        Enhanced P_adv with queue depletion velocity and spoofing detection.
+        
+        New components:
+        - QueueRisk: min(1.0, QDS_side / 0.5) where QDS_threshold = 0.5/sec
+        - SpoofRisk: SDS on the side we're trading (fake wall detection)
+        
+        Weight redistribution: 0.30 FlowOpp + 0.20 WhaleOpp + 0.15 SpreadRisk 
+                              + 0.10 QueueRisk + 0.10 BranchRisk + 0.15 SpoofRisk
+        """
+        if side == "BUY":
+            flow_opposing = max(0.0, min(1.0, 1.0 - oimb)) if oimb < 1.0 else 0.0
+            whale_opposing = max(0.0, min(1.0, -whale_z / 2.0)) if whale_z < 0 else 0.0
+            queue_risk = min(1.0, qds_bid / 0.5)  # Bid queue depletion speed
+            spoof_risk = sds_ask  # Ask spoofing = fake sell wall
+        else:
+            flow_opposing = max(0.0, min(1.0, oimb - 1.0)) if oimb > 1.0 else 0.0
+            whale_opposing = max(0.0, min(1.0, whale_z / 2.0)) if whale_z > 0 else 0.0
+            queue_risk = min(1.0, qds_ask / 0.5)  # Ask queue depletion speed
+            spoof_risk = sds_bid  # Bid spoofing = fake buy wall
+        
+        spread_risk = min(max((spread_bps - 5.0) / 10.0, 0.0), 1.0)
+        branch_risk = min(max((0.15 - branching) / 0.15, 0.0), 1.0)
+        
+        p_adv = (
+            0.30 * flow_opposing +
+            0.20 * whale_opposing +
+            0.15 * spread_risk +
+            0.10 * queue_risk +
+            0.10 * branch_risk +
+            0.15 * spoof_risk
         )
         return float(min(max(p_adv, 0.0), 1.0))
 
@@ -1246,7 +1442,10 @@ class CascadeValueEngine:
             self.cur_net_vacuum[sym] += vac_bps
             
             # Queue Position Decay (Adverse Selection Signal)
-            bid_queue_decay, ask_queue_decay = self._calculate_queue_decay(sym, st, curr_bids, curr_asks)
+            bid_queue_decay, ask_queue_decay = self._calculate_queue_decay(sym, st, curr_bids, curr_asks, dVol, lp)
+            
+            # Q3: Queue depletion velocity & spoofing detection
+            qd_metrics = self._calculate_queue_depletion_metrics(sym, curr_bids, curr_asks, dVol, lp, dt)
             
             mid = (touch_bid + touch_ask)*0.5 if touch_bid>0 and touch_ask>0 else lp
             lam_buy, lam_sell, dkla_asym, eff_lam = self._calculate_dkla(st, mid)
@@ -1266,7 +1465,18 @@ class CascadeValueEngine:
             adv["mp_val"] = mp_val
             adv["bid_queue_decay"] = bid_queue_decay
             adv["ask_queue_decay"] = ask_queue_decay
+            # Q3: Queue depletion & spoofing metrics
+            adv["qds_bid"] = qd_metrics['qds_bid']
+            adv["qds_ask"] = qd_metrics['qds_ask']
+            adv["sds_bid"] = qd_metrics['sds_bid']
+            adv["sds_ask"] = qd_metrics['sds_ask']
+            adv["cv_bid"] = qd_metrics['cv_bid']
+            adv["cv_ask"] = qd_metrics['cv_ask']
             st["_adv"] = adv
+
+            # Q4: Push real-time adv metrics to execution manager for dynamic exits
+            if hasattr(self, 'execution_manager') and self.execution_manager:
+                self.execution_manager.update_adv_metrics(sym, adv)
 
             # Update last_depth_state in-place (no new dict allocation)
             lds = self.last_depth_state[sym]
@@ -1357,6 +1567,9 @@ class CascadeValueEngine:
             # Queue Position Decay (Adverse Selection Signal)
             bid_queue_decay, ask_queue_decay = self._calculate_queue_decay(sym, st, curr_bids, curr_asks, dVol, lp)
             
+            # Q3: Queue depletion velocity & spoofing detection
+            qd_metrics = self._calculate_queue_depletion_metrics(sym, curr_bids, curr_asks, dVol, lp, dt)
+            
             mid = (touch_bid + touch_ask)*0.5 if touch_bid>0 and touch_ask>0 else lp
             lam_buy, lam_sell, dkla_asym, eff_lam = self._calculate_dkla(st, mid)
             mp_accel, mp_align, mp_val = self._update_mpar(sym, st, dt)
@@ -1375,12 +1588,23 @@ class CascadeValueEngine:
             adv["mp_val"] = mp_val
             adv["bid_queue_decay"] = bid_queue_decay
             adv["ask_queue_decay"] = ask_queue_decay
+            # Q3: Queue depletion & spoofing metrics
+            adv["qds_bid"] = qd_metrics['qds_bid']
+            adv["qds_ask"] = qd_metrics['qds_ask']
+            adv["sds_bid"] = qd_metrics['sds_bid']
+            adv["sds_ask"] = qd_metrics['sds_ask']
+            adv["cv_bid"] = qd_metrics['cv_bid']
+            adv["cv_ask"] = qd_metrics['cv_ask']
             # P1 FIX: Real-time TPIN for tick-level toxicity computation in exit brain
             target_bucket = self.bucket_map.get(sym, self.CFG["bucket_turnover"])
             bv = self.cur_buy_val.get(sym, 0.0)
             sv = self.cur_sell_val.get(sym, 0.0)
             adv["tpin"] = (bv - sv) / max(target_bucket, 1.0)
             st["_adv"] = adv
+
+            # Q4: Push real-time adv metrics to execution manager for dynamic exits
+            if hasattr(self, 'execution_manager') and self.execution_manager:
+                self.execution_manager.update_adv_metrics(sym, adv)
 
             # Update last_depth_state in-place (no new dict allocation)
             lds = self.last_depth_state[sym]
@@ -1512,6 +1736,11 @@ class CascadeValueEngine:
         lra_signal = lra_asym if tpin > 0.1 else (-lra_asym if tpin < -0.1 else 0.0)
         dkla_asym = adv.get("dkla_asym", 0.0)
         
+        # --- Q1: MULTI-HORIZON MOMENTUM ALIGNMENT (M_align) ---
+        # Compute continuous alignment factor for both directions
+        m_align_long = self._compute_multi_horizon_alignment(sym, lp, nows, "BUY")
+        m_align_short = self._compute_multi_horizon_alignment(sym, lp, nows, "SELL")
+        
         # --- UNIFIED S_FLOW COMPUTATION (single call, both directions) ---
         s_flow_long, s_flow_short = self._compute_unified_s_flow(
             mpar_accel=mpar_score,
@@ -1526,26 +1755,42 @@ class CascadeValueEngine:
             regime=regime
         )
         
-        # --- SINGLE DECISION RULE (S_flow >= 0.45, Mom confirmation) ---
+        # Apply M_align modulation to S_flow
+        s_flow_long *= m_align_long
+        s_flow_short *= m_align_short
+        
+        # --- Q2: DYNAMIC S_FLOW THRESHOLD CALIBRATION ---
+        # Replace static 0.45 with regime-aware dynamic threshold
+        dynamic_threshold = self._compute_dynamic_sflow_threshold(sym, regime, nows)
+        
+        # --- SINGLE DECISION RULE (S_flow >= dynamic_threshold, Mom confirmation) ---
         signal_side = None
         conviction = 0.0
         
-        # S_flow threshold = 0.45 (calibrated for 0.40%-0.60% spike capture)
+        # Dynamic threshold calibrated for 0.40%-0.60% spike capture
         # Momentum confirmation: mom_1m must align with direction
-        if s_flow_long >= 0.45 and mom_1m >= 0.0:
+        if s_flow_long >= dynamic_threshold and mom_1m >= 0.0:
             signal_side = "BUY"
             conviction = s_flow_long * 10.0  # Scale to 0-10 for compatibility
-        elif s_flow_short >= 0.45 and mom_1m <= 0.0:
+        elif s_flow_short >= dynamic_threshold and mom_1m <= 0.0:
             signal_side = "SELL"
             conviction = s_flow_short * 10.0
         
-        # --- ADVERSE SELECTION FILTER (kept from v3.7 armor) ---
+        # --- Q3: ENHANCED ADVERSE SELECTION FILTER (with queue depletion & spoofing) ---
         if signal_side:
             bid_queue_decay = adv.get("bid_queue_decay", 0.0)
             ask_queue_decay = adv.get("ask_queue_decay", 0.0)
             spread_bps = spread / max(lp, 1e-6) * 10000
             
-            adv_sel_prob = self._estimate_adverse_selection(
+            # Q3: Get queue depletion & spoofing metrics
+            qds_bid = adv.get("qds_bid", 0.0)
+            qds_ask = adv.get("qds_ask", 0.0)
+            sds_bid = adv.get("sds_bid", 0.0)
+            sds_ask = adv.get("sds_ask", 0.0)
+            cv_bid = adv.get("cv_bid", 0.0)
+            cv_ask = adv.get("cv_ask", 0.0)
+            
+            adv_sel_prob = self._estimate_adverse_selection_enhanced(
                 sym=sym,
                 side=signal_side,
                 vpins=avg_tpin,
@@ -1555,16 +1800,24 @@ class CascadeValueEngine:
                 bid_queue_decay=bid_queue_decay,
                 ask_queue_decay=ask_queue_decay,
                 whale_z=whale_z,
-                branching=branching
+                branching=branching,
+                qds_bid=qds_bid,
+                qds_ask=qds_ask,
+                sds_bid=sds_bid,
+                sds_ask=sds_ask,
+                cv_bid=cv_bid,
+                cv_ask=cv_ask
             )
             
             # Log adverse selection probability
             if logger.isEnabledFor(logging.INFO):
                 logger.info(
                     "[ADV_SEL] %s | Side: %s | P(toxic): %.3f | VPIN: %.3f | OIB: %.2f | "
-                    "Spread: %.1fbps | Tox: %.1f | QueueDecay: B=%.1f A=%.1f | WhaleZ: %.2f | Branch: %.3f"
+                    "Spread: %.1fbps | Tox: %.1f | QueueDecay: B=%.1f A=%.1f | WhaleZ: %.2f | Branch: %.3f | "
+                    "QDS: B=%.3f A=%.3f | SDS: B=%.3f A=%.3f | CV: B=%.3f A=%.3f"
                     % (sym, signal_side, adv_sel_prob, avg_tpin, oimb, spread_bps, toxicity,
-                       bid_queue_decay, ask_queue_decay, whale_z, branching)
+                       bid_queue_decay, ask_queue_decay, whale_z, branching,
+                       qds_bid, qds_ask, sds_bid, sds_ask, cv_bid, cv_ask)
                 )
             
             # Veto if adverse selection probability too high
@@ -1591,11 +1844,13 @@ class CascadeValueEngine:
             logger.info(
                 "[S_FLOW] %s | Phase: %s | Regime: %s (conf=%.1f) | "
                 "S_Flow_L: %.3f S_Flow_S: %.3f | "
+                "M_Align_L: %.3f M_Align_S: %.3f | Dyn_Thresh: %.3f | "
                 "Ticks: %d | Branching: %.3f | WhaleZ: %.2f | "
                 "Mom1m: %+.2f%% Mom5m: %+.2f%% | Toxicity: %.1f | "
                 "Signal: %s | Conviction: %.2f | AdvSel: %.3f"
                 % (sym, phase.name, self._regime_names[regime], self.regime_conf[sym_idx],
                    s_flow_long, s_flow_short,
+                   m_align_long, m_align_short, dynamic_threshold,
                    tc, branching, whale_z,
                    mom_1m, mom_5m, toxicity,
                    signal_side or 'NONE', conviction, adv_sel_prob if signal_side else 0.0)
@@ -1615,6 +1870,14 @@ class CascadeValueEngine:
             "lra_asymmetry": round(lra_asym,5), "lra_velocity": round(lra_vel,5), "lra_signal": round(lra_signal,5),
             "dkla_lambda_buy_bps": round(adv.get("lam_buy",0),2), "dkla_lambda_sell_bps": round(adv.get("lam_sell",0),2),
             "dkla_asymmetry": round(dkla_asym,5), "dkla_toxicity": round(toxicity,2), "dkla_tox_p90": round(tox_p90,2),
+            # Q1: Multi-horizon alignment
+            "m_align_long": round(m_align_long, 3), "m_align_short": round(m_align_short, 3),
+            # Q2: Dynamic threshold
+            "dynamic_threshold": round(dynamic_threshold, 3),
+            # Q3: Queue depletion & spoofing
+            "qds_bid": round(qds_bid, 3), "qds_ask": round(qds_ask, 3),
+            "sds_bid": round(sds_bid, 3), "sds_ask": round(sds_ask, 3),
+            "cv_bid": round(cv_bid, 3), "cv_ask": round(cv_ask, 3),
             # Unified S_Flow Diagnostics
             "s_flow_long": round(s_flow_long, 3), "s_flow_short": round(s_flow_short, 3),
             "signal_generated": signal_side, "conviction_score": round(conviction, 2)
@@ -1642,20 +1905,45 @@ class CascadeValueEngine:
             self.signal_queue.put(sig_payload)
             logger.info(f"SIGNAL {signal_side} {sym} @ {lp:.2f} | Conv: {conviction:.2f} | Kelly: {kelly_fraction:.3f} | Branching: {branching:.2f} WhaleZ: {whale_z:.2f}")
             
+            # Q4: Push bucket aggregates to execution manager for dynamic exits
+            # Include S_flow history for SVI computation
+            s_flow_hist = self.bucket_aggregates.get(sym, {}).get("s_flow_history", [])
+            s_flow_hist.append(s_flow_long if signal_side == "BUY" else s_flow_short)
+            if len(s_flow_hist) > 50:
+                s_flow_hist = s_flow_hist[-50:]
+            
+            bucket_aggregates = {
+                "net_vacuum_bps": net_vac,
+                "toxicity_history": list(self.toxicity_history[sym]),
+                "branching": branching,
+                "whale_z": whale_z,
+                "dkla_toxicity": toxicity,
+                "s_flow_history": s_flow_hist
+            }
+            self.bucket_aggregates[sym] = bucket_aggregates
+            
+            # Notify execution manager
+            if hasattr(self, 'execution_manager') and self.execution_manager:
+                self.execution_manager.update_bucket_aggregates(sym, bucket_aggregates)
+            
             # ULTRA-DETAILED TELEMETRY: Log entry decision with full conviction metrics
             # tox_p90 already computed above
             if logger.isEnabledFor(logging.INFO):
                 logger.info(
                     "[ENTRY_DECISION] %s | Side: %s | LP: %.2f | Conviction: %.2f | S_Flow: %.3f | "
+                    "M_Align: %.3f | Dyn_Thresh: %.3f | "
                     "TPIN: %.5f | Branching: %.3f | WhaleZ: %.2f | "
                     "Toxicity: %.1f(P90:%.1f) | NetVac: %.1fbps | "
                     "MPAR: %.3f(align:%.1f) | LRA: %.3f | DKLA: %.3f | "
-                    "MicroDev: %.6f | QueueDecay: Bid=%.1f Ask=%.1fbps"
+                    "MicroDev: %.6f | QueueDecay: Bid=%.1f Ask=%.1fbps | "
+                    "QDS: Bid=%.3f Ask=%.3f | SDS: Bid=%.3f Ask=%.3f | CV: Bid=%.3f Ask=%.3f"
                     % (sym, signal_side, lp, conviction, s_flow_long if signal_side == "BUY" else s_flow_short,
+                       m_align_long if signal_side == "BUY" else m_align_short, dynamic_threshold,
                        tpin, branching, whale_z,
                        toxicity, tox_p90, net_vac,
                        mpar_score, adv.get('mp_align',0), lra_signal, dkla_asym,
-                       micro_dev, adv.get('bid_queue_decay',0), adv.get('ask_queue_decay',0))
+                       micro_dev, adv.get('bid_queue_decay',0), adv.get('ask_queue_decay',0),
+                       qds_bid, qds_ask, sds_bid, sds_ask, cv_bid, cv_ask)
                 )
         
         # ── BAYESIAN POSTERIOR UPDATE & BUCKET COUNT (for adaptive thresholds) ──
