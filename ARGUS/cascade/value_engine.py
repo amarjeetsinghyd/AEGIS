@@ -1560,24 +1560,18 @@ class CascadeValueEngine:
             regime=regime
         )
         
-        # --- SINGLE DECISION RULE (replaces hard_gate + conviction + mom_guard) ---
+        # --- SINGLE DECISION RULE (S_flow >= 0.45, Mom confirmation) ---
         signal_side = None
         conviction = 0.0
         
-        # Global 1-trade lock check
-        if self._engine_active_trade and self._active_trade_symbol != sym:
-            if logger.isEnabledFor(logging.INFO):
-                logger.info(f"[TRADE_LOCK] {sym} signal blocked | Active trade on: {self._active_trade_symbol}")
-        else:
-            # S_flow threshold = 0.45 (calibrated for 0.40%-0.60% spike capture)
-            # Adverse selection veto = 0.60
-            # Momentum confirmation: mom_1m must align with direction
-            if s_flow_long >= 0.45 and mom_1m >= 0.0:
-                signal_side = "BUY"
-                conviction = s_flow_long * 10.0  # Scale to 0-10 for compatibility
-            elif s_flow_short >= 0.45 and mom_1m <= 0.0:
-                signal_side = "SELL"
-                conviction = s_flow_short * 10.0
+        # S_flow threshold = 0.45 (calibrated for 0.40%-0.60% spike capture)
+        # Momentum confirmation: mom_1m must align with direction
+        if s_flow_long >= 0.45 and mom_1m >= 0.0:
+            signal_side = "BUY"
+            conviction = s_flow_long * 10.0  # Scale to 0-10 for compatibility
+        elif s_flow_short >= 0.45 and mom_1m <= 0.0:
+            signal_side = "SELL"
+            conviction = s_flow_short * 10.0
         
         # --- ADVERSE SELECTION FILTER (kept from v3.7 armor) ---
         if signal_side:
