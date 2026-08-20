@@ -625,7 +625,7 @@ class CascadeValueEngine:
     def _evaluate_adaptive_gate(self, sym_idx: int, beta: float, whale_z: float, mom_5m: float, 
                                 toxicity: float, tox_hist: deque, thresholds: tuple,
                                 mlofi: float, mpar_score: float, net_vac: float, lra_signal: float, 
-                                dkla_asym: float, micro_dev: float) -> bool:
+                                dkla_asym: float, micro_dev: float, mom_1m: float = 0.0) -> bool:
         """
         Zero-allocation adaptive gate: continuous scoring with regime-adaptive weights.
         Allows NOISE regime to pass when structural asymmetry is strong.
@@ -645,7 +645,8 @@ class CascadeValueEngine:
         # Fast Scalar Clipping (Zero-Allocation, No Numpy)
         beta_n = max(0.0, min(beta / max(t_beta * 2.5, 0.5), 1.0))
         whale_n = max(0.0, min(whale_z / max(t_W * 2.5, 2.0), 1.0))
-        mom_n = max(0.0, min(abs(mom_5m) / max(t_mom * 2.5, 0.5), 1.0))
+        eff_mom = max(abs(mom_5m), abs(mom_1m))
+        mom_n = max(0.0, min(eff_mom / max(t_mom * 2.5, 0.5), 1.0))
         
         vac_n = max(0.0, min(abs(net_vac) / self.CFG["vac_cap"], 1.0))
         mlofi_n = max(0.0, min(abs(mlofi) / self.CFG["mlofi_cap"], 1.0))
@@ -665,8 +666,8 @@ class CascadeValueEngine:
             # Weights: whale 45%, structure 55% (beta irrelevant)
             return (0.45 * whale_n + 0.55 * struct_score) >= 0.55 and whale_n >= 0.35
         else:  # NOISE (regime 0): Structure + Activity Gate (ML-Calibrated)
-            # Rejects dead range-bound noise (71.6% of market) while allowing explosive opening moves
-            return struct_score >= 0.50 and abs(mom_5m) >= 0.08
+            # Rejects dead range-bound noise while allowing fast micro-bursts
+            return struct_score >= 0.45 and eff_mom >= 0.04
 
     def _update_threshold_posteriors(self, sym_idx: int, signal_fired: bool, move_captured: bool) -> None:
         """Beta-Binomial conjugate update for branching & whale thresholds."""
@@ -1521,7 +1522,7 @@ class CascadeValueEngine:
         
         hard_gate_pass = bool(gate_ticks and self._evaluate_adaptive_gate(
             sym_idx, branching, whale_z, mom_5m, toxicity, tox_hist, (t_beta, t_W, t_mom, t_tox_pct),
-            mlofi, mpar_score, net_vac, lra_signal, dkla_asym, micro_dev
+            mlofi, mpar_score, net_vac, lra_signal, dkla_asym, micro_dev, mom_1m=mom_1m
         ))
         
         # ULTRA-DETAILED TELEMETRY: Log all Phase 1 Hard Gates with pass/fail
@@ -1534,12 +1535,12 @@ class CascadeValueEngine:
                 "[ADAPTIVE_GATE] %s | Phase: %s | Regime: %s (conf=%.1f) | "
                 "Ticks: %d/%d %s | StructScore: %.3f | "
                 "Branching: %.3f/%.3f | WhaleZ: %.2f/%.2f | "
-                "Mom5m: %+.2f%%/%.2f%% | Toxicity: %.1f/%.1f(P%d) | "
+                "Mom1m: %+.2f%% Mom5m: %+.2f%% | Toxicity: %.1f/%.1f(P%d) | "
                 "HARD_GATE: %s"
                 % (sym, phase.name, self._regime_names[regime], self.regime_conf[sym_idx],
                    tc, min_ticks_required, tick_ok, struct_score,
                    branching, t_beta, whale_z, t_W,
-                   mom_5m, t_mom, toxicity, tox_thresh, t_tox_pct,
+                   mom_1m, mom_5m, toxicity, tox_thresh, t_tox_pct,
                    'PASS' if hard_gate_pass else 'FAIL')
             )
         
@@ -1555,47 +1556,34 @@ class CascadeValueEngine:
                 logger.info(f"[TRADE_LOCK] {sym} signal blocked | Active trade on: {self._active_trade_symbol}")
             hard_gate_pass = False  # Force gate failure
         
-        # ─── LAYER 1: 15-MIN MACRO DIRECTIONAL BIAS GUARD ───
-        macro_bias = self._symbol_bias.get(sym)
-        if macro_bias == "NO_TRADE":
-            if logger.isEnabledFor(logging.INFO):
-                logger.info(f"[MACRO_BIAS_DROP] {sym} | 15m Trend is FLAT / NO_TRADE — signal dropped.")
-            hard_gate_pass = False  # Directionless flat stock - reject
-        
         if hard_gate_pass:
             # --- INTERACTION-AWARE CONVICTION SCORING ---
             long_score, short_score = self._compute_interaction_conviction(
-                regime, mlofi, mpar_score, net_vac, lra_signal, dkla_asym, micro_dev, whale_z, branching, mom_5m
+                regime, mlofi, mpar_score, net_vac, lra_signal, dkla_asym, micro_dev, whale_z, branching, mom_1m
             )
             
             # Regime-adaptive conviction threshold
             thresh = self._get_regime_conviction_threshold(regime, sym)
             
             if long_score >= thresh and long_score > short_score:
-                # ─── DIRECTIONAL CONFIRMATION: 15m MACRO BIAS + 5m/1m MOMENTUM ───
-                if macro_bias == "SHORT_ONLY":
-                    if logger.isEnabledFor(logging.INFO):
-                        logger.info(f"[MACRO_BIAS_BLOCKED] {sym} BUY rejected | 15m Macro Bias is SHORT_ONLY")
-                elif mom_5m >= 0.05 and mom_1m >= 0.0 and mpar_score >= 0:
+                # ─── REAL-TIME MICROSTRUCTURE DIRECTIONAL CONFIRMATION ───
+                if mom_1m >= 0.0 or mpar_score >= -0.05:
                     signal_side = "BUY"
                     conviction = long_score
                 elif logger.isEnabledFor(logging.INFO):
                     logger.info(
-                        "[MOM_GUARD_BLOCKED] %s BUY rejected | mom_5m=%+.2f%%, mom_1m=%+.2f%%, mpar=%+.2f"
-                        % (sym, mom_5m, mom_1m, mpar_score)
+                        "[MOM_GUARD_BLOCKED] %s BUY rejected | mom_1m=%+.2f%%, mpar=%+.2f"
+                        % (sym, mom_1m, mpar_score)
                     )
             elif short_score >= thresh and short_score > long_score:
-                # ─── DIRECTIONAL CONFIRMATION: 15m MACRO BIAS + 5m/1m MOMENTUM ───
-                if macro_bias == "LONG_ONLY":
-                    if logger.isEnabledFor(logging.INFO):
-                        logger.info(f"[MACRO_BIAS_BLOCKED] {sym} SELL rejected | 15m Macro Bias is LONG_ONLY")
-                elif mom_5m <= -0.05 and mom_1m <= 0.0 and mpar_score <= 0:
+                # ─── REAL-TIME MICROSTRUCTURE DIRECTIONAL CONFIRMATION ───
+                if mom_1m <= 0.0 or mpar_score <= 0.05:
                     signal_side = "SELL"
                     conviction = short_score
                 elif logger.isEnabledFor(logging.INFO):
                     logger.info(
-                        "[MOM_GUARD_BLOCKED] %s SELL rejected | mom_5m=%+.2f%%, mom_1m=%+.2f%%, mpar=%+.2f"
-                        % (sym, mom_5m, mom_1m, mpar_score)
+                        "[MOM_GUARD_BLOCKED] %s SELL rejected | mom_1m=%+.2f%%, mpar=%+.2f"
+                        % (sym, mom_1m, mpar_score)
                     )
             
             # ─── ADVERSE SELECTION FILTER ───
