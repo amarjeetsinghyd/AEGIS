@@ -629,62 +629,100 @@ class CascadeValueEngine:
         return (float(max(0.08, min(t_beta, 0.22))), float(max(0.6, min(t_W, 2.5))),
                 self.CFG["minimax_mom"], self.CFG["minimax_tox_pct"])
 
-    def _compute_flow_impetus(self, mpar_accel: float, net_vac: float, whale_z: float, mom_1m: float) -> float:
+    def _compute_unified_s_flow(self, mpar_accel: float, net_vac: float, whale_z: float, mom_1m: float,
+                                       mlofi: float, lra_signal: float, dkla_asym: float, micro_dev: float,
+                                       branching: float, regime: int) -> tuple:
         """
-        Core Flow Metric — single continuous score replacing 4-regime branching.
+        Unified Composite Microstructure Impulse Engine (S_flow).
         
-        Flow Impetus = w_mpar * MPAR_accel + w_vac * Vacuum + w_whale * W_z + w_mom * Mom_1m
+        Single continuous score combining all alpha primitives with temporal alignment awareness.
+        No Boolean gates. No phase separation. Replaces dual-gate + 20-term polynomial.
         
-        All inputs normalized to [0,1] range. Weights calibrated for 0.40%-0.60% spike capture.
+        S_flow = Linear_Base + Physics_Interactions
+        Linear_Base = w_mpar*MPAR + w_vac*VAC + w_whale*WHALE + w_mom*MOM + w_lra*LRA + w_dkla*DKLA + w_micro*MICRO + w_branch*BRANCH
+        Physics_Interactions = w_mlofi_vac*MLOFI*VAC + w_mpar_lra*MPAR*LRA + w_whale_dkla*WHALE*DKLA + w_vac_dkla*VAC*DKLA
+        
+        Returns: (s_flow_long, s_flow_short) in range [0, 1]
         """
-        # Normalize inputs to [0,1] using calibrated caps
-        mpar_n = max(0.0, min(abs(mpar_accel) / self.CFG["mpar_cap"], 1.0))
-        vac_n = max(0.0, min(abs(net_vac) / self.CFG["vac_cap"], 1.0))
-        whale_n = max(0.0, min(abs(whale_z) / 3.0, 1.0))
-        mom_n = max(0.0, min(abs(mom_1m) / 0.5, 1.0))
+        # Fast scalar clipping (zero allocation, no numpy)
+        clip = lambda x, lo, hi: lo if x < lo else hi if x > hi else x
+        
+        # Normalize all inputs to [0,1] using calibrated caps
+        mpar_n   = clip(abs(mpar_accel) / self.CFG["mpar_cap"], 0.0, 1.0)
+        vac_n    = clip(abs(net_vac) / self.CFG["vac_cap"], 0.0, 1.0)
+        whale_n  = clip(abs(whale_z) / 3.0, 0.0, 1.0)
+        mom_n    = clip(abs(mom_1m) / 0.5, 0.0, 1.0)
+        lra_n    = clip(abs(lra_signal) / self.CFG["lra_cap"], 0.0, 1.0)
+        dkla_n   = clip(abs(dkla_asym) / self.CFG["dkla_cap"], 0.0, 1.0)
+        micro_n  = 1.0 if abs(micro_dev) > 0.0002 else 0.0
+        branch_n = clip(branching / 0.5, 0.0, 1.0)
+        mlofi_n  = clip(abs(mlofi) / self.CFG["mlofi_cap"], 0.0, 1.0)
+        
+        # Directional signs for long/short
+        mpar_sign = 1.0 if mpar_accel >= 0 else -1.0
+        vac_sign = 1.0 if net_vac >= 0 else -1.0
+        lra_sign = 1.0 if lra_signal >= 0 else -1.0
+        dkla_sign = 1.0 if dkla_asym >= 0 else -1.0
+        mom_sign = 1.0 if mom_1m >= 0 else -1.0
+        mlofi_sign = 1.0 if mlofi >= 0 else -1.0
         
         # Core weights (sum = 1.0 for interpretability)
-        w_mpar = 0.35   # Microprice acceleration — highest alpha signal
-        w_vac = 0.25    # Liquidity vacuum — pure cancellation pressure
-        w_whale = 0.25  # Whale presence — large lot clustering
-        w_mom = 0.15    # 1-min momentum — directional confirmation
+        w_mpar = 0.30   # Microprice acceleration — highest alpha
+        w_vac = 0.20    # Liquidity vacuum — pure cancellation pressure
+        w_whale = 0.20  # Whale presence — large lot clustering
+        w_mom = 0.10    # 1-min momentum — directional confirmation
+        w_lra = 0.08    # MM retreat/advance (lags 1-2 ticks)
+        w_dkla = 0.07   # Impact asymmetry (confirms direction)
+        w_micro = 0.03  # Microprice stretch (mean reversion risk)
+        w_branch = 0.02 # Self-excitation (cluster confirmation)
         
-        return w_mpar * mpar_n + w_vac * vac_n + w_whale * whale_n + w_mom * mom_n
-
-    def _evaluate_adaptive_gate(self, sym_idx: int, beta: float, whale_z: float, mom_5m: float, 
-                                toxicity: float, tox_hist: deque, thresholds: tuple,
-                                mlofi: float, mpar_score: float, net_vac: float, lra_signal: float, 
-                                dkla_asym: float, micro_dev: float, mom_1m: float = 0.0) -> bool:
-        """
-        Zero-allocation adaptive gate using Core Flow Metric (Flow Impetus).
-        Replaces 4-regime branching with single continuous score.
-        Maintains O(1) zero-allocation hot path.
-        """
-        t_beta, t_W, t_mom, t_tox_pct = thresholds
+        # Linear base (same for long/short, direction from signs)
+        linear_base = (
+            w_mpar * mpar_n +
+            w_vac * vac_n +
+            w_whale * whale_n +
+            w_mom * mom_n +
+            w_lra * lra_n +
+            w_dkla * dkla_n +
+            w_micro * micro_n +
+            w_branch * branch_n
+        )
         
-        # O(1) Toxicity Gate without numpy overhead (Toxicity Ceiling: reject if toxicity exceeds P60/P80 cutoff)
-        if len(tox_hist) >= 20:
-            s_hist = sorted(tox_hist)
-            idx = int((t_tox_pct / 100.0) * (len(s_hist) - 1))
-            tox_thresh = s_hist[idx]
-            if toxicity > tox_thresh and tox_thresh > 0:
-                return False
+        # Physics-based interactions (4 only - microstructure cascade physics)
+        inter_long = 0.0
+        inter_short = 0.0
         
-        # Core Flow Metric — single continuous score
-        flow_impetus = self._compute_flow_impetus(mpar_score, net_vac, whale_z, mom_1m)
+        # 1. MLOFI x VACUUM: Book-flow divergence + cancellation pressure
+        if mlofi_sign > 0 and vac_sign > 0:
+            inter_long += 0.15 * mlofi_n * vac_n
+        elif mlofi_sign < 0 and vac_sign < 0:
+            inter_short += 0.15 * mlofi_n * vac_n
         
-        # Structural confirmation score (unchanged from before)
-        vac_n = max(0.0, min(abs(net_vac) / self.CFG["vac_cap"], 1.0))
-        mlofi_n = max(0.0, min(abs(mlofi) / self.CFG["mlofi_cap"], 1.0))
-        micro_n = 1.0 if abs(micro_dev) > 0.0002 else 0.0
-        dkla_n = max(0.0, min(abs(dkla_asym) / self.CFG["dkla_cap"], 1.0))
-        lra_n = max(0.0, min(abs(lra_signal) / self.CFG["lra_cap"], 1.0))
-            
-        struct_score = (vac_n * 0.25 + mlofi_n * 0.25 + micro_n * 0.15 + dkla_n * 0.20 + lra_n * 0.15)
+        # 2. MPAR x LRA: Microprice acceleration + MM retreat
+        if mpar_sign > 0 and lra_sign > 0:
+            inter_long += 0.12 * min(mpar_n, lra_n)
+        elif mpar_sign < 0 and lra_sign < 0:
+            inter_short += 0.12 * min(mpar_n, lra_n)
         
-        # Unified gate: Flow Impetus + Structural Confirmation
-        # Threshold calibrated for 0.40%-0.60% spike capture
-        return flow_impetus >= 0.42 and struct_score >= 0.35
+        # 3. WHALE x DKLA: Large lots + impact asymmetry
+        if whale_n > 0 and dkla_sign > 0:
+            inter_long += 0.10 * whale_n * dkla_n
+        elif whale_n > 0 and dkla_sign < 0:
+            inter_short += 0.10 * whale_n * dkla_n
+        
+        # 4. VACUUM x DKLA: Liquidity removal + impact asymmetry (strong directional)
+        if vac_sign > 0 and dkla_sign > 0:
+            inter_long += 0.08 * vac_n * dkla_n
+        elif vac_sign < 0 and dkla_sign < 0:
+            inter_short += 0.08 * vac_n * dkla_n
+        
+        # Regime modulation (multiplicative, not branching)
+        regime_boost = (0.85, 1.00, 0.95, 1.05)[regime]  # NOISE, BURST, GRIND, WHALE
+        
+        s_flow_long = clip((linear_base + inter_long) * regime_boost, 0.0, 1.0)
+        s_flow_short = clip((linear_base + inter_short) * regime_boost, 0.0, 1.0)
+        
+        return s_flow_long, s_flow_short
 
     def _update_threshold_posteriors(self, sym_idx: int, signal_fired: bool, move_captured: bool) -> None:
         """Beta-Binomial conjugate update for branching & whale thresholds."""
@@ -1483,30 +1521,16 @@ class CascadeValueEngine:
         mpar_score = adv.get("mp_align",0.0) * divergence * abs(mlofi)
         
         # ═══════════════════════════════════════════════
-        # ADAPTIVE GATING & INTERACTION-AWARE CONVICTION SCORING
+        # UNIFIED S_FLOW IMPULSE ENGINE (replaces dual-gate + 20-term polynomial)
         # ═══════════════════════════════════════════════
         
-        # --- ADAPTIVE REGIME CLASSIFICATION & DYNAMIC THRESHOLDS ---
+        # --- REGIME CLASSIFICATION (telemetry only, no branching) ---
         sym_idx = self.sym_to_idx[sym]
         mom_5m, mom_1m = self._compute_5m_momentum(sym, lp, nows)
         self._update_regime_state(sym_idx, branching, whale_z, mom_5m)
+        regime = self.regime_id[sym_idx]
         
-        t_beta, t_W, t_mom, t_tox_pct = self._get_dynamic_thresholds(sym_idx)
-        
-        # --- ADAPTIVE HARD GATES (Regime-Specific Logic) ---
-        # Phase-adaptive min_ticks: lower threshold during auction/transition phases
-        # AND for first 4 hours of CONTINUOUS_LIVE (low tick frequency at open and mid-day)
-        phase = self._phase[sym]
-        secs = self._seconds_from_midnight(nows)
-        market_open_secs = 9 * 3600 + 15 * 60  # 09:15
-        if phase in (EnginePhase.AUCTION_BUFFER, EnginePhase.TRANSITION_DETECT):
-            min_ticks_required = 1  # Lower threshold for opening minutes
-        elif phase == EnginePhase.CONTINUOUS_LIVE and secs <= market_open_secs + 4 * 3600:  # First 4 hours after 09:15 (until 13:15)
-            min_ticks_required = 1  # Low tick frequency at market open and mid-day
-        else:
-            min_ticks_required = self.TRIG["min_ticks"]
-        gate_ticks = tc >= min_ticks_required
-        
+        # --- TOXICITY TRACKING (for adverse selection) ---
         toxicity = adv.get("eff_lam",0.0) * abs(tpin)
         tox_hist = self.toxicity_history[sym]  # Pre-allocated, no setdefault
         tox_hist.append(toxicity)
@@ -1517,219 +1541,111 @@ class CascadeValueEngine:
             tox_thresh = toxicity
             tox_p90 = toxicity
         
+        # --- LRA SIGNAL (directional, TPIN-gated) ---
         lra_asym = adv.get("lra_asym", 0.0)
         lra_vel = adv.get("lra_vel", 0.0)
         lra_signal = lra_asym if tpin > 0.1 else (-lra_asym if tpin < -0.1 else 0.0)
         dkla_asym = adv.get("dkla_asym", 0.0)
         
-        # Compute struct_score for logging (replicate logic from _evaluate_adaptive_gate)
-        thresholds = (t_beta, t_W, t_mom, t_tox_pct)
-        beta_n = max(0.0, min(branching / max(t_beta * 2.5, 0.5), 1.0))
-        whale_n = max(0.0, min(whale_z / max(t_W * 2.5, 2.0), 1.0))
-        mom_n = max(0.0, min(abs(mom_5m) / max(t_mom * 2.5, 0.5), 1.0))
-        vac_n = max(0.0, min(abs(net_vac) / self.CFG["vac_cap"], 1.0))
-        mlofi_n = max(0.0, min(abs(mlofi) / self.CFG["mlofi_cap"], 1.0))
-        micro_n = 1.0 if abs(micro_dev) > 0.0002 else 0.0
-        dkla_n = max(0.0, min(abs(dkla_asym) / self.CFG["dkla_cap"], 1.0))
-        lra_n = max(0.0, min(abs(lra_signal) / self.CFG["lra_cap"], 1.0))
-        struct_score = (vac_n * 0.25 + mlofi_n * 0.25 + micro_n * 0.15 + dkla_n * 0.20 + lra_n * 0.15)
+        # --- UNIFIED S_FLOW COMPUTATION (single call, both directions) ---
+        s_flow_long, s_flow_short = self._compute_unified_s_flow(
+            mpar_accel=mpar_score,
+            net_vac=net_vac,
+            whale_z=whale_z,
+            mom_1m=mom_1m,
+            mlofi=mlofi,
+            lra_signal=lra_signal,
+            dkla_asym=dkla_asym,
+            micro_dev=micro_dev,
+            branching=branching,
+            regime=regime
+        )
         
-        # Compute Flow Impetus for logging
-        flow_impetus = self._compute_flow_impetus(mpar_score, net_vac, whale_z, mom_1m)
-        
-        hard_gate_pass = bool(gate_ticks and self._evaluate_adaptive_gate(
-            sym_idx, branching, whale_z, mom_5m, toxicity, tox_hist, (t_beta, t_W, t_mom, t_tox_pct),
-            mlofi, mpar_score, net_vac, lra_signal, dkla_asym, micro_dev, mom_1m=mom_1m
-        ))
-        
-        # ULTRA-DETAILED TELEMETRY: Log all Phase 1 Hard Gates with pass/fail
-        regime = self.regime_id[sym_idx]
-        tox_thresh = (sorted(tox_hist)[int((t_tox_pct / 100.0) * (len(tox_hist) - 1))] 
-                      if len(tox_hist) >= 20 else toxicity)
-        tick_ok = "OK" if gate_ticks else "FAIL"
-        if logger.isEnabledFor(logging.INFO):
-            logger.info(
-                "[ADAPTIVE_GATE] %s | Phase: %s | Regime: %s (conf=%.1f) | FlowImpetus: %.3f | "
-                "Ticks: %d/%d %s | StructScore: %.3f | "
-                "Branching: %.3f/%.3f | WhaleZ: %.2f/%.2f | "
-                "Mom1m: %+.2f%% Mom5m: %+.2f%% | Toxicity: %.1f/%.1f(P%d) | "
-                "HARD_GATE: %s"
-                % (sym, phase.name, self._regime_names[regime], self.regime_conf[sym_idx], flow_impetus,
-                   tc, min_ticks_required, tick_ok, struct_score,
-                   branching, t_beta, whale_z, t_W,
-                   mom_1m, mom_5m, toxicity, tox_thresh, t_tox_pct,
-                   'PASS' if hard_gate_pass else 'FAIL')
-            )
-        
+        # --- SINGLE DECISION RULE (replaces hard_gate + conviction + mom_guard) ---
         signal_side = None
         conviction = 0.0
-        long_score = 0.0
-        short_score = 0.0
         
-        # ─── GLOBAL 1-TRADE LOCK ───
+        # Global 1-trade lock check
         if self._engine_active_trade and self._active_trade_symbol != sym:
-            # Another symbol has an active trade - drop all entry signals
             if logger.isEnabledFor(logging.INFO):
                 logger.info(f"[TRADE_LOCK] {sym} signal blocked | Active trade on: {self._active_trade_symbol}")
-            hard_gate_pass = False  # Force gate failure
+        else:
+            # S_flow threshold = 0.45 (calibrated for 0.40%-0.60% spike capture)
+            # Adverse selection veto = 0.60
+            # Momentum confirmation: mom_1m must align with direction
+            if s_flow_long >= 0.45 and mom_1m >= 0.0:
+                signal_side = "BUY"
+                conviction = s_flow_long * 10.0  # Scale to 0-10 for compatibility
+            elif s_flow_short >= 0.45 and mom_1m <= 0.0:
+                signal_side = "SELL"
+                conviction = s_flow_short * 10.0
         
-        if hard_gate_pass:
-            # --- INTERACTION-AWARE CONVICTION SCORING ---
-            # regime is now telemetry-only; pass 0 (NOISE) as neutral for conviction weights
-            long_score, short_score = self._compute_interaction_conviction(
-                0, mlofi, mpar_score, net_vac, lra_signal, dkla_asym, micro_dev, whale_z, branching, mom_1m
+        # --- ADVERSE SELECTION FILTER (kept from v3.7 armor) ---
+        if signal_side:
+            bid_queue_decay = adv.get("bid_queue_decay", 0.0)
+            ask_queue_decay = adv.get("ask_queue_decay", 0.0)
+            spread_bps = spread / max(lp, 1e-6) * 10000
+            
+            adv_sel_prob = self._estimate_adverse_selection(
+                sym=sym,
+                side=signal_side,
+                vpins=avg_tpin,
+                oimb=oimb,
+                spread_bps=spread_bps,
+                toxicity=toxicity,
+                bid_queue_decay=bid_queue_decay,
+                ask_queue_decay=ask_queue_decay,
+                whale_z=whale_z,
+                branching=branching
             )
             
-            # Regime-adaptive conviction threshold (using telemetry regime)
-            thresh = self._get_regime_conviction_threshold(regime, sym)
-            
-            if long_score >= thresh and long_score > short_score:
-                # ─── REAL-TIME MICROSTRUCTURE DIRECTIONAL CONFIRMATION ───
-                if mom_1m >= 0.0 or mpar_score >= -0.05:
-                    signal_side = "BUY"
-                    conviction = long_score
-                elif logger.isEnabledFor(logging.INFO):
-                    logger.info(
-                        "[MOM_GUARD_BLOCKED] %s BUY rejected | mom_1m=%+.2f%%, mpar=%+.2f"
-                        % (sym, mom_1m, mpar_score)
-                    )
-            elif short_score >= thresh and short_score > long_score:
-                # ─── REAL-TIME MICROSTRUCTURE DIRECTIONAL CONFIRMATION ───
-                if mom_1m <= 0.0 or mpar_score <= 0.05:
-                    signal_side = "SELL"
-                    conviction = short_score
-                elif logger.isEnabledFor(logging.INFO):
-                    logger.info(
-                        "[MOM_GUARD_BLOCKED] %s SELL rejected | mom_1m=%+.2f%%, mpar=%+.2f"
-                        % (sym, mom_1m, mpar_score)
-                    )
-            
-            # ─── ADVERSE SELECTION FILTER ───
-            # Estimate probability of toxic fill (getting picked off)
-            if signal_side:
-                bid_queue_decay = adv.get("bid_queue_decay", 0.0)
-                ask_queue_decay = adv.get("ask_queue_decay", 0.0)
-                spread_bps = spread / max(lp, 1e-6) * 10000
-                
-                adv_sel_prob = self._estimate_adverse_selection(
-                    sym=sym,
-                    side=signal_side,
-                    vpins=avg_tpin,
-                    oimb=oimb,
-                    spread_bps=spread_bps,
-                    toxicity=toxicity,
-                    bid_queue_decay=bid_queue_decay,
-                    ask_queue_decay=ask_queue_decay,
-                    whale_z=whale_z,
-                    branching=branching
+            # Log adverse selection probability
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(
+                    "[ADV_SEL] %s | Side: %s | P(toxic): %.3f | VPIN: %.3f | OIB: %.2f | "
+                    "Spread: %.1fbps | Tox: %.1f | QueueDecay: B=%.1f A=%.1f | WhaleZ: %.2f | Branch: %.3f"
+                    % (sym, signal_side, adv_sel_prob, avg_tpin, oimb, spread_bps, toxicity,
+                       bid_queue_decay, ask_queue_decay, whale_z, branching)
                 )
-                
-                # Log adverse selection probability
-                if logger.isEnabledFor(logging.INFO):
-                    logger.info(
-                        "[ADV_SEL] %s | Side: %s | P(toxic): %.3f | VPIN: %.3f | OIB: %.2f | "
-                        "Spread: %.1fbps | Tox: %.1f | QueueDecay: B=%.1f A=%.1f | WhaleZ: %.2f | Branch: %.3f"
-                        % (sym, signal_side, adv_sel_prob, avg_tpin, oimb, spread_bps, toxicity,
-                           bid_queue_decay, ask_queue_decay, whale_z, branching)
-                    )
-                
-                # Veto if adverse selection probability too high
-                if adv_sel_prob > 0.60:
-                    if logger.isEnabledFor(logging.INFO):
-                        logger.info(f"[ADV_SEL_VETO] {sym} {signal_side} vetoed | P(toxic)={adv_sel_prob:.3f} > 0.60")
-                    signal_side = None
-                    conviction = 0.0
             
-            # ─── ML CONVICTION MULTIPLIER HOOK ───
-            # Apply ML probability from EOD calibration as multiplicative conviction multiplier
-            if signal_side and hasattr(self, '_ml_predictor') and self._ml_predictor is not None:
-                try:
-                    # Get ML probability for this symbol/regime
-                    # This requires the feature computer to be available
-                    ml_prob = self._get_ml_probability(sym, regime)
-                    if ml_prob is not None:
-                        old_conviction = conviction
-                        conviction = self._apply_ml_conviction_multiplier(conviction, ml_prob, regime)
-                        if logger.isEnabledFor(logging.INFO):
-                            logger.info(
-                                "[ML_MULTIPLIER] %s | ML_Prob: %.3f | Conviction: %.2f -> %.2f | Regime: %s"
-                                % (sym, ml_prob, old_conviction, conviction, self._regime_names[regime])
-                            )
-                        # If ML vetoed, clear signal
-                        if conviction == 0.0:
-                            signal_side = None
-                            if logger.isEnabledFor(logging.INFO):
-                                logger.info(f"[ML_VETO] {sym} signal vetoed by ML (prob={ml_prob:.3f} < 0.40)")
-                except Exception as e:
-                    if logger.isEnabledFor(logging.INFO):
-                        logger.info(f"[ML_MULTIPLIER_ERROR] {sym} | {e}")
-            
-            # ─── KELLY SIZING FROM ML PROB ───
-            # Replace global 1-trade lock with dynamic position sizing
-            if signal_side:
-                # Calculate Kelly fraction based on ML probability and historical metrics
-                kelly_fraction = self._calculate_kelly_fraction(sym, signal_side, conviction, ml_prob if 'ml_prob' in locals() else None, regime)
-                
-                # Cap Kelly fraction at reasonable bounds
-                kelly_fraction = max(0.0, min(kelly_fraction, 1.0))
-                
-                # Log Kelly sizing decision
+            # Veto if adverse selection probability too high
+            if adv_sel_prob > 0.60:
                 if logger.isEnabledFor(logging.INFO):
-                    logger.info(
-                        "[KELLY_SIZING] %s | Side: %s | Conviction: %.2f | ML_Prob: %s | "
-                        "Kelly_Fraction: %.3f | Max_Position_Pct: %.1f%%"
-                        % (sym, signal_side, conviction, 
-                           f"{ml_prob:.3f}" if 'ml_prob' in locals() and ml_prob is not None else "N/A",
-                           kelly_fraction, kelly_fraction * 100)
-                    )
-                
-                # Acquire global trade lock on signal generation (still used for single-position constraint)
-                self._engine_active_trade = True
-                self._active_trade_symbol = sym
-                if logger.isEnabledFor(logging.INFO):
-                    logger.info(f"[TRADE_LOCK_ACQUIRED] {sym} | Lock engaged for {signal_side} | Kelly: {kelly_fraction:.3f}")
+                    logger.info(f"[ADV_SEL_VETO] {sym} {signal_side} vetoed | P(toxic)={adv_sel_prob:.3f} > 0.60")
+                signal_side = None
+                conviction = 0.0
         
-        # ULTRA-DETAILED TELEMETRY: Log Phase 2 Conviction Scores with component breakdown
-        if hard_gate_pass:
-            long_ok = "OK" if long_score >= thresh else "FAIL"
-            short_ok = "OK" if short_score >= thresh else "FAIL"
-            if logger.isEnabledFor(logging.INFO):
-                logger.info(
-                    "[CONVICTION] %s | LONG: %.2f/%.2f %s | "
-                    "SHORT: %.2f/%.2f %s | "
-                    "Signal: %s | Conviction: %.2f | Regime: %s"
-                    % (sym, long_score, thresh, long_ok,
-                       short_score, thresh, short_ok,
-                       signal_side or 'NONE', conviction, self._regime_names[regime])
-                )
-            # Log interaction-aware conviction components (recompute for logging)
-            mlofi_t = max(0.0, min(mlofi / self.CFG["mlofi_cap"], 1.0))
-            mpar_t = max(0.0, min(mpar_score / self.CFG["mpar_cap"], 1.0))
-            vac_t = max(0.0, min(net_vac / self.CFG["vac_cap"], 1.0))
-            lra_t = max(0.0, min(lra_signal / self.CFG["lra_cap"], 1.0))
-            dkla_t = max(0.0, min(dkla_asym / self.CFG["dkla_cap"], 1.0))
-            micro_t = 1.0 if micro_dev > 0.0002 else 0.0
-            whale_t = max(0.0, min(whale_z / 3.0, 1.0))
-            beta_t = max(0.0, min(branching / 0.5, 1.0))
-            mom_t = max(0.0, min(abs(mom_5m) / 0.5, 1.0))
-            
-            base_long = (mlofi_t * self.CFG["w_mlofi"] + mpar_t * self.CFG["w_mpar"] + vac_t * self.CFG["w_vac"] +
-                         lra_t * self.CFG["w_lra"] + dkla_t * self.CFG["w_dkla"] + micro_t * self.CFG["w_micro"])
-            inter_long = 0.0
-            if mlofi_t > 0 and vac_t > 0: inter_long += self.CFG["interact_mlofi_vac"] * mlofi_t * vac_t
-            if mpar_t > 0 and lra_t > 0: inter_long += self.CFG["interact_mpar_lra"] * min(mpar_t, lra_t)
-            if whale_t > 0 and dkla_t > 0: inter_long += self.CFG["interact_whale_dkla"] * whale_t * dkla_t
-            if beta_t > 0 and mom_t > 0: inter_long += self.CFG["interact_beta_mom"] * beta_t * mom_t
+        # --- KELLY SIZING (0.05 to 0.25 bounded) ---
+        if signal_side:
+            kelly_fraction = self._calculate_kelly_fraction(sym, signal_side, conviction, None, regime)
+            kelly_fraction = max(0.05, min(kelly_fraction, 0.25))
             
             if logger.isEnabledFor(logging.INFO):
                 logger.info(
-                    "[CONVICTION_DETAIL] %s | Base: %.2f Inter: %.2f Total: %.2f | "
-                    "MLOFI: %.3f MPAR: %.3f VAC: %.3f LRA: %.3f DKLA: %.3f | "
-                    "WHL: %.3f BETA: %.3f MOM: %.3f"
-                    % (sym, base_long, inter_long, long_score,
-                       mlofi_t, mpar_t, vac_t, lra_t, dkla_t,
-                       whale_t, beta_t, mom_t)
+                    "[KELLY_SIZING] %s | Side: %s | Conviction: %.2f | "
+                    "Kelly_Fraction: %.3f | Max_Position_Pct: %.1f%%"
+                    % (sym, signal_side, conviction, kelly_fraction, kelly_fraction * 100)
                 )
+            
+            self._engine_active_trade = True
+            self._active_trade_symbol = sym
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(f"[TRADE_LOCK_ACQUIRED] {sym} | Lock engaged for {signal_side} | Kelly: {kelly_fraction:.3f}")
+        
+        # --- UNIFIED TELEMETRY (replaces ADAPTIVE_GATE + CONVICTION + CONVICTION_DETAIL) ---
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(
+                "[S_FLOW] %s | Phase: %s | Regime: %s (conf=%.1f) | "
+                "S_Flow_L: %.3f S_Flow_S: %.3f | "
+                "Ticks: %d | Branching: %.3f | WhaleZ: %.2f | "
+                "Mom1m: %+.2f%% Mom5m: %+.2f%% | Toxicity: %.1f/%.1f(P%d) | "
+                "Signal: %s | Conviction: %.2f | AdvSel: %.3f"
+                % (sym, phase.name, self._regime_names[regime], self.regime_conf[sym_idx],
+                   s_flow_long, s_flow_short,
+                   tc, branching, whale_z,
+                   mom_1m, mom_5m, toxicity, tox_thresh, t_tox_pct,
+                   signal_side or 'NONE', conviction, adv_sel_prob if signal_side else 0.0)
+            )
         
         # ── COMPREHENSIVE LOG ENTRY ──
         log_entry = {
@@ -1745,9 +1661,8 @@ class CascadeValueEngine:
             "lra_asymmetry": round(lra_asym,5), "lra_velocity": round(lra_vel,5), "lra_signal": round(lra_signal,5),
             "dkla_lambda_buy_bps": round(adv.get("lam_buy",0),2), "dkla_lambda_sell_bps": round(adv.get("lam_sell",0),2),
             "dkla_asymmetry": round(dkla_asym,5), "dkla_toxicity": round(toxicity,2), "dkla_tox_p90": round(tox_p90,2),
-            # Trigger Diagnostics
-            "hard_gate_pass": hard_gate_pass, "conviction_long": round(long_score, 2),
-            "conviction_short": round(short_score, 2),
+            # Unified S_Flow Diagnostics
+            "s_flow_long": round(s_flow_long, 3), "s_flow_short": round(s_flow_short, 3),
             "signal_generated": signal_side, "conviction_score": round(conviction, 2)
         }
         
@@ -1777,12 +1692,12 @@ class CascadeValueEngine:
             # tox_p90 already computed above
             if logger.isEnabledFor(logging.INFO):
                 logger.info(
-                    "[ENTRY_DECISION] %s | Side: %s | LP: %.2f | Conviction: %.2f/%.2f | "
+                    "[ENTRY_DECISION] %s | Side: %s | LP: %.2f | Conviction: %.2f | S_Flow: %.3f | "
                     "TPIN: %.5f | Branching: %.3f | WhaleZ: %.2f | "
                     "Toxicity: %.1f(P90:%.1f) | NetVac: %.1fbps | "
                     "MPAR: %.3f(align:%.1f) | LRA: %.3f | DKLA: %.3f | "
                     "MicroDev: %.6f | QueueDecay: Bid=%.1f Ask=%.1fbps"
-                    % (sym, signal_side, lp, conviction, thresh,
+                    % (sym, signal_side, lp, conviction, s_flow_long if signal_side == "BUY" else s_flow_short,
                        tpin, branching, whale_z,
                        toxicity, tox_p90, net_vac,
                        mpar_score, adv.get('mp_align',0), lra_signal, dkla_asym,
@@ -1791,7 +1706,7 @@ class CascadeValueEngine:
         
         # ── BAYESIAN POSTERIOR UPDATE & BUCKET COUNT (for adaptive thresholds) ──
         # Track whether a signal was generated and whether it would have captured a move
-        signal_fired = hard_gate_pass and (signal_side is not None)
+        signal_fired = signal_side is not None
         self.bucket_count[sym_idx] += 1
         
         # For posterior update, we need to know if a move happened in the next 15 min.
