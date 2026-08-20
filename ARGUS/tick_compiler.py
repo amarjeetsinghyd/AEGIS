@@ -73,6 +73,10 @@ class TickCompiler:
 
     def set_symbol_map(self, token_to_symbol: dict):
         self._t2s = {str(k): str(v) for k, v in token_to_symbol.items()}
+
+    @property
+    def token_to_symbol(self):
+        return self._t2s
         # Initialize tick pool for zero-copy path
         for sym in self._t2s.values():
             if sym not in self._tick_pool:

@@ -365,7 +365,8 @@ class TradingSystem:
         """Run every 15 min: score active symbols, select top 30/15."""
         # Collect stats for all symbols currently in compiler
         all_stats = {}
-        for sym in self.compiler.token_to_symbol.values():
+        t2s = getattr(self.compiler, "_t2s", {}) or getattr(self.compiler, "token_to_symbol", {})
+        for sym in t2s.values():
             st = self.compiler.get_15min_stats(sym)
             if not st or st['ticks_per_min'] < 3:  # minimum activity
                 continue
