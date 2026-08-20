@@ -192,6 +192,7 @@ class CascadeValueEngine:
         self.regime_id = np.zeros(self._n_symbols, dtype=np.int8)  # 0=NOISE, 1=BURST, 2=GRIND, 3=WHALE
         self.regime_conf = np.zeros(self._n_symbols, dtype=np.float32)
         self.regime_mom_history = {sym: deque(maxlen=1200) for sym in self.t2s.values()}  # 15-min LTP history (for 10s, 1m, 5m, 15m multi-horizon alignment)
+        self.s_flow_history = {sym: deque(maxlen=30) for sym in self.t2s.values()}         # S_flow history for SVI exit computation
         
         # ─── ADAPTIVE GATING: Bayesian Threshold Posteriors (bucket-level only) ───
         # Beta-Binomial conjugate priors per symbol: branching threshold & whale_z threshold
@@ -1763,6 +1764,10 @@ class CascadeValueEngine:
         # Counter-trend: M_align=0.15 -> multiplier=0.65 (discounted)
         s_flow_long *= (0.5 + m_align_long)
         s_flow_short *= (0.5 + m_align_short)
+        
+        # Track S_flow history for SVI
+        if sym in self.s_flow_history:
+            self.s_flow_history[sym].append(float(max(s_flow_long, s_flow_short)))
         
         # --- Q2: DYNAMIC S_FLOW THRESHOLD CALIBRATION ---
         # Replace static 0.45 with regime-aware dynamic threshold
