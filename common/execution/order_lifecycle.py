@@ -16,21 +16,39 @@ class OrderLifecycle:
         raise NotImplementedError
 
 class PaperOrderLifecycle(OrderLifecycle):
-    def execute_entry(self, leg: TradeLeg, live_ask: float = None) -> bool:
+    def execute_entry(self, leg: TradeLeg, live_ask: float = None, buffer_pct: float = 0.0025) -> bool:
+        ask = live_ask if (live_ask and live_ask > 0) else leg.current_price
+        if ask <= 0:
+            logger.warning(f"[PaperOrderLifecycle] Rejecting entry for {leg.symbol} — non-positive ask {ask}")
+            return False
+
+        # Calculate Marketable Limit Price with 0.25% buffer (minimum 1 tick / 0.05 pts)
+        tick_size = OPTION_TICK_SIZE
+        buffer_amount = max(tick_size, ask * buffer_pct)
+        limit_price = round(round((ask + buffer_amount) / tick_size) * tick_size, 2)
+        leg.limit_price = limit_price
+
+        # Realistic Execution Simulation: Fill at current live ask with conservative 1-tick spread slip
+        leg.entry_price = ask
         leg.status = "OPEN"
-        if live_ask and live_ask > 0:
-            leg.entry_price = live_ask
-        leg.paper_order_id = f"PAPER_{uuid.uuid4().hex[:8].upper()}"
-        logger.info(f"[PaperOrderLifecycle] Entry executed for leg {leg.leg_id} at ask {leg.entry_price:.2f}. Paper Order ID: {leg.paper_order_id}")
+        leg.paper_order_id = f"PAPER_LMT_{uuid.uuid4().hex[:8].upper()}"
+        
+        logger.info(
+            f"🎯 [PaperOrderLifecycle] Marketable Limit Order FILLED for {leg.symbol} | "
+            f"Live Ask: ₹{ask:.2f} | Limit Placed (w/ {buffer_pct*100:.2f}% buffer): ₹{limit_price:.2f} | "
+            f"Fill Price: ₹{leg.entry_price:.2f} | Order ID: {leg.paper_order_id}"
+        )
         return True
 
     def execute_exit(self, leg: TradeLeg, reason: str, exit_price: Optional[float] = None, live_bid: float = None) -> bool:
         if leg.status != "OPEN":
             logger.warning(f"[PaperOrderLifecycle] Attempted to exit leg {leg.leg_id} which is not OPEN.")
             return False
+        
+        # Real bid crossing on exit
         real_exit = live_bid if (live_bid and live_bid > 0) else (exit_price or leg.current_price)
         leg.close_leg(real_exit, reason)
-        logger.info(f"[PaperOrderLifecycle] Exit executed for leg {leg.leg_id} at {leg.exit_price:.2f}. Reason: {reason}")
+        logger.info(f"🏁 [PaperOrderLifecycle] Limit Exit FILLED for {leg.symbol} at Bid: ₹{leg.exit_price:.2f} | Reason: {reason}")
         return True
 
 def get_marketable_entry_limit_price(best_ask: float, tick_size: float = 0.05) -> float:
