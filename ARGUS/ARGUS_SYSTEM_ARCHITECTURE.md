@@ -1,7 +1,7 @@
-# 🏗️ ARGUS SYSTEM ARCHITECTURE & QUANTITATIVE BLUEPRINT (v3.8)  
+# 🏗️ ARGUS SYSTEM ARCHITECTURE & QUANTITATIVE BLUEPRINT (v3.9)  
 **ARGUS — Algorithmic Real-Time Granular Ultra-Microstructure Scalper**  
 *Target Audience: AI Agentic Coder (Antigravity, Cursor, Devin) & Quantitative System Engineers*  
-*Version: 3.8 "Pure 110-Symbol Microstructure Core + Adverse Selection Probability Shield + Dynamic Kyle's Lambda Limit Price + Real-Time 1-Minute Impulse Trigger"*  
+*Version: 3.9 "Unified Composite Microstructure Impulse Engine (S_flow) + Adverse Selection Probability Shield + Dynamic Kyle's Lambda Maker Pricing + 4-Pillar Physical Decay Exits"*  
 *Classification: **Internal — System Architecture Authority***  
 *Last Comprehensive Audit & Revision: 2026-08-20*  
 

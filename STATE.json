@@ -33,7 +33,7 @@
     "current_market_regime": "CONTINUOUS_LIVE_110_SYMBOLS",
     "active_kill_switch": false,
     "premarket_bridge_armed": true,
-    "architecture_version": "v3.8",
+    "architecture_version": "v3.9",
     "time_stops": {
       "pre_market_wakeup": "08:55:00",
       "indicative_auction_match": "09:08:00",
