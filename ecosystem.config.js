@@ -58,6 +58,21 @@ module.exports = {
         PYTHONPATH: "/home/opc",
         BOT_RUNTIME: "ARGUS"
       }
+    },
+    {
+      name: "stratos-bot",
+      script: "STRATOS/main.py",
+      cwd: "/home/opc",
+      interpreter: "python3",
+      autorestart: true,
+      watch: false,
+      max_memory_restart: "1G",
+      max_restarts: 20,
+      restart_delay: 5000,
+      env: {
+        PYTHONPATH: "/home/opc",
+        BOT_RUNTIME: "stratos"
+      }
     }
   ]
 };

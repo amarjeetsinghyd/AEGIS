@@ -47,6 +47,7 @@ os.makedirs(TRADES_DIR, exist_ok=True)
 OPEN_PATH = os.path.join(TRADES_DIR, "open_positions.json")
 HISTORY_PATH = os.path.join(TRADES_DIR, "trade_history.json")
 
+PAPER_MODE = True                # ARGUS running in shadow/paper mode per user directive
 MAX_OPEN_POSITIONS = 1
 MAX_TRADES_PER_DAY = 5           # Hard safety limit for testing: max 5 trades per day
 LEVERAGE = 5.0
@@ -601,6 +602,10 @@ class StockExecutionManager:
                 return None
 
     def _place_order(self, kwargs: dict):
+        if PAPER_MODE:
+            sim_ordno = f"SIM_{int(pytime.time() * 1000)}"
+            logger.info(f"[StockExecution] 📝 [PAPER MODE] Simulated Order for {kwargs.get('tradingsymbol')} {kwargs.get('buy_or_sell')} {kwargs.get('quantity')}x @ {kwargs.get('price')} (ID: {sim_ordno})")
+            return {"stat": "Ok", "norenordno": sim_ordno}
         for fn_name in ("place_order", "placeorder"):
             fn = getattr(self.api, fn_name, None)
             if fn:
@@ -646,6 +651,8 @@ class StockExecutionManager:
         return None
 
     def _confirm_fill(self, ordno: str, fallback_price: float):
+        if str(ordno).startswith("SIM_"):
+            return True, fallback_price, 10
         self._last_rej = ""
         avg_prc = fallback_price
         last_row = None
