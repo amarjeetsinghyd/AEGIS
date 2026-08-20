@@ -823,15 +823,29 @@ class CascadeValueEngine:
         branch_n = clip(branching / 0.5, 0.0, 1.0)
         mlofi_n  = clip(abs(mlofi) / self.CFG["mlofi_cap"], 0.0, 1.0)
         
-        # Directional signs for long/short
-        mpar_sign = 1.0 if mpar_accel >= 0 else -1.0
-        vac_sign = 1.0 if net_vac >= 0 else -1.0
-        lra_sign = 1.0 if lra_signal >= 0 else -1.0
-        dkla_sign = 1.0 if dkla_asym >= 0 else -1.0
-        mom_sign = 1.0 if mom_1m >= 0 else -1.0
-        mlofi_sign = 1.0 if mlofi >= 0 else -1.0
+        # Directional decomposition of primitives (zero allocation)
+        # For Long (BUY): Only positive directional pressure contributes
+        # For Short (SELL): Only negative directional pressure contributes
+        mpar_long  = mpar_n if mpar_accel > 0 else 0.0
+        mpar_short = mpar_n if mpar_accel < 0 else 0.0
         
-        # Core weights (sum = 1.0 for interpretability)
+        vac_long   = vac_n if net_vac > 0 else 0.0
+        vac_short  = vac_n if net_vac < 0 else 0.0
+        
+        mom_long   = mom_n if mom_1m > 0 else 0.0
+        mom_short  = mom_n if mom_1m < 0 else 0.0
+        
+        lra_long   = lra_n if lra_signal > 0 else 0.0
+        lra_short  = lra_n if lra_signal < 0 else 0.0
+        
+        dkla_long  = dkla_n if dkla_asym > 0 else 0.0
+        dkla_short = dkla_n if dkla_asym < 0 else 0.0
+        
+        # Whale flow directionality (align with order flow)
+        whale_long  = whale_n if (mpar_accel > 0 or net_vac > 0 or mom_1m > 0) else 0.0
+        whale_short = whale_n if (mpar_accel < 0 or net_vac < 0 or mom_1m < 0) else 0.0
+        
+        # Core weights (sum = 1.0)
         w_mpar = 0.30   # Microprice acceleration — highest alpha
         w_vac = 0.20    # Liquidity vacuum — pure cancellation pressure
         w_whale = 0.20  # Whale presence — large lot clustering
@@ -841,19 +855,28 @@ class CascadeValueEngine:
         w_micro = 0.03  # Microprice stretch (mean reversion risk)
         w_branch = 0.02 # Self-excitation (cluster confirmation)
         
-        # Linear base (same for long/short, direction from signs)
-        linear_base = (
-            w_mpar * mpar_n +
-            w_vac * vac_n +
-            w_whale * whale_n +
-            w_mom * mom_n +
-            w_lra * lra_n +
-            w_dkla * dkla_n +
-            w_micro * micro_n +
-            w_branch * branch_n
+        # Truly directional linear base
+        linear_long = (
+            w_mpar * mpar_long +
+            w_vac * vac_long +
+            w_whale * whale_long +
+            w_mom * mom_long +
+            w_lra * lra_long +
+            w_dkla * dkla_long +
+            (w_branch * branch_n if (mpar_long + vac_long + mom_long) > 0.3 else 0.0)
         )
         
-        # Physics-based interactions (4 only - microstructure cascade physics)
+        linear_short = (
+            w_mpar * mpar_short +
+            w_vac * vac_short +
+            w_whale * whale_short +
+            w_mom * mom_short +
+            w_lra * lra_short +
+            w_dkla * dkla_short +
+            (w_branch * branch_n if (mpar_short + vac_short + mom_short) > 0.3 else 0.0)
+        )
+        
+        # Physics-based interactions (microstructure cascade physics)
         inter_long = 0.0
         inter_short = 0.0
         
@@ -884,8 +907,8 @@ class CascadeValueEngine:
         # Regime modulation (multiplicative, not branching)
         regime_boost = (0.85, 1.00, 0.95, 1.05)[regime]  # NOISE, BURST, GRIND, WHALE
         
-        s_flow_long = clip((linear_base + inter_long) * regime_boost, 0.0, 1.0)
-        s_flow_short = clip((linear_base + inter_short) * regime_boost, 0.0, 1.0)
+        s_flow_long = clip((linear_long + inter_long) * regime_boost, 0.0, 1.0)
+        s_flow_short = clip((linear_short + inter_short) * regime_boost, 0.0, 1.0)
         
         return s_flow_long, s_flow_short
 
@@ -1778,11 +1801,11 @@ class CascadeValueEngine:
         conviction = 0.0
         
         # Dynamic threshold calibrated for 0.40%-0.60% spike capture
-        # M_align soft gate >= 0.35 ensures we don't catch severe counter-trend falling knives
-        if s_flow_long >= dynamic_threshold and m_align_long >= 0.35 and mom_1m >= 0.0:
+        # M_align gate >= 0.52 strictly requires multi-horizon momentum to be in our favor (above neutral 0.50)
+        if s_flow_long >= dynamic_threshold and m_align_long >= 0.52 and mom_1m >= 0.0:
             signal_side = "BUY"
             conviction = s_flow_long * 10.0  # Scale to 0-10 for compatibility
-        elif s_flow_short >= dynamic_threshold and m_align_short >= 0.35 and mom_1m <= 0.0:
+        elif s_flow_short >= dynamic_threshold and m_align_short >= 0.52 and mom_1m <= 0.0:
             signal_side = "SELL"
             conviction = s_flow_short * 10.0
         

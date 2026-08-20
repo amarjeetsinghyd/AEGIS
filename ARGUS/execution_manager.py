@@ -52,9 +52,9 @@ MAX_TRADES_PER_DAY = 5           # Hard safety limit for testing: max 5 trades p
 LEVERAGE = 5.0
 MARGIN_SAFETY = 1.0          # Set to 100% per user request
 TP_ATR_MULT = 1.5            # Calibrated for 0.4% - 0.6% micro-trend capture
-SL_ATR_MULT = 1.0            # Initial ATR stop loss
-CHANDELIER_ATR_MULT = 1.2    # Dynamic trailing stop
-BREAKEVEN_ATR_FRACTION = 0.6 # Move stop to breakeven once 60% of ATR move achieved
+SL_ATR_MULT = 0.8            # Initial ATR stop loss (tight risk control)
+CHANDELIER_ATR_MULT = 0.8    # Tight dynamic trailing stop to lock in sudden spike peaks
+BREAKEVEN_ATR_FRACTION = 0.4 # Lock breakeven early at 40% of ATR move to protect profits
 # MN-6: gap-open detection before breakeven floor lock. A single-tick move larger
 # than GAP_ATR_MULT * ATR past the entry is a discontinuous gap, not a trend advance
 # — locking the stop at breakeven on a gap would invert it exactly at entry right as
@@ -92,7 +92,9 @@ EXIT_CFG = {
     "lra_vel_flip_threshold": 0.0,
     "lra_vel_magnitude_min": 0.25,        
     "lra_min_hold_seconds": 60,           
-    # Confirmation Layer (require >= 2 of 3)
+    # Confirmation Layer (require >= 2 of 3, with hold timer)
+    "min_hold_seconds": 60,               # Minimum hold before confirmation layer exit
+    "cooldown_seconds": 180,              # 3-minute per-symbol cooldown after exit
     "tox_spike_pct": 95,
     "whale_exit_z": -1.5,                 # More negative - require stronger whale exit
     "branching_collapse": 0.10,           # Lowered from 0.15 - more sensitive to collapse
@@ -390,28 +392,29 @@ def evaluate_exit(
         if lra_flipped and abs(lra_vel) > lra_vel_magnitude_min:
             return True, "LRA_VEL_FLIP"
 
-    # ─── CONFIRMATION LAYER (Require >= 2 of 3, adaptive) ───
-    confirm_signals = 0
-    confirm_reasons = []
+    # ─── CONFIRMATION LAYER (Require >= 2 of 3, adaptive, min hold enforced) ───
+    if seconds_held >= EXIT_CFG.get("min_hold_seconds", 60):
+        confirm_signals = 0
+        confirm_reasons = []
 
-    if toxicity_history and len(toxicity_history) > 20:
-        import numpy as np
-        tox_p95 = np.percentile(toxicity_history, tox_spike_pct)
-        current_tox = bucket_aggregates.get("dkla_toxicity", 0.0)
-        if current_tox > tox_p95:
+        if toxicity_history and len(toxicity_history) > 20:
+            import numpy as np
+            tox_p95 = np.percentile(toxicity_history, tox_spike_pct)
+            current_tox = bucket_aggregates.get("dkla_toxicity", 0.0)
+            if current_tox > tox_p95:
+                confirm_signals += 1
+                confirm_reasons.append("TOX_SPIKE")
+
+        if whale_z < whale_exit_z:
             confirm_signals += 1
-            confirm_reasons.append("TOX_SPIKE")
+            confirm_reasons.append("WHALE_EXIT")
 
-    if whale_z < whale_exit_z:
-        confirm_signals += 1
-        confirm_reasons.append("WHALE_EXIT")
+        if branching_ratio < branching_collapse:
+            confirm_signals += 1
+            confirm_reasons.append("BRANCHING_COLLAPSE")
 
-    if branching_ratio < branching_collapse:
-        confirm_signals += 1
-        confirm_reasons.append("BRANCHING_COLLAPSE")
-
-    if confirm_signals >= 2:
-        return True, "+".join(confirm_reasons)
+        if confirm_signals >= 2:
+            return True, "+".join(confirm_reasons)
 
     return False, "NONE"
 
@@ -458,6 +461,7 @@ class StockExecutionManager:
         self._consec_sl = 0
         self._day_paused = False
         self._last_rej = ""
+        self.symbol_last_exit_time = {}     # symbol -> timestamp of last exit (per-symbol cooldown)
         
         self.cmd_queue = queue.Queue(maxsize=10)
         self.prices_dict = {}
@@ -731,6 +735,7 @@ class StockExecutionManager:
             "strategy": "ARGUS",
         })
         self._day_loss += net_pnl
+        self.symbol_last_exit_time[symbol] = pytime.time()
         self._save_history(trade)
         if not keep_open:
             self.open_trades.pop(symbol, None)
@@ -761,6 +766,14 @@ class StockExecutionManager:
         today_trades = self.get_today_trades_count()
         if today_trades >= MAX_TRADES_PER_DAY:
             logger.warning(f"[StockExecution] 🛑 Daily trade limit reached ({today_trades}/{MAX_TRADES_PER_DAY}) — no new entries today.")
+            return
+        
+        # ─── PER-SYMBOL COOLDOWN GATE (3 Minutes) ───
+        cooldown_sec = float(EXIT_CFG.get("cooldown_seconds", 180))
+        last_exit = self.symbol_last_exit_time.get(symbol, 0.0)
+        if pytime.time() - last_exit < cooldown_sec:
+            rem = int(cooldown_sec - (pytime.time() - last_exit))
+            logger.info(f"[StockExecution] ⏳ Cooldown active for {symbol} ({rem}s remaining) — skipping entry.")
             return
         margin_budget = float(self.capital_engine.get_available_funds())
         if margin_budget < 50:
