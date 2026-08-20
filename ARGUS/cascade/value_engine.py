@@ -1526,16 +1526,18 @@ class CascadeValueEngine:
             regime=regime
         )
         
-        # --- SINGLE DECISION RULE (S_flow >= 0.45, Mom confirmation) ---
+        # --- SINGLE DECISION RULE (S_flow >= 0.45, Mom 1m + 5m confirmation) ---
         signal_side = None
         conviction = 0.0
         
         # S_flow threshold = 0.45 (calibrated for 0.40%-0.60% spike capture)
-        # Momentum confirmation: mom_1m must align with direction
-        if s_flow_long >= 0.45 and mom_1m >= 0.0:
+        # Multi-horizon momentum alignment:
+        # - mom_1m must align with direction (>= 0.0 for BUY, <= 0.0 for SELL)
+        # - mom_5m must NOT oppose the trade (>= -0.10% for BUY, <= +0.10% for SELL) to prevent counter-trend knife catching
+        if s_flow_long >= 0.45 and mom_1m >= 0.0 and mom_5m >= -0.10:
             signal_side = "BUY"
             conviction = s_flow_long * 10.0  # Scale to 0-10 for compatibility
-        elif s_flow_short >= 0.45 and mom_1m <= 0.0:
+        elif s_flow_short >= 0.45 and mom_1m <= 0.0 and mom_5m <= 0.10:
             signal_side = "SELL"
             conviction = s_flow_short * 10.0
         
