@@ -842,6 +842,8 @@ class StockExecutionManager:
                         }
                         self.open_trades[symbol] = trade
                         self._save_open()
+                        if hasattr(self, '_cascade_engine') and self._cascade_engine:
+                            self._cascade_engine.set_active_trade(symbol)
                         
                         if fillqty < attempt_qty:
                             self._cancel_order(ordno)
@@ -883,6 +885,8 @@ class StockExecutionManager:
                         }
                         self.open_trades[symbol] = trade
                         self._save_open()
+                        if hasattr(self, '_cascade_engine') and self._cascade_engine:
+                            self._cascade_engine.set_active_trade(symbol)
                         return
                     
                     if "margin" in self._last_rej.lower() and attempt == 0:

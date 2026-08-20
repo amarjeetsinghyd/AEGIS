@@ -1625,11 +1625,6 @@ class CascadeValueEngine:
                     "Kelly_Fraction: %.3f | Max_Position_Pct: %.1f%%"
                     % (sym, signal_side, conviction, kelly_fraction, kelly_fraction * 100)
                 )
-            
-            self._engine_active_trade = True
-            self._active_trade_symbol = sym
-            if logger.isEnabledFor(logging.INFO):
-                logger.info(f"[TRADE_LOCK_ACQUIRED] {sym} | Lock engaged for {signal_side} | Kelly: {kelly_fraction:.3f}")
         
         # --- UNIFIED TELEMETRY (replaces ADAPTIVE_GATE + CONVICTION + CONVICTION_DETAIL) ---
         if logger.isEnabledFor(logging.INFO):
@@ -1769,19 +1764,22 @@ class CascadeValueEngine:
         except Exception: return "error"
 
     # ─── GLOBAL TRADE LOCK MANAGEMENT ───
+    def set_active_trade(self, sym: str) -> None:
+        """Called by execution manager when a position is confirmed open."""
+        self._engine_active_trade = True
+        self._active_trade_symbol = sym
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(f"[TRADE_LOCK_ENGAGED] Engine locked on active trade: {sym}")
+
     def handle_trade_closed(self, sym: str) -> None:
         """
-        Release global 1-trade lock when a trade exits.
+        Release global 1-trade lock when a trade exits or is cancelled.
         Called by execution_manager on TRADE_CLOSED event.
         """
-        if self._engine_active_trade and self._active_trade_symbol == sym:
-            self._engine_active_trade = False
-            self._active_trade_symbol = None
-            if logger.isEnabledFor(logging.INFO):
-                logger.info(f"[TRADE_LOCK_RELEASED] {sym} | Lock released")
-        elif self._engine_active_trade and self._active_trade_symbol != sym:
-            if logger.isEnabledFor(logging.WARNING):
-                logger.warning(f"[TRADE_LOCK_MISMATCH] Expected {self._active_trade_symbol}, got {sym}")
+        self._engine_active_trade = False
+        self._active_trade_symbol = None
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(f"[TRADE_LOCK_RELEASED] {sym} | Lock released. Ready for new signals.")
 
 def attach_cascade_engine(broker, token_to_symbol, bucket_map=None, vacuum_map=None, 
                           dkla_notional=1_00_00_000.0, trigger_config=None, stock_calibration=None):
