@@ -92,6 +92,19 @@
         "SYSTEM_CONTEXT.md"
       ],
       "completed_at": "2026-08-20T13:45:00.000000"
+    },
+    {
+      "task_id": "TASK-2026-08-20-005",
+      "title": "Claude First-Principles Architectural Fixes: Truly Directional S_flow, 3-Min Symbol Cooldown, 60s Hold Timer on Confirmation Exits, M_align >= 0.52 Gate, Tightened ATR Exits, and Max 5 Trades/Day Safety Cap",
+      "status": "COMPLETED",
+      "priority": "CRITICAL",
+      "target_modules": [
+        "ARGUS/cascade/value_engine.py",
+        "ARGUS/execution_manager.py",
+        "ARGUS/main.py",
+        "STATE.json"
+      ],
+      "completed_at": "2026-08-20T15:20:00.000000"
     }
   ]
 }
