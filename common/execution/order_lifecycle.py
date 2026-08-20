@@ -18,16 +18,19 @@ class OrderLifecycle:
 class PaperOrderLifecycle(OrderLifecycle):
     def execute_entry(self, leg: TradeLeg, live_ask: float = None) -> bool:
         leg.status = "OPEN"
+        if live_ask and live_ask > 0:
+            leg.entry_price = live_ask
         leg.paper_order_id = f"PAPER_{uuid.uuid4().hex[:8].upper()}"
-        logger.info(f"[PaperOrderLifecycle] Entry executed for leg {leg.leg_id}. Paper Order ID: {leg.paper_order_id}")
+        logger.info(f"[PaperOrderLifecycle] Entry executed for leg {leg.leg_id} at ask {leg.entry_price:.2f}. Paper Order ID: {leg.paper_order_id}")
         return True
 
     def execute_exit(self, leg: TradeLeg, reason: str, exit_price: Optional[float] = None, live_bid: float = None) -> bool:
         if leg.status != "OPEN":
             logger.warning(f"[PaperOrderLifecycle] Attempted to exit leg {leg.leg_id} which is not OPEN.")
             return False
-        leg.close_leg(exit_price or leg.current_price, reason)
-        logger.info(f"[PaperOrderLifecycle] Exit executed for leg {leg.leg_id} at {leg.exit_price}. Reason: {reason}")
+        real_exit = live_bid if (live_bid and live_bid > 0) else (exit_price or leg.current_price)
+        leg.close_leg(real_exit, reason)
+        logger.info(f"[PaperOrderLifecycle] Exit executed for leg {leg.leg_id} at {leg.exit_price:.2f}. Reason: {reason}")
         return True
 
 def get_marketable_entry_limit_price(best_ask: float, tick_size: float = 0.05) -> float:

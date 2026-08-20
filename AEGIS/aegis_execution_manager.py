@@ -402,13 +402,17 @@ class AegisExecutionManager:
         )
 
     def _place_initial_take_profit(self, leg: TradeLeg, params: dict):
-        """Resting DAY limit at +10% premium. AEGIS will manage dynamic exits."""
-        tp_price = _round_tick(leg.entry_price * 1.10)
+        """Resting DAY limit at +10% premium (or +5% on Friday DTE 4)."""
+        now = datetime.now()
+        is_friday = (now.weekday() == 4)
+        target_pct = 0.05 if is_friday else 0.10
+        tp_price = _round_tick(leg.entry_price * (1.0 + target_pct))
         leg.tp_price = tp_price
-        leg.initial_tp_pct = 0.10
+        leg.initial_tp_pct = target_pct
         
         if isinstance(self.order_lifecycle, PaperOrderLifecycle):
             self.tp_order_id = f"PAPER_TP_{leg.symbol}"
+            logger.info(f"[AegisEM] [Paper] Resting TP limit set at {tp_price:.2f} (+{int(target_pct*100)}% on {'Friday DTE-4' if is_friday else 'Regular Day'})")
             return
 
         try:
@@ -487,9 +491,12 @@ class AegisExecutionManager:
         for leg in legs:
             if leg.status != "OPEN":
                 continue
-            tp_price = getattr(leg, "tp_price", _round_tick(leg.entry_price * 1.10))
+            is_friday = (now.weekday() == 4)
+            default_tp_pct = 0.05 if is_friday else 0.10
+            tp_price = getattr(leg, "tp_price", _round_tick(leg.entry_price * (1.0 + default_tp_pct)))
             if leg.current_price >= tp_price > 0:
-                self._close_all_legs(f"Take-Profit Hit (+10% @ {leg.current_price:.2f})")
+                tp_pct_str = f"+{int(default_tp_pct*100)}%"
+                self._close_all_legs(f"Take-Profit Hit ({tp_pct_str} @ {leg.current_price:.2f})")
                 return
 
         # 5. Hard time stop (10 min)
