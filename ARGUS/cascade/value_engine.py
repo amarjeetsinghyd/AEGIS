@@ -634,12 +634,12 @@ class CascadeValueEngine:
         regime = self.regime_id[sym_idx]
         t_beta, t_W, t_mom, t_tox_pct = thresholds
         
-        # O(1) Toxicity Gate without numpy overhead
+        # O(1) Toxicity Gate without numpy overhead (Toxicity Ceiling: reject if toxicity exceeds P60/P80 cutoff)
         if len(tox_hist) >= 20:
             s_hist = sorted(tox_hist)
             idx = int((t_tox_pct / 100.0) * (len(s_hist) - 1))
             tox_thresh = s_hist[idx]
-            if toxicity < tox_thresh:
+            if toxicity > tox_thresh and tox_thresh > 0:
                 return False
         
         # Fast Scalar Clipping (Zero-Allocation, No Numpy)
