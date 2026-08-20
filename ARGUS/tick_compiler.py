@@ -182,7 +182,8 @@ class TickCompiler:
 
             # ── TIER 2 INTRADAY FILTER (15-min rolling stats) ───
             # Collect per-symbol stats for 15-min filter (only if symbol in tier2 or engine set)
-            # Only compute if we have meaningful depth
+            # ── 5-MIN INTRADAY MACRO STATS ───
+            # Collect per-symbol stats for 5-min macro bias calculation
             if bp1 > 0 and sp1 > 0:
                 st = self._stats_15min[key]
                 st['ticks'] += 1
@@ -202,30 +203,21 @@ class TickCompiler:
                     st['oib_sum'] += (bq1 - sq1) / (bq1 + sq1)
                     st['oib_cnt'] += 1
 
-            # ── TIER 2 GATE: Skip symbols not in top 30 ───
-            if self._tier2_symbols and key not in self._tier2_symbols:
-                return  # Skip all parsing/math for bottom 80 symbols
-
-            # ── ENGINE GATE: Skip symbols not in top 15 for adaptive engine ───
-            if self._engine_symbols and self.engine and key not in self._engine_symbols:
-                # Still allow footprints/bar_books but skip engine dispatch
-                pass
-            else:
-                # ── ZERO-COPY DISPATCH TO ENGINE ──
-                # Parse directly into pre-allocated ParsedTick, bypass dict creation
-                if self.engine and key in self._tick_pool:
-                    tick = self._tick_pool[key]
-                    tick.tok = token
-                    tick.lp = lp
-                    tick.vol = new_vol
-                    tick.ts = time.time()
-                    for i in range(5):
-                        tick.bp[i] = self._as_float(message, f"bp{i+1}", default=0.0)
-                        tick.bq[i] = int(self._as_float(message, f"bq{i+1}", default=0.0))
-                        tick.sp[i] = self._as_float(message, f"sp{i+1}", default=0.0)
-                        tick.sq[i] = int(self._as_float(message, f"sq{i+1}", default=0.0))
-                    # Non-blocking dispatch - engine processes in same thread
-                    self.engine.on_tick_parsed(tick)
+            # ── UNIFIED ZERO-COPY DISPATCH TO ENGINE (ALL 110 SYMBOLS DIRECT) ──
+            # Parse directly into pre-allocated ParsedTick, bypass dict creation
+            if self.engine and key in self._tick_pool:
+                tick = self._tick_pool[key]
+                tick.tok = token
+                tick.lp = lp
+                tick.vol = new_vol
+                tick.ts = time.time()
+                for i in range(5):
+                    tick.bp[i] = self._as_float(message, f"bp{i+1}", default=0.0)
+                    tick.bq[i] = int(self._as_float(message, f"bq{i+1}", default=0.0))
+                    tick.sp[i] = self._as_float(message, f"sp{i+1}", default=0.0)
+                    tick.sq[i] = int(self._as_float(message, f"sq{i+1}", default=0.0))
+                # Non-blocking dispatch - engine processes in same thread
+                self.engine.on_tick_parsed(tick)
         except Exception as e:
             logger.debug(f"on_message error: {e}")
 
@@ -393,24 +385,24 @@ class TickCompiler:
             return None
         elapsed = time.time() - self._stats_window_start
         if elapsed <= 0:
-            elapsed = 900.0  # 15 min
+            elapsed = 300.0  # 5 min rolling
         ticks_per_min = st['ticks'] / (elapsed / 60.0)
         vol_per_min = st['volume'] / (elapsed / 60.0)
         trade_value_per_min = st['trade_value'] / (elapsed / 60.0)
         avg_spread_bps = (st['spread_sum'] / max(st['spread_cnt'], 1)) / max(st.get('mid', 1), 1) * 10000 if st['spread_cnt'] > 0 else 0
         mid_prices = st['mid_prices']
         microprice_vol = 0.0
-        ret_15m = 0.0
+        ret_5m = 0.0
         last_mid = mid_prices[-1] if mid_prices else 0.0
-        if len(mid_prices) > 10:
+        if len(mid_prices) > 5:
             import numpy as np
             microprice_vol = float(np.std(mid_prices) / max(np.mean(mid_prices), 1) * 100)
             if mid_prices[0] > 0:
-                ret_15m = float((mid_prices[-1] - mid_prices[0]) / mid_prices[0] * 100.0)
+                ret_5m = float((mid_prices[-1] - mid_prices[0]) / mid_prices[0] * 100.0)
         
-        # 15-minute VWAP & Distance from VWAP
-        vwap_15m = st['trade_value'] / max(st['volume'], 1.0) if st['volume'] > 0 else last_mid
-        vwap_dist = float((last_mid - vwap_15m) / vwap_15m * 100.0) if vwap_15m > 0 and last_mid > 0 else 0.0
+        # 5-minute VWAP & Distance from VWAP
+        vwap_5m = st['trade_value'] / max(st['volume'], 1.0) if st['volume'] > 0 else last_mid
+        vwap_dist = float((last_mid - vwap_5m) / vwap_5m * 100.0) if vwap_5m > 0 and last_mid > 0 else 0.0
         
         oib = st['oib_sum'] / max(st['oib_cnt'], 1) if st['oib_cnt'] > 0 else 0.0
         return {
@@ -419,13 +411,20 @@ class TickCompiler:
             'avg_spread_bps': avg_spread_bps,
             'trade_value_per_min': trade_value_per_min,
             'microprice_vol': microprice_vol,
-            'ret_15m': ret_15m,
+            'ret_15m': ret_5m,
+            'ret_5m': ret_5m,
             'vwap_dist': vwap_dist,
             'oib': oib,
         }
 
+    def get_5min_stats(self, symbol: str) -> dict:
+        return self.get_15min_stats(symbol)
+
     def reset_15min_stats(self):
-        """Reset 15-min stats for new window."""
+        """Reset 5-min stats for new window."""
         self._stats_15min.clear()
         self._stats_window_start = time.time()
-        logger.info("[TIER2] Reset 15-min stats for new window")
+        logger.info("[MACRO_5M] Reset 5-min stats for new window")
+
+    def reset_5min_stats(self):
+        self.reset_15min_stats()

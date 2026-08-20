@@ -317,17 +317,17 @@ class TradingSystem:
         # 7. Historical Calibration (Bucket/Vacuum)
         bucket_map, vacuum_map = calibrate_buckets(self.broker, token_to_symbol, self.universe)
 
-        # 8. Value Engine (Signal Generator)
+        # 8. Value Engine (Signal Generator — All 110 Symbols Full Live Coverage)
         from ARGUS.cascade.value_engine import attach_cascade_engine
         stock_calib = load_stock_calibration()
         self.engine = attach_cascade_engine(
             self.broker, 
-            token_to_symbol, 
+            master_token_map, 
             bucket_map=bucket_map, 
             vacuum_map=vacuum_map,
             stock_calibration=stock_calib
         )
-        logger.info(f"[OK] Cascade Value Engine Attached (Per-Stock Calibration Active: {len(stock_calib)} profiles)")
+        logger.info(f"[OK] Cascade Value Engine Attached (All 110 Symbols Live, Per-Stock Calibration Active: {len(stock_calib)} profiles)")
 
         # 9. Zero-Copy Wiring: Compiler -> Engine (Hot Path Optimization)
         self.compiler.set_engine(self.engine)
@@ -359,78 +359,6 @@ class TradingSystem:
     def _signal_handler(self, signum, frame):
         logger.warning(f"Signal {signum} received. Initiating Graceful Shutdown...")
         self.shutdown_event.set()
-
-    # ─── TIER 2 INTRADAY FILTER (15-min rolling) ───
-    def _run_intraday_tier2(self):
-        """Run every 15 min: score active symbols, select top 30/15."""
-        # Collect stats for all symbols currently in compiler
-        all_stats = {}
-        t2s = getattr(self.compiler, "_t2s", {}) or getattr(self.compiler, "token_to_symbol", {})
-        for sym in t2s.values():
-            st = self.compiler.get_15min_stats(sym)
-            if not st or st['ticks_per_min'] < 3:  # minimum activity
-                continue
-            all_stats[sym] = st
-        
-        if len(all_stats) < 10:
-            return  # not enough data yet
-        
-        # Percentile normalization across all symbols
-        def pctile(vals, x):
-            return sum(1 for v in vals if v <= x) / len(vals)
-        
-        ticks = [s['ticks_per_min'] for s in all_stats.values()]
-        vols  = [s['vol_per_min'] for s in all_stats.values()]
-        sprds = [s['avg_spread_bps'] for s in all_stats.values()]
-        trades = [s['trade_value_per_min'] for s in all_stats.values()]
-        mvols = [s['microprice_vol'] for s in all_stats.values()]
-        
-        scores = {}
-        bias_map = {}
-        for sym, s in all_stats.items():
-            scores[sym] = (
-                0.25 * pctile(ticks, s['ticks_per_min']) +
-                0.20 * pctile(vols, s['vol_per_min']) +
-                0.20 * (1 - pctile(sprds, s['avg_spread_bps'])) +  # tight = good
-                0.20 * pctile(trades, s['trade_value_per_min']) +
-                0.10 * (1 - pctile(mvols, s['microprice_vol'])) +  # stable = good
-                0.05 * abs(s['oib'])
-            )
-            # Multi-Parameter 15-Minute Macro Directional Trend Bias
-            ret_15m = s.get('ret_15m', 0.0)
-            vwap_dist = s.get('vwap_dist', 0.0)
-            oib = s.get('oib', 0.0)
-            
-            # Composite Directional Score: Price Return (45%) + VWAP Distance (35%) + Order Imbalance (20%)
-            dir_score = 0.45 * (ret_15m / 0.15) + 0.35 * (vwap_dist / 0.10) + 0.20 * (oib / 0.20)
-            
-            if dir_score >= 1.0 and ret_15m > 0 and vwap_dist >= 0:
-                bias_map[sym] = "LONG_ONLY"
-            elif dir_score <= -1.0 and ret_15m < 0 and vwap_dist <= 0:
-                bias_map[sym] = "SHORT_ONLY"
-            else:
-                bias_map[sym] = "NO_TRADE"  # Pure flat noise or conflicting signals - reject
-        
-        ranked = sorted(scores, key=scores.get, reverse=True)
-        top30 = ranked[:30]
-        # Prioritize symbols with clear directional momentum (LONG_ONLY / SHORT_ONLY)
-        directional_top = [sym for sym in top30 if bias_map.get(sym) in ("LONG_ONLY", "SHORT_ONLY")]
-        top15 = directional_top[:15] if directional_top else top30[:15]
-        
-        # Push to compiler + engine
-        self.compiler.set_tier2_symbols(top30)
-        self.compiler.set_engine_symbols(top15)
-        if hasattr(self.engine, "set_symbol_bias_map"):
-            self.engine.set_symbol_bias_map(bias_map)
-        
-        # Reset 15-min stats for next window
-        self.compiler.reset_15min_stats()
-        
-        n_long = sum(1 for b in bias_map.values() if b == 'LONG_ONLY')
-        n_short = sum(1 for b in bias_map.values() if b == 'SHORT_ONLY')
-        n_flat = sum(1 for b in bias_map.values() if b == 'NO_TRADE')
-        logger.info(f"[TIER2] {datetime.now().strftime('%H:%M')} | "
-                    f"Top15: {top15} | Macro Bias Summary: LONG={n_long}, SHORT={n_short}, FLAT(NO_TRADE)={n_flat}")
 
     def _publish_premarket_bridge(self):
         """Calculates 09:08-09:14 indicative index gap bias from constituent premarket prices and publishes to IPC."""
