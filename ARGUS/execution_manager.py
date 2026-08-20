@@ -76,21 +76,21 @@ CONSEC_SL_LIMIT = 3
 
 EXIT_CFG = {
     # MPAR Deceleration
-    "mpar_accel_flip_mult": 2.0,          # Increased from 1.5 - require stronger flip
-    "mpar_accel_collapse_pct": 0.50,      # Increased from 0.35 - allow more decay before exit
-    "mpar_min_hold_seconds": 30,          # NEW: Minimum hold time before MPAR exit can trigger
+    "mpar_accel_flip_mult": 2.0,          # Require 2x adverse acceleration flip
+    "mpar_accel_collapse_pct": 0.50,      
+    "mpar_min_hold_seconds": 60,          # Give position at least 60s to develop
     # DKLA Asymmetry Flip
     "dkla_flip_threshold": 0.0,
-    "dkla_flip_confirm_bps": 10.0,        # Increased from 5.0 - require stronger confirmation
-    "dkla_min_hold_seconds": 30,          # NEW: Minimum hold time before DKLA exit can trigger
+    "dkla_flip_confirm_bps": 10.0,        # Require stronger confirmation
+    "dkla_min_hold_seconds": 60,          
     # Vacuum Exhaustion/Reversal
-    "vac_reversal_bps": 30.0,             # Increased from 20.0 - allow more vacuum giveback
-    "vac_exhaustion_z": 3.0,              # Increased from 2.5 - require more extreme exhaustion
-    "vac_min_hold_seconds": 30,           # NEW: Minimum hold time before VAC exit can trigger
+    "vac_reversal_bps": 30.0,             
+    "vac_exhaustion_z": 3.0,              
+    "vac_min_hold_seconds": 60,           
     # LRA Velocity Reversal
     "lra_vel_flip_threshold": 0.0,
-    "lra_vel_magnitude_min": 0.25,        # Increased from 0.15 - require stronger reversal
-    "lra_min_hold_seconds": 30,           # NEW: Minimum hold time before LRA exit can trigger
+    "lra_vel_magnitude_min": 0.25,        
+    "lra_min_hold_seconds": 60,           
     # Confirmation Layer (require >= 2 of 3)
     "tox_spike_pct": 95,
     "whale_exit_z": -1.5,                 # More negative - require stronger whale exit
@@ -358,15 +358,13 @@ def evaluate_exit(
     whale_exit_z = EXIT_CFG["whale_exit_z"] * adaptive_mult
     branching_collapse = EXIT_CFG["branching_collapse"] / adaptive_mult  # More sensitive in high SVI
 
-    # ─── DECAY PILLAR 1: MPAR DECELERATION (with peak-lock) ───
+    # ─── DECAY PILLAR 1: MPAR DECELERATION (Directional Flip Only) ───
     seconds_held = now - trade_state.entry_time
     if seconds_held >= EXIT_CFG["mpar_min_hold_seconds"]:
         accel_flipped = (mp_accel * side < 0) and (trade_state.entry_accel * side > 0)
-        # Q4: Use locked peak (never decreases) for collapse detection
-        accel_collapsed = abs(mp_accel) < mpar_accel_collapse_pct * trade_state.locked_peak_accel
+        # Only exit on MPAR if acceleration has actively reversed against trade direction
+        # with significant magnitude (not just because entry impulse settled into steady velocity)
         if accel_flipped and abs(mp_accel) > mpar_accel_flip_mult * abs(trade_state.entry_accel):
-            return True, "MPAR_DECEL"
-        if accel_collapsed and trade_state.locked_peak_accel > 1e-6:
             return True, "MPAR_DECEL"
 
     # ─── DECAY PILLAR 2: DKLA ASYMMETRY FLIP (adaptive) ───
