@@ -1535,10 +1535,9 @@ class CascadeValueEngine:
         tox_hist = self.toxicity_history[sym]  # Pre-allocated, no setdefault
         tox_hist.append(toxicity)
         if len(tox_hist) >= 20:
-            tox_thresh = sorted(tox_hist)[int((t_tox_pct / 100.0) * (len(tox_hist) - 1))]
-            tox_p90 = sorted(tox_hist)[int(0.9 * (len(tox_hist) - 1))]
+            s_tox = sorted(tox_hist)
+            tox_p90 = s_tox[int(0.9 * (len(s_tox) - 1))]
         else:
-            tox_thresh = toxicity
             tox_p90 = toxicity
         
         # --- LRA SIGNAL (directional, TPIN-gated) ---
