@@ -1776,20 +1776,20 @@ class CascadeValueEngine:
             signal_side = "SELL"
             conviction = s_flow_short * 10.0
         
+        # --- Q3: EXTRACT QUEUE DEPLETION & SPOOFING METRICS (Always in scope) ---
+        bid_queue_decay = adv.get("bid_queue_decay", 0.0)
+        ask_queue_decay = adv.get("ask_queue_decay", 0.0)
+        spread_bps = spread / max(lp, 1e-6) * 10000
+        qds_bid = adv.get("qds_bid", 0.0)
+        qds_ask = adv.get("qds_ask", 0.0)
+        sds_bid = adv.get("sds_bid", 0.0)
+        sds_ask = adv.get("sds_ask", 0.0)
+        cv_bid = adv.get("cv_bid", 0.0)
+        cv_ask = adv.get("cv_ask", 0.0)
+        adv_sel_prob = 0.0
+        
         # --- Q3: ENHANCED ADVERSE SELECTION FILTER (with queue depletion & spoofing) ---
         if signal_side:
-            bid_queue_decay = adv.get("bid_queue_decay", 0.0)
-            ask_queue_decay = adv.get("ask_queue_decay", 0.0)
-            spread_bps = spread / max(lp, 1e-6) * 10000
-            
-            # Q3: Get queue depletion & spoofing metrics
-            qds_bid = adv.get("qds_bid", 0.0)
-            qds_ask = adv.get("qds_ask", 0.0)
-            sds_bid = adv.get("sds_bid", 0.0)
-            sds_ask = adv.get("sds_ask", 0.0)
-            cv_bid = adv.get("cv_bid", 0.0)
-            cv_ask = adv.get("cv_ask", 0.0)
-            
             adv_sel_prob = self._estimate_adverse_selection_enhanced(
                 sym=sym,
                 side=signal_side,
