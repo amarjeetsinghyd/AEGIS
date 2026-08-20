@@ -401,6 +401,7 @@ class TickCompiler:
             elapsed = 900.0  # 15 min
         ticks_per_min = st['ticks'] / (elapsed / 60.0)
         vol_per_min = st['volume'] / (elapsed / 60.0)
+        trade_value_per_min = st['trade_value'] / (elapsed / 60.0)
         avg_spread_bps = (st['spread_sum'] / max(st['spread_cnt'], 1)) / max(st.get('mid', 1), 1) * 10000 if st['spread_cnt'] > 0 else 0
         mid_prices = st['mid_prices']
         microprice_vol = 0.0
