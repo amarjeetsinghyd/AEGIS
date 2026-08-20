@@ -52,28 +52,40 @@ PARAM_FILE = os.path.join(PARAM_DIR, "aegis_calibrated_params.json")
 def _bsm_d1(S, K, T, r, sigma):
     return (np.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * np.sqrt(T))
 
+def _bsm_price(S, K, T, r, sigma, is_call=True):
+    d1 = _bsm_d1(S, K, T, r, sigma)
+    d2 = d1 - sigma * math.sqrt(max(T, 1e-6))
+    cdf_d1 = 0.5 * (1.0 + math.erf(d1 / math.sqrt(2.0)))
+    cdf_d2 = 0.5 * (1.0 + math.erf(d2 / math.sqrt(2.0)))
+    if is_call:
+        return max(0.0, S * cdf_d1 - K * math.exp(-r * T) * cdf_d2)
+    else:
+        return max(0.0, K * math.exp(-r * T) * (1.0 - cdf_d2) - S * (1.0 - cdf_d1))
+
 def _bsm_greeks(S, K, T, r, sigma, is_call=True):
     """Returns (price, delta, gamma, speed, vega, theta, vanna, vomma) per strike."""
+    T = max(T, 1e-6)
+    sigma = max(sigma, 1e-4)
     d1 = _bsm_d1(S, K, T, r, sigma)
-    d2 = d1 - sigma * np.sqrt(T)
-    pdf = np.exp(-0.5 * d1 * d1) / np.sqrt(2 * np.pi)
-    cdf_d1 = 0.5 * (1 + np.erf(d1 / np.sqrt(2)))
-    cdf_d2 = 0.5 * (1 + np.erf(d2 / np.sqrt(2)))
+    d2 = d1 - sigma * math.sqrt(T)
+    pdf = math.exp(-0.5 * d1 * d1) / math.sqrt(2.0 * math.pi)
+    cdf_d1 = 0.5 * (1.0 + math.erf(d1 / math.sqrt(2.0)))
+    cdf_d2 = 0.5 * (1.0 + math.erf(d2 / math.sqrt(2.0)))
 
     if is_call:
-        price = S * cdf_d1 - K * np.exp(-r * T) * cdf_d2
+        price = S * cdf_d1 - K * math.exp(-r * T) * cdf_d2
         delta = cdf_d1
-        theta = (-S * sigma * pdf / (2 * np.sqrt(T))
-                 - r * K * np.exp(-r * T) * cdf_d2) / 365.0
+        theta = (-S * sigma * pdf / (2.0 * math.sqrt(T))
+                 - r * K * math.exp(-r * T) * cdf_d2) / 365.0
     else:
-        price = K * np.exp(-r * T) * (1 - cdf_d2) - S * (1 - cdf_d1)
+        price = K * math.exp(-r * T) * (1.0 - cdf_d2) - S * (1.0 - cdf_d1)
         delta = cdf_d1 - 1.0
-        theta = (-S * sigma * pdf / (2 * np.sqrt(T))
-                 + r * K * np.exp(-r * T) * (1 - cdf_d2)) / 365.0
+        theta = (-S * sigma * pdf / (2.0 * math.sqrt(T))
+                 + r * K * math.exp(-r * T) * (1.0 - cdf_d2)) / 365.0
 
-    gamma = pdf / (S * sigma * np.sqrt(T))
-    speed = -gamma / S * (d1 / (sigma * np.sqrt(T)) + 1.0)
-    vega  = S * np.sqrt(T) * pdf / 100.0          # per 1% vol
+    gamma = pdf / (S * sigma * math.sqrt(T))
+    speed = -gamma / S * (d1 / (sigma * math.sqrt(T)) + 1.0)
+    vega  = S * math.sqrt(T) * pdf / 100.0          # per 1% vol
     vanna = -gamma * d2 / sigma / 100.0           # dGamma/dσ per 1%
     vomma = vega * d1 * d2 / sigma / 100.0        # dVega/dσ per 1%
 
@@ -555,7 +567,9 @@ class AegisGammaEngine:
                 self._rebuild_route_matrix()
 
             # 3. CSLDT: cross-strike liquidity displacement
-            grad_L = self.route_matrix.T @ (self.gamma_tensor.ravel() * self.bucket_ofi.ravel())
+            gamma_per_strike = self.gamma_tensor.sum(axis=0)
+            ofi_per_strike = self.bucket_ofi.sum(axis=0)
+            grad_L = self.route_matrix.T @ (gamma_per_strike * ofi_per_strike)
             csldt_mag = float(np.abs(grad_L).sum())
 
             # 4. NGAO: non-linear gamma acceleration
