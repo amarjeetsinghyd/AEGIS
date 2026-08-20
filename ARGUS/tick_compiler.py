@@ -73,23 +73,18 @@ class TickCompiler:
 
     def set_symbol_map(self, token_to_symbol: dict):
         self._t2s = {str(k): str(v) for k, v in token_to_symbol.items()}
-
-    @property
-    def token_to_symbol(self):
-        return self._t2s
         # Initialize tick pool for zero-copy path
         for sym in self._t2s.values():
             if sym not in self._tick_pool:
                 self._tick_pool[sym] = ParsedTick()
 
+    @property
+    def token_to_symbol(self):
+        return self._t2s
+
     def set_engine(self, engine):
         """Set the engine for zero-copy tick dispatch."""
         self.engine = engine
-
-    @property
-    def token_to_symbol(self):
-        """Expose the token-to-symbol mapping for external access."""
-        return self._t2s
 
     def _as_float(self, message: dict, *keys, default=0.0):
         for k in keys:
