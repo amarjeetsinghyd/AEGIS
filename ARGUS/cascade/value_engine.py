@@ -685,8 +685,10 @@ class CascadeValueEngine:
                                               spread_bps: float, toxicity: float,
                                               bid_queue_decay: float, ask_queue_decay: float,
                                               whale_z: float, branching: float,
-                                              qds_bid: float, qds_ask: float,
-                                              sds_bid: float, sds_ask: float) -> float:
+                                              qds_bid: float = 0.0, qds_ask: float = 0.0,
+                                              sds_bid: float = 0.0, sds_ask: float = 0.0,
+                                              cv_bid: float = 0.0, cv_ask: float = 0.0,
+                                              **kwargs) -> float:
         """
         Enhanced P_adv with queue depletion velocity and spoofing detection.
         
