@@ -509,7 +509,14 @@ class AegisGammaEngine:
             self._route_dirty = True
             logger.info(f"[AEGIS] Dynamic ATM roll performed: shift={shift:+d} strikes | New ATM={self.current_atm_strike}")
         except Exception as e:
-            logger.error(f"[AEGIS] Error during dynamic ATM roll: {e}", exc_info=True)
+            logger.error(f"Error rolling ATM state by {shift}: {e}", exc_info=True)
+
+    def shift_atm(self, shift: int, new_atm: float = 0.0):
+        """Public method for periodic or boundary ATM strike shifts."""
+        if new_atm > 0:
+            self.current_atm_strike = new_atm
+        if shift != 0:
+            self._roll_atm_state(shift)
 
     def _update_hawkes_bin(self, now: float, strike_idx: int):
         """Exponential kernel sufficient statistic update."""
