@@ -1755,24 +1755,27 @@ class CascadeValueEngine:
             regime=regime
         )
         
-        # Apply M_align modulation to S_flow
-        s_flow_long *= m_align_long
-        s_flow_short *= m_align_short
+        # Apply M_align modulation to S_flow (centered at 1.0 for neutral M_align=0.50)
+        # Neutral: M_align=0.50 -> multiplier=1.0
+        # Aligned: M_align=0.80 -> multiplier=1.3
+        # Counter-trend: M_align=0.15 -> multiplier=0.65 (discounted)
+        s_flow_long *= (0.5 + m_align_long)
+        s_flow_short *= (0.5 + m_align_short)
         
         # --- Q2: DYNAMIC S_FLOW THRESHOLD CALIBRATION ---
         # Replace static 0.45 with regime-aware dynamic threshold
         dynamic_threshold = self._compute_dynamic_sflow_threshold(sym, regime, nows)
         
-        # --- SINGLE DECISION RULE (S_flow >= dynamic_threshold, Mom confirmation) ---
+        # --- SINGLE DECISION RULE (S_flow >= dynamic_threshold, Soft M_align gate) ---
         signal_side = None
         conviction = 0.0
         
         # Dynamic threshold calibrated for 0.40%-0.60% spike capture
-        # Momentum confirmation: mom_1m must align with direction
-        if s_flow_long >= dynamic_threshold and mom_1m >= 0.0:
+        # M_align soft gate >= 0.35 ensures we don't catch severe counter-trend falling knives
+        if s_flow_long >= dynamic_threshold and m_align_long >= 0.35 and mom_1m >= 0.0:
             signal_side = "BUY"
             conviction = s_flow_long * 10.0  # Scale to 0-10 for compatibility
-        elif s_flow_short >= dynamic_threshold and mom_1m <= 0.0:
+        elif s_flow_short >= dynamic_threshold and m_align_short >= 0.35 and mom_1m <= 0.0:
             signal_side = "SELL"
             conviction = s_flow_short * 10.0
         
