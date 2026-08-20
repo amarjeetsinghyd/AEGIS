@@ -476,6 +476,7 @@ class TradingSystem:
     def run(self):
         """Main Event Loop: Heartbeat, Price Updates, Signal Processing."""
         last_heartbeat_min = -1
+        last_state_push = 0.0
         logger.info("ENTERING MAIN LOOP. System Live.")
         
         while not self.shutdown_event.is_set():
