@@ -209,27 +209,37 @@ def run_eod_calibration():
             
             # Bound within robust operational envelopes
             opt_branching = float(np.clip(opt_branching, 0.10, 0.45))
-            opt_whale_z   = float(np.clip(opt_whale_z, 1.20, 3.00))
+            opt_whale_z   = float(np.clip(opt_whale_z, 0.35, 2.50))
             mom_5m_min    = float(np.clip(mom_5m_min, 0.08, 0.35))
             
-            # Regime classification based on empirical spread & breakout density
+            # Empirical 95th percentile scales for S_flow normalization
+            vac_cap_val = float(np.clip(median_spread_bps * 8.0, 20.0, 100.0))
+            mpar_cap_val = float(np.clip(median_spread_bps * 0.0005, 0.0005, 0.0050))
+            dkla_cap_val = float(np.clip(median_spread_bps * 1.5, 5.0, 30.0))
+            tox_cutoff = float(np.clip(median_price * 1000.0, 50000.0, 5000000.0))
+            
+            # Profile
             breakout_density = n_breakouts / len(g) * 1000.0  # per 1k ticks
             if median_spread_bps > 5.0 and breakout_density < 1.0:
                 profile = "CHOPPY_NOISE_REJECT"
-                conv_burst, conv_grind, min_ticks = 6.2, 5.8, 4
+                min_ticks = 4
             elif breakout_density >= 4.0:
                 profile = "TRENDING_UP_SURGE" if np.sum(is_long_move) > np.sum(is_short_move) else "TRENDING_DOWN_LIQUIDATION"
-                conv_burst, conv_grind, min_ticks = 4.8, 4.5, 2
+                min_ticks = 2
             else:
                 profile = "BALANCED_TREND_GRINDER"
-                conv_burst, conv_grind, min_ticks = 5.2, 4.8, 3
+                min_ticks = 3
         else:
             # Conservative defaults for thin liquidity
             profile = "BALANCED_TREND_GRINDER"
             opt_branching = 0.15
-            opt_whale_z   = 1.60
+            opt_whale_z   = 0.60
             mom_5m_min    = 0.12
-            conv_burst, conv_grind, min_ticks = 5.2, 4.8, 3
+            vac_cap_val   = 40.0
+            mpar_cap_val  = 0.0015
+            dkla_cap_val  = 10.0
+            tox_cutoff    = 500000.0
+            min_ticks     = 3
 
         calib_results[sym] = {
             "profile": profile,
@@ -240,11 +250,13 @@ def run_eod_calibration():
             "short_moves_observed": int(np.sum(is_short_move)),
             "opt_branching": round(opt_branching, 3),
             "opt_whale_z": round(opt_whale_z, 2),
+            "whale_z_threshold": round(opt_whale_z, 2),
+            "vac_cap": round(vac_cap_val, 2),
+            "mpar_cap": round(mpar_cap_val, 6),
+            "dkla_cap": round(dkla_cap_val, 2),
+            "tox_p60_cutoff": round(tox_cutoff, 2),
+            "s_flow_threshold": 0.45,
             "mom_5m_min_pct": round(mom_5m_min, 3),
-            "conv_thresh_burst": conv_burst,
-            "conv_thresh_grind": conv_grind,
-            "conv_thresh_whale": 6.0,
-            "conv_thresh_noise": 6.5,
             "min_ticks": min_ticks,
             "prior_alpha_beta": round(float(opt_branching * 20.0), 2),
             "prior_beta_beta": 20.0,
@@ -253,7 +265,7 @@ def run_eod_calibration():
             "est_tp_pct": 0.005,
             "est_sl_pct": 0.0025
         }
-        logger.info(f"[CALIB] {sym:12s} | Moves: {n_breakouts:4d} | B_median: {opt_branching:.3f} | Whale_Z: {opt_whale_z:.2f} | Mom5m: {mom_5m_min:.3f}% | Profile: {profile}")
+        logger.info(f"[CALIB] {sym:12s} | Moves: {n_breakouts:4d} | Whale_Z: {opt_whale_z:.2f} | VacCap: {vac_cap_val:.1f} | MparCap: {mpar_cap_val:.4f} | Profile: {profile}")
 
     os.makedirs(os.path.dirname(CALIB_OUTPUT), exist_ok=True)
     with open(CALIB_OUTPUT, "w") as f:
