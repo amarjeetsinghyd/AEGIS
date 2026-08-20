@@ -86,18 +86,36 @@ def get_master_token_map(universe: Dict, archiver_tokens: Set[str]) -> Dict[str,
     # 2. Archiver Extra Tokens (Passive Logging Only)
     # Note: Archiver internally filters its 110 list, but we must subscribe to them here.
     # We need reverse lookup for tokens not in universe. 
-    # Since Archiver has its own hardcoded symbol list, we rely on the global token cache.
-    try:
-        if os.path.exists(TOKEN_CACHE_PATH):
-            with open(TOKEN_CACHE_PATH, "r") as f:
-                cache = json.load(f)
-            for sym in archiver_tokens:
-                if sym in cache and "token" in cache[sym]:
-                    tok = str(cache[sym]["token"])
-                    if tok not in token_map:
-                        token_map[tok] = sym # Archiver symbols map to themselves
-    except Exception as e:
-        logger.warning(f"Token cache merge failed: {e}")
+    # Search all candidate token caches
+    tc_candidates = [
+        TOKEN_CACHE_PATH,
+        os.path.join(BASE_DIR, "ARGUS", "calibration_notes", "l2_data", "tokens_cache.json"),
+        os.path.join(BASE_DIR, "ARGUS", "data", "tokens_cache.json"),
+        os.path.join(BASE_DIR, "data", "tokens_cache.json"),
+        "/home/opc/ARGUS/calibration_notes/l2_data/tokens_cache.json",
+        "/home/opc/ARGUS/data/tokens_cache.json",
+        "/home/opc/data/tokens_cache.json"
+    ]
+    cache = {}
+    for p in tc_candidates:
+        if os.path.exists(p):
+            try:
+                with open(p, "r") as f:
+                    c_data = json.load(f)
+                if len(c_data) > len(cache):
+                    cache = c_data
+            except Exception:
+                pass
+
+    if cache:
+        for sym in archiver_tokens:
+            if sym in cache and "token" in cache[sym]:
+                tok = str(cache[sym]["token"])
+                if tok not in token_map:
+                    token_map[tok] = sym
+        logger.info(f"Loaded master token map: {len(token_map)} tokens (Universe + Archiver 110)")
+    else:
+        logger.warning("No valid tokens_cache.json found with tokens!")
         
     return token_map
 

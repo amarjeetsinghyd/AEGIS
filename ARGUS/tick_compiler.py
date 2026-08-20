@@ -331,15 +331,16 @@ class TickCompiler:
             while True:
                 time.sleep(backoff)
                 try:
-                    from common.market.market_calendar import is_trading_day
+                    from common.market.market_calendar import is_trading_day, is_bot_active_hours
                     from datetime import datetime as _dt
-                    if not is_trading_day(_dt.now().date()):
-                        logger.info("WS closed on a non-trading day (weekend/holiday) — no reconnect attempt.")
+                    now_dt = _dt.now()
+                    if not is_trading_day(now_dt.date()) or not is_bot_active_hours(now_dt):
+                        logger.info("WS closed outside active market hours (08:55-15:17) — skipping reconnect.")
                         return
                 except Exception:
                     # If the calendar import fails we err on the side of NOT
                     # hammering the broker on a weekend; bail out.
-                    logger.warning("is_trading_day unavailable — skipping WS reconnect re-issue.")
+                    logger.warning("is_trading_day / is_bot_active_hours unavailable — skipping WS reconnect re-issue.")
                     return
                 mdp = self._resolve_mdp()
                 if mdp is None:
