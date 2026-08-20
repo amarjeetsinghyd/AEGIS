@@ -1,7 +1,7 @@
-# 🏗️ ARGUS SYSTEM ARCHITECTURE & QUANTITATIVE BLUEPRINT (v3.9)  
+# 🏗️ ARGUS SYSTEM ARCHITECTURE & QUANTITATIVE BLUEPRINT (v4.0)  
 **ARGUS — Algorithmic Real-Time Granular Ultra-Microstructure Scalper**  
 *Target Audience: AI Agentic Coder (Antigravity, Cursor, Devin) & Quantitative System Engineers*  
-*Version: 3.9 "Unified Composite Microstructure Impulse Engine (S_flow) + Adverse Selection Probability Shield + Dynamic Kyle's Lambda Maker Pricing + 4-Pillar Physical Decay Exits"*  
+*Version: 4.0 "Continuous Multi-Horizon Momentum Alignment (M_align) + Dynamic S_flow Regime Thresholds (θ_dynamic) + L2 Queue Depletion & Spoofing Shield (P_adv) + Adaptive SVI Peak-Lock Decay Exits"*  
 *Classification: **Internal — System Architecture Authority***  
 *Last Comprehensive Audit & Revision: 2026-08-20*  
 
@@ -132,28 +132,29 @@ The v6.0 Calibrator applies **C-accelerated reverse engineering**:
 ## 6. LIVE EXECUTION, GATING & 4-PILLAR EXITS
 
 ### 6.1 Entry Sequence (`CascadeValueEngine` → `StockExecutionManager`)
-1. **Phase 1: Hard Statistical Gates (Boolean AND)**:
-   - $	ext{Tick Count} \ge 	ext{min\_ticks}$ (2 to 4 based on calibration).
-   - $	ext{Hawkes Branching} \ge 	ext{opt\_branching}$ (calibrated P50).
-   - $	ext{Whale Z-Score} \ge 	ext{opt\_whale\_z}$ (calibrated P50).
-   - $	ext{Toxicity} \ge 	ext{P75}$ of rolling toxicity history.
-2. **Phase 2: Conviction Scoring (Max 10.5)**:
-   - $	ext{Score} = w_{	ext{mpar}} 	ext{MPAR} + w_{	ext{mlofi}} 	ext{MLOFI} + w_{	ext{vac}} 	ext{VAC} + w_{	ext{lra}} 	ext{LRA} + w_{	ext{dkla}} 	ext{DKLA} + w_{	ext{dev}} 	ext{MicroDev}$.
-   - Must exceed calibrated threshold (e.g. 5.2 for Balanced, 4.8 for Surge).
-3. **Phase 3: Adverse Selection Shield**:
-   - Computes $P(	ext{toxic\_fill})$. If $P > 0.60$, signal is vetoed immediately.
-4. **Phase 4: Kyle's $\lambda$ Limit Order Generation**:
-   $$	ext{Limit Price} = 	ext{Mid} \pm rac{1}{2} \cdot \lambda_{	ext{side}} \cdot 	ext{Notional} \cdot 	ext{ConvictionScaling}$$
-   High conviction ($>0.7$) = Maker price inside book. Low conviction ($<0.5$) = Marketable limit.
+1. **Unified Impulse Engine ($S_{\text{flow}}$)**:
+   - Evaluates continuous composite score $S_{\text{flow}} \in [0, 1]$ over MPAR, Net Vacuum, DKLA, LRA, WhaleZ, and 4-way non-linear interactions.
+2. **Q1: Continuous Multi-Horizon Momentum Alignment ($M_{\text{align}}$)**:
+   - Evaluates $M_{\text{align}} = \sigma\left(\sum w_h \cdot \tanh(k_h \cdot \text{Mom}_h \cdot \text{sign})\right)$ across 10s, 1m, 5m, 15m.
+   - Modulates $S_{\text{flow}} \gets S_{\text{flow}} \cdot M_{\text{align}}$, preventing counter-trend falling knives while preserving explosive V-shape reversals.
+3. **Q2: Dynamic Regime-Aware Threshold ($\theta_{\text{dynamic}}$)**:
+   - $\theta_{\text{dynamic}} = \theta_{\text{base}} \cdot V_{\text{regime}} \cdot L_{\text{tod}} \cdot C_{\text{symbol}} \in [0.35, 0.60]$.
+   - Trigger condition: $S_{\text{flow, side}} \ge \theta_{\text{dynamic}}$ AND $\text{Mom}_{1m}$ aligned.
+4. **Q3: Directional Adverse Selection Shield with Queue Depletion & Spoofing Detection ($P_{\text{adv}}$)**:
+   - Evaluates $P_{\text{adv}} = 0.30 \cdot \text{FlowOpp} + 0.20 \cdot \text{WhaleOpp} + 0.15 \cdot \text{SpreadRisk} + 0.10 \cdot \text{QueueRisk} + 0.10 \cdot \text{BranchRisk} + 0.15 \cdot \text{SpoofRisk}$.
+   - If $P_{\text{adv}} > 0.60$, trade is vetoed to protect against institutional traps and spoofed liquidity walls.
+5. **Dynamic Limit Pricing & Kelly Sizing**:
+   - Limit price generated via Kyle's lambda; capital sized dynamically via fractional Kelly $f^* \in [0.05, 0.25]$.
 
-### 6.2 4-Pillar Dynamic Exit Architecture
-The exit brain continuously monitors 4 physical decay pillars:
-1. **Pillar 1 (MPAR Momentum Exhaustion)**: Microprice acceleration reverses against trade direction.
-2. **Pillar 2 (DKLA Liquidity Wall Formation)**: Opposite side lambda spikes $>2.5	imes$, indicating massive resistance wall.
-3. **Pillar 3 (Vacuum Collapse)**: Order cancellations flip to the opposing side.
-4. **Pillar 4 (LRA MM Retreat)**: Market maker replenishment velocity drops $>70\%$.
-- **Confirmation Layer**: Triggered when 2 or more pillars decay simultaneously OR upon Hawkes branching collapse ($B < 0.10$).
-- **Hard Guardrails**: Hard SL ($0.25\%$), Trailing Breakeven Lock ($+0.35\%$ triggers SL to $+0.05\%$), Max Hold Time (12 min), Hard EOD Flatten (15:15 IST).
+### 6.2 4-Pillar Dynamic Exit Architecture (with SVI & Peak-Lock)
+The exit brain continuously monitors 4 physical decay pillars with adaptive thresholds:
+1. **Pillar 1 (`MPAR_DECEL`)**: Microprice acceleration drops below adaptive collapse percentage of locked peak magnitude.
+2. **Pillar 2 (`DKLA_FLIP`)**: Opposite side lambda asymmetry flips with adaptive confirmation.
+3. **Pillar 3 (`VAC_REVERSAL`)**: Depth cancellation pressure reverses from locked peak vacuum.
+4. **Pillar 4 (`LRA_VEL_FLIP`)**: Market maker replenishment velocity reverses against trade direction.
+- **Q4: Spike Velocity Index (SVI) & Peak-Lock**:
+  - For high-velocity moves (e.g. +0.50% in 45s), minimum hold drops down to 5s and peak-lock guarantees zero profit giveback on fast wicks.
+- **Hard Guardrails**: Hard SL ($1.0 \times \text{ATR}$), Trailing Chandelier Stop ($1.2 \times \text{ATR}$), Breakeven Lock (at $+0.6 \times \text{ATR}$), Max Hold Time (15 min), Hard EOD Flatten (15:15 IST).
 
 ---
 

@@ -33,7 +33,7 @@
     "current_market_regime": "CONTINUOUS_LIVE_110_SYMBOLS",
     "active_kill_switch": false,
     "premarket_bridge_armed": true,
-    "architecture_version": "v3.9",
+    "architecture_version": "v4.0",
     "time_stops": {
       "pre_market_wakeup": "08:55:00",
       "indicative_auction_match": "09:08:00",
@@ -77,6 +77,21 @@
         "ARGUS/stock_calibration.json"
       ],
       "completed_at": "2026-08-20T12:42:35.000000"
+    },
+    {
+      "task_id": "TASK-2026-08-20-004",
+      "title": "ARGUS v4.0 Nemotron Optimizations: Continuous M_align, Dynamic S_flow Threshold, Queue Depletion P_adv, SVI Peak-Lock Exits",
+      "status": "COMPLETED",
+      "priority": "HIGH",
+      "target_modules": [
+        "ARGUS/cascade/value_engine.py",
+        "ARGUS/execution_manager.py",
+        "ARGUS/main.py",
+        "ARGUS/ARGUS_SYSTEM_ARCHITECTURE.md",
+        "SYSTEM_ARCHITECTURE.md",
+        "SYSTEM_CONTEXT.md"
+      ],
+      "completed_at": "2026-08-20T13:45:00.000000"
     }
   ]
 }

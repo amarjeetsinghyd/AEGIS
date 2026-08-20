@@ -21,15 +21,15 @@ flowchart TD
     end
 
     subgraph Gates ["Multi-Phase Gatekeeping & Sizing"]
-        ME --> G1["Phase 1: Hard Statistical Gates<br/>(Tick Count, Hawkes B ≥ P50, Whale Z ≥ P50)"]
-        G1 --> G2["Phase 2: Conviction Scoring<br/>(Weighted MPAR, MLOFI, Vac, LRA, DKLA ≥ Threshold)"]
-        G2 --> G3["Phase 3: Adverse Selection Shield<br/>(Logistic Regression P(toxic) ≤ 0.60)"]
+        ME --> G1["Phase 1: Unified Impulse Scoring<br/>(Continuous S_flow + Q1: M_align Multi-Horizon)"]
+        G1 --> G2["Phase 2: Dynamic Regime Threshold<br/>(Q2: θ_dynamic ∈ [0.35, 0.60] based on Volatility & TOD)"]
+        G2 --> G3["Phase 3: Enhanced Adverse Selection Shield<br/>(Q3: Directional P_adv ≤ 0.60 + Queue Depletion & Spoofing Guard)"]
         G3 --> G4["Phase 4: Dynamic Sizing & Pricing<br/>(Kyle's λ Limit Price + Kelly Sizing f*)"]
     end
 
     subgraph Execution ["Execution & Risk Management"]
         G4 --> EX["StockExecutionManager / AegisExecutionManager<br/>(Shoonya REST API / Paper Mode)"]
-        EX --> RM["4-Pillar Decay Exits & Circuit Breakers<br/>(Momentum Exhaustion, Wall Detection, Trailing Lock)"]
+        EX --> RM["4-Pillar Decay Exits with Peak-Lock & SVI<br/>(Q4: MPAR, DKLA, Vac, LRA + Chandelier ATR Trail)"]
     end
 
     subgraph Bridge ["09:08 Pre-Market Alpha Bridge"]
@@ -72,17 +72,21 @@ flowchart TD
   $$B = 1 - \sqrt{\frac{\mu_{\text{bin}}}{\sigma^2_{\text{bin}}}}$$
 - **Whale Volume Z-Score**: Standardized block volume anomaly detection:
   $$Z = \frac{\Delta \text{Vol} - \mu_{100}}{\sigma_{100}}$$
-- **Adverse Selection Probability Shield**: Logistic regression probability $P(\text{toxic}) > 0.60$ immediately vetoes trade entries to prevent toxic fill exploitation.
+- **Directional Adverse Selection Shield with Queue Depletion ($P_{\text{adv}}$)**:
+  $$P_{\text{adv}} = 0.30 \cdot \text{FlowOpp} + 0.20 \cdot \text{WhaleOpp} + 0.15 \cdot \text{SpreadRisk} + 0.10 \cdot \text{QueueRisk} + 0.10 \cdot \text{BranchRisk} + 0.15 \cdot \text{SpoofRisk}$$
+  If $P_{\text{adv}} > 0.60$, signal is immediately vetoed to protect against institutional traps and spoofed liquidity walls.
+- **Continuous Multi-Horizon Momentum ($M_{\text{align}}$)**:
+  $$M_{\text{align}} = \sigma\left(\sum_{h \in \{10s, 1m, 5m, 15m\}} w_h \cdot \tanh(k_h \cdot \text{Mom}_h \cdot \text{sign})\right)$$
 - **Kyle's $\lambda$ Dynamic Limit Price Engine**:
   $$\text{Limit Price} = \text{Mid} \pm \frac{1}{2} \cdot \lambda_{\text{side}} \cdot \text{Notional} \cdot \text{ConvictionScaling}$$
 
-### 3.3 4-Pillar Dynamic Decay Exit System
-Exits are governed by real-time structural decay across 4 pillars:
-1. **Pillar 1 (MPAR Momentum Exhaustion)**: Acceleration reverses against position side.
-2. **Pillar 2 (DKLA Liquidity Wall Formation)**: Opposing side impact resistance spikes $>2.5\times$.
-3. **Pillar 3 (Vacuum Collapse)**: Depth cancellation pressure flips against position.
-4. **Pillar 4 (LRA Market Maker Retreat)**: Replenishment rate drops $>70\%$.
-- **Hard Guardrails**: Fixed SL at $0.25\%$, Trailing Breakeven Lock at $+0.35\%$, Max Hold Time of 12 minutes, and Hard EOD Flatten at 15:15 IST.
+### 3.3 4-Pillar Dynamic Decay Exit System (with SVI & Peak-Lock)
+Exits are governed by real-time structural decay across 4 pillars with adaptive thresholds:
+1. **Pillar 1 (`MPAR_DECEL`)**: Acceleration drops below adaptive collapse percentage of locked peak magnitude.
+2. **Pillar 2 (`DKLA_FLIP`)**: Opposing side impact resistance spikes $>2.5\times$ with adaptive confirmation.
+3. **Pillar 3 (`VAC_REVERSAL`)**: Depth cancellation pressure flips against position from locked peak vacuum.
+4. **Pillar 4 (`LRA_VEL_FLIP`)**: Replenishment rate drops $>70\%$.
+- **Hard Guardrails**: Initial SL at $1.0 \times \text{ATR}$, Trailing Chandelier Stop at $1.2 \times \text{ATR}$, Breakeven Lock at $+0.6 \times \text{ATR}$, Max Hold Time of 15 minutes, and Hard EOD Flatten at 15:15 IST.
 
 ---
 

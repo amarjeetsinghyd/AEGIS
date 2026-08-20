@@ -39,16 +39,16 @@ Each engine owns its detailed spec; this root file only maps them and the
 shared plumbing. **When an engine's behaviour is in question, read that
 engine's harness document — it overrides everything here for that engine.**
 
-### 2.1 Engine 1 — ARGUS (Algorithmic Real-Time Granular Ultra-Microstructure Scalper)
+### 2.1 Engine 1 — ARGUS (Algorithmic Real-Time Granular Ultra-Microstructure Scalper v4.0)
 Zero-copy `ParsedTick` (`__slots__`), per-symbol object pool, unified
-conviction trigger with **adaptive regime gating** (NOISE/BURST/GRIND/WHALE),
-**Adverse Selection Shield** (3-layer toxicity gate), **Kyle's Lambda Limit Price Engine**,
-**Kelly Criterion Dynamic Sizing**, **pre-market state machine** (5 phases),
-**delta-baseline math** (first 3 buckets),
-4-pillar microstructure-decay exits
+composite impulse engine ($S_{\text{flow}}$) with **continuous multi-horizon momentum alignment ($M_{\text{align}}$ across 10s, 1m, 5m, 15m)**,
+**dynamic regime & TOD threshold calibration ($\theta_{\text{dynamic}} \in [0.35, 0.60]$)**,
+**Enhanced Directional Adverse Selection Shield with L2 Queue Depletion & Spoofing Detection ($P_{\text{adv}}$)**,
+**Kyle's Lambda Limit Price Engine**, **Kelly Criterion Dynamic Sizing**, **pre-market alpha bridge (09:08)**,
+and **4-pillar microstructure-decay exits with Adaptive SVI & Peak-Lock**
 (`MPAR_DECEL`/`DKLA_FLIP`/`VAC_REVERSAL`/`LRA_VEL_FLIP` + confirmation
 `TOX_SPIKE`/`WHALE_EXIT`/`BRANCHING_COLLAPSE`, plus `TIME_STOP`/
-`EOD_FLATTEN`/`BREAKEVEN_LOCK`). Full spec → harness doc (§1.1).
+`EOD_FLATTEN`/`BREAKEVEN_LOCK`/`CHANDELIER_ATR`). Full spec → [`ARGUS/ARGUS_SYSTEM_ARCHITECTURE.md`](ARGUS/ARGUS_SYSTEM_ARCHITECTURE.md).
 
 ### 2.2 Engine 2 — AEGIS (Autonomous Execution & Gamma Imbalance System)
 5-factor Gamma-Burst Z-score composite offset-indexed ±10 strikes around ATM,
