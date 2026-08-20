@@ -44,6 +44,7 @@ class StrikeSelector:
     ) -> List[Tuple[pd.Series, int, float]]:
         """
         Selects the most affordable OTM contract within the OTM 1 to 3 sweet spot for 1 lot.
+        Prioritizes the highest affordable premium (closest to ATM) for maximum delta.
         """
         if weekly_opts.empty:
             logger.debug("[StrikeSelector] Option chain is empty. Aborting selection.")
@@ -53,7 +54,6 @@ class StrikeSelector:
         opts = weekly_opts[weekly_opts['symbol'].str.contains(pattern, regex=True)]
         
         atm_strike = StrikeSelector.calculate_atm_strike(index_price, index_name)
-        # Focus on OTM 1 to 3 (high gamma concentration zone)
         otm_strikes = StrikeSelector.get_otm_strikes(atm_strike, signal_type, index_name, max_depth=4)
         
         market_data_provider = kwargs.get("market_data_provider")
@@ -87,23 +87,15 @@ class StrikeSelector:
             
             if ltp is not None and ltp > 0:
                 cost_for_one_lot = ltp * lot_size
-                valid_opts.append((opt_row, ltp, cost_for_one_lot))
+                if cost_for_one_lot <= available_funds:
+                    valid_opts.append((opt_row, ltp, cost_for_one_lot))
 
         if not valid_opts:
-            logger.warning("[StrikeSelector] No valid option quotes found.")
+            logger.warning(f"[StrikeSelector] Funds (₹{available_funds}) too low for 1 lot of size {lot_size} among available strikes.")
             return []
 
-        # Human approach: Find the option whose 1 lot cost is <= available_funds
-        # We check from ATM moving outwards, or we can find the best fit within budget.
-        selected_option = None
-        for opt_row, ltp, cost_for_one_lot in valid_opts:
-            if cost_for_one_lot <= available_funds:
-                selected_option = (opt_row, 1, ltp)
-                logger.info(f"[StrikeSelector] Found affordable OTM: {opt_row['symbol']} at LTP {ltp} (Cost: {cost_for_one_lot:.2f} <= Funds: {available_funds})")
-                break
-
-        if not selected_option:
-            logger.warning(f"[StrikeSelector] Funds (₹{available_funds}) too low for 1 lot of size {lot_size} among available OTMs.")
-            return []
-
-        return [selected_option]
+        # Sort by highest affordable premium (closest to ATM for highest delta)
+        valid_opts.sort(key=lambda x: x[1], reverse=True)
+        chosen_row, chosen_ltp, chosen_cost = valid_opts[0]
+        logger.info(f"[StrikeSelector] Selected optimal affordable strike: {chosen_row['symbol']} @ LTP ₹{chosen_ltp:.2f} (Cost: ₹{chosen_cost:.2f} <= Funds: ₹{available_funds:.2f})")
+        return [(chosen_row, 1, chosen_ltp)]
