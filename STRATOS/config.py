@@ -46,7 +46,7 @@ STRATOS_CONFIG = {
     "anti_hunt_buffer_pct": 0.0015,    # 0.15% breathing room below lowest pullback wick
     "anti_hunt_atr_fraction": 0.25,    # 0.25x ATR floor buffer
     "min_reward_risk_ratio": 2.0,      # Minimum 1:2 RR for TP1
-    "tp2_target_rr": 3.0,              # 1:3 RR for runner
+    "tp2_target_rr": 4.0,              # 1:4 RR for runner (Optimized canonical target)
     
     # Session-Adaptive Trailing Engine
     "entry_start_time": time(9, 20),   # No entry in first 5 mins (opening volatility)
