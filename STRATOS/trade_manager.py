@@ -70,19 +70,23 @@ class ActiveTradeManager:
                     "pnl": (cur_price - entry_p) * qty, "pnl_pct": ((cur_price - entry_p) / entry_p) * 100.0
                 }
 
-            # Trailing Stop
+            # Trailing Stop (15m Candle Low/High + Close Pierce Rule)
             if arrays and len(arrays.get("close", [])) >= 10:
                 closes = arrays["close"]
+                lows = arrays.get("low", closes)
                 trailing_period = self.cfg.get("morning_trailing_ema", 20) if cur_time < self.cfg.get("session_split_time", time(13, 30)) else self.cfg.get("afternoon_trailing_ema", 9)
                 sess_name = "MORNING_20_EMA" if cur_time < self.cfg.get("session_split_time", time(13, 30)) else "AFTERNOON_9_EMA"
 
                 ema_vals = compute_ema(closes, trailing_period)
                 if len(ema_vals) > 0:
                     cur_ema = ema_vals[-1]
-                    if cur_price >= entry_p * 1.0035 and closes[-1] < cur_ema:
+                    last_low = lows[-1] if len(lows) > 0 else cur_price
+                    last_close = closes[-1] if len(closes) > 0 else cur_price
+                    # Long Exit: Once in profit >= +0.35%, exit only when 15m Low < EMA AND 15m Close < EMA
+                    if cur_price >= entry_p * 1.0035 and last_low < cur_ema and last_close < cur_ema:
                         return {
                             "action": "CLOSE", "symbol": symbol, "exit_price": cur_price,
-                            "reason": f"TRAILING_EXIT_{sess_name}",
+                            "reason": f"TRAILING_EXIT_{sess_name}_PIERCE",
                             "pnl": (cur_price - entry_p) * qty, "pnl_pct": ((cur_price - entry_p) / entry_p) * 100.0
                         }
 
@@ -115,19 +119,23 @@ class ActiveTradeManager:
                     "pnl": (entry_p - cur_price) * qty, "pnl_pct": ((entry_p - cur_price) / entry_p) * 100.0
                 }
 
-            # Trailing Stop
+            # Trailing Stop (15m Candle Low/High + Close Pierce Rule)
             if arrays and len(arrays.get("close", [])) >= 10:
                 closes = arrays["close"]
+                highs = arrays.get("high", closes)
                 trailing_period = self.cfg.get("morning_trailing_ema", 20) if cur_time < self.cfg.get("session_split_time", time(13, 30)) else self.cfg.get("afternoon_trailing_ema", 9)
                 sess_name = "MORNING_20_EMA" if cur_time < self.cfg.get("session_split_time", time(13, 30)) else "AFTERNOON_9_EMA"
 
                 ema_vals = compute_ema(closes, trailing_period)
                 if len(ema_vals) > 0:
                     cur_ema = ema_vals[-1]
-                    if cur_price <= entry_p * 0.9965 and closes[-1] > cur_ema:
+                    last_high = highs[-1] if len(highs) > 0 else cur_price
+                    last_close = closes[-1] if len(closes) > 0 else cur_price
+                    # Short Exit: Once in profit >= +0.35%, exit only when 15m High > EMA AND 15m Close > EMA
+                    if cur_price <= entry_p * 0.9965 and last_high > cur_ema and last_close > cur_ema:
                         return {
                             "action": "CLOSE", "symbol": symbol, "exit_price": cur_price,
-                            "reason": f"TRAILING_EXIT_{sess_name}",
+                            "reason": f"TRAILING_EXIT_{sess_name}_PIERCE",
                             "pnl": (entry_p - cur_price) * qty, "pnl_pct": ((entry_p - cur_price) / entry_p) * 100.0
                         }
 
