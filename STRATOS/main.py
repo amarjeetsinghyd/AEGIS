@@ -105,22 +105,26 @@ class StratosLiveService:
         WebSocket tick callback (Zero-Allocation Hot Path).
         """
         try:
-            tok = str(tick.get("tk", tick.get("token", "")))
+            tok = str(tick.get("tk", tick.get("token", ""))).split("|")[-1].strip()
             symbol = self.t2s.get(tok)
             if not symbol:
                 return
 
-            lp = float(tick.get("lp", 0.0))
+            lp = float(tick.get("lp", tick.get("last_traded_price", 0.0)) or 0.0)
             if lp <= 0:
                 return
 
-            vol = float(tick.get("v", tick.get("vol", 0.0)))
-            ts = float(tick.get("ft", tick.get("ts", time.time())))
+            vol = float(tick.get("v", tick.get("vol", tick.get("volume_trade_for_the_day", 0.0))) or 0.0)
+            ts = float(tick.get("ft", tick.get("ts", time.time())) or time.time())
 
             # Order Flow Directionality Approximation
-            bp1 = float(tick.get("bp1", 0.0))
-            sp1 = float(tick.get("sp1", 0.0))
+            bp1 = float(tick.get("bp1", tick.get("bid", 0.0)) or 0.0)
+            sp1 = float(tick.get("sp1", tick.get("ask", 0.0)) or 0.0)
             is_buy = True if lp >= sp1 else False if lp <= bp1 else True
+
+            self.total_ticks += 1
+            self.last_tick_time = ts
+            self.active_symbols_seen.add(symbol)
 
             # Feed tick into Orchestrator
             self.orchestrator.on_tick(
@@ -133,23 +137,65 @@ class StratosLiveService:
         except Exception as e:
             logger.debug(f"Tick error: {e}")
 
+    def _rest_poller_worker(self):
+        """
+        Background REST API poller: ensures uninterrupted price flow
+        even during WebSocket reconnects.
+        """
+        logger.info("[REST_POLLER] Background REST API Poller initialized.")
+        while not self.shutdown_event.is_set():
+            try:
+                now = datetime.now()
+                if dt_time(9, 15) <= now.time() <= dt_time(15, 30):
+                    api = getattr(self.broker, "_api", getattr(self.broker, "api", self.broker))
+                    # Batch fetch quotes for universe tokens
+                    for sym, tok in list(self.s2t.items())[:30]:
+                        if self.shutdown_event.is_set():
+                            break
+                        try:
+                            q = self.broker.get_quote("NSE", tok) if hasattr(self.broker, "get_quote") else None
+                            if q and float(q.get("ltp", 0)) > 0:
+                                self._on_tick({
+                                    "tk": tok, "lp": q["ltp"], "bp1": q.get("bid", 0),
+                                    "sp1": q.get("ask", 0), "v": q.get("volume", 0),
+                                    "ts": time.time()
+                                })
+                        except Exception:
+                            pass
+                        time.sleep(0.05)
+                time.sleep(15.0)
+            except Exception as e:
+                logger.debug(f"[REST_POLLER] Warning: {e}")
+                time.sleep(10.0)
+
     def start(self):
         self.initialize()
         self.running = True
+        self.total_ticks = 0
+        self.last_tick_time = 0.0
+        self.active_symbols_seen = set()
 
-        # Subscribe WebSocket to Universe Tokens
+        # 1. Register Tick Listener on Broker Adapter
+        if hasattr(self.broker, "add_tick_listener"):
+            self.broker.add_tick_listener(self._on_tick)
+
+        # 2. Subscribe WebSocket to Universe Tokens
         tokens_to_sub = [self.s2t[s] for s in self.symbols if s in self.s2t]
         if tokens_to_sub:
-            feed_tokens = [f"NSE|{t}" for t in tokens_to_sub]
-            logger.info(f"[FEED] Subscribing WebSocket to {len(feed_tokens)} tokens...")
-            if hasattr(self.broker, "start_websocket"):
-                self.broker.start_websocket(self._on_tick, feed_tokens)
+            logger.info(f"[FEED] Subscribing WebSocket to {len(tokens_to_sub)} NSE tokens...")
+            if hasattr(self.broker, "subscribe"):
+                self.broker.subscribe(tokens_to_sub, exchange="NSE", feed_type="t")
             elif hasattr(self.broker, "api") and hasattr(self.broker.api, "start_websocket"):
+                feed_tokens = [f"NSE|{t}" for t in tokens_to_sub]
                 self.broker.api.start_websocket(
                     order_update_callback=lambda x: None,
                     subscribe_callback=self._on_tick,
                     socket_open_callback=lambda: self.broker.api.subscribe(feed_tokens)
                 )
+
+        # 3. Start Background REST Poller
+        poller_thread = threading.Thread(target=self._rest_poller_worker, daemon=True, name="StratosRestPoller")
+        poller_thread.start()
 
         logger.info("🟢 STRATOS LIVE SERVICE RUNNING. Listening for market structure breakouts...")
 
@@ -160,15 +206,19 @@ class StratosLiveService:
                 open_cnt = self.orchestrator.trades.get_open_count()
                 today_trades = self.orchestrator.trades.get_today_trades_count()
                 
-                # Hourly Heartbeat
-                logger.info(f"[HEARTBEAT] Time: {now.strftime('%H:%M:%S')} | Open Positions: {open_cnt} | Today Trades: {today_trades}")
+                # Active Heartbeat with Tick Stats
+                logger.info(
+                    f"[HEARTBEAT] Time: {now.strftime('%H:%M:%S')} | "
+                    f"Ticks: {self.total_ticks:,} | Symbols Active: {len(self.active_symbols_seen)}/{len(self.symbols)} | "
+                    f"Open Positions: {open_cnt} | Today Trades: {today_trades}"
+                )
                 
                 # Check EOD Market Close (15:30 IST)
                 if now.time() >= dt_time(15, 30):
                     logger.info("[EOD] Market Closed (15:30 IST). STRATOS standing down.")
                     time.sleep(300)
 
-                self.shutdown_event.wait(60.0)
+                self.shutdown_event.wait(30.0)
             except KeyboardInterrupt:
                 break
             except Exception as e:
