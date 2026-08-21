@@ -50,7 +50,7 @@ STRATOS_CONFIG = {
     
     # Session-Adaptive Trailing Engine
     "entry_start_time": time(9, 20),   # No entry in first 5 mins (opening volatility)
-    "entry_cutoff_time": time(14, 30),  # No new entries after 14:30 IST
+    "entry_cutoff_time": time(15, 0),  # No new entries after 15:00 IST (3:00 PM)
     "session_split_time": time(13, 30), # 13:30 IST split
     "morning_trailing_ema": 20,        # 20-bucket EMA for wide trend ride (09:15-13:30)
     "afternoon_trailing_ema": 9,       # 9-bucket EMA for tight profit lock (13:30-15:15)

@@ -66,7 +66,7 @@ class StratosOrchestrator:
             return
 
         cur_time = datetime.now().time()
-        if cur_time < self.cfg.get("entry_start_time", time(9, 20)) or cur_time > self.cfg.get("entry_cutoff_time", time(14, 30)):
+        if cur_time < self.cfg.get("entry_start_time", time(9, 20)) or cur_time > self.cfg.get("entry_cutoff_time", time(15, 0)):
             return
 
         if self.trades.get_open_count() >= self.cfg["max_open_positions"]:
