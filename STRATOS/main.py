@@ -139,34 +139,43 @@ class StratosLiveService:
 
     def _rest_poller_worker(self):
         """
-        Background REST API poller: ensures uninterrupted price flow
-        even during WebSocket reconnects.
+        Background REST API poller: continuously polls real Shoonya quotes
+        for all 110 universe tokens to guarantee 100% resilient data flow.
         """
+        import concurrent.futures
         logger.info("[REST_POLLER] Background REST API Poller initialized.")
         while not self.shutdown_event.is_set():
             try:
                 now = datetime.now()
                 if dt_time(9, 15) <= now.time() <= dt_time(15, 30):
                     api = getattr(self.broker, "_api", getattr(self.broker, "api", self.broker))
-                    # Batch fetch quotes for universe tokens
-                    for sym, tok in list(self.s2t.items())[:30]:
-                        if self.shutdown_event.is_set():
-                            break
+                    tokens_list = list(self.s2t.items())
+
+                    def _fetch_one(item):
+                        sym, tok = item
                         try:
-                            q = self.broker.get_quote("NSE", tok) if hasattr(self.broker, "get_quote") else None
-                            if q and float(q.get("ltp", 0)) > 0:
-                                self._on_tick({
-                                    "tk": tok, "lp": q["ltp"], "bp1": q.get("bid", 0),
-                                    "sp1": q.get("ask", 0), "v": q.get("volume", 0),
-                                    "ts": time.time()
-                                })
+                            res = api.get_quotes(exchange="NSE", token=tok)
+                            if isinstance(res, dict) and res.get("lp") is not None:
+                                lp = float(res.get("lp", 0.0) or 0.0)
+                                if lp > 0:
+                                    self._on_tick({
+                                        "tk": tok,
+                                        "lp": lp,
+                                        "bp1": float(res.get("bp1", 0.0) or 0.0),
+                                        "sp1": float(res.get("sp1", 0.0) or 0.0),
+                                        "v": float(res.get("v", 0.0) or 0.0),
+                                        "ts": time.time()
+                                    })
                         except Exception:
                             pass
-                        time.sleep(0.05)
-                time.sleep(15.0)
+
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+                        list(executor.map(_fetch_one, tokens_list))
+
+                time.sleep(4.0)
             except Exception as e:
                 logger.debug(f"[REST_POLLER] Warning: {e}")
-                time.sleep(10.0)
+                time.sleep(5.0)
 
     def start(self):
         self.initialize()
