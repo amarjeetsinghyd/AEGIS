@@ -63,12 +63,12 @@ def test_pullback_analyzer_turnover():
     assert res["valid"] is True
     assert res["vol_ratio"] < 0.85
 
-def test_flip_trigger_turnover():
+def test_flip_trigger_rejection_wick():
     trigger = FlipTriggerEngine()
     
-    opens = np.array([100.1])
+    opens = np.array([100.8])
     highs = np.array([101.5])
-    lows = np.array([99.9])
+    lows = np.array([99.8])
     closes = np.array([101.2])
     volumes = np.array([5000.0])
     deltas = np.array([2500.0]) # Positive buyer delta
@@ -76,7 +76,7 @@ def test_flip_trigger_turnover():
     arrays = {"open": opens, "high": highs, "low": lows, "close": closes, "volume": volumes, "delta": deltas}
     res = trigger.evaluate_trigger(arrays, support_level=100.0)
     assert res["triggered"] is True
-    assert res["pattern"] == "BULLISH_BUCKET_CLOSE"
+    assert res["pattern"] == "LOWER_REJECTION_WICK"
 
 def test_anti_hunt_risk():
     risk = AntiHuntRiskEngine()

@@ -49,9 +49,7 @@ class FlipTriggerEngine:
 
                 lower_wick = min(cur_open, cur_close) - cur_low
                 lower_wick_ratio = lower_wick / bar_range
-                is_bullish_close = cur_close >= cur_open
                 is_rejection_wick = lower_wick_ratio >= self.cfg.get("min_rejection_wick_ratio", 0.35)
-                has_action = is_bullish_close or is_rejection_wick
                 is_delta_valid = cur_delta >= 0
 
                 if live_order_flow and live_order_flow.get("delta", 0.0) > 0:
@@ -59,11 +57,12 @@ class FlipTriggerEngine:
 
                 in_zone = (cur_low <= zone_high) and (cur_close >= zone_low * 0.9980)
 
-                if in_zone and has_action and is_delta_valid:
-                    pattern = "BULLISH_BUCKET_CLOSE" if is_bullish_close else "ABSORPTION_REJECTION_WICK"
+                if in_zone and is_rejection_wick and is_delta_valid:
+                    pattern = "LOWER_REJECTION_WICK"
                     return {
                         "triggered": True, "side": "BUY", "pattern": pattern, "delta": cur_delta,
-                        "reason": f"Absorption @ Support Zone [{zone_low:.2f}-{zone_high:.2f}] | {pattern} | Delta: {cur_delta:+.0f}"
+                        "wick_ratio": lower_wick_ratio,
+                        "reason": f"Rejection Wick ({lower_wick_ratio*100:.0f}%) @ Support Zone [{zone_low:.2f}-{zone_high:.2f}] | Delta: {cur_delta:+.0f}"
                     }
 
             else: # SELL (Short)
@@ -72,9 +71,7 @@ class FlipTriggerEngine:
 
                 upper_wick = cur_high - max(cur_open, cur_close)
                 upper_wick_ratio = upper_wick / bar_range
-                is_bearish_close = cur_close <= cur_open
                 is_rejection_wick = upper_wick_ratio >= self.cfg.get("min_rejection_wick_ratio", 0.35)
-                has_action = is_bearish_close or is_rejection_wick
                 is_delta_valid = cur_delta <= 0
 
                 if live_order_flow and live_order_flow.get("delta", 0.0) < 0:
@@ -82,11 +79,12 @@ class FlipTriggerEngine:
 
                 in_zone = (cur_high >= zone_low) and (cur_close <= zone_high * 1.0020)
 
-                if in_zone and has_action and is_delta_valid:
-                    pattern = "BEARISH_BUCKET_CLOSE" if is_bearish_close else "ABSORPTION_UPPER_WICK"
+                if in_zone and is_rejection_wick and is_delta_valid:
+                    pattern = "UPPER_REJECTION_WICK"
                     return {
                         "triggered": True, "side": "SELL", "pattern": pattern, "delta": cur_delta,
-                        "reason": f"Rejection @ Resistance Zone [{zone_low:.2f}-{zone_high:.2f}] | {pattern} | Delta: {cur_delta:+.0f}"
+                        "wick_ratio": upper_wick_ratio,
+                        "reason": f"Rejection Wick ({upper_wick_ratio*100:.0f}%) @ Resistance Zone [{zone_low:.2f}-{zone_high:.2f}] | Delta: {cur_delta:+.0f}"
                     }
 
         return {"triggered": False, "reason": "Criteria unmet"}
