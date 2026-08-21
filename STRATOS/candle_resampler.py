@@ -1,16 +1,23 @@
 """
-candle_resampler.py — High-performance, zero-allocation multi-timeframe candle aggregator.
-Constructs live 1-Hour, 15-Minute, and 5-Minute OHLCV candles from raw WebSocket tick stream.
+candle_resampler.py — High-performance, zero-allocation multi-timeframe candle aggregator & historical preloader.
+Constructs live 1-Hour, 15-Minute, and 5-Minute OHLCV candles from raw WebSocket tick stream and REST API quotes,
+and preloads canonical historical parquet datasets to eliminate historical gaps.
 """
 from __future__ import annotations
+import os
+import sys
 import time
 from collections import deque
 from datetime import datetime, timezone
 import numpy as np
+import pandas as pd
+from common.logger import get_logger
+
+logger = get_logger("stratos_resampler")
 
 class Candle:
     __slots__ = ("open", "high", "low", "close", "volume", "start_ts", "end_ts", "tick_count", "buy_vol", "sell_vol")
-    def __init__(self, ts: float, open_p: float, high_p: float, low_p: float, close_p: float, vol: float):
+    def __init__(self, ts: float, open_p: float, high_p: float, low_p: float, close_p: float, vol: float, buy_vol: float = 0.0, sell_vol: float = 0.0):
         self.start_ts = ts
         self.end_ts = ts
         self.open = float(open_p)
@@ -19,8 +26,8 @@ class Candle:
         self.close = float(close_p)
         self.volume = float(vol)
         self.tick_count = 1
-        self.buy_vol = 0.0
-        self.sell_vol = 0.0
+        self.buy_vol = float(buy_vol)
+        self.sell_vol = float(sell_vol)
 
     def update(self, price: float, dvol: float, is_buy: bool):
         if price > self.high:
@@ -58,6 +65,17 @@ class SymbolCandleSeries:
         self.active_5m: Candle | None = None
         
         self.last_vol = None
+
+    def append_historical_bar(self, tf: str, open_p: float, high_p: float, low_p: float, close_p: float, vol: float, delta: float = 0.0, ts: float = 0.0):
+        buy_vol = max(0.0, (vol + delta) / 2.0)
+        sell_vol = max(0.0, (vol - delta) / 2.0)
+        c = Candle(ts, open_p, high_p, low_p, close_p, vol, buy_vol, sell_vol)
+        if tf == "15m":
+            self.bars_15m.append(c)
+        elif tf == "1h":
+            self.bars_1h.append(c)
+        elif tf == "5m":
+            self.bars_5m.append(c)
 
     def on_tick(self, ts: float, price: float, cumulative_vol: float, is_buy: bool) -> dict:
         """
@@ -143,6 +161,78 @@ class SymbolCandleSeries:
 class MultiTimeframeResampler:
     def __init__(self, symbols: list[str]):
         self.series = {sym: SymbolCandleSeries(sym) for sym in symbols}
+        self.preload_historical_candles()
+
+    def preload_historical_candles(self, data_root: str = None):
+        """
+        Preloads multi-day 15m and 1h historical candles from canonical parquet datasets
+        so that 15m pivots, 20-EMA, 9-EMA, and 1H trends have immediate historical depth with zero gaps.
+        """
+        candidates = [
+            data_root,
+            "/home/opc/data/canonical_candles",
+            os.path.join(os.getcwd(), "data", "canonical_candles"),
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "canonical_candles")
+        ]
+        valid_root = None
+        for c in candidates:
+            if c and os.path.exists(c):
+                valid_root = c
+                break
+
+        if not valid_root:
+            logger.info("[PRELOAD] No canonical historical candle directory found — starting clean.")
+            return
+
+        # 1. Preload 15m Canonical Candles
+        path_15m = os.path.join(valid_root, "15m", "canonical_15m_all_symbols.parquet")
+        if os.path.exists(path_15m):
+            try:
+                df_15 = pd.read_parquet(path_15m)
+                loaded_cnt = 0
+                for sym, grp in df_15.groupby("symbol"):
+                    if sym in self.series:
+                        sub = grp.sort_values("dt").tail(100)
+                        for _, r in sub.iterrows():
+                            self.series[sym].append_historical_bar(
+                                tf="15m",
+                                open_p=float(r["open"]),
+                                high_p=float(r["high"]),
+                                low_p=float(r["low"]),
+                                close_p=float(r["close"]),
+                                vol=float(r.get("volume", 0)),
+                                delta=float(r.get("delta", 0)),
+                                ts=float(pd.to_datetime(r["dt"]).timestamp()) if "dt" in r else 0.0
+                            )
+                        loaded_cnt += 1
+                logger.info(f"[PRELOAD] ✅ Loaded 15m historical candles for {loaded_cnt} symbols from {path_15m}")
+            except Exception as e:
+                logger.warning(f"[PRELOAD] Failed loading 15m parquet: {e}")
+
+        # 2. Preload 1H Canonical Candles
+        path_1h = os.path.join(valid_root, "1h", "canonical_1h_all_symbols.parquet")
+        if os.path.exists(path_1h):
+            try:
+                df_1h = pd.read_parquet(path_1h)
+                loaded_1h = 0
+                for sym, grp in df_1h.groupby("symbol"):
+                    if sym in self.series:
+                        sub = grp.sort_values("dt").tail(100)
+                        for _, r in sub.iterrows():
+                            self.series[sym].append_historical_bar(
+                                tf="1h",
+                                open_p=float(r["open"]),
+                                high_p=float(r["high"]),
+                                low_p=float(r["low"]),
+                                close_p=float(r["close"]),
+                                vol=float(r.get("volume", 0)),
+                                delta=float(r.get("delta", 0)),
+                                ts=float(pd.to_datetime(r["dt"]).timestamp()) if "dt" in r else 0.0
+                            )
+                        loaded_1h += 1
+                logger.info(f"[PRELOAD] ✅ Loaded 1H historical candles for {loaded_1h} symbols from {path_1h}")
+            except Exception as e:
+                logger.warning(f"[PRELOAD] Failed loading 1H parquet: {e}")
 
     def on_tick(self, symbol: str, ts: float, price: float, cumulative_vol: float, is_buy: bool) -> dict:
         ser = self.series.get(symbol)
