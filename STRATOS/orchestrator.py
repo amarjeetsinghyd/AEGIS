@@ -1,17 +1,17 @@
 """
-orchestrator.py — Master Two-Way Strategy Engine for STRATOS.
+orchestrator.py — Master Strategy Engine for STRATOS (Pure 15-Minute Architecture).
 Coordinates:
-- Macro Trend (1H)
-- 15m Market Structure (Long HH2 Breakout Support Floor vs Short LL2 Breakdown Resistance Ceiling)
-- 5m Pullback Volume Contraction & Order-Flow Absorption/Rejection Triggers
-- Anti-Hunt SL & Adaptive Trailing Exits
+- Multi-Timeframe Resampling (1H Macro, 15m Canonical Structure, 5m Trigger)
+- 15m Market Structure (Long HH2 Breakout Support Zone vs Short LL2 Breakdown Resistance Zone)
+- Order-Flow Absorption / Rejection Zone Triggers
+- Anti-Liquidity Hunting SL & 1:4 RR Runner / 15m Trailing Exits
 - Real-Time Live / Paper Broker Order Execution
 """
 from __future__ import annotations
 import time
 from datetime import datetime
 from STRATOS.config import STRATOS_CONFIG
-from STRATOS.turnover_bucket_engine import TurnoverBucketEngine
+from STRATOS.candle_resampler import MultiTimeframeResampler
 from STRATOS.structure_engine import MarketStructureEngine
 from STRATOS.pullback_analyzer import PullbackAnalyzer
 from STRATOS.flip_trigger import FlipTriggerEngine
@@ -27,11 +27,8 @@ class StratosOrchestrator:
         self.symbols = symbols
         self.cfg = STRATOS_CONFIG
         
-        self.bucket_engine = TurnoverBucketEngine(
-            symbols=symbols,
-            default_turnover_inr=self.cfg.get("turnover_bucket_inr", 20_000_000.0),
-            max_history=self.cfg.get("max_history_buckets", 200)
-        )
+        # Pure 15m / 5m / 1H Multi-Timeframe Resampler
+        self.resampler = MultiTimeframeResampler(symbols)
         self.structure = MarketStructureEngine(self.cfg)
         self.pullback = PullbackAnalyzer(self.cfg)
         self.trigger = FlipTriggerEngine(self.cfg)
@@ -43,16 +40,16 @@ class StratosOrchestrator:
 
     def on_tick(self, symbol: str, ts: float, price: float, cumulative_vol: float, is_buy: bool, order_flow: dict = None):
         """
-        Hot-path event called on every incoming tick from WebSocket feed.
+        Hot-path event called on every incoming tick from WebSocket/REST API feed.
         """
-        # 1. Update turnover buckets
-        completed_bucket = self.bucket_engine.on_tick(symbol, ts, price, cumulative_vol, is_buy)
+        # 1. Update Multi-Timeframe Candles (1H, 15m, 5m)
+        events = self.resampler.on_tick(symbol, ts, price, cumulative_vol, is_buy)
         
         # 2. Check active trade exits on every tick
         if symbol in self.trades.open_trades:
             trade = self.trades.open_trades[symbol]
-            arrays = self.bucket_engine.get_arrays(symbol)
-            exit_signal = self.trades.evaluate_exits(symbol, price, arrays)
+            arrays_15m = self.resampler.get_arrays(symbol, "15m")
+            exit_signal = self.trades.evaluate_exits(symbol, price, arrays_15m)
             if exit_signal:
                 exit_side = "SELL" if trade.get("side", "BUY") == "BUY" else "BUY"
                 logger.info(f"[STRATOS_EXIT] 🛑 Triggered {exit_side} on {symbol} @ {price:.2f} | Reason: {exit_signal['reason']}")
@@ -61,29 +58,31 @@ class StratosOrchestrator:
                 self.structure.state[symbol] = "IDLE"
             return
 
-        # 3. Only evaluate new entries when a bar/bucket completes
-        if not completed_bucket:
-            return
-
+        # 3. Time Window Guard
         cur_time = datetime.now().time()
         if cur_time < self.cfg.get("entry_start_time", time(9, 20)) or cur_time > self.cfg.get("entry_cutoff_time", time(15, 0)):
             return
 
+        # 4. Global Mutex & Max Daily Trades
         if self.trades.get_open_count() >= self.cfg["max_open_positions"]:
             return
         if self.trades.get_today_trades_count() >= self.cfg["max_trades_per_day"]:
             return
 
-        arrays = self.bucket_engine.get_arrays(symbol)
+        arrays_15m = self.resampler.get_arrays(symbol, "15m")
+        if not arrays_15m or arrays_15m["count"] < 4:
+            return
 
-        # ─── PHASE 1: Macro Trend Filter ───
-        macro = self.structure.check_macro_trend(arrays)
+        arrays_1h = self.resampler.get_arrays(symbol, "1h") or arrays_15m
+
+        # ─── PHASE 1: Macro Trend Filter (1H) ───
+        macro = self.structure.check_macro_trend(arrays_1h)
         trend = macro["trend"]
         if trend not in {"BULLISH", "BEARISH"}:
             return
 
-        # ─── PHASE 2: Market Structure Swings ───
-        struct = self.structure.update_structure(symbol, arrays)
+        # ─── PHASE 2: 15m Market Structure Swings (HH1->HH2 / LL1->LL2) ───
+        struct = self.structure.update_structure(symbol, arrays_15m)
         status = struct.get("status")
 
         # ─── LONG SETUP (BULLISH) ───
@@ -91,25 +90,25 @@ class StratosOrchestrator:
             support_line = struct["support_level"]
             breakout_vol = self.structure.breakout_bucket.get(symbol, {}).get("volume", 1000.0)
 
-            # Pullback Quality
-            pb_res = self.pullback.analyze_pullback_quality(arrays, support_line, breakout_vol, side="BUY")
+            # Pullback Quality on 15m
+            pb_res = self.pullback.analyze_pullback_quality(arrays_15m, support_line, breakout_vol, side="BUY")
             if not pb_res["valid"]:
                 return
 
-            # Order Flow Absorption Trigger
-            trig = self.trigger.evaluate_trigger(arrays, support_line, side="BUY", live_order_flow=order_flow)
+            # Order Flow Absorption Reversal Trigger
+            trig = self.trigger.evaluate_trigger(arrays_15m, support_line, side="BUY", live_order_flow=order_flow)
             if not trig["triggered"]:
                 return
 
-            # Risk & Sizing
-            levels = self.risk.calculate_trade_levels(price, support_line, pb_res["lowest_wick"], arrays, side="BUY")
+            # Risk & Sizing (1:4 RR Runner)
+            levels = self.risk.calculate_trade_levels(price, support_line, pb_res["lowest_wick"], arrays_15m, side="BUY")
             qty = self.risk.calculate_position_size(self.active_capital, price, levels["risk_dist"])
             if qty <= 0:
                 return
 
             logger.info(
-                f"[STRATOS_ENTRY] 🎯 LONG SETUP! {symbol} BUY @ {price:.2f} | "
-                f"SL: {levels['stop_loss']:.2f} | TP1: {levels['tp1_price']:.2f} | "
+                f"[STRATOS_ENTRY] 🎯 15m LONG SETUP! {symbol} BUY @ {price:.2f} | "
+                f"SL: {levels['stop_loss']:.2f} | TP2 (1:4 RR): {levels['tp2_price']:.2f} | "
                 f"Qty: {qty} | Risk: {levels['risk_pct']:.2f}% | Reason: {trig['reason']}"
             )
 
@@ -129,25 +128,25 @@ class StratosOrchestrator:
             resistance_line = struct["resistance_level"]
             breakdown_vol = self.structure.breakdown_bucket.get(symbol, {}).get("volume", 1000.0)
 
-            # Pullback Quality
-            pb_res = self.pullback.analyze_pullback_quality(arrays, resistance_line, breakdown_vol, side="SELL")
+            # Pullback Quality on 15m
+            pb_res = self.pullback.analyze_pullback_quality(arrays_15m, resistance_line, breakdown_vol, side="SELL")
             if not pb_res["valid"]:
                 return
 
             # Order Flow Rejection Trigger
-            trig = self.trigger.evaluate_trigger(arrays, resistance_line, side="SELL", live_order_flow=order_flow)
+            trig = self.trigger.evaluate_trigger(arrays_15m, resistance_line, side="SELL", live_order_flow=order_flow)
             if not trig["triggered"]:
                 return
 
-            # Risk & Sizing
-            levels = self.risk.calculate_trade_levels(price, resistance_line, pb_res["highest_wick"], arrays, side="SELL")
+            # Risk & Sizing (1:4 RR Runner)
+            levels = self.risk.calculate_trade_levels(price, resistance_line, pb_res["highest_wick"], arrays_15m, side="SELL")
             qty = self.risk.calculate_position_size(self.active_capital, price, levels["risk_dist"])
             if qty <= 0:
                 return
 
             logger.info(
-                f"[STRATOS_ENTRY] 🎯 SHORT SETUP! {symbol} SELL @ {price:.2f} | "
-                f"SL: {levels['stop_loss']:.2f} | TP1: {levels['tp1_price']:.2f} | "
+                f"[STRATOS_ENTRY] 🎯 15m SHORT SETUP! {symbol} SELL @ {price:.2f} | "
+                f"SL: {levels['stop_loss']:.2f} | TP2 (1:4 RR): {levels['tp2_price']:.2f} | "
                 f"Qty: {qty} | Risk: {levels['risk_pct']:.2f}% | Reason: {trig['reason']}"
             )
 

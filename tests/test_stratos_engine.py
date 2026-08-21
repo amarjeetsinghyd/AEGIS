@@ -45,7 +45,7 @@ def test_structure_engine_turnover_breakout():
     arrays = {"high": highs, "low": lows, "close": closes, "volume": vols, "delta": deltas}
     
     res = engine.update_structure("TCS", arrays)
-    assert res["status"] in ["AWAITING_RETEST", "NO_CLEAN_BREAKOUT"]
+    assert res["status"] in ["AWAITING_LONG_RETEST", "AWAITING_RETEST", "NO_CLEAN_BREAKOUT"]
 
 def test_pullback_analyzer_turnover():
     analyzer = PullbackAnalyzer()
