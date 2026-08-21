@@ -87,7 +87,7 @@ class MarketStructureEngine:
         # ── 1. Check Bullish Breakout (HH1 -> HH2) & Build High-Low Support Zone ──
         if len(p_highs) >= 2:
             hh1, hh2 = p_highs[-2][1], p_highs[-1][1]
-            if hh2 >= hh1 and cur_price >= hh2 * 1.0002:
+            if hh2 >= hh1:
                 # High-Low Support Zone around HH2
                 zone_low = round(hh2 * 0.9970, 2)
                 zone_high = round(hh2 * 1.0025, 2)
@@ -107,7 +107,7 @@ class MarketStructureEngine:
         # ── 2. Check Bearish Breakdown (LL1 -> LL2) & Build High-Low Resistance Zone ──
         if len(p_lows) >= 2:
             ll1, ll2 = p_lows[-2][1], p_lows[-1][1]
-            if ll2 <= ll1 and cur_price <= ll2 * 0.9998:
+            if ll2 <= ll1:
                 # High-Low Resistance Zone around LL2
                 zone_low = round(ll2 * 0.9975, 2)
                 zone_high = round(ll2 * 1.0030, 2)
