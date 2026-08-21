@@ -102,8 +102,8 @@ class StratosExecutionManager:
             }
             logger.info(f"[STRATOS_LIVE] 🚀 Punching LIVE MIS {action} {qty}x {tsym} @ Limit ₹{limit_price:.2f} (Ref: ₹{price:.2f})...")
             
-            api = getattr(self.broker, "api", self.broker)
-            place_fn = getattr(api, "place_order", None) or getattr(api, "placeorder", None)
+            api = getattr(self.broker, "_api", getattr(self.broker, "api", self.broker))
+            place_fn = getattr(self.broker, "place_order", None) or getattr(api, "place_order", None) or getattr(api, "placeorder", None)
             if not place_fn:
                 raise RuntimeError("Broker API does not implement place_order")
 
