@@ -234,6 +234,31 @@ class MultiTimeframeResampler:
             except Exception as e:
                 logger.warning(f"[PRELOAD] Failed loading 1H parquet: {e}")
 
+        # 3. Preload 5m Canonical Candles
+        path_5m = os.path.join(valid_root, "5m", "canonical_5m_all_symbols.parquet")
+        if os.path.exists(path_5m):
+            try:
+                df_5m = pd.read_parquet(path_5m)
+                loaded_5m = 0
+                for sym, grp in df_5m.groupby("symbol"):
+                    if sym in self.series:
+                        sub = grp.sort_values("dt").tail(100)
+                        for _, r in sub.iterrows():
+                            self.series[sym].append_historical_bar(
+                                tf="5m",
+                                open_p=float(r["open"]),
+                                high_p=float(r["high"]),
+                                low_p=float(r["low"]),
+                                close_p=float(r["close"]),
+                                vol=float(r.get("volume", 0)),
+                                delta=float(r.get("delta", 0)),
+                                ts=float(pd.to_datetime(r["dt"]).timestamp()) if "dt" in r else 0.0
+                            )
+                        loaded_5m += 1
+                logger.info(f"[PRELOAD] ✅ Loaded 5m historical candles for {loaded_5m} symbols from {path_5m}")
+            except Exception as e:
+                logger.warning(f"[PRELOAD] Failed loading 5m parquet: {e}")
+
     def on_tick(self, symbol: str, ts: float, price: float, cumulative_vol: float, is_buy: bool) -> dict:
         ser = self.series.get(symbol)
         if not ser:
