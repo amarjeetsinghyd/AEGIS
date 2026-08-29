@@ -47,12 +47,12 @@ AUCTION_LOG_INTERVAL = 2.0
 UNDERLYING_TOKENS = {"26000", "1", "99919000"}
 
 # ─── Schema Definition (Options-Enriched) ───
-# Adds `oi` (open interest) and `kind` (0=index, 1=CE, 2=PE) vs the equity archiver.
+# Adds `oi` (open interest) and `kind` (0=index, 1=CE, 2=PE, 3=FUT) vs the equity archiver.
 SCHEMA_DTYPES = {
     "ts": "int64",        # Unix ms
     "tok": "int64",       # Token (options tokens can exceed int32 range)
-    "sym": "object",      # Option symbol e.g. NIFTY25AUG24500CE
-    "kind": "int8",       # 0=index, 1=CE, 2=PE
+    "sym": "object",      # Option/Futures symbol e.g. NIFTY25AUG24500CE / NIFTY28AUGFUT
+    "kind": "int8",       # 0=index, 1=CE, 2=PE, 3=FUT
     "strike": "float32",  # Strike price (0 for index)
     "lp": "float32",      # Last Price (premium for options)
     "vol": "float32",     # Day Volume
@@ -119,23 +119,43 @@ class AegisL2Archiver:
             f"AegisL2Archiver: token maps refreshed — now tracking {len(self.target_tokens)} tokens"
         )
 
+    def _get_index_subfolder(self, date_str: str | None = None) -> str:
+        d_str = date_str or self.current_date
+        try:
+            dt = datetime.strptime(d_str, "%Y-%m-%d")
+            # Wed (2), Thu (3) -> Sensex; Mon (0), Tue (1), Fri (4) -> Nifty
+            return "Sensex" if dt.weekday() in (2, 3) else "Nifty"
+        except Exception:
+            return "Nifty"
+
+    def _get_partition_dir(self, date_str: str | None = None) -> str:
+        sub = self._get_index_subfolder(date_str)
+        target_dir = os.path.join(RAW_DIR, sub)
+        os.makedirs(target_dir, exist_ok=True)
+        return target_dir
+
     def _prune_old_files(self):
         try:
             cut = datetime.now() - timedelta(days=RETENTION_DAYS)
-            for f in os.listdir(RAW_DIR):
-                if f.startswith("aegis_l2_raw_") and f.endswith(".parquet"):
-                    # aegis_l2_raw_YYYY-MM-DD_part_NNN.parquet
-                    parts = f.replace("aegis_l2_raw_", "").replace(".parquet", "").split("_part_")
-                    if len(parts) == 2:
-                        d = datetime.strptime(parts[0], "%Y-%m-%d")
-                        if d < cut:
-                            os.remove(os.path.join(RAW_DIR, f))
+            dirs_to_check = [RAW_DIR, os.path.join(RAW_DIR, "Nifty"), os.path.join(RAW_DIR, "Sensex")]
+            for dpath in dirs_to_check:
+                if not os.path.exists(dpath):
+                    continue
+                for f in os.listdir(dpath):
+                    if f.startswith("aegis_l2_raw_") and f.endswith(".parquet"):
+                        # aegis_l2_raw_YYYY-MM-DD_part_NNN.parquet
+                        parts = f.replace("aegis_l2_raw_", "").replace(".parquet", "").split("_part_")
+                        if len(parts) == 2:
+                            d = datetime.strptime(parts[0], "%Y-%m-%d")
+                            if d < cut:
+                                os.remove(os.path.join(dpath, f))
         except Exception as e:
             logger.debug(f"Prune failed: {e}")
 
     def _get_partition_path(self) -> str:
+        target_dir = self._get_partition_dir(self.current_date)
         return os.path.join(
-            RAW_DIR, f"aegis_l2_raw_{self.current_date}_part_{self.partition_seq:03d}.parquet"
+            target_dir, f"aegis_l2_raw_{self.current_date}_part_{self.partition_seq:03d}.parquet"
         )
 
     def _flush_buffer(self, force=False, tick_ts_sec=None):
@@ -219,8 +239,13 @@ class AegisL2Archiver:
             # Resolve kind + strike from token metadata
             meta = self.token_meta.get(tok, {})
             is_underlying = tok in UNDERLYING_TOKENS
+            is_futures = (isinstance(meta, dict) and meta.get("is_futures", False)) or (sym and ("FUT" in sym.upper()))
+
             if is_underlying:
                 kind = 0
+                strike = np.float32(0.0)
+            elif is_futures:
+                kind = 3  # 3=FUT (Index Futures)
                 strike = np.float32(0.0)
             else:
                 side = int(meta.get("side", -1)) if isinstance(meta, dict) else -1

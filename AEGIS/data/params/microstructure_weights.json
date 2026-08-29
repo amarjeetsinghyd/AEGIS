@@ -1,0 +1,26 @@
+{
+  "model_name": "AEGIS_Empirical_Microstructure_Scorer_v1",
+  "calibrated_on": "NIFTY_SENSEX_L2_2026_AUG",
+  "n_samples": 2436,
+  "roc_auc": 0.8264,
+  "raw_intercept": -6.041813,
+  "feature_weights": {
+    "target_pre_ret": -1.76504,
+    "target_ask_vacuum_vel": 6e-06,
+    "target_bid_build_vel": 4e-06,
+    "target_ask_depth_decay": -1e-06,
+    "target_l1_ofi": 1e-06,
+    "target_top5_imbalance": -0.3493,
+    "target_tick_intensity": 4.532921,
+    "target_spread_compression": 0.18578,
+    "otm1_ret": 0.598507,
+    "otm2_ret": -0.116872,
+    "otm3_ret": -0.309572,
+    "otm4_ret": -0.474109,
+    "cascade_coherence": 0.101717,
+    "opp_side_ret": 0.005423
+  },
+  "high_conviction_threshold": 75.0,
+  "moderate_conviction_threshold": 60.0,
+  "min_tick_rate_gate": 1.5
+}

@@ -40,10 +40,16 @@ from common.ipc.premarket_bridge import read_premarket_state
 logger = get_logger("aegis_execution_manager")
 
 # ─── AEGIS Risk Constants ───
-MAX_HOLD_SEC = 600.0                    # 10-minute hard ceiling
+MAX_HOLD_SEC = 300.0                    # 5-minute hard ceiling
 AEGIS_ENTRY_CUTOFF = dt_time(15, 0, 0)  # No new entries after 15:00
 AEGIS_FORCE_FLATTEN = dt_time(15, 10, 0) # Force flatten at 15:10
-MAX_TRADES_PER_DAY = 5                  # Daily circuit breaker
+MAX_TRADES_PER_DAY = int(os.getenv("MAX_TRADES_PER_DAY", "3")) # Hard safety cap: max 3 trades per day
+
+# ─── Sweet Spot 5% Target & Trailing Stop Constants ───
+TARGET_PROFIT_PCT = 0.05                # +5.0% Target Profit
+STOP_LOSS_PCT = 0.035                   # -3.5% Hard Stop Loss
+TRAIL_TRIGGER_PCT = 0.020               # Arm trailing lock when PnL >= +2.0%
+TRAIL_LOCK_PCT = 0.015                  # Lock in +1.5% profit on pullback
 
 def _round_tick(price: float, tick: float = OPTION_TICK_SIZE) -> float:
     if price <= 0:
@@ -93,7 +99,7 @@ class AegisExecutionManager:
         self.trades_today = 0
         self.last_trade_date = None
         self.strike_cooldowns: Dict[str, datetime] = {}
-        self._option_cache: Dict = {}
+        self._option_cache: Dict = getattr(aegis_engine, "option_cache", {}) if aegis_engine else {}
         self.tp_order_id: Optional[str] = None
         self.trade_lock = threading.Lock()
         
@@ -178,7 +184,9 @@ class AegisExecutionManager:
         return now.time() >= AEGIS_FORCE_FLATTEN
 
     def has_open_trade(self) -> bool:
-        return bool(self.trade_context and self.trade_context.status == "OPEN")
+        if getattr(self, "_is_entering", False):
+            return True
+        return bool(self.trade_context and str(self.trade_context.status).upper() in ("OPEN", "PENDING", "EXIT_PENDING", "SUBMITTED"))
 
     def get_instrument_params(self) -> dict:
         name, _ = self.data_fetcher.get_active_instrument()
@@ -218,6 +226,13 @@ class AegisExecutionManager:
         """Main processing loop: drains signal queue, manages open trades."""
         while self._running:
             try:
+                # 0. Daily reset check
+                today_d = datetime.now().date()
+                if self.last_trade_date != today_d:
+                    self.trades_today = 0
+                    self.daily_pnl = 0.0
+                    self.last_trade_date = today_d
+
                 # 1. Process AEGIS signals (blocking with timeout)
                 try:
                     signal = self.signal_queue.get(timeout=0.5)
@@ -292,108 +307,121 @@ class AegisExecutionManager:
             self.trades_today = 0
             self.daily_pnl = 0.0
             self.last_trade_date = now.date()
-            
-        if self.trades_today >= MAX_TRADES_PER_DAY:
-            logger.warning(f"[AegisEM] Daily trade limit ({MAX_TRADES_PER_DAY}) reached")
+        # Daily trade limit (Strict 3 trades max per day)
+        max_daily_trades = MAX_TRADES_PER_DAY
+        if self.trades_today >= max_daily_trades:
+            logger.warning(f"[AegisEM] Daily trade limit ({max_daily_trades}) reached")
             return
 
-        if self.has_open_trade():
-            logger.warning("[AegisEM] Entry blocked — trade already open")
-            return
-
-        if not self.can_enter(now):
-            logger.warning(f"[AegisEM] Entry blocked — outside window (cutoff {AEGIS_ENTRY_CUTOFF})")
-            return
-
-        direction = signal.get("signal")  # "UP" or "DOWN"
-        conviction = signal.get("conviction", 0.0)
-        lp = signal.get("lp", 0.0)
-        metrics = signal.get("metrics", {})
-
-        params = self.get_instrument_params()
-        weekly_opts = self.data_fetcher.get_weekly_option_tokens()
-        
-        # Map signal direction to option type
-        signal_type = "CALL" if direction == "UP" else "PUT"
-        
-        allocations = StrikeSelector.select_strikes(
-            signal_type=signal_type,
-            index_price=lp,
-            index_name=params["index_name"],
-            weekly_opts=weekly_opts,
-            option_cache=self._option_cache,
-            available_funds=self.capital_engine.get_available_funds(),
-            lot_size=params["lot_size"],
-            market_data_provider=getattr(self.broker, "market_data_provider", None),
-            premium_min=params.get("premium_min"),
-            premium_max=params.get("premium_max"),
-        )
-        
-        if not allocations:
-            logger.warning(f"[AegisEM] No affordable strike for {signal_type}")
-            return
-
-        opt_row, quantity, ltp = allocations[0]
-        symbol = opt_row["symbol"]
-        token_str = str(opt_row["token"])
-        
-        if symbol in self.strike_cooldowns and now < self.strike_cooldowns[symbol]:
-            logger.warning(f"[AegisEM] Strike {symbol} in cooldown")
-            return
-
-        # Spread & liquidity check
-        live_ask = 0.0
-        if hasattr(self.broker, "market_data_provider"):
-            try:
-                exch_seg = params["exchange"]
-                q = self.broker.market_data_provider.get_quote(exch_seg, token_str)
-                if q:
-                    ask = float(q.get("sp1") or 0)
-                    bid = float(q.get("bp1") or 0)
-                    live_ask = ask
-                    if ask > 0 and bid > 0:
-                        mid = (ask + bid) / 2
-                        spread = (ask - bid) / mid
-                        if spread > 0.02:
-                            logger.warning(f"[AegisEM] Spread too high: {spread*100:.1f}%")
-                            return
-                        sq1 = int(float(q.get("sq1") or 0))
-                        if sq1 < 3:
-                            logger.warning(f"[AegisEM] Ask size too thin: sq1={sq1}")
-                            return
-            except Exception as e:
-                logger.error(f"[AegisEM] Pre-trade check failed: {e}")
-                return
-
-        # Execute entry
         with self.trade_lock:
-            self.trade_context = TradeContext(
-                signal_type=signal_type,
-                strategy="AEGIS_GAMMA_BURST",
-                index_entry=lp,
-                decision_payload={
-                    "conviction": conviction,
-                    "direction": direction,
-                    "metrics": metrics,
-                    "iv": metrics.get("iv", 0.15),
-                },
-            )
-            leg = TradeLeg(token_str, symbol, float(opt_row["strike"]), signal_type, quantity, ltp)
-            
-            if not self.order_lifecycle.execute_entry(leg, live_ask=live_ask or ltp):
-                logger.error(f"[AegisEM] Entry order rejected for {symbol}")
-                self.trade_context = None
+            if self.has_open_trade():
+                logger.warning("[AegisEM] Entry blocked — trade already open")
                 return
+            self._is_entering = True
+
+        try:
+            if not self.can_enter(now):
+                logger.warning(f"[AegisEM] Entry blocked — outside window (cutoff {AEGIS_ENTRY_CUTOFF})")
+                return
+
+            direction = signal.get("signal")  # "UP" or "DOWN"
+            conviction = signal.get("conviction", 0.0)
+            opt_lp = signal.get("lp", 0.0)
+            sym = signal.get("sym", "")
+            metrics = signal.get("metrics", {})
+
+            params = self.get_instrument_params()
+            weekly_opts = self.data_fetcher.get_weekly_option_tokens()
             
-            self.trade_context.add_leg(leg)
+            # Map signal direction to option type
+            signal_type = "CALL" if direction == "UP" else "PUT"
+            
+            # Retrieve actual underlying index spot price
+            spot_price = float(signal.get("spot") or getattr(self.aegis_engine, "last_spot", 0.0) or 0.0)
+            if spot_price <= 0.0:
+                spot_price = self._get_current_spot()
+            
+            allocations = StrikeSelector.select_strikes(
+                signal_type=signal_type,
+                index_price=spot_price,
+                index_name=params["index_name"],
+                weekly_opts=weekly_opts,
+                option_cache=self._option_cache,
+                available_funds=self.capital_engine.get_available_funds(),
+                lot_size=params["lot_size"],
+                market_data_provider=getattr(self.broker, "market_data_provider", None),
+                premium_min=params.get("premium_min"),
+                premium_max=params.get("premium_max"),
+            )
+            
+            if not allocations:
+                logger.warning(f"[AegisEM] No affordable strike for {signal_type}")
+                return
 
-        self.capital_engine.deduct_funds(leg.entry_price * quantity * params["lot_size"])
-        self.trades_today += 1
-        self._save_trades_today()
-        self.tp_order_id = None
+            opt_row, quantity, ltp = allocations[0]
+            symbol = opt_row["symbol"]
+            token_str = str(opt_row["token"])
+            
+            if symbol in self.strike_cooldowns and now < self.strike_cooldowns[symbol]:
+                logger.warning(f"[AegisEM] Strike {symbol} in cooldown")
+                return
 
-        # Place initial TP at +10% (AEGIS manages dynamic exits via signals)
-        self._place_initial_take_profit(leg, params)
+            # Spread & liquidity check
+            live_ask = 0.0
+            if hasattr(self.broker, "market_data_provider"):
+                try:
+                    exch_seg = params["exchange"]
+                    q = self.broker.market_data_provider.get_quote(exch_seg, token_str)
+                    if q:
+                        ask = float(q.get("sp1") or 0)
+                        bid = float(q.get("bp1") or 0)
+                        live_ask = ask
+                        if ask > 0 and bid > 0:
+                            mid = (ask + bid) / 2
+                            spread = (ask - bid) / mid
+                            if spread > 0.02:
+                                logger.warning(f"[AegisEM] Spread too high: {spread*100:.1f}%")
+                                return
+                            sq1 = int(float(q.get("sq1") or 0))
+                            if sq1 < 3:
+                                logger.warning(f"[AegisEM] Ask size too thin: sq1={sq1}")
+                                return
+                except Exception as e:
+                    logger.error(f"[AegisEM] Pre-trade check failed: {e}")
+                    return
+
+            # Execute entry
+            with self.trade_lock:
+                self.trade_context = TradeContext(
+                    signal_type=signal_type,
+                    strategy="AEGIS_GAMMA_BURST",
+                    index_entry=spot_price,
+                    decision_payload={
+                        "conviction": conviction,
+                        "direction": direction,
+                        "metrics": metrics,
+                        "iv": metrics.get("iv", 0.15),
+                        "signal_ts": float(signal.get("timestamp") or 0.0),
+                    },
+                )
+                leg = TradeLeg(token_str, symbol, float(opt_row["strike"]), signal_type, quantity, ltp)
+                
+                if not self.order_lifecycle.execute_entry(leg, live_ask=live_ask or ltp):
+                    logger.error(f"[AegisEM] Entry order rejected for {symbol}")
+                    self.trade_context = None
+                    return
+                
+                self.trade_context.add_leg(leg)
+
+            self.capital_engine.deduct_funds(leg.entry_price * quantity * params["lot_size"])
+            self.trades_today += 1
+            self._save_trades_today()
+            self.tp_order_id = None
+
+            # Place initial TP at +8% (or +5% on Friday)
+            self._place_initial_take_profit(leg, params)
+        finally:
+            self._is_entering = False
         self._save_active_context()
         
         logger.info(
@@ -402,17 +430,16 @@ class AegisExecutionManager:
         )
 
     def _place_initial_take_profit(self, leg: TradeLeg, params: dict):
-        """Resting DAY limit at +10% premium (or +5% on Friday DTE 4)."""
-        now = datetime.now()
-        is_friday = (now.weekday() == 4)
-        target_pct = 0.05 if is_friday else 0.10
+        """Resting DAY limit at +5% premium target."""
+        target_pct = TARGET_PROFIT_PCT # 0.05 (+5%)
         tp_price = _round_tick(leg.entry_price * (1.0 + target_pct))
         leg.tp_price = tp_price
         leg.initial_tp_pct = target_pct
+        leg.highest_price = leg.entry_price
         
         if isinstance(self.order_lifecycle, PaperOrderLifecycle):
             self.tp_order_id = f"PAPER_TP_{leg.symbol}"
-            logger.info(f"[AegisEM] [Paper] Resting TP limit set at {tp_price:.2f} (+{int(target_pct*100)}% on {'Friday DTE-4' if is_friday else 'Regular Day'})")
+            logger.info(f"[AegisEM] [Paper] Resting TP limit set at {tp_price:.2f} (+{int(target_pct*100)}%)")
             return
 
         try:
@@ -445,7 +472,7 @@ class AegisExecutionManager:
 
     # ─── Open Trade Management ───
     def _manage_open_trade(self):
-        """Check exit conditions: AEGIS signals, force flatten, TP/SL."""
+        """Check exit conditions: AEGIS signals, force flatten, TP/SL, Trailing SL."""
         now = datetime.now()
         
         with self.trade_lock:
@@ -457,53 +484,91 @@ class AegisExecutionManager:
         params = self.get_instrument_params()
         exch_seg = params["exchange"]
         
-        # Refresh marks
+        # Refresh marks and update highest price
+        live_bid = 0.0
+        live_ask = 0.0
         for leg in legs:
             if leg.status != "OPEN":
                 continue
-            try:
-                q = self.broker.market_data_provider.get_quote(exch_seg, leg.token)
-                if q and float(q.get("ltp") or 0) > 0:
-                    leg.current_price = float(q["ltp"])
-            except Exception:
-                pass
+            opt_cache = getattr(self, "_option_cache", None)
+            if opt_cache and leg.token in opt_cache:
+                c_lp = opt_cache[leg.token]
+                if c_lp > 0:
+                    leg.current_price = c_lp
+                    live_bid = c_lp
+                    live_ask = c_lp
+            else:
+                try:
+                    q = self.broker.market_data_provider.get_quote(exch_seg, leg.token)
+                    if q:
+                        if float(q.get("ltp") or 0) > 0:
+                            leg.current_price = float(q["ltp"])
+                        live_bid = float(q.get("bp1") or leg.current_price)
+                        live_ask = float(q.get("sp1") or leg.current_price)
+                except Exception:
+                    live_bid = leg.current_price
+
+            # Update highest price reached during the trade
+            if leg.current_price > getattr(leg, "highest_price", leg.entry_price):
+                leg.highest_price = leg.current_price
 
         # 1. Force flatten at session end
         if self.must_force_flatten(now):
             self._close_all_legs(f"Force Flatten (>= {AEGIS_FORCE_FLATTEN.strftime('%H:%M')})")
             return
 
-        # 2. Check AEGIS exit signals (ξ_soft, ξ_hard) — would come via signal queue
-        #    For now, we implement local equivalents based on conviction decay
-        #    Real AEGIS exit signals would be GAMMA_BURST_EXIT with exit_type
-        
-        # 3. Hard SL at -25% premium (fallback)
+        # 2. Hard SL (-3.5%)
         for leg in legs:
             if leg.status != "OPEN" or leg.entry_price <= 0:
                 continue
-            sl_price = _round_tick(leg.entry_price * 0.75)
-            if leg.current_price > 0 and leg.current_price <= sl_price:
+            sl_price = _round_tick(leg.entry_price * (1.0 - STOP_LOSS_PCT))
+            effective_bid = live_bid if live_bid > 0 else leg.current_price
+            if effective_bid > 0 and effective_bid <= sl_price:
                 self._cancel_tp()
-                self._close_all_legs(f"Hard SL (-25% @ {leg.current_price:.2f})")
+                self._close_all_legs(f"Hard SL (-{STOP_LOSS_PCT*100:.1f}% @ {effective_bid:.2f})")
                 return
 
-        # 4. TP hit detection (resting or synthetic)
+        # 3. Dynamic Trailing Profit Lock (+1.5% locked if peak >= +2.0%)
+        for leg in legs:
+            if leg.status != "OPEN" or leg.entry_price <= 0:
+                continue
+            highest = getattr(leg, "highest_price", leg.entry_price)
+            peak_pnl_pct = (highest - leg.entry_price) / leg.entry_price
+            curr_pnl_pct = (leg.current_price - leg.entry_price) / leg.entry_price
+            if peak_pnl_pct >= TRAIL_TRIGGER_PCT and curr_pnl_pct <= TRAIL_LOCK_PCT:
+                self._cancel_tp()
+                self._close_all_legs(f"Trailing Profit Lock (+{TRAIL_LOCK_PCT*100:.1f}% @ {leg.current_price:.2f})")
+                return
+
+        # 4. Spot Adverse Movement SL (+/- 25 pts for Nifty, +/- 50 pts for Sensex)
+        curr_spot = self._get_current_spot()
+        # params has key 'index_name' (NIFTY/SENSEX), not 'instrument' — fixed 2026-08-29 audit P1.3
+        spot_sl_pts = 25.0 if "NIFTY" in params.get("index_name", "NIFTY").upper() else 50.0
+        if curr_spot > 0 and context.index_entry > 0:
+            if context.signal_type == "CALL" and curr_spot <= (context.index_entry - spot_sl_pts):
+                self._cancel_tp()
+                self._close_all_legs(f"Spot Adverse Breakdown SL ({curr_spot:.1f} vs entry {context.index_entry:.1f}, -{spot_sl_pts:.0f}pts)")
+                return
+            elif context.signal_type == "PUT" and curr_spot >= (context.index_entry + spot_sl_pts):
+                self._cancel_tp()
+                self._close_all_legs(f"Spot Adverse Rally SL ({curr_spot:.1f} vs entry {context.index_entry:.1f}, +{spot_sl_pts:.0f}pts)")
+                return
+
+        # 5. Take-Profit Hit (+5.0%)
         for leg in legs:
             if leg.status != "OPEN":
                 continue
-            is_friday = (now.weekday() == 4)
-            default_tp_pct = 0.05 if is_friday else 0.10
-            tp_price = getattr(leg, "tp_price", _round_tick(leg.entry_price * (1.0 + default_tp_pct)))
-            if leg.current_price >= tp_price > 0:
-                tp_pct_str = f"+{int(default_tp_pct*100)}%"
-                self._close_all_legs(f"Take-Profit Hit ({tp_pct_str} @ {leg.current_price:.2f})")
+            tp_price = getattr(leg, "tp_price", _round_tick(leg.entry_price * (1.0 + TARGET_PROFIT_PCT)))
+            effective_exit_bid = live_bid if live_bid > 0 else leg.current_price
+            if effective_exit_bid >= tp_price > 0:
+                self._close_all_legs(f"Take-Profit Hit (+{int(TARGET_PROFIT_PCT*100)}% @ {tp_price:.2f})")
                 return
 
-        # 5. Hard time stop (10 min)
+        # 6. Hard time stop (5 min)
         if context.entry_time:
             hold_sec = (now - context.entry_time).total_seconds()
             if hold_sec >= MAX_HOLD_SEC:
-                self._close_all_legs(f"10-Min Hard Time Stop ({int(hold_sec)}s)")
+                self._close_all_legs(f"5-Min Hard Time Stop ({int(hold_sec)}s)")
                 return
 
     def _close_all_legs(self, reason: str):
@@ -599,12 +664,21 @@ class AegisExecutionManager:
                             place = getattr(api, "place_order", None)
                             if place:
                                 logger.warning(f"[AegisEM Chaser] Final aggressive exit @ {price_3:.2f}")
-                                place(**kwargs)
-                                time.sleep(0.8)
-                                history = api.single_order_history(orderno=ordno) if hasattr(api, "single_order_history") else []
-                                latest = history[0] if history and isinstance(history, list) else {}
-                                fill_price = float(latest.get("avgprc") or price_3)
-                                filled = True
+                                resp = place(**kwargs)
+                                ordno_3 = resp.get("norenordno") if isinstance(resp, dict) and resp.get("stat") == "Ok" else None
+                                if ordno_3:
+                                    time.sleep(0.8)
+                                    history = api.single_order_history(orderno=ordno_3) if hasattr(api, "single_order_history") else []
+                                    latest = history[0] if history and isinstance(history, list) else {}
+                                    status = latest.get("status", "OPEN")
+                                    if status in ["FILLED", "COMPLETE"]:
+                                        fill_price = float(latest.get("avgprc") or price_3)
+                                        filled = True
+                                        fill_ts = time.time()
+                                    else:
+                                        logger.error(f"[AegisEM Chaser] Step-3 exit order {ordno_3} NOT filled (status={status}) — position may still be open at broker")
+                                else:
+                                    logger.error(f"[AegisEM Chaser] Step-3 aggressive exit order placement failed: {resp}")
             
             if not filled:
                 # Fallback
@@ -615,14 +689,21 @@ class AegisExecutionManager:
             # ─── CRITICAL: Feed fill back to AEGIS for latency decay ───
             if self.aegis_engine:
                 signal_price = leg.entry_price
-                signal_ts = context.entry_time.timestamp() if context.entry_time else fill_ts
-                self.aegis_engine.on_fill(
-                    sym=context.legs[0].symbol if context.legs else leg.symbol,
-                    fill_price=fill_price,
-                    fill_ts=fill_ts,
-                    signal_price=signal_price,
-                    signal_ts=signal_ts
-                )
+                dp = getattr(context, "decision_payload", None) or {}
+                signal_ts = float(dp.get("signal_ts") or 0.0)
+                if signal_ts <= 0:
+                    signal_ts = context.entry_time.timestamp() if context.entry_time else fill_ts
+                try:
+                    self.aegis_engine.on_fill(
+                        sym=context.legs[0].symbol if context.legs else leg.symbol,
+                        fill_price=fill_price,
+                        fill_ts=fill_ts,
+                        signal_price=signal_price,
+                        signal_ts=signal_ts
+                    )
+                except Exception as e:
+                    # Feedback must never break trade bookkeeping below
+                    logger.error(f"[AegisEM] on_fill feedback failed (non-fatal): {e}")
             
             # Record PnL
             with self.trade_lock:
@@ -639,6 +720,11 @@ class AegisExecutionManager:
             context.status = "CLOSED"
             context.exit_time = datetime.now()
             self._append_history(reason, total_pnl)
+            if self.aegis_engine and getattr(self.aegis_engine, "chop_gate", None):
+                try:
+                    self.aegis_engine.chop_gate.register_trade_close(time.time())
+                except Exception:
+                    pass
             if self.trade_context == context:
                 self.trade_context = None
             self.tp_order_id = None

@@ -37,11 +37,6 @@ ACTIVE_BROKER = BROKER
 STRIKE_DB_PATH = os.path.join(DATA_DIR, "strike_research.db")
 UNDERLYING_PARQUET_FILE = os.path.join(DATA_DIR, "underlying_candles.parquet")
 
-TIME_FRAME = "5m"
-PREDICTION_THRESHOLD = 0.0025
-COOLDOWN_MINUTES = 15
-UNLIMITED_DAILY_TRADES = True
-
-KRONOS_MODEL_KEY = "NeoQuasar/Kronos-base"
-KRONOS_TOKENIZER_KEY = "NeoQuasar/Kronos-Tokenizer-base"
-KRONOS_CONTEXT_LENGTH = 512
+# AEGIS V3.1 — no Kronos/legacy constants here (see common/config for shared trading constants).
+# TIME_FRAME / PREDICTION_THRESHOLD / KRONOS_* were Kronos residue and have been removed (2026-08-29 audit).
+# AEGIS uses strike_step 50 (NIFTY) / 100 (SENSEX) resolved at runtime in aegis_main.py:108.

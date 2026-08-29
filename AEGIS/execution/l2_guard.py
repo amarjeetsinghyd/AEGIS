@@ -1,5 +1,9 @@
+# DEPRECATED — 2026-08-29 audit P1.7: live V3 execution inlines spread/depth checks
+# at aegis_execution_manager.py:382 (spread 2% / sq1<3) and option_quality.py does
+# the canonical veto. This helper is kept for backward import compat only.
+# Do not call on hot path; if needed, call OptionQualityEngine.qualify_option instead.
 def depth_guard_passes(broker, token, side, ratio_limit=2.0):
-    """On-demand 5-level depth. Fail-safe: any error => block."""
+    """[DEPRECATED SHADOW] On-demand 5-level depth. Fail-safe: any error => block."""
     try:
         if hasattr(broker, 'get_depth'):
             depth = broker.get_depth(token)

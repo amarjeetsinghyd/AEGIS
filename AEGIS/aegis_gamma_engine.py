@@ -1,7 +1,7 @@
 # aegis_gamma_engine.py
-# AEGIS V2.0 — Adversarial Engine for Gamma Inception & Structural Exploitation
-# Production-ready, zero-allocation hot path, calibrated-parameter aware
-# Integrates natively with cascade_engine.py bucket cycle & signal queue
+# AEGIS V2.0 — Empirical Microstructure Impulse Engine
+# Reverse-engineered from 812 real >=10% clean option impulse moves (NIFTY & SENSEX)
+# Zero-allocation hot path, O(1) continuous confidence scoring (0 to 100).
 
 from __future__ import annotations
 import os
@@ -11,7 +11,7 @@ import math
 import time
 import logging
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Tuple, Optional, Any
 
 import numpy as np
@@ -26,949 +26,603 @@ if BASE_DIR not in sys.path:
 from common.logger import get_logger
 from common.config import get_data_dir
 
+try:
+    from AEGIS.core.microstructure_scorer import MicrostructureScorer
+    from AEGIS.core.regime_chop_gate import RegimeChopGate
+    from AEGIS.core.time_bar_engine import TimeBarEngine
+    from AEGIS.core.directional_persistence import DirectionalPersistenceEngine
+    from AEGIS.core.option_quality import OptionQualityEngine
+    from AEGIS.core.signal_state_machine import SignalStateMachine, SignalState
+    from AEGIS.core.outcome_telemetry import OutcomeTelemetryEngine
+    from AEGIS.core.entry_quality_engine import EntryQualityEngine
+except ImportError:
+    try:
+        from core.microstructure_scorer import MicrostructureScorer
+        from core.regime_chop_gate import RegimeChopGate
+        from core.time_bar_engine import TimeBarEngine
+        from core.directional_persistence import DirectionalPersistenceEngine
+        from core.option_quality import OptionQualityEngine
+        from core.signal_state_machine import SignalStateMachine, SignalState
+        from core.outcome_telemetry import OutcomeTelemetryEngine
+        from core.entry_quality_engine import EntryQualityEngine
+    except ImportError:
+        MicrostructureScorer = None
+        RegimeChopGate = None
+        TimeBarEngine = None
+        DirectionalPersistenceEngine = None
+        OptionQualityEngine = None
+        SignalStateMachine = None
+        OutcomeTelemetryEngine = None
+        EntryQualityEngine = None
+
 logger = get_logger("aegis_gamma")
 
 # ──────────────────────────────────────────────────────────────
 # CONSTANTS & CONFIGURATION
 # ──────────────────────────────────────────────────────────────
 N_STRIKES = 21          # ATM ±10
-N_LEVELS  = 5           # L1–L5
-N_TYPES   = 2           # 0=CE, 1=PE
 ATM_IDX   = N_STRIKES // 2
 
-# Bucket & timing
-BUCKET_TURNOVER_DEFAULT = 5_00_000.0   # ₹5 Lakhs for options contracts
-HAWKE_LOOKBACK_SEC      = 600
-HAWKE_BIN_SEC           = 10
-HAWKE_BINS              = HAWKE_LOOKBACK_SEC // HAWKE_BIN_SEC   # 60
-
-# Parameter file
 PARAM_DIR  = os.path.join(get_data_dir(), "params")
-PARAM_FILE = os.path.join(PARAM_DIR, "aegis_calibrated_params.json")
+PARAM_FILE = os.path.join(PARAM_DIR, "microstructure_weights.json")
 
 # ──────────────────────────────────────────────────────────────
-# BSM HELPERS (vectorized, used in bucket recompute only)
-# ──────────────────────────────────────────────────────────────
-def _bsm_d1(S, K, T, r, sigma):
-    return (np.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * np.sqrt(T))
-
-def _bsm_price(S, K, T, r, sigma, is_call=True):
-    d1 = _bsm_d1(S, K, T, r, sigma)
-    d2 = d1 - sigma * math.sqrt(max(T, 1e-6))
-    cdf_d1 = 0.5 * (1.0 + math.erf(d1 / math.sqrt(2.0)))
-    cdf_d2 = 0.5 * (1.0 + math.erf(d2 / math.sqrt(2.0)))
-    if is_call:
-        return max(0.0, S * cdf_d1 - K * math.exp(-r * T) * cdf_d2)
-    else:
-        return max(0.0, K * math.exp(-r * T) * (1.0 - cdf_d2) - S * (1.0 - cdf_d1))
-
-def _bsm_greeks(S, K, T, r, sigma, is_call=True):
-    """Returns (price, delta, gamma, speed, vega, theta, vanna, vomma) per strike."""
-    T = max(T, 1e-6)
-    sigma = max(sigma, 1e-4)
-    d1 = _bsm_d1(S, K, T, r, sigma)
-    d2 = d1 - sigma * math.sqrt(T)
-    pdf = math.exp(-0.5 * d1 * d1) / math.sqrt(2.0 * math.pi)
-    cdf_d1 = 0.5 * (1.0 + math.erf(d1 / math.sqrt(2.0)))
-    cdf_d2 = 0.5 * (1.0 + math.erf(d2 / math.sqrt(2.0)))
-
-    if is_call:
-        price = S * cdf_d1 - K * math.exp(-r * T) * cdf_d2
-        delta = cdf_d1
-        theta = (-S * sigma * pdf / (2.0 * math.sqrt(T))
-                 - r * K * math.exp(-r * T) * cdf_d2) / 365.0
-    else:
-        price = K * math.exp(-r * T) * (1.0 - cdf_d2) - S * (1.0 - cdf_d1)
-        delta = cdf_d1 - 1.0
-        theta = (-S * sigma * pdf / (2.0 * math.sqrt(T))
-                 + r * K * math.exp(-r * T) * (1.0 - cdf_d2)) / 365.0
-
-    gamma = pdf / (S * sigma * math.sqrt(T))
-    speed = -gamma / S * (d1 / (sigma * math.sqrt(T)) + 1.0)
-    vega  = S * math.sqrt(T) * pdf / 100.0          # per 1% vol
-    vanna = -gamma * d2 / sigma / 100.0           # dGamma/dσ per 1%
-    vomma = vega * d1 * d2 / sigma / 100.0        # dVega/dσ per 1%
-
-    return price, delta, gamma, speed, vega, theta, vanna, vomma
-
-# ──────────────────────────────────────────────────────────────
-# IV SOLVER (Newton + Bisection, O(1), used per-strike per bucket)
-# ──────────────────────────────────────────────────────────────
-def _impvol_newton(price, S, K, T, r=0.05, iv_guess=0.15, is_call=True):
-    iv_low, iv_high = 1e-4, 3.0
-    intrinsic = max(0.0, S - K) if is_call else max(0.0, K - S)
-    if price < intrinsic * 0.999 or price > S:
-        return np.nan
-
-    iv = np.clip(iv_guess, iv_low, iv_high)
-    for _ in range(5):
-        d1 = (math.log(S/K) + (r + 0.5*iv*iv)*T) / (iv*math.sqrt(T))
-        vega = S * math.sqrt(T) * math.exp(-0.5*d1*d1) / math.sqrt(2*math.pi)
-        if vega < 1e-8:
-            break
-        bs_price = _bsm_price(S, K, T, r, iv, is_call)
-        diff = bs_price - price
-        if abs(diff) < 1e-4:
-            return iv
-        iv_new = iv - diff / vega
-        if not (iv_low < iv_new < iv_high) or iv_new <= 0:
-            break
-        iv = iv_new
-
-    # Bisection fallback
-    iv = 0.5 * (iv_low + iv_high)
-    for _ in range(12):
-        bs_price = _bsm_price(S, K, T, r, iv, is_call)
-        if bs_price > price:
-            iv_high = iv
-        else:
-            iv_low = iv
-        if iv_high - iv_low < 1e-5:
-            return 0.5 * (iv_low + iv_high)
-        iv = 0.5 * (iv_low + iv_high)
-    return iv
-
-def _bsm_price(S, K, T, r, sigma, is_call=True):
-    d1 = (math.log(S/K) + (r + 0.5*sigma*sigma)*T) / (sigma*math.sqrt(T))
-    d2 = d1 - sigma*math.sqrt(T)
-    cdf_d1 = 0.5 * (1 + math.erf(d1 / math.sqrt(2)))
-    cdf_d2 = 0.5 * (1 + math.erf(d2 / math.sqrt(2)))
-    if is_call:
-        return S * cdf_d1 - K * math.exp(-r*T) * cdf_d2
-    else:
-        return K * math.exp(-r*T) * (1 - cdf_d2) - S * (1 - cdf_d1)
-
-# ──────────────────────────────────────────────────────────────
-# AEGIS ENGINE CLASS
+# AEGIS ENGINE CLASS (PURE EMPIRICAL MICROSTRUCTURE)
 # ──────────────────────────────────────────────────────────────
 class AegisGammaEngine:
     """
-    Detects & exploits gamma burst inception across ATM±10 strikes.
-    Zero-allocation hot path; all heavy math at bucket boundary.
+    AEGIS Empirical Microstructure Engine.
+    Detects institutional quote acceleration, deep order book vacuums, and cross-strike
+    gamma coherence to trigger high-conviction >=10% option impulse trades.
     """
 
     def __init__(
         self,
         token_to_symbol: Dict[str, str],
-        token_map: Dict[str, Dict],          # token → {'side':0/1, 'strike':float, 'expiry':datetime}
+        token_map: Dict[str, Dict],          # token -> {'side':0/1, 'strike':float, 'expiry':datetime}
         bucket_map: Dict[str, float] = None,
         strike_step: float = 100.0,
         underlying_tokens: set = None,
-        signal_queue: Any = None,            # cascade_engine's queue.Queue
+        signal_queue: Any = None,            # queue.Queue for AegisExecutionManager
         log_path: str = None,
     ):
         self.t2s = {str(k): str(v) for k, v in token_to_symbol.items()}
         self.token_map = {str(k): v for k, v in token_map.items()}
         self.bucket_map = bucket_map or {}
         self.strike_step = strike_step
-        self.underlying_tokens = underlying_tokens or {"26000", "1", "99919000"}
+        self.underlying_tokens = underlying_tokens or {"26000", "1", "99919000", "99926000"}
         self.signal_queue = signal_queue
+
+        # Build fast (side, strike) -> symbol lookup for cross-strike coherence
+        self.strike_to_symbol: Dict[Tuple[int, float], str] = {}
+        self.tick_ring: Dict[str, deque] = {}  # pre-sized below after P is loaded
+        # Rebuild is defined below as _rebuild_strike_to_symbol(); warm tick_ring after t2s known
 
         # ─── Load or default parameters ───
         self.P = self._load_or_default_params()
+        self.high_conviction_threshold = float(self.P.get("high_conviction_threshold", 75.0))
 
-        # ─── Per-symbol bucket accumulators ───
-        self.cur_tot_val: Dict[str, float] = {}
-        self.cur_tick_count: Dict[str, int] = {}
-        self.cur_max_tick_val: Dict[str, float] = {}
-        self.bucket_start_ts: Dict[str, float] = {}
+        # ─── Empirical Microstructure Scorer ───
+        weights_file = os.path.join(PARAM_DIR, "microstructure_weights.json")
+        if MicrostructureScorer is not None:
+            self.scorer = MicrostructureScorer(weights_path=weights_file, high_conviction_threshold=self.high_conviction_threshold)
+        else:
+            self.scorer = None
 
-        # ─── Global state tensors (pre-allocated, zero heap on hot path) ───
-        # Shape: [N_TYPES, N_STRIKES]  (CE=0, PE=1)
-        self.gamma_tensor      = np.zeros((N_TYPES, N_STRIKES), dtype=np.float32)
-        self.speed_tensor      = np.zeros((N_TYPES, N_STRIKES), dtype=np.float32)
-        self.iv_tensor         = np.full((N_TYPES, N_STRIKES), np.nan, dtype=np.float32)
-        self.vega_tensor       = np.zeros((N_TYPES, N_STRIKES), dtype=np.float32)
-        self.theta_tensor      = np.zeros((N_TYPES, N_STRIKES), dtype=np.float32)
-        self.vanna_tensor      = np.zeros((N_TYPES, N_STRIKES), dtype=np.float32)
-        self.vomma_tensor      = np.zeros((N_TYPES, N_STRIKES), dtype=np.float32)
-        self.oi_tensor         = np.ones((N_TYPES, N_STRIKES), dtype=np.float32)
+        if RegimeChopGate is not None:
+            self.chop_gate = RegimeChopGate(strike_step=self.strike_step, cooldown_sec=240.0)
+        else:
+            self.chop_gate = None
 
-        # Routing matrix [N_STRIKES, N_STRIKES] — rebuilt when Γ or ℓ change
-        self.route_matrix      = np.zeros((N_STRIKES, N_STRIKES), dtype=np.float32)
-        self._route_dirty      = True
+        # State Tracking
+        self.last_spot = 0.0
+        self.spot_history = deque(maxlen=600)  # (ts_sec, spot_price)
+        self.spot_ema_fast = 0.0
+        self.spot_ema_slow = 0.0
+        self.current_atm_strike = 0.0
+        self.last_atm_iv = 0.15
+        self.cooldowns: Dict[str, float] = {}  # sym -> last_signal_ts
+        self._pending: Dict[str, Dict] = {}
+        self.primed_strikes: Dict[str, Dict] = {}  # sym -> {"ts": float, "direction": str, "count": int}
+        self.required_bursts = int(self.P.get("required_bursts", 3))  # 3-Burst Triple Tap
+        self.min_burst_gap_sec = float(self.P.get("min_burst_gap_sec", 5.0))  # ≥ 5.0s between distinct bursts
+        self.max_burst_memory_sec = float(self.P.get("max_burst_memory_sec", 180.0))
+        self.spot_1m_drift_gate = float(self.P.get("spot_1m_drift_gate", 1.5))
+        self.option_cache: Dict[str, float] = {}
 
-        # Hawkes sufficient statistics
-        self.hawkes_z          = np.zeros(N_STRIKES, dtype=np.float32)   # exp kernel state
-        self.hawkes_bins       = np.zeros((HAWKE_BINS, N_STRIKES), dtype=np.uint32)
-        self._hawkes_bin_ptr   = 0
-        self._last_hawkes_ts   = 0.0
+        # V3 Horizon-Aligned Modules
+        telemetry_dir = os.path.join(PARAM_DIR, "..", "logs", "telemetry") if "PARAM_DIR" in globals() else "AEGIS/logs/telemetry"
+        self.time_bar_engine = TimeBarEngine(ema_period=9, atr_period=14) if TimeBarEngine is not None else None
+        self.persistence_engine = DirectionalPersistenceEngine(window_sec=60.0, sample_interval_sec=5.0) if DirectionalPersistenceEngine is not None else None
+        self.option_quality_engine = OptionQualityEngine(max_spread_pct=2.5, min_top5_depth_qty=500.0) if OptionQualityEngine is not None else None
+        self.signal_fsm = SignalStateMachine(max_trigger_freshness_sec=3.0, max_trigger_acceptable_sec=8.0) if SignalStateMachine is not None else None
+        self.eqs_engine = EntryQualityEngine(dispatch_threshold=float(self.P.get("eqs_dispatch_threshold", 70.0))) if EntryQualityEngine is not None else None
+        self.outcome_telemetry = OutcomeTelemetryEngine(log_dir=telemetry_dir) if OutcomeTelemetryEngine is not None else None
 
-        # Bucket accumulators (reset each bucket)
-        self.bucket_ofi        = np.zeros((N_TYPES, N_STRIKES), dtype=np.float32)
-        self.bucket_vacuum     = np.zeros((N_TYPES, N_STRIKES), dtype=np.float32)
-        self.bucket_whale      = np.zeros((N_TYPES, N_STRIKES), dtype=np.float32)
-        self.bucket_iv_atm     = 0.0
-        self.bucket_iv_change  = 0.0
-        self.bucket_theta_bleed = 0.0
-        self.bucket_start_iv_atm = 0.0
+        # Fill & Edge tracking
+        self.fill_latency_buf = np.zeros(500, dtype=np.float32)
+        self.post_fill_edge_buf = np.zeros(500, dtype=np.float32)
+        self.fill_ptr = 0
+        self._pending_edge_measures: List[Dict] = []
+        # Empirical Veto Gate from 5-day Backtest (Spikes avg 1.895 ticks/s vs controls 0.500)
+        self.min_tick_rate_gate = float(self.P.get("min_tick_rate_gate", 1.5))
 
-        # ─── L1-L5 Depth Tensors (shape: [2, N_STRIKES, N_LEVELS]) ───
-        self.bid_px            = np.zeros((N_TYPES, N_STRIKES, N_LEVELS), dtype=np.float32)
-        self.bid_qty           = np.zeros((N_TYPES, N_STRIKES, N_LEVELS), dtype=np.float32)
-        self.ask_px            = np.zeros((N_TYPES, N_STRIKES, N_LEVELS), dtype=np.float32)
-        self.ask_qty           = np.zeros((N_TYPES, N_STRIKES, N_LEVELS), dtype=np.float32)
-        self.prev_bid_px       = np.zeros((N_TYPES, N_STRIKES, N_LEVELS), dtype=np.float32)
-        self.prev_ask_px       = np.zeros((N_TYPES, N_STRIKES, N_LEVELS), dtype=np.float32)
+        # Compatibility attribute (deprecated, kept for dashboard schema — see audit P2.10)
+        self.gamma_tensor = np.zeros((2, N_STRIKES), dtype=np.float32)
 
-        # Realized vol tracking & Spot history
-        self.ema_sigma         = 0.15
-        self._last_spot_for_vol = 0.0
+        # Warm tick_ring & strike map after all symbols known (P1.4/P2.11)
+        self._rebuild_strike_to_symbol()
+        for sym in set(self.t2s.values()):
+            if sym not in self.tick_ring:
+                self.tick_ring[sym] = deque(maxlen=100)
 
-        # Latency / fill tracking (circular buffers, 500 trades)
-        self.fill_latency_buf    = np.zeros(500, dtype=np.float32)
-        self.post_fill_edge_buf  = np.zeros(500, dtype=np.float32)
-        self.fill_ptr            = 0
-        self._pending_edge_measure = []   # list of dicts for deferred edge calc
-        self._g6_validated       = False   # set True after calibration validates queue assumption
-
-        # Last spot & IV for warm-start
-        self.last_spot           = 0.0
-        self.current_atm_strike  = 0.0
-        self.last_atm_iv         = 0.15
-
-        # Logging
-        self.LOG_FILE = log_path or os.path.join(
-            get_data_dir(), "logs", f"aegis_live_{datetime.now().strftime('%Y-%m-%d')}.jsonl"
+        logger.info(
+            f"AEGIS Empirical Microstructure Engine initialised | "
+            f"Threshold={self.high_conviction_threshold:.1f} | MinTickRate={self.min_tick_rate_gate:.1f} | StrikeStep={self.strike_step}"
         )
-        os.makedirs(os.path.dirname(self.LOG_FILE), exist_ok=True)
 
-        logger.info("AEGIS Gamma Engine initialised — zero-allocation hot path active")
-
-    # ═══════════════════════════════════════════════════════════
-    # PARAMETER LOADING
-    # ═══════════════════════════════════════════════════════════
     def _load_or_default_params(self) -> Dict:
-        """Load calibrated params JSON; if missing, use reverse-engineered OTM 1-5 prior medians."""
+        """Load calibrated empirical microstructure weights."""
         if os.path.exists(PARAM_FILE):
             try:
-                with open(PARAM_FILE, 'r') as f:
+                with open(PARAM_FILE, "r") as f:
                     params = json.load(f)
-                logger.info(f"Loaded calibrated params from {PARAM_FILE}")
+                logger.info(f"Loaded calibrated empirical params from {PARAM_FILE}")
                 return params
             except Exception as e:
-                logger.warning(f"Failed to load {PARAM_FILE}: {e} — falling back to priors")
+                logger.warning(f"Failed to load {PARAM_FILE}: {e}")
 
-        # ─── DATA-DRIVEN REVERSE-ENGINEERED PRIORS (from 1.15M L2 options ticks) ───
         priors = {
-            # Structural
-            "liquidity_decay_len": 2.0,          # ℓ
-            "market_depth_inv": 1.5,             # η (bps/₹Cr)
-            "hawkes_base_excitation": 0.15,      # α₀
-            "stress_modulation": 1.0,            # γ
-            "kappa_vega": 0.5,                   # κ_vega (bps/₹Cr)
-            "psi_meanrev": 0.1,                  # ψ (1/bucket)
-
-            # Hard Gates (Phase 1)
-            "theta_1_csldt": 0.12,               # θ₁ bps (median of real blasts = 0.17)
-            "theta_2_ngao": 0.50,                # θ₂ bps/₹Cr
-            "theta_3_low": 0.40,                 # θ₃ˡ (median of real blasts = 0.52)
-            "theta_3_high": 1.25,                # θ₃ᵘ
-            "theta_4_coherence": 1,              # θ₄ strikes (1-3 OTM sweet spot)
-            "theta_5_vpin_pct": 75,              # θ₅ percentile
-            "theta_6_short": 0.3,                # τ_short
-            "theta_6_med": 0.4,                  # τ_med
-            "theta_6_long": 0.5,                 # τ_long
-            "nu_max_iv_decay": 15.0,             # ν_max bps/bucket
-            "theta_theta_bleed": 1.5,            # θ_θ %/bucket
-
-            # Conviction Weights & Scales (Phase 2)
-            "w_csldt": 2.0, "sigma_csldt": 0.20,
-            "w_ngao": 1.5,  "sigma_ngao": 1.0,
-            "w_hawkes": 2.0, "sigma_hawkes": 0.50,
-            "w_coherence": 1.0, "sigma_coherence": 1.0,
-            "w_vacuum": 1.5, "sigma_vacuum": 10.0,
-            "w_mmretreat": 1.0, "sigma_mmretreat": 0.5,
-            "w_syndiv": 1.0, "sigma_syndiv": 5.0,
-            "w_vega": 1.0, "sigma_vega": 10.0,
-            "w_theta": 0.5, "sigma_theta": 1.0,
-            "conviction_threshold_frac": 0.45,   # τ_conv = frac * Σw
-
-            # Exit / Decay
-            "exit_w": [0.5, 0.3, 0.2],           # w_exit
-            "xi_soft": 0.60,
-            "xi_hard": 0.85,
-            "lambda_decay": 0.02,                # per second
-            "hold_time_sec": 30.0,               # T_hold
-            "cost_bps": 2.0,                     # round-trip cost buffer
+            "model_name": "AEGIS_Empirical_Microstructure_Scorer_v1",
+            "high_conviction_threshold": 75.0,
+            "moderate_conviction_threshold": 60.0,
+            "cost_bps": 2.0,
+            "hold_time_sec": 30.0,
+            "burst_cooldown_sec": 60.0
         }
-        logger.info("Using reverse-engineered data-driven prior parameters (OTM 1-3 calibrated)")
         return priors
 
     def reload_params(self):
-        """Hot-reload params file (call from admin endpoint)."""
+        """Hot-reload params from disk."""
         self.P = self._load_or_default_params()
-        logger.info("Parameters reloaded")
+        self.high_conviction_threshold = float(self.P.get("high_conviction_threshold", 75.0))
+        self.min_tick_rate_gate = float(self.P.get("min_tick_rate_gate", 1.5))
+        if self.scorer is not None:
+            weights_file = os.path.join(PARAM_DIR, "microstructure_weights.json")
+            self.scorer = MicrostructureScorer(weights_path=weights_file, high_conviction_threshold=self.high_conviction_threshold)
+        logger.info(f"Parameters reloaded | New Threshold: {self.high_conviction_threshold} | MinTickRate: {self.min_tick_rate_gate}")
 
     # ═══════════════════════════════════════════════════════════
     # HOT PATH: PER-TICK PROCESSING (O(1), ZERO ALLOC)
     # ═══════════════════════════════════════════════════════════
     def on_tick_parsed(self, tick) -> None:
-        """
-        Entry from cascade_engine's zero-copy ParsedTick.
-        Updates sufficient statistics only; heavy math at bucket boundary.
-        """
+        """Processes zero-copy incoming tick from market WebSocket."""
         try:
-            sym = self.t2s.get(tick.tok)
+            tok_str = str(tick.tok)
+            sym = self.t2s.get(tok_str) or getattr(tick, "sym", None)
             if not sym:
                 return
 
-            now = tick.ts
-            lp = tick.lp
+            now = float(tick.ts) if float(tick.ts) > 1e9 else float(tick.ts) * 1000.0
+            now_sec = now / 1000.0 if now > 1e11 else now
+            lp = float(tick.lp)
             if lp <= 0:
                 return
 
-            # ─── Underlying tick ───
-            if tick.tok in self.underlying_tokens:
-                self._on_underlying_tick(sym, lp, now)
+            # ─── Underlying Cash Index Tick ───
+            if tok_str in self.underlying_tokens:
+                self._on_underlying_tick(sym, lp, now_sec)
                 return
 
-            # ─── Option tick ───
-            info = self.token_map.get(tick.tok)
+            # ─── Option Contract Tick ───
+            self.option_cache[tok_str] = lp
+            if self.outcome_telemetry:
+                self.outcome_telemetry.update_tick(sym, lp, now_sec)
+
+            info = self.token_map.get(tok_str)
             if not info:
                 return
 
-            side = info['side']          # 0=CE, 1=PE
-            strike = info['strike']
-            expiry = info.get('expiry')
+            side = info["side"]          # 0=CE, 1=PE
+            strike = float(info["strike"])
 
-            # Map strike to index
-            if self.last_spot <= 0:
-                return
-            atm = self.current_atm_strike if self.current_atm_strike > 0 else round(self.last_spot / self.strike_step) * self.strike_step
-            offset = int(round((strike - atm) / self.strike_step))
-            if offset < -10 or offset > 10:
-                return
-            idx = offset + ATM_IDX
+            # [NEW] O(1) Rolling 2.0s Time-Window Tick Rate Calculation
+            if sym not in self.tick_ring:
+                self.tick_ring[sym] = deque(maxlen=100)
+                
+            ring = self.tick_ring[sym]
+            ring.append(now_sec)
+            while ring and ring[0] < (now_sec - 2.0):
+                ring.popleft()
+            live_tick_rate = len(ring) / 2.0
 
-            # ─── L1-L5 Depth Update ───
-            if hasattr(tick, 'bp') and hasattr(tick, 'bq') and hasattr(tick, 'sp') and hasattr(tick, 'sq'):
-                for l in range(min(len(tick.bp), N_LEVELS)):
-                    self.bid_px[side, idx, l] = tick.bp[l]
-                    self.bid_qty[side, idx, l] = tick.bq[l]
-                    self.ask_px[side, idx, l] = tick.sp[l]
-                    self.ask_qty[side, idx, l] = tick.sq[l]
-
-            # ─── Bucket accumulators ───
-            tv = tick.vol * lp if tick.vol > 0 else 0.0
-            self.cur_tot_val[sym] = self.cur_tot_val.get(sym, 0.0) + tv
-            self.cur_tick_count[sym] = self.cur_tick_count.get(sym, 0) + 1
-            self.cur_max_tick_val[sym] = max(self.cur_max_tick_val.get(sym, 0.0), tv)
-            if sym not in self.bucket_start_ts:
-                self.bucket_start_ts[sym] = now
-
-            # ─── Tick-rule volume attribution (L1 only) ───
-            bp1 = tick.bp[0] if tick.bp[0] > 0 else 0.0
-            ap1 = tick.sp[0] if tick.sp[0] > 0 else 0.0
-            dvol = max(0.0, tick.vol - getattr(self, f'_last_vol_{sym}_{side}_{idx}', 0.0))
-            setattr(self, f'_last_vol_{sym}_{side}_{idx}', tick.vol)
-
-            if dvol > 0:
-                if ap1 > 0 and lp >= ap1:
-                    self.bucket_ofi[side, idx] += dvol
-                elif bp1 > 0 and lp <= bp1:
-                    self.bucket_ofi[side, idx] -= dvol
-                else:
-                    self.bucket_ofi[side, idx] += 0.0  # mid — no OFI info
-
-                # Whale concentration (max single-tick volume in bucket)
-                self.bucket_whale[side, idx] = max(self.bucket_whale[side, idx], dvol)
-
-            # ─── L1 Queue decay for QPASM (bid/ask cancellation proxy) ───
-            # We track L1 qty change not explained by trades
-            last_bq = getattr(self, f'_last_bq_{sym}_{side}_{idx}', 0.0)
-            last_aq = getattr(self, f'_last_aq_{sym}_{side}_{idx}', 0.0)
-            curr_bq = tick.bq[0] if tick.bq[0] > 0 else 0.0
-            curr_aq = tick.sq[0] if tick.sq[0] > 0 else 0.0
-
-            bid_cancel = max(0.0, last_bq - curr_bq)
-            ask_cancel = max(0.0, last_aq - curr_aq)
-            # Net vacuum proxy: cancellations on the side we're *not* hitting
-            if side == 0:  # CE
-                self.bucket_vacuum[0, idx] += ask_cancel * ap1 - bid_cancel * bp1
+            # Extract Level 1-5 Depth - Scalar O(1) Math (Invariant I1)
+            if hasattr(tick, "bp") and hasattr(tick, "sp") and len(tick.bp) >= 5 and len(tick.sp) >= 5:
+                bp1 = float(tick.bp[0])
+                sp1 = float(tick.sp[0])
+                b1 = float(tick.bq[0])
+                a1 = float(tick.sq[0])
+                b2 = float(tick.bq[1])
+                a2 = float(tick.sq[1])
+                b3 = float(tick.bq[2])
+                a3 = float(tick.sq[2])
+                b4 = float(tick.bq[3])
+                a4 = float(tick.sq[3])
+                b5 = float(tick.bq[4])
+                a5 = float(tick.sq[4])
             else:
-                self.bucket_vacuum[1, idx] += bid_cancel * bp1 - ask_cancel * ap1
+                bp1 = float(getattr(tick, "bp1", 0.0) or 0.0)
+                sp1 = float(getattr(tick, "sp1", 0.0) or 0.0)
+                b1 = float(getattr(tick, "bq1", 0.0) or 0.0)
+                a1 = float(getattr(tick, "sq1", 0.0) or 0.0)
+                b2 = float(getattr(tick, "bq2", 0.0) or 0.0)
+                a2 = float(getattr(tick, "sq2", 0.0) or 0.0)
+                b3 = float(getattr(tick, "bq3", 0.0) or 0.0)
+                a3 = float(getattr(tick, "sq3", 0.0) or 0.0)
+                b4 = float(getattr(tick, "bq4", 0.0) or 0.0)
+                a4 = float(getattr(tick, "sq4", 0.0) or 0.0)
+                b5 = float(getattr(tick, "bq5", 0.0) or 0.0)
+                a5 = float(getattr(tick, "sq5", 0.0) or 0.0)
 
-            setattr(self, f'_last_bq_{sym}_{side}_{idx}', curr_bq)
-            setattr(self, f'_last_aq_{sym}_{side}_{idx}', curr_aq)
+            tot_bid_depth = b1 + b2 + b3 + b4 + b5
+            tot_ask_depth = a1 + a2 + a3 + a4 + a5
 
-            # ─── Hawkes bin update (10-sec bins) ───
-            self._update_hawkes_bin(now, idx)
+            if self.scorer is not None:
+                self.scorer.update_tick(sym, now_sec, lp, bp1, sp1, b1, a1, b2, a2, b3, a3, b4, a4, b5, a5)
 
-            # ─── Bucket boundary check ───
-            target = self.bucket_map.get(sym, BUCKET_TURNOVER_DEFAULT)
-            if self.cur_tot_val[sym] >= target or self.cur_tick_count.get(sym, 0) >= 20:
-                self._process_bucket(sym, lp, now)
+                # Compute adjacent OTM returns (OTM 1 to 4) and opposite side return
+                otm_rets = {}
+                for k in (1, 2, 3, 4):
+                    otm_k_strike = strike + k * self.strike_step if side == 0 else strike - k * self.strike_step
+                    otm_sym = self.strike_to_symbol.get((side, otm_k_strike))
+                    if otm_sym and otm_sym in self.scorer.history:
+                        buf_otm = self.scorer.history[otm_sym]
+                        if len(buf_otm) >= 2 and buf_otm[0][1] > 0:
+                            otm_rets[k] = (buf_otm[-1][1] - buf_otm[0][1]) / buf_otm[0][1]
+
+                opp_sym = self.strike_to_symbol.get((1 - side, strike))
+                opp_ret = 0.0
+                if opp_sym and opp_sym in self.scorer.history:
+                    buf_opp = self.scorer.history[opp_sym]
+                    if len(buf_opp) >= 2 and buf_opp[0][1] > 0:
+                        opp_ret = (buf_opp[-1][1] - buf_opp[0][1]) / buf_opp[0][1]
+
+                # Compute real-time empirical confidence score
+                score, is_high_conv, feats = self.scorer.compute_score(
+                    sym, 
+                    now_sec,
+                    adjacent_otm_returns=otm_rets,
+                    opp_side_return=opp_ret
+                )
+                
+                # Check High Conviction Trigger
+                if is_high_conv and score >= self.high_conviction_threshold:
+                    last_fired = self.cooldowns.get(sym, 0.0)
+                    cooldown_dur = float(self.P.get("burst_cooldown_sec", 60.0))
+                    if now_sec - last_fired >= cooldown_dur:
+                        # [OCCAM GATE] Veto if market is quiet (low intensity)
+                        if live_tick_rate < self.min_tick_rate_gate:
+                            logger.info(
+                                f"[OCCAM VETO] {sym} Score={score:.1f} tick_rate={live_tick_rate:.2f} < {self.min_tick_rate_gate:.1f}"
+                            )
+                            return
+
+                        # V3 4-Domain Pipeline Evaluation
+                        direction = "UP" if side == 0 else "DOWN"  # 0=CE -> UP, 1=PE -> DOWN
+
+                        # Domain 1: Permission (Higher Timeframe Trend & Structure)
+                        has_permission = True
+                        perm_reason = "permission_ok"
+                        perm_metrics = {}
+                        if self.time_bar_engine:
+                            has_permission, perm_reason, perm_metrics = self.time_bar_engine.get_permission_state(direction)
+                            if not has_permission and perm_reason != "warmup_permissive":
+                                logger.info(f"[PERMISSION VETO] {sym} ({direction}) blocked by '{perm_reason}'")
+                                return
+
+                        # Domain 2: Confirmation (60s Signed Persistence)
+                        pers_confirmed = True
+                        pers_score = 1.0
+                        pers_metrics = {}
+                        if self.persistence_engine:
+                            pers_confirmed, pers_score, pers_metrics = self.persistence_engine.evaluate_persistence(direction)
+
+                        # Domain 3 & 4: Option Tradability & Quality
+                        opt_qualified = True
+                        opt_reason = "option_ok"
+                        opt_metrics = {}
+                        if self.option_quality_engine:
+                            opt_qualified, opt_reason, opt_metrics = self.option_quality_engine.qualify_option(
+                                sym=sym,
+                                lp=lp,
+                                bp1=bp1,
+                                sp1=sp1,
+                                top5_bid_qty=tot_bid_depth,
+                                top5_ask_qty=tot_ask_depth,
+                            )
+                            if not opt_qualified:
+                                logger.info(f"[OPTION QUALITY VETO] {sym} blocked: {opt_reason}")
+                                return
+
+                        # Centralized Signal FSM Lifecycle Evaluation
+                        fsm_state = None
+                        should_fire = False
+                        fsm_reason = "direct"
+                        if self.signal_fsm:
+                            fsm_state, should_fire, fsm_reason = self.signal_fsm.update_trigger(
+                                sym=sym,
+                                now_sec=now_sec,
+                                direction=direction,
+                                micro_score=score,
+                                has_permission=has_permission,
+                                persistence_confirmed=pers_confirmed,
+                                option_qualified=opt_qualified,
+                            )
+                            if not should_fire:
+                                if fsm_state == SignalState.PRIMED and fsm_reason.startswith("primed"):
+                                    logger.info(f"[AEGIS V3 PRIMED] {sym} ({direction}) | Score: {score:.1f}/100 | FSM: PRIMED | Awaiting persistence & confirmation...")
+                                return
+                        else:
+                            should_fire = is_high_conv and score >= self.high_conviction_threshold
+
+                        if should_fire:
+                            trigger_age = 0.5
+                            if self.signal_fsm:
+                                trigger_age = now_sec - self.signal_fsm.get_or_create(sym).last_trigger_ts
+                            
+                            eqs = 80.0
+                            is_eqs_qual = True
+                            eqs_breakdown = {}
+                            if self.eqs_engine:
+                                eqs, is_eqs_qual, eqs_breakdown = self.eqs_engine.compute_eqs(
+                                    ema_1m_slope=perm_metrics.get("ema_1m_slope", 0.0),
+                                    ema_3m_slope=perm_metrics.get("ema_3m_slope", 0.0),
+                                    atr_ratio=perm_metrics.get("atr_ratio", 1.0),
+                                    market_structure=perm_metrics.get("market_structure", "NEUTRAL"),
+                                    direction=direction,
+                                    persistence_score=pers_score,
+                                    opposite_count=pers_metrics.get("opposite_count", 0),
+                                    micro_score=score,
+                                    trigger_age_sec=trigger_age,
+                                    spread_pct=opt_metrics.get("spread_pct", 0.5),
+                                    total_depth_qty=tot_bid_depth + tot_ask_depth,
+                                )
+
+                            if is_eqs_qual:
+                                event_id = f"{sym}_{int(now_sec*1000)}"
+                                if self.outcome_telemetry:
+                                    self.outcome_telemetry.register_entry(
+                                        event_id=event_id,
+                                        symbol=sym,
+                                        direction=direction,
+                                        entry_ts=now_sec,
+                                        entry_opt_price=lp,
+                                        entry_spot_price=self.last_spot,
+                                        eqs_score=eqs,
+                                        features_snapshot={**feats, **eqs_breakdown, **perm_metrics},
+                                    )
+                                if self.signal_fsm:
+                                    self.signal_fsm.register_trade_executed(sym, now_sec)
+
+                                self.cooldowns[sym] = now_sec
+                                logger.info(
+                                    f"[AEGIS V3 FIRED] {sym} ({direction}) | EQS: {eqs:.1f}/100 | MicroScore: {score:.1f} | "
+                                    f"Persist: {pers_score:.2f} | Struct: {perm_metrics.get('market_structure', 'N/A')} | "
+                                    f"ATR_Ratio: {perm_metrics.get('atr_ratio', 1.0):.2f} | Spread: {opt_metrics.get('spread_pct', 0.5):.2f}%"
+                                )
+                                self._emit_signal(
+                                    sym=sym,
+                                    lp=lp,
+                                    direction=direction,
+                                    conviction=score,
+                                    gates={
+                                        "permission_granted": has_permission,
+                                        "persistence_confirmed": pers_confirmed,
+                                        "option_qualified": opt_qualified,
+                                        "eqs_qualified": is_eqs_qual,
+                                    },
+                                    metrics={
+                                        "eqs_score": eqs,
+                                        "microstructure_score": round(score, 2),
+                                        "persistence_score": round(pers_score, 3),
+                                        "live_tick_rate": round(live_tick_rate, 2),
+                                        "strike": strike,
+                                        "side": "CE" if side == 0 else "PE",
+                                        **feats,
+                                        **eqs_breakdown,
+                                        **perm_metrics,
+                                    }
+                                )
 
         except Exception as e:
             logger.error(f"AEGIS on_tick_parsed error: {e}", exc_info=True)
 
-    def _update_realized_vol(self, spot: float):
-        """High-frequency realized volatility smoothing directly from spot price returns."""
-        if self._last_spot_for_vol > 0 and spot > 0:
-            ret = math.log(spot / self._last_spot_for_vol)
-            # 1-sec annualized return variance proxy
-            inst_vol = abs(ret) * math.sqrt(252 * 375 * 60)
-            inst_vol = min(max(inst_vol, 0.08), 0.75)
-            self.ema_sigma = 0.95 * self.ema_sigma + 0.05 * inst_vol
-            self.last_atm_iv = self.ema_sigma
-        self._last_spot_for_vol = spot
-
-    def _on_underlying_tick(self, sym: str, lp: float, now: float):
-        """Processes underlying Spot price ticks and manages dynamic ATM realignment."""
+    def _on_underlying_tick(self, sym: str, lp: float, now_sec: float):
+        """Processes underlying Spot price ticks and manages dynamic ATM strike alignment."""
         if lp <= 0:
             return
         self.last_spot = lp
-        self._update_realized_vol(lp)
+        self.spot_history.append((now_sec, lp))
+
+        if self.chop_gate:
+            self.chop_gate.update(lp, now_sec)
+
+        # 1. Update V3 TimeBarEngine
+        if self.time_bar_engine:
+            self.time_bar_engine.update_tick(price=lp, ts_sec=now_sec)
+
+        # 2. Update V3 60s Directional Persistence Snapshot every 5s
+        if self.persistence_engine and self.persistence_engine.should_sample(now_sec):
+            curr_dir = "NEUTRAL"
+            drift_5s = 0.0
+            if self.time_bar_engine and self.time_bar_engine.bars_1m:
+                drift_5s = lp - self.time_bar_engine.bars_1m[-1].open
+                if self.time_bar_engine.ema_1m_slope > 0.1:
+                    curr_dir = "UP"
+                elif self.time_bar_engine.ema_1m_slope < -0.1:
+                    curr_dir = "DOWN"
+            elif len(self.spot_history) >= 5:
+                drift_5s = lp - self.spot_history[-5][1]
+                if drift_5s > 0.5:
+                    curr_dir = "UP"
+                elif drift_5s < -0.5:
+                    curr_dir = "DOWN"
+
+            self.persistence_engine.record_snapshot(
+                now_sec=now_sec,
+                direction=curr_dir,
+                micro_score=75.0 if curr_dir != "NEUTRAL" else 50.0,
+                spot_drift=drift_5s,
+            )
+
+        # Prune older than 300s (5 min)
+        cutoff = now_sec - 300.0
+        while self.spot_history and self.spot_history[0][0] < cutoff:
+            self.spot_history.popleft()
+
+        # Update fast (1-min) and slow (5-min) Spot EMAs
+        if self.spot_ema_fast == 0.0:
+            self.spot_ema_fast = lp
+            self.spot_ema_slow = lp
+        else:
+            self.spot_ema_fast = 0.05 * lp + 0.95 * self.spot_ema_fast
+            self.spot_ema_slow = 0.01 * lp + 0.99 * self.spot_ema_slow
+
         new_atm = round(lp / self.strike_step) * self.strike_step
         if self.current_atm_strike == 0.0:
             self.current_atm_strike = new_atm
         elif new_atm != self.current_atm_strike:
             shift = int(round((new_atm - self.current_atm_strike) / self.strike_step))
             if shift != 0:
-                self._roll_atm_state(shift)
                 self.current_atm_strike = new_atm
+                logger.info(f"[AEGIS] Dynamic ATM roll: shift={shift:+d} | New ATM={self.current_atm_strike:.0f}")
 
-    def _roll_atm_state(self, shift: int):
-        """
-        Dynamically shifts strike-indexed tensors when Spot moves across strike boundaries.
-        shift > 0 means Spot moved UP (new ATM is higher strike -> shifts grid left by shift).
-        shift < 0 means Spot moved DOWN (new ATM is lower strike -> shifts grid right by -shift).
-        """
-        try:
-            if abs(shift) >= N_STRIKES:
-                self.gamma_tensor.fill(0)
-                self.speed_tensor.fill(0)
-                self.iv_tensor.fill(np.nan)
-                self.vega_tensor.fill(0)
-                self.theta_tensor.fill(0)
-                self.vanna_tensor.fill(0)
-                self.vomma_tensor.fill(0)
-                self.hawkes_bins.fill(0)
-                self.hawkes_z.fill(0)
-                self.bucket_ofi.fill(0)
-                self.bucket_vacuum.fill(0)
-                self.bucket_whale.fill(0)
-                self.bid_px.fill(0)
-                self.bid_qty.fill(0)
-                self.ask_px.fill(0)
-                self.ask_qty.fill(0)
-                self.prev_bid_px.fill(0)
-                self.prev_ask_px.fill(0)
+    def get_spot_drift(self, now_sec: float, lookback_sec: float = 60.0) -> float:
+        """Returns the spot price drift (current_spot - spot_lookback_ago)."""
+        if not self.spot_history or self.last_spot <= 0:
+            return 0.0
+        target_ts = now_sec - lookback_sec
+        ref_price = self.spot_history[0][1]
+        for ts, price in self.spot_history:
+            if ts <= target_ts:
+                ref_price = price
             else:
-                # Roll state along strike dimension (-shift moves higher strikes to lower indices)
-                self.gamma_tensor = np.roll(self.gamma_tensor, -shift, axis=1)
-                self.speed_tensor = np.roll(self.speed_tensor, -shift, axis=1)
-                self.iv_tensor = np.roll(self.iv_tensor, -shift, axis=1)
-                self.vega_tensor = np.roll(self.vega_tensor, -shift, axis=1)
-                self.theta_tensor = np.roll(self.theta_tensor, -shift, axis=1)
-                self.vanna_tensor = np.roll(self.vanna_tensor, -shift, axis=1)
-                self.vomma_tensor = np.roll(self.vomma_tensor, -shift, axis=1)
-                self.hawkes_bins = np.roll(self.hawkes_bins, -shift, axis=1)
-                self.hawkes_z = np.roll(self.hawkes_z, -shift)
-                self.bucket_ofi = np.roll(self.bucket_ofi, -shift, axis=1)
-                self.bucket_vacuum = np.roll(self.bucket_vacuum, -shift, axis=1)
-                self.bucket_whale = np.roll(self.bucket_whale, -shift, axis=1)
+                break
+        return self.last_spot - ref_price
 
-                # Roll L1-L5 Depth tensors (shape [2, N_STRIKES, N_LEVELS]) along axis 1
-                self.bid_px = np.roll(self.bid_px, -shift, axis=1)
-                self.bid_qty = np.roll(self.bid_qty, -shift, axis=1)
-                self.ask_px = np.roll(self.ask_px, -shift, axis=1)
-                self.ask_qty = np.roll(self.ask_qty, -shift, axis=1)
-                self.prev_bid_px = np.roll(self.prev_bid_px, -shift, axis=1)
-                self.prev_ask_px = np.roll(self.prev_ask_px, -shift, axis=1)
+    def _rebuild_strike_to_symbol(self):
+        """Rebuild (side,strike)→symbol after token-map refresh (fixes P1.4 universe drift)."""
+        self.strike_to_symbol.clear()
+        for tok, info in self.token_map.items():
+            sym_name = self.t2s.get(str(tok))
+            if sym_name and "side" in info and "strike" in info:
+                try:
+                    self.strike_to_symbol[(int(info["side"]), float(info["strike"]))] = sym_name
+                except Exception:
+                    continue
 
-                # Zero out newly exposed edges
-                if shift > 0:
-                    self.gamma_tensor[:, -shift:] = 0
-                    self.speed_tensor[:, -shift:] = 0
-                    self.iv_tensor[:, -shift:] = np.nan
-                    self.vega_tensor[:, -shift:] = 0
-                    self.theta_tensor[:, -shift:] = 0
-                    self.vanna_tensor[:, -shift:] = 0
-                    self.vomma_tensor[:, -shift:] = 0
-                    self.hawkes_bins[:, -shift:] = 0
-                    self.hawkes_z[-shift:] = 0
-                    self.bucket_ofi[:, -shift:] = 0
-                    self.bucket_vacuum[:, -shift:] = 0
-                    self.bucket_whale[:, -shift:] = 0
-                    self.bid_px[:, -shift:, :] = 0
-                    self.bid_qty[:, -shift:, :] = 0
-                    self.ask_px[:, -shift:, :] = 0
-                    self.ask_qty[:, -shift:, :] = 0
-                    self.prev_bid_px[:, -shift:, :] = 0
-                    self.prev_ask_px[:, -shift:, :] = 0
-                else:
-                    self.gamma_tensor[:, :-shift] = 0
-                    self.speed_tensor[:, :-shift] = 0
-                    self.iv_tensor[:, :-shift] = np.nan
-                    self.vega_tensor[:, :-shift] = 0
-                    self.theta_tensor[:, :-shift] = 0
-                    self.vanna_tensor[:, :-shift] = 0
-                    self.vomma_tensor[:, :-shift] = 0
-                    self.hawkes_bins[:, :-shift] = 0
-                    self.hawkes_z[:-shift] = 0
-                    self.bucket_ofi[:, :-shift] = 0
-                    self.bucket_vacuum[:, :-shift] = 0
-                    self.bucket_whale[:, :-shift] = 0
-                    self.bid_px[:, :-shift, :] = 0
-                    self.bid_qty[:, :-shift, :] = 0
-                    self.ask_px[:, :-shift, :] = 0
-                    self.ask_qty[:, :-shift, :] = 0
-                    self.prev_bid_px[:, :-shift, :] = 0
-                    self.prev_ask_px[:, :-shift, :] = 0
-
-            self._route_dirty = True
-            logger.info(f"[AEGIS] Dynamic ATM roll performed: shift={shift:+d} strikes | New ATM={self.current_atm_strike}")
-        except Exception as e:
-            logger.error(f"Error rolling ATM state by {shift}: {e}", exc_info=True)
+    def refresh_token_maps(self, token_to_symbol: Dict[str, str], token_map: Dict[str, Dict]):
+        """Hot-refresh after expiry roll / ATM rebuild (called by aegis_main on 1-min boundary)."""
+        self.t2s = {str(k): str(v) for k, v in token_to_symbol.items()}
+        self.token_map = {str(k): v for k, v in token_map.items()}
+        self._rebuild_strike_to_symbol()
+        # Warm tick_ring for any new symbols without disturbing existing deques
+        for sym in self.t2s.values():
+            if sym not in self.tick_ring:
+                self.tick_ring[sym] = deque(maxlen=100)
+        logger.info(f"[AEGIS] Token maps refreshed — {len(self.token_map)} tokens, {len(self.strike_to_symbol)} strikes")
 
     def shift_atm(self, shift: int, new_atm: float = 0.0):
-        """Public method for periodic or boundary ATM strike shifts."""
+        """External shift method."""
         if new_atm > 0:
             self.current_atm_strike = new_atm
-        if shift != 0:
-            self._roll_atm_state(shift)
 
-    def _update_hawkes_bin(self, now: float, strike_idx: int):
-        """Exponential kernel sufficient statistic update."""
-        if self._last_hawkes_ts == 0.0:
-            self._last_hawkes_ts = now
-
-        # Advance bin pointer if needed
-        bins_advanced = int((now - self._last_hawkes_ts) // HAWKE_BIN_SEC)
-        if bins_advanced > 0:
-            for _ in range(min(bins_advanced, HAWKE_BINS)):
-                self._hawkes_bin_ptr = (self._hawkes_bin_ptr + 1) % HAWKE_BINS
-                self.hawkes_bins[self._hawkes_bin_ptr, :] = 0
-            self._last_hawkes_ts += bins_advanced * HAWKE_BIN_SEC
-
-        # Increment current bin
-        self.hawkes_bins[self._hawkes_bin_ptr, strike_idx] += 1
-
-        # Update exponential kernel state: z ← e^{-βΔt} z + 1
-        beta = 1.0 / 30.0  # 30-sec decay
-        dt = now - self._last_hawkes_ts
-        decay = math.exp(-beta * dt)
-        self.hawkes_z *= decay
-        self.hawkes_z[strike_idx] += 1.0
-
-    # ═══════════════════════════════════════════════════════════
-    # BUCKET BOUNDARY: HEAVY MATH & SIGNAL GENERATION
-    # ═══════════════════════════════════════════════════════════
-    def _process_bucket(self, sym: str, lp: float, now: float):
-        """Full AEGIS recompute at bucket turnover."""
-        try:
-            # 1. Update BSM tensors (gamma, speed, IV, vega, theta, vanna, vomma)
-            self._update_bsm_tensors(lp, now)
-
-            # 2. Rebuild route matrix if needed
-            if self._route_dirty:
-                self._rebuild_route_matrix()
-
-            # 3. CSLDT: cross-strike liquidity displacement
-            gamma_per_strike = self.gamma_tensor.sum(axis=0)
-            ofi_per_strike = self.bucket_ofi.sum(axis=0)
-            grad_L = self.route_matrix.T @ (gamma_per_strike * ofi_per_strike)
-            csldt_mag = float(np.abs(grad_L).sum())
-
-            # 4. NGAO: non-linear gamma acceleration
-            V_oe = float(self.bucket_ofi.sum())
-            sum_gamma = float(self.gamma_tensor.sum())
-            sum_speed = float(self.speed_tensor.sum() + self.vanna_tensor.sum() * self.bucket_iv_change)
-            ngaccel = self._ngao_acceleration(V_oe, sum_gamma, sum_speed, self.P["market_depth_inv"])
-            ngAO = ngaccel * V_oe
-
-            # 5. Hawkes branching ratio
-            B = self._hawkes_branching()
-
-            # 6. Multi-strike coherence
-            n_coherent = self._coherent_strikes()
-
-            # 7. VPIN gate (from cascade_engine's toxicity history — we proxy here)
-            vpin_gate = self._vpin_gate()
-
-            # 8. Adaptive microprice alignment (G6)
-            align_ok = self._adaptive_microprice_align()
-
-            # 9. Vega drag veto (G7) — HARD BLOCK
-            vega_veto = self.bucket_iv_change >= -self.P["nu_max_iv_decay"]
-
-            # 10. Theta bleed (G8) — SOFT
-            theta_ok = self.bucket_theta_bleed <= self.P["theta_theta_bleed"]
-
-            # 11. Vanna alignment (G9)
-            vanna_ok = self._vanna_alignment()
-
-            # ─── Phase 1 Hard Structural Gates ───
-            hard_gates = {
-                'G1_csldt': csldt_mag > self.P["theta_1_csldt"],
-                'G2_ngao':  ngAO > self.P["theta_2_ngao"],
-                'G3_hawkes': self.P["theta_3_low"] <= B <= self.P["theta_3_high"],
-                'G7_vega_veto': vega_veto,
-            }
-            gates = {
-                **hard_gates,
-                'G4_coherence': n_coherent >= self.P["theta_4_coherence"],
-                'G5_vpin': vpin_gate,
-                'G6_align': align_ok,
-                'G8_theta': theta_ok,
-                'G9_vanna': vanna_ok,
-            }
-
-            gate_pass = all(hard_gates.values())
-
-            # ─── Phase 2 Conviction (Multi-factor score) ───
-            conviction = 0.0
-            if gate_pass:
-                conviction = self._compute_conviction(
-                    csldt_mag, ngAO, B, n_coherent,
-                    vpin_gate, align_ok, vega_veto, theta_ok, vanna_ok, spot=self.last_spot
-                )
-
-            # ─── Latency-aware effective conviction ───
-            C_eff = self._effective_conviction(conviction)
-
-            thresh = self.P["conviction_threshold_frac"] * sum(
-                self.P[k] for k in self.P if k.startswith('w_') and not k.endswith('_exit')
-            )
-
-            # ─── Emit Signal ───
-            if C_eff >= thresh and gate_pass:
-                direction = "UP" if V_oe > 0 else "DOWN"
-                self._emit_signal(sym, lp, direction, C_eff, gates, {
-                    'csldt': csldt_mag, 'ngao': ngAO, 'hawkes_B': B,
-                    'coherence': n_coherent, 'iv_change': self.bucket_iv_change,
-                    'theta_bleed': self.bucket_theta_bleed
-                })
-
-            # ─── Logging ───
-            self._log_bucket(sym, lp, now, gates, conviction, C_eff, thresh)
-
-            # ─── Reset Bucket ───
-            self._reset_bucket(sym, now)
-
-        except Exception as e:
-            logger.error(f"AEGIS _process_bucket error: {e}", exc_info=True)
-
-    # ═══════════════════════════════════════════════════════════
-    # CORE MATHEMATICAL KERNELS (bucket-level)
-    # ═══════════════════════════════════════════════════════════
-    def _update_bsm_tensors(self, spot: float, now: float):
-        """Recompute full greek tensors for all strikes using current spot & IV."""
-        if spot <= 0:
-            return
-
-        # Time to expiry (seconds → years)
-        t_exp = 0.0
-        for info in self.token_map.values():
-            if 'expiry' in info and info['expiry']:
-                exp_val = info['expiry']
-                try:
-                    t_exp = float(pd.to_datetime(exp_val).timestamp())
-                    break
-                except Exception:
-                    pass
-        if t_exp <= 0.0:
-            t_exp = now + 4.0 * 3600.0  # default 4 hours
-        T = max(t_exp - now, 300.0) / (365.0 * 24.0 * 3600.0)
-
-        # Strikes array
-        K_arr = self.last_spot + (np.arange(N_STRIKES) - ATM_IDX) * self.strike_step
-
-        for side in range(N_TYPES):
-            # Use last known IV as warm start; fall back to 15%
-            iv_guess = self.last_atm_iv if self.last_atm_iv > 0 else 0.15
-
-            for i in range(N_STRIKES):
-                K = K_arr[i]
-                # Mid price from L1 (we don't have it here — in production, cache from last tick)
-                # For now, use BSM with current IV tensor value
-                iv = self.iv_tensor[side, i]
-                if np.isnan(iv) or iv <= 0:
-                    iv = iv_guess
-
-                _, _, gamma, speed, vega, theta, vanna, vomma = _bsm_greeks(
-                    spot, K, T, 0.05, iv, is_call=(side==0)
-                )
-                self.gamma_tensor[side, i] = max(gamma, 0.0)
-                self.speed_tensor[side, i] = speed
-                self.vega_tensor[side, i] = vega
-                self.theta_tensor[side, i] = theta
-                self.vanna_tensor[side, i] = vanna
-                self.vomma_tensor[side, i] = vomma
-
-        # Update ATM IV tracker (CE ATM)
-        if not np.isnan(self.iv_tensor[0, ATM_IDX]):
-            self.last_atm_iv = float(self.iv_tensor[0, ATM_IDX])
-
-        # Bucket IV change (for vega veto & NGAO vanna term)
-        if self.bucket_start_iv_atm > 0:
-            self.bucket_iv_change = self.last_atm_iv - self.bucket_start_iv_atm
-        self.bucket_start_iv_atm = self.last_atm_iv
-
-        # Bucket theta bleed (sum |theta| * dt / premium proxy)
-        dt_bucket = 1.0 / (375 * 60)  # 1 bucket ≈ 1 min in trading day
-        total_theta = np.abs(self.theta_tensor).sum()
-        # Premium proxy: mean straddle mid ≈ 2 * ATM IV * spot * sqrt(T)
-        prem_proxy = 2 * self.last_atm_iv * spot * math.sqrt(T) * 100  # ₹
-        self.bucket_theta_bleed = (total_theta * dt_bucket / max(prem_proxy, 1.0)) * 100  # %
-
-        self._route_dirty = True  # gamma changed → route matrix stale
-
-    def _rebuild_route_matrix(self):
-        """R_ij = |Γ_j| * exp(-|i-j|/ℓ) / Σ_k |Γ_k| * exp(-|i-k|/ℓ)"""
-        ell = self.P["liquidity_decay_len"]
-        gamma_flat = self.gamma_tensor.ravel()  # 42 elements, but we want per-strike combined
-        # Combine CE+PE gamma per strike
-        gamma_strike = self.gamma_tensor.sum(axis=0)  # shape (21,)
-        for i in range(N_STRIKES):
-            dist = np.abs(np.arange(N_STRIKES) - i)
-            weights = gamma_strike * np.exp(-dist / ell)
-            denom = weights.sum()
-            if denom > 0:
-                self.route_matrix[i, :] = weights / denom
-            else:
-                self.route_matrix[i, :] = 1.0 / N_STRIKES
-        self._route_dirty = False
-
-    def _ngao_acceleration(self, V_oe, sum_gamma, sum_speed, eta):
-        """Exact quadratic solution with dual guards."""
-        D0 = 1.0 - eta * sum_gamma
-        if D0 <= 1e-8:
-            return 1e6
-        if abs(sum_speed) < 1e-10:
-            return 1.0 / D0
-        disc = D0*D0 - 4.0 * eta*eta * sum_speed * V_oe
-        if disc < 0.0:
-            disc = 0.0
-        delta_S = (D0 - math.sqrt(disc)) / (2.0 * eta * sum_speed)
-        return delta_S / (eta * V_oe) if V_oe > 1e-8 else 1.0 / D0
-
-    def _hawkes_branching(self) -> float:
-        """Spectral radius approximation: (α ⊙ B) z / z"""
-        alpha0 = self.P["hawkes_base_excitation"]
-        gamma_mod = self.P["stress_modulation"]
-        # Stress proxy: normalized vacuum + whale
-        stress = np.abs(self.bucket_vacuum.sum(axis=0)) / 10000.0 + self.bucket_whale.sum(axis=0)
-        stress = stress / (stress.max() + 1e-6)
-        B = (1.0 + gamma_mod * stress) / (1.0 / 30.0)  # β = 1/30
-        alpha = alpha0 * np.exp(-np.abs(np.arange(N_STRIKES)[:,None] - np.arange(N_STRIKES)) / self.P["liquidity_decay_len"])
-        # Branching ≈ (α ⊙ B) z / z  (z = hawkes_z)
-        num = np.sum((alpha * B) * self.hawkes_z[None, :])
-        den = np.sum(self.hawkes_z) + 1e-6
-        return float(num / den)
-
-    def _coherent_strikes(self) -> int:
-        """Count strikes where |OFI·Γ| > 0.1 * max|OFI·Γ|"""
-        ofi_gamma = np.abs(self.bucket_ofi.sum(axis=0) * self.gamma_tensor.sum(axis=0))
-        thresh = 0.1 * ofi_gamma.max() if ofi_gamma.max() > 0 else 0
-        return int(np.sum(ofi_gamma > thresh))
-
-    def _vpin_gate(self) -> bool:
-        """Proxy: use bucket toxicity (DKLA eff_lam) vs rolling percentile."""
-        # In production, read from cascade_engine's toxicity_history
-        # Here: simple heuristic — high vacuum + high OFI ⇒ toxic
-        tox_proxy = np.abs(self.bucket_vacuum).sum() + np.abs(self.bucket_ofi).sum()
-        return tox_proxy > 1e6  # placeholder; replace with real percentile check
-
-    def _adaptive_microprice_align(self) -> bool:
-        """Three-horizon queue-weighted alignment check."""
-        # We don't have true queue position — log warning once per bucket
-        if not self._g6_validated and not hasattr(self, '_g6_warned'):
-            logger.warning("G6_RUNNING_UNVALIDATED_QUEUE_ASSUMPTION — back-of-queue proxy active")
-            self._g6_warned = True
-
-        # Proxy: sign(OFI) vs sign(microprice - mid) over bucket
-        # Since we only have bucket aggregates, use cumulative sign consistency
-        ofi_sign = np.sign(self.bucket_ofi.sum())
-        if ofi_sign == 0:
-            return False
-
-        # Microprice deviation: we'd need tick-by-tick — approximate with vacuum sign
-        vac_sign = np.sign(self.bucket_vacuum.sum())
-        return bool(ofi_sign == vac_sign) if vac_sign != 0 else False
-
-    def _vanna_alignment(self) -> bool:
-        """sign(Σ Vanna·OFI) == sign(Σ Gamma·OFI)"""
-        vanna_ofi = float((self.vanna_tensor * self.bucket_ofi).sum())
-        gamma_ofi = float((self.gamma_tensor * self.bucket_ofi).sum())
-        if vanna_ofi == 0 or gamma_ofi == 0:
-            return True
-        return np.sign(vanna_ofi) == np.sign(gamma_ofi)
-
-    def _synthetic_divergence(self, spot: float) -> float:
-        """Put-Call Parity synthetic index divergence: S_synthetic = P_CE - P_PE + K_ATM - Spot"""
-        if spot <= 0:
-            return 0.0
-        call_mid = (self.bid_px[0, ATM_IDX, 0] + self.ask_px[0, ATM_IDX, 0]) * 0.5
-        put_mid  = (self.bid_px[1, ATM_IDX, 0] + self.ask_px[1, ATM_IDX, 0]) * 0.5
-        if call_mid > 0 and put_mid > 0:
-            atm_k = self.current_atm_strike if self.current_atm_strike > 0 else round(spot / self.strike_step) * self.strike_step
-            synthetic = call_mid - put_mid + atm_k
-            return float(synthetic - spot)
-        return 0.0
-
-    def _microprice_deviation(self) -> float:
-        """ATM Call vs Put order book microprice deviation."""
-        b_px = self.bid_px[:, ATM_IDX, 0]
-        a_px = self.ask_px[:, ATM_IDX, 0]
-        b_qty = self.bid_qty[:, ATM_IDX, 0]
-        a_qty = self.ask_qty[:, ATM_IDX, 0]
-        denom_ce = b_qty[0] + a_qty[0]
-        denom_pe = b_qty[1] + a_qty[1]
-        ce_mp = (b_px[0] * a_qty[0] + a_px[0] * b_qty[0]) / max(denom_ce, 1e-6) if denom_ce > 0 else 0.0
-        pe_mp = (b_px[1] * a_qty[1] + a_px[1] * b_qty[1]) / max(denom_pe, 1e-6) if denom_pe > 0 else 0.0
-        return float(ce_mp - pe_mp)
-
-    def _compute_conviction(self, csldt, ngAO, B, n_coherent, vpin_gate, align_ok, vega_veto, theta_ok, vanna_ok, spot: float = 0.0) -> float:
-        """Phase 2 multi-factor conviction score with mature metrics."""
-        P = self.P
-        # Normalized components (tanh)
-        c1 = math.tanh(csldt / P["sigma_csldt"]) * P["w_csldt"]
-        c2 = math.tanh(ngAO / P["sigma_ngao"]) * P["w_ngao"]
-        c3 = math.tanh((B - 0.45) / P["sigma_hawkes"]) * P["w_hawkes"] if B > 0.40 else 0
-        c4 = math.tanh(n_coherent / P["sigma_coherence"]) * P["w_coherence"]
-        c5 = math.tanh(abs(self.bucket_vacuum).sum() / P["sigma_vacuum"]) * P["w_vacuum"]
-        c6 = P["w_mmretreat"] if align_ok else 0
-        c7 = math.tanh(abs(self.bucket_iv_change) / P["sigma_vega"]) * P["w_vega"] if self.bucket_iv_change > 0 else 0
-        c8 = math.tanh(max(0, P["theta_theta_bleed"] - self.bucket_theta_bleed) / P["sigma_theta"]) * P["w_theta"]
-
-        # Synthetic Put-Call parity divergence (options leading underlying cash)
-        syn_div = self._synthetic_divergence(spot)
-        c_syn = math.tanh(abs(syn_div) / P.get("sigma_syndiv", 5.0)) * P.get("w_syndiv", 1.0)
-
-        # Microprice deviation
-        mp_dev = self._microprice_deviation()
-        c_mp = math.tanh(abs(mp_dev) / 2.0) * 0.5
-
-        return c1 + c2 + c3 + c4 + c5 + c6 + c7 + c8 + c_syn + c_mp
-
-    def _effective_conviction(self, C0) -> float:
-        """Latency-adjusted conviction using post-fill edge survival (no warmup dead-lock)."""
-        n = min(self.fill_ptr, 500)
-        if n < 10:
-            return C0
-
-        cost = self.P["cost_bps"]
-        survives = np.sum(self.post_fill_edge_buf[:n] > cost)
-        S_hat = max(0.5, survives / n)
-        lam = self.P["lambda_decay"]
-        T = self.P["hold_time_sec"]
-        return C0 * S_hat * math.exp(-lam * min(T, 30.0))
-
-    # ═══════════════════════════════════════════════════════════
-    # SIGNAL EMISSION & LOGGING
-    # ═══════════════════════════════════════════════════════════
-    def _emit_signal(self, sym, lp, direction, conviction, gates, metrics):
+    def _emit_signal(self, sym: str, lp: float, direction: str, conviction: float, gates: Dict, metrics: Dict):
+        """Emits signal to AegisExecutionManager queue."""
         if not self.signal_queue:
+            logger.warning("[AEGIS] Signal queue is not connected — signal dropped")
             return
         payload = {
             "type": "GAMMA_BURST_ENTRY",
             "sym": sym,
             "signal": direction,
             "lp": lp,
-            "conviction": round(conviction, 2),
-            "metrics": metrics,
+            "spot": self.last_spot,
+            "conviction": conviction,
             "gates": gates,
-            "ts": datetime.now().isoformat()
+            "metrics": metrics,
+            "timestamp": time.time(),
         }
         try:
             self.signal_queue.put_nowait(payload)
-            logger.info(f"🚀 AEGIS {direction} {sym} @ {lp:.2f} | Conv: {conviction:.2f}")
-        except Exception:
-            pass
-
-    def _log_bucket(self, sym, lp, now, gates, conviction, C_eff, thresh):
-        entry = {
-            "ts": datetime.now().isoformat(), "sym": sym, "lp": round(lp, 2),
-            "bucket_dur_sec": round(now - self.bucket_start_ts.get(sym, now), 2),
-            "gates": gates,
-            "conviction_raw": round(conviction, 3),
-            "conviction_eff": round(C_eff, 3),
-            "threshold": round(thresh, 3),
-            "signal": C_eff >= thresh and all(gates.values()),
-            "bucket_ofi": round(self.bucket_ofi.sum(), 2),
-            "bucket_vac": round(self.bucket_vacuum.sum(), 2),
-            "iv_change_bps": round(self.bucket_iv_change * 10000, 1),
-            "theta_bleed_pct": round(self.bucket_theta_bleed, 3),
-        }
-        try:
-            with open(self.LOG_FILE, "a") as f:
-                f.write(json.dumps(entry, default=str) + "\n")
-        except IOError:
-            pass
-
-    def _reset_bucket(self, sym, now):
-        """Reset bucket accumulators, preserve overflow."""
-        overflow = max(0.0, self.cur_tot_val.get(sym, 0) - self.bucket_map.get(sym, BUCKET_TURNOVER_DEFAULT))
-        self.cur_tot_val[sym] = overflow
-        self.cur_tick_count[sym] = 0
-        self.cur_max_tick_val[sym] = 0.0
-        self.bucket_start_ts[sym] = now
-
-        # Zero bucket tensors
-        self.bucket_ofi.fill(0)
-        self.bucket_vacuum.fill(0)
-        self.bucket_whale.fill(0)
-        self.bucket_iv_change = 0.0
-        self.bucket_theta_bleed = 0.0
+        except queue.Full:
+            logger.warning(f"[AEGIS] Signal queue full ({self.signal_queue.qsize()}/{self.signal_queue.maxsize}) — dropping {sym} {direction} {conviction:.1f}")
+            return
+        logger.info(f"[AEGIS SIGNAL EMITTED] {direction} {sym} @ {lp:.2f} (Score={conviction:.1f})")
 
     # ═══════════════════════════════════════════════════════════
-    # FILL TRACKING (for latency decay)
+    # EXECUTION FEEDBACK LOOP
     # ═══════════════════════════════════════════════════════════
-    def on_fill(self, sym: str, fill_price: float, fill_ts: float, signal_price: float, signal_ts: float):
-        """Call from execution engine when order fills."""
-        L = fill_ts - signal_ts
+    def on_fill(self, fill_ts: float, fill_price: float, signal_ts: float, signal_price: float,
+                sym: Optional[str] = None):
+        """Records signal→fill latency and schedules post-fill edge measurement."""
+        lat_ms = max(0.0, (fill_ts - signal_ts) * 1000.0)
         idx = self.fill_ptr % 500
-        self.fill_latency_buf[idx] = L
-        # Schedule post-fill edge measurement
-        self._pending_edge_measure.append({
-            'idx': idx,
-            'measure_ts': fill_ts + self.P["hold_time_sec"],
-            'fill_price': fill_price
-        })
+        self.fill_latency_buf[idx] = lat_ms
         self.fill_ptr += 1
+        self._pending_edge_measures.append({
+            "fill_ts": fill_ts,
+            "fill_price": fill_price,
+            "measure_at": fill_ts + 30.0,
+            "buf_idx": idx,
+        })
+        logger.info(f"[AEGIS] Fill recorded: latency={lat_ms:.1f}ms | px={fill_price:.2f}")
 
-    def check_pending_edges(self, current_ts: float, current_price: float):
-        """Call periodically (e.g., every tick) to resolve post-fill edges."""
-        for p in list(self._pending_edge_measure):
-            if current_ts >= p['measure_ts']:
-                edge_bps = (current_price - p['fill_price']) / p['fill_price'] * 10000
-                self.post_fill_edge_buf[p['idx']] = edge_bps
-                self._pending_edge_measure.remove(p)
+    def check_pending_edges(self, now: float, current_spot: float):
+        """Records post-fill edge survival."""
+        still_pending = []
+        for item in self._pending_edge_measures:
+            if now >= item["measure_at"]:
+                if item["fill_price"] > 0 and current_spot > 0:
+                    ret_bps = (current_spot - item["fill_price"]) / item["fill_price"] * 10000.0
+                    self.post_fill_edge_buf[item["buf_idx"]] = ret_bps
+            else:
+                still_pending.append(item)
+        self._pending_edge_measures = still_pending
 
-    # ═══════════════════════════════════════════════════════════
-    # MONITORING / STATE SUMMARY
-    # ═══════════════════════════════════════════════════════════
-    def get_state_summary(self) -> Dict:
+    def _hawkes_branching(self) -> float:
+        return 0.0
+
+    def get_state_summary(self) -> Dict[str, Any]:
+        """Provides snapshot metrics for monitoring / UI dashboard."""
         return {
             "spot": self.last_spot,
+            "atm_strike": self.current_atm_strike,
             "atm_iv": self.last_atm_iv,
-            "gamma_sum": float(self.gamma_tensor.sum()),
-            "speed_sum": float(self.speed_tensor.sum()),
-            "hawkes_B": self._hawkes_branching(),
-            "route_dirty": self._route_dirty,
-            "fills_recorded": min(self.fill_ptr, 500),
-            "params_source": "calibrated" if os.path.exists(PARAM_FILE) else "priors",
+            "gamma_sum": 0.0,
+            "hawkes_B": 0.0,
+            "fills_recorded": self.fill_ptr,
+            "pending_signals": len(self._pending),
+            "scorer_active": self.scorer is not None,
+            "high_conviction_threshold": self.high_conviction_threshold,
         }
 
 
-# ──────────────────────────────────────────────────────────────
-# FACTORY FOR CASCADE ENGINE INTEGRATION
-# ──────────────────────────────────────────────────────────────
 def create_aegis_engine(
-    token_to_symbol: Dict,
-    token_map: Dict,
-    bucket_map: Dict = None,
+    token_to_symbol: Dict[str, str],
+    token_map: Dict[str, Dict],
+    bucket_map: Dict[str, float] = None,
     strike_step: float = 100.0,
+    underlying_tokens: set = None,
     signal_queue: Any = None,
+    log_path: str = None,
 ) -> AegisGammaEngine:
-    """Factory matching cascade_engine.py attachment pattern."""
     return AegisGammaEngine(
         token_to_symbol=token_to_symbol,
         token_map=token_map,
         bucket_map=bucket_map,
         strike_step=strike_step,
+        underlying_tokens=underlying_tokens,
         signal_queue=signal_queue,
+        log_path=log_path,
     )

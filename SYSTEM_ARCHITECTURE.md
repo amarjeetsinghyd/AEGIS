@@ -50,19 +50,33 @@ and **4-pillar microstructure-decay exits with Adaptive SVI & Peak-Lock**
 `TOX_SPIKE`/`WHALE_EXIT`/`BRANCHING_COLLAPSE`, plus `TIME_STOP`/
 `EOD_FLATTEN`/`BREAKEVEN_LOCK`/`CHANDELIER_ATR`). Full spec → [`ARGUS/ARGUS_SYSTEM_ARCHITECTURE.md`](ARGUS/ARGUS_SYSTEM_ARCHITECTURE.md).
 
-### 2.2 Engine 2 — AEGIS (Autonomous Execution & Gamma Imbalance System)
-5-factor Gamma-Burst Z-score composite offset-indexed ±10 strikes around ATM,
-fused with a Spot-Structure state machine (session VWAP, dynamic High/Low
-VWAP bands, 9-EMA trail, 200-EMA regime) and a price-confirm pending window.
-0DTE only, Nifty Mon/Tue/Fri + Sensex Wed/Thu, entry cutoff 15:00, hard flatten
-15:10, LMT only. Full spec → harness doc.
+### 2.2 Engine 2 — AEGIS (Autonomous Execution & Gamma Imbalance System) — V3.1 LIVE
 
-### 2.3 L2 Archiver — Raw Data Logger (Passive)
-**PM2 process**: `l2-archiver` (starts at 08:55 IST, independent of engine).
-Subscribes to hardcoded 110 symbols (`SUBSCRIPTION_UNIVERSE` from `common/symbols.py`).
-Writes partitioned Snappy Parquet (15-min files) to `data/l2_raw/`.
-Logs auction data (09:00-09:15, 15:30-15:40) to `data/logs/`.
-**Critical**: Must start by 08:55 IST to capture 09:00-09:08 auction window.
+**What it actually is (code-grounded 2026-08-29):** Empirical 0-100 microstructure impulse detector
+(`AEGIS/aegis_gamma_engine.py:72` → `core/microstructure_scorer.py:15`, calibrated `n=2436, ROC AUC 0.8264`,
+intercept `-6.04`, 14 weights at `data/params/microstructure_weights.json:7`) fused through a
+4-domain quality gate — (1) Permission: `core/time_bar_engine.py:33` (1m/3m EMA9 slopes, ATR14, 30-min baseline,
+market structure ALIGNED/NEUTRAL/OPPOSED), (2) Confirmation: `core/directional_persistence.py:29` (60s × 12 × 5s
+signed window, 70% persistence, ≤1 opposite), (3) Tradability: `core/option_quality.py:17` (spread ≤2.5%,
+depth ≥500, premium 5-400), (4) Centralized FSM: `core/signal_state_machine.py:43`
+`OBSERVE→PRIMED(≥78)→CONFIRMED→FIRED(≤3s)→COOLDOWN(120s)` → unified `EQS 0-100` at
+`core/entry_quality_engine.py:30` (30+25+25+20, dispatch 70). Hot path is scalar O(1) at
+`aegis_gamma_engine.py:197` via pooled `ParsedTick` (`ARGUS/tick_compiler.py:28`) with a 2s tick-rate ring
+veto (`min_tick_rate_gate 1.5`) at `aegis_gamma_engine.py:303`. Single open position, `MAX_TRADES 3`,
+`+5% TP / -3.5% SL / +2.0→+1.5% trail / ±25/50pts spot / 300s hard` in
+`aegis_execution_manager.py:42` with 3-step limit chase (`0.99→0.98→0.97×bid`), fill→edge feedback
+(`on_fill:539` → `check_pending_edges:554`), and forward telemetry `MFE/MAE +5/+8%` JSONL at
+`core/outcome_telemetry.py:60`. Passive parquet archiver (`l2_options_archiver.py:73`, 15-min Snappy, 30d)
+is embedded as a tick listener (`aegis_main.py:174`), not a standalone `l2-archiver` PM2 app.
+0DTE only, Nifty Mon/Tue/Fri + Sensex Wed/Thu, entry `9:16-15:00`, flatten `≥15:10`, LMT only.
+Full authority → [`AEGIS/AEGIS V2.md v3.1`](AEGIS/AEGIS%20V2.md) (code-grounded, supersedes all prior V2 theory
+including Hawkes/NGAO/Kyle/Kelly/G1..G9 which are retired/stubbed — see §20 there).
+
+### 2.3 L2 Archivers — Raw Data Loggers (Passive)
+
+* **ARGUS equities:** `ARGUS/l2_archiver.py` — standalone `l2-archiver` PM2 (legacy standalone; 08:55 start, 110 symbols from `common/symbols.py`, 15-min Snappy under `ARGUS/data/l2_raw/`, auction 09:00-09:15/15:30-15:40).
+* **AEGIS options:** `AEGIS/l2_options_archiver.py:73` — **embedded** passive listener (attached at `AEGIS/aegis_main.py:174` via `broker.add_tick_listener`), not a standalone PM2 app. Schema adds `kind(0=index,1=CE,2=PE,3=FUT)` + `strike` + `oi` (`l2_options_archiver.py:50`), writes to `AEGIS/data/l2_raw/{Nifty,Sensex}/aegis_l2_raw_YYYY-MM-DD_part_NNN.parquet` every 15 min or 50k rows (900s flush at line 162, `compression="snappy"` at 178, 30d prune at 137), auction JSONL to `data/logs/`. Must be attached by 08:55 to capture 09:00-09:08.
+* **System view:** `SYSTEM_ARCHITECTURE.md:13` diagram's `l2-archiver` box is historical — on VPS the live wiring is per-engine embedded archivers; align `ecosystem.config.js` (no `l2-archiver` entry) and this section on next deploy.
 
 ---
 

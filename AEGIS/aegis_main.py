@@ -30,6 +30,16 @@ from ARGUS.tick_compiler import TickCompiler
 
 logger = get_logger("aegis_main")
 
+def is_call_symbol(sym: str) -> bool:
+    s = str(sym).upper().strip()
+    if 'CE' in s or 'CALL' in s:
+        return True
+    if 'PE' in s or 'PUT' in s:
+        return False
+    stripped = s.rstrip('0123456789')
+    return stripped.endswith('C')
+
+
 # ─── Pre-market Setup ───
 def perform_premarket_handshake(broker, fetcher):
     logger.info("08:55 AM IST PRE-MARKET WAKEUP: Initiating Handshake & Setup")
@@ -62,12 +72,12 @@ def build_minute_digest(now, aegis_engine, trader, spot_price):
     if aegis_engine:
         state = aegis_engine.get_state_summary()
         seg.append(f"Spot: {state['spot']:.0f}")
+        seg.append(f"ATM: {state['atm_strike']:.0f}")
         seg.append(f"ATM IV: {state['atm_iv']*100:.1f}%")
-        seg.append(f"Γ Sum: {state['gamma_sum']:.4f}")
-        seg.append(f"Hawkes B: {state['hawkes_B']:.3f}")
+        seg.append(f"Scorer: {'ON' if state['scorer_active'] else 'OFF'}")
         seg.append(f"Fills: {state['fills_recorded']}")
     
-    if trader and trader.has_open_trade():
+    if trader and trader.has_open_trade() and getattr(trader, "trade_context", None) and getattr(trader.trade_context, "legs", None):
         leg = trader.trade_context.legs[0]
         chg = ((leg.current_price - leg.entry_price) / leg.entry_price * 100) if leg.entry_price else 0.0
         seg.append(f"OPEN {leg.symbol} {chg:+.1f}%")
@@ -105,6 +115,14 @@ def main():
             token_map[spot_token] = {'side': 0, 'strike': 0.0, 'is_index': True}
             logger.info(f"[AegisMain] Active instrument: {inst_name} | Spot Token: {spot_token} ({spot_sym}) | Strike Step: {strike_step}")
         
+        # 1b. Add Active Index Futures Token for Lead-Lag Tracking and L2 Archival
+        fut_token, fut_sym, fut_exch = fetcher.get_current_futures_token()
+        if fut_token and fut_sym:
+            fut_token = str(fut_token)
+            token_to_symbol[fut_token] = fut_sym
+            token_map[fut_token] = {'side': 0, 'strike': 0.0, 'is_futures': True}
+            logger.info(f"[AegisMain] Subscribed Active Futures: {fut_sym} (Token: {fut_token})")
+
         # 2. Build token maps for AEGIS options
         weekly_opts = fetcher.get_weekly_option_tokens()
         for _, row in weekly_opts.iterrows():
@@ -112,12 +130,13 @@ def main():
             sym = str(row.get('symbol', ''))
             stk = float(row.get('strike', 0))
             if stk > 0 and tkn and sym:
-                side = 0 if ('CE' in sym or 'CALL' in sym.upper()) else 1
+                side = 0 if is_call_symbol(sym) else 1
                 token_map[tkn] = {'side': side, 'strike': stk, 'expiry': row.get('expiry')}
                 token_to_symbol[tkn] = sym
         
-        # Bucket mapping (₹5 Lakhs for options contracts)
-        bucket_map = {sym: 5_00_00_0.0 for sym in token_to_symbol.values()}
+        # Turnover bucket mapping (₹5,00,000 per options contract) — reserved for future use,
+        # engine currently scores per-tick and does not gate on buckets
+        bucket_map = {sym: 500_000.0 for sym in token_to_symbol.values()}
         
         # Signal queue: AEGIS → Execution
         signal_queue = queue.Queue(maxsize=1000)
@@ -278,13 +297,19 @@ def main():
                                     sym = str(row.get('symbol', ''))
                                     stk = float(row.get('strike', 0))
                                     if stk > 0 and tkn and sym:
-                                        side = 0 if ('CE' in sym or 'CALL' in sym.upper()) else 1
+                                        side = 0 if is_call_symbol(sym) else 1
                                         refreshed_t2s[tkn] = sym
                                         refreshed_tmap[tkn] = {'side': side, 'strike': stk, 'expiry': row.get('expiry')}
                                 # Include the underlying index token
                                 idx_token, idx_name, _ = fetcher.get_cash_index_token()
                                 refreshed_t2s[str(idx_token)] = idx_name
                                 aegis_archiver.update_token_maps(refreshed_t2s, refreshed_tmap)
+                                # Also refresh engine's strike map to fix P1.4 universe drift
+                                if aegis_engine and hasattr(aegis_engine, 'refresh_token_maps'):
+                                    try:
+                                        aegis_engine.refresh_token_maps(refreshed_t2s, refreshed_tmap)
+                                    except Exception as e:
+                                        logger.warning(f"[AegisMain] engine refresh_token_maps failed: {e}")
                 
                 # Log minute digest
                 digest = build_minute_digest(now, aegis_engine, trader, spot_price)
@@ -296,8 +321,10 @@ def main():
                     "spot_price": spot_price,
                     "atm_strike": atm_strike,
                     "atm_iv": aegis_engine.last_atm_iv if aegis_engine else 0.0,
-                    "gamma_sum": aegis_engine.gamma_tensor.sum() if aegis_engine else 0.0,
-                    "hawkes_B": aegis_engine._hawkes_branching() if aegis_engine else 0.0,
+                    "gamma_sum": 0.0,   # deprecated (empirical scorer engine); kept for dashboard schema compat
+                    "hawkes_B": 0.0,    # deprecated (empirical scorer engine); kept for dashboard schema compat
+                    "scorer_active": bool(aegis_engine.scorer) if aegis_engine else False,
+                    "high_conviction_threshold": aegis_engine.high_conviction_threshold if aegis_engine else 0.0,
                     "trades_today": trader.trades_today,
                     "daily_pnl": trader.daily_pnl,
                     "has_open_trade": trader.has_open_trade(),
