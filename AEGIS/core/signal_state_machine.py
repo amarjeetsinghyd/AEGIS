@@ -101,7 +101,9 @@ class SignalStateMachine:
             lc.state = SignalState.OBSERVE
             lc.direction = direction
 
-        lc.last_trigger_ts = now_sec
+        # Q-6 fix: trigger_age must measure time since the most recent genuine
+        # trigger inception, not since this same tick (previously always ≈0, which
+        # defeated the 3s/8s freshness windows in the PRIMED/CONFIRMED branches).
         trigger_age = now_sec - lc.last_trigger_ts
 
         # 4. State Transitions
@@ -112,6 +114,7 @@ class SignalStateMachine:
                 lc.direction = direction
                 lc.prime_ts = now_sec
                 lc.prime_score = micro_score
+                lc.last_trigger_ts = now_sec  # trigger inception timestamp
                 return SignalState.PRIMED, False, f"primed_score_{micro_score:.1f}"
             return SignalState.OBSERVE, False, "observing"
 

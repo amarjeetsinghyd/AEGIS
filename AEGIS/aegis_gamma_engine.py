@@ -223,6 +223,12 @@ class AegisGammaEngine:
             if not info:
                 return
 
+            # Q-5 fix: futures token must NOT be scored as an option (strike=0 CE
+            # pollution). Archiver records futures separately via raw dict; lead-lag
+            # is not wired in V3.1 engine.
+            if info.get("is_futures"):
+                return
+
             side = info["side"]          # 0=CE, 1=PE
             strike = float(info["strike"])
 

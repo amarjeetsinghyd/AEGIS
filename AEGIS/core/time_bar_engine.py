@@ -41,11 +41,13 @@ class TimeBarEngine:
         atr_period: int = 14,
         atr_baseline_bars: int = 30,  # 30-min baseline
         max_history_bars: int = 100,
+        slope_veto_bps: float = 2.0,   # Q-4: scale-invariant EMA-slope veto (bps, normalized by last_price)
     ):
         self.ema_period = ema_period
         self.atr_period = atr_period
         self.atr_baseline_bars = atr_baseline_bars
         self.max_history_bars = max_history_bars
+        self.slope_veto_bps = slope_veto_bps
 
         # 1-Minute Bar Building State
         self._curr_1m_bar: Optional[OHLCBar] = None
@@ -203,9 +205,9 @@ class TimeBarEngine:
             recent_tr = list(self.atr_1m_history)[-self.atr_period:]
             self.current_atr_1m = sum(recent_tr) / len(recent_tr)
             
-            # 30-Min Baseline ATR
-            baseline_tr = list(self.atr_1m_history)
-            self.baseline_atr_1m = sum(baseline_tr) / len(baseline_tr)
+            # 30-Min Baseline ATR (Q-3 fix: use atr_baseline_bars, not all 100)
+            baseline_tr = list(self.atr_1m_history)[-self.atr_baseline_bars:]
+            self.baseline_atr_1m = sum(baseline_tr) / len(baseline_tr) if baseline_tr else 0.0
             
             if self.baseline_atr_1m > 1e-4:
                 self.atr_ratio = self.current_atr_1m / self.baseline_atr_1m
@@ -286,21 +288,30 @@ class TimeBarEngine:
         if struct == "OPPOSED":
             return False, f"market_structure_opposed ({struct})", metrics
 
-        # Multi-timeframe slope check
+        # Multi-timeframe slope check (Q-4 fix: normalize absolute slope by price
+        # into basis points so NIFTY (~25k) and SENSEX (~78k) share one threshold.
+        # 2.0 bps reproduces the prior NIFTY 0.5pt / 24800 = ~2.0 bps behavior.)
+        ref = self.last_price if self.last_price > 0 else 1.0
+        slope_3m_bps = (self.ema_3m_slope / ref) * 10000.0
+        slope_1m_bps = (self.ema_1m_slope / ref) * 10000.0
+        metrics["slope_veto_bps"] = self.slope_veto_bps
+        metrics["ema_3m_slope_bps"] = round(slope_3m_bps, 2)
+        metrics["ema_1m_slope_bps"] = round(slope_1m_bps, 2)
+
         if direction.upper() in ("UP", "CALL"):
             # If 3-min slope is strongly negative, veto CALL
-            if self.ema_3m_slope < -0.5:
-                return False, f"3m_trend_bearish_slope ({self.ema_3m_slope:+.2f})", metrics
+            if slope_3m_bps < -self.slope_veto_bps:
+                return False, f"3m_trend_bearish_slope ({slope_3m_bps:+.2f}bps)", metrics
             # If 1-min slope is strongly negative, veto CALL
-            if self.ema_1m_slope < -0.5:
-                return False, f"1m_trend_bearish_slope ({self.ema_1m_slope:+.2f})", metrics
+            if slope_1m_bps < -self.slope_veto_bps:
+                return False, f"1m_trend_bearish_slope ({slope_1m_bps:+.2f}bps)", metrics
 
         elif direction.upper() in ("DOWN", "PUT"):
             # If 3-min slope is strongly positive, veto PUT
-            if self.ema_3m_slope > 0.5:
-                return False, f"3m_trend_bullish_slope ({self.ema_3m_slope:+.2f})", metrics
+            if slope_3m_bps > self.slope_veto_bps:
+                return False, f"3m_trend_bullish_slope ({slope_3m_bps:+.2f}bps)", metrics
             # If 1-min slope is strongly positive, veto PUT
-            if self.ema_1m_slope > 0.5:
-                return False, f"1m_trend_bullish_slope ({self.ema_1m_slope:+.2f})", metrics
+            if slope_1m_bps > self.slope_veto_bps:
+                return False, f"1m_trend_bullish_slope ({slope_1m_bps:+.2f}bps)", metrics
 
         return True, "permission_granted", metrics

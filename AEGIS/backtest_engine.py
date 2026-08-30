@@ -32,6 +32,7 @@ if repo_root not in sys.path:
 
 from AEGIS.aegis_gamma_engine import AegisGammaEngine, create_aegis_engine
 from AEGIS.core.signal_state_machine import SignalState
+from common.execution.realistic_paper_broker import calculate_nse_option_charges
 
 
 @dataclass
@@ -96,7 +97,7 @@ class SimulatedPositionManager:
         self,
         start_capital: float = 2000.0,
         charges_per_trade: float = 16.50,
-        lot_size: int = 25,
+        lot_size: int = 65,   # Q-7: default NIFTY 65 (was 25); SENSEX 20 passed by initialize_engine
         target_pct: float = 5.0,
         stop_loss_pct: float = 3.5,
         trail_trigger_pct: float = 2.0,  # aligned to live TRAIL_TRIGGER_PCT 2.0 (was 2.5 — fixed 2026-08-29 P1.5)
@@ -104,12 +105,14 @@ class SimulatedPositionManager:
         max_hold_sec: float = 300.0,
         cooldown_sec: float = 60.0,
         max_trades_per_day: int = 8,
+        use_statutory_charges: bool = True,  # Q-7: real STT/exch/SEBI/stamp/GST instead of flat ₹16.50
     ):
         self.start_capital = start_capital
         self.current_capital = start_capital
         self.peak_capital = start_capital
         self.charges_per_trade = charges_per_trade
         self.lot_size = lot_size
+        self.use_statutory_charges = use_statutory_charges
         self.target_pct = target_pct
         self.stop_loss_pct = stop_loss_pct
         self.trail_trigger_pct = trail_trigger_pct
@@ -222,10 +225,20 @@ class SimulatedPositionManager:
         trade.hold_sec = current_ts_sec - trade.entry_ts_sec
 
         gross_pnl = (trade.entry_price * (exit_pct / 100.0)) * trade.qty
-        net_pnl = gross_pnl - self.charges_per_trade
+
+        if self.use_statutory_charges:
+            # Q-7: full Indian statutory + regulatory costs (STT/exchange/SEBI/stamp/GST)
+            buy_turnover = round(trade.entry_price * trade.qty, 2)
+            sell_turnover = round(exit_price * trade.qty, 2)
+            charges = calculate_nse_option_charges(buy_turnover=buy_turnover, sell_turnover=sell_turnover)
+            total_charges = charges.total_charges
+        else:
+            total_charges = self.charges_per_trade
+
+        net_pnl = gross_pnl - total_charges
 
         trade.gross_pnl_rs = gross_pnl
-        trade.charges_rs = self.charges_per_trade
+        trade.charges_rs = total_charges
         trade.net_pnl_rs = net_pnl
 
         self.current_capital += net_pnl
@@ -264,6 +277,7 @@ class AegisParquetBacktester:
         target_pct: float = 5.0,
         stop_loss_pct: float = 3.5,
         max_trades_per_day: int = 8,
+        use_statutory_charges: bool = True,
         telemetry_dir: Optional[str] = None,
     ):
         self.data_dir = data_dir
@@ -277,6 +291,7 @@ class AegisParquetBacktester:
         self.target_pct = target_pct
         self.stop_loss_pct = stop_loss_pct
         self.max_trades_per_day = max_trades_per_day
+        self.use_statutory_charges = use_statutory_charges
         self.telemetry_dir = telemetry_dir or os.path.join(data_dir, "telemetry_eval")
         os.makedirs(self.telemetry_dir, exist_ok=True)
 
@@ -348,10 +363,13 @@ class AegisParquetBacktester:
         if self.engine.outcome_telemetry:
             self.engine.outcome_telemetry.log_dir = self.telemetry_dir
 
+        # Q-7: correct SEBI lot size per index (65 NIFTY / 20 SENSEX) instead of flat 25
+        lot_size = 65 if self.strike_step <= 50 else 20
+
         self.position_manager = SimulatedPositionManager(
             start_capital=self.start_capital,
             charges_per_trade=self.charges_per_trade,
-            lot_size=25,
+            lot_size=lot_size,
             target_pct=self.target_pct,
             stop_loss_pct=self.stop_loss_pct,
             trail_trigger_pct=2.0,  # aligned to live (was 2.5)
@@ -359,6 +377,7 @@ class AegisParquetBacktester:
             max_hold_sec=300.0,
             cooldown_sec=60.0,
             max_trades_per_day=self.max_trades_per_day,
+            use_statutory_charges=self.use_statutory_charges,
         )
 
         return self.engine
