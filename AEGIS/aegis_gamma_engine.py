@@ -316,6 +316,21 @@ class AegisGammaEngine:
                         # V3 4-Domain Pipeline Evaluation
                         direction = "UP" if side == 0 else "DOWN"  # 0=CE -> UP, 1=PE -> DOWN
 
+                        # [MACRO ALIGNMENT GATE] Underlying Cash Index Momentum Agreement (60s & 180s)
+                        if len(self.spot_history) >= 2 and self.last_spot > 0:
+                            drift_60 = self.get_spot_drift(now_sec, 60.0)
+                            drift_180 = self.get_spot_drift(now_sec, 180.0)
+                            if direction == "UP" and (drift_60 < -1.0 or drift_180 < -2.0):
+                                logger.info(
+                                    f"[MACRO ALIGN VETO] {sym} (UP) blocked: spot drifting down (60s: {drift_60:+.1f}pts, 180s: {drift_180:+.1f}pts)"
+                                )
+                                return
+                            elif direction == "DOWN" and (drift_60 > 1.0 or drift_180 > 2.0):
+                                logger.info(
+                                    f"[MACRO ALIGN VETO] {sym} (DOWN) blocked: spot drifting up (60s: {drift_60:+.1f}pts, 180s: {drift_180:+.1f}pts)"
+                                )
+                                return
+
                         # Domain 1: Permission (Higher Timeframe Trend & Structure)
                         has_permission = True
                         perm_reason = "permission_ok"

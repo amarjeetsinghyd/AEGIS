@@ -15,10 +15,10 @@ class MockParsedTick:
         self.lp = float(lp)
         self.vol = float(vol)
         self.ts = int(ts)
-        self.bp = np.array(bp or [lp - 0.5, 0, 0, 0, 0], dtype=np.float64)
-        self.bq = np.array(bq or [100, 0, 0, 0, 0], dtype=np.float64)
-        self.sp = np.array(sp or [lp + 0.5, 0, 0, 0, 0], dtype=np.float64)
-        self.sq = np.array(sq or [100, 0, 0, 0, 0], dtype=np.float64)
+        self.bp = np.array(bp if bp is not None else [lp - 0.5, 0, 0, 0, 0], dtype=np.float64)
+        self.bq = np.array(bq if bq is not None else [100, 0, 0, 0, 0], dtype=np.float64)
+        self.sp = np.array(sp if sp is not None else [lp + 0.5, 0, 0, 0, 0], dtype=np.float64)
+        self.sq = np.array(sq if sq is not None else [100, 0, 0, 0, 0], dtype=np.float64)
 
 
 def test_aegis_initialization_and_params():
@@ -48,7 +48,8 @@ def test_aegis_initialization_and_params():
     assert engine.strike_step == 50.0
     assert engine.last_spot == 0.0
     assert engine.current_atm_strike == 0.0
-    assert engine.P["theta_1_csldt"] == 0.12
+    assert engine.high_conviction_threshold >= 60.0
+    assert engine.scorer is not None
 
 
 def test_aegis_spot_tick_and_dynamic_atm_roll():
@@ -77,13 +78,12 @@ def test_aegis_spot_tick_and_dynamic_atm_roll():
     assert engine.last_spot == 24000.0
     assert engine.current_atm_strike == 24000.0
     
-    # 2. Feed Option tick at 24000 CE (ATM -> idx 10)
-    opt_tick_1 = MockParsedTick("1001", lp=150.0, vol=500, bp=[149.5], bq=[200], sp=[150.5], sq=[200])
+    # 2. Feed Option tick at 24000 CE
+    opt_tick_1 = MockParsedTick("1001", lp=150.0, vol=500, bp=[149.5, 149.0, 148.5, 148.0, 147.5], bq=[200, 200, 200, 200, 200], sp=[150.5, 151.0, 151.5, 152.0, 152.5], sq=[200, 200, 200, 200, 200])
     engine.on_tick_parsed(opt_tick_1)
     
-    # Verify Hawkes & OFI updated at ATM index 10
-    assert engine.hawkes_bins[engine._hawkes_bin_ptr, 10] >= 1
-    assert engine.hawkes_z[10] >= 1.0
+    # Verify scorer has tick recorded
+    assert "NIFTY2682024000CE" in engine.scorer.history
     
     # 3. Simulate Spot moving UP to 24100 (+2 strikes for 50-step)
     spot_tick_2 = MockParsedTick("26000", lp=24100.0, vol=2000)
@@ -91,19 +91,90 @@ def test_aegis_spot_tick_and_dynamic_atm_roll():
     
     assert engine.last_spot == 24100.0
     assert engine.current_atm_strike == 24100.0
+
+
+def test_aegis_microstructure_signal_emission():
+    sig_q = queue.Queue()
+    token_to_symbol = {
+        "26000": "NIFTY",
+        "1001": "NIFTY2682024000CE",
+    }
+    token_map = {
+        "26000": {"side": 0, "strike": 0.0, "is_index": True},
+        "1001": {"side": 0, "strike": 24000.0},
+    }
     
-    # After shift of +2 strikes, the previous ATM (24000) is now shifted left by 2 positions
-    # Index 10 moved to index 8!
-    assert engine.hawkes_z[8] >= 1.0
-    assert engine.hawkes_bins[engine._hawkes_bin_ptr, 8] >= 1
+    engine = create_aegis_engine(
+        token_to_symbol=token_to_symbol,
+        token_map=token_map,
+        strike_step=50.0,
+        signal_queue=sig_q
+    )
+    
+    t0_ms = 1787023500000
+    # Feed rapid institutional burst ticks (60 ticks in 20s)
+    for i in range(60):
+        tick = MockParsedTick(
+            tok="1001",
+            lp=50.0 + i * 0.2,
+            vol=500 + i * 10,
+            ts=t0_ms + int(i * 300),
+            bp=[50.0 + i * 0.2 - 0.05, 49.5, 49.0, 48.5, 48.0],
+            bq=[200 + i * 10, 200, 200, 200, 200],
+            sp=[50.0 + i * 0.2 + 0.05, 51.0, 51.5, 52.0, 52.5],
+            sq=[20, 20, 20, 20, 20]
+        )
+        engine.on_tick_parsed(tick)
+        
+    assert not sig_q.empty()
+    sig = sig_q.get_nowait()
+    assert sig["type"] == "GAMMA_BURST_ENTRY"
+    assert sig["signal"] == "UP"
+    assert sig["conviction"] >= 70.0
 
 
 def test_strike_selector_otm_sweet_spot():
     atm = 24000.0
     otm_calls = StrikeSelector.get_otm_strikes(atm, "CALL", "NIFTY", max_depth=4)
-    # Should contain OTM 1 (24050), OTM 2 (24100), OTM 3 (24150), and ATM (24000) as fallback
     assert otm_calls == [24050.0, 24100.0, 24150.0, 24000.0]
     
     otm_puts = StrikeSelector.get_otm_strikes(atm, "PUT", "NIFTY", max_depth=4)
-    # Should contain OTM 1 (23950), OTM 2 (23900), OTM 3 (23850), and ATM (24000) as fallback
     assert otm_puts == [23950.0, 23900.0, 23850.0, 24000.0]
+
+
+def test_strike_selector_budget_adaptation_2000():
+    # Simulate Sensex with lot size 10 and user budget ₹2000
+    # Strikes:
+    # 77600 CE (ATM) @ 250 -> Cost 2500 (Out of budget)
+    # 77700 CE (OTM1) @ 220 -> Cost 2200 (Out of budget)
+    # 77800 CE (OTM2) @ 190 -> Cost 1900 (Fits budget ₹2000!)
+    # 77900 CE (OTM3) @ 140 -> Cost 1400 (Fits budget)
+    weekly_opts = pd.DataFrame([
+        {"symbol": "SENSEX2682077600CE", "token": "101", "strike": 77600.0},
+        {"symbol": "SENSEX2682077700CE", "token": "102", "strike": 77700.0},
+        {"symbol": "SENSEX2682077800CE", "token": "103", "strike": 77800.0},
+        {"symbol": "SENSEX2682077900CE", "token": "104", "strike": 77900.0},
+    ])
+    option_cache = {
+        "101": 250.0,
+        "102": 220.0,
+        "103": 190.0,
+        "104": 140.0,
+    }
+    
+    alloc = StrikeSelector.select_strikes(
+        signal_type="CALL",
+        index_price=77620.0,
+        index_name="SENSEX",
+        weekly_opts=weekly_opts,
+        option_cache=option_cache,
+        available_funds=2000.0,
+        lot_size=10,
+    )
+    
+    assert len(alloc) == 1
+    chosen_row, qty, ltp = alloc[0]
+    # Must select 77800 CE (₹190, Cost ₹1900 <= ₹2000) as the highest affordable premium!
+    assert chosen_row["symbol"] == "SENSEX2682077800CE"
+    assert ltp == 190.0
+    assert qty == 1
