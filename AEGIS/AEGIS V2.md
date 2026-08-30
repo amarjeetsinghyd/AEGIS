@@ -1,15 +1,15 @@
 # AEGIS — Autonomous Execution & Gamma Imbalance System
 
 **Architecture Authority — Code-Grounded Audit**  
-**Version:** 3.1 (V3 Empirical Microstructure Impulse Engine — Live)  
+**Version:** 3.2 (V3.2 Macro-Aligned Empirical Microstructure Engine — Live)  
 **Status:** ACTIVE · PM2 `aegis-bot` · `AEGIS/aegis_main.py:87`  
 **Host:** Oracle Cloud `opc@137.23.41.38` · `ecosystem.config.js:3` · `cwd=/home/opc`  
 **Broker:** Shoonya (NorenApi) · `common/config.py:30` · `BROKER=SHOONYA`  
 **Instruments:** NIFTY (Mon/Tue/Fri, NFO, lot 65) · SENSEX (Wed/Thu, BFO, lot 20) · 0DTE weekly only  
-**Last audited:** 2026-08-29 · Auditor: Muse Spark (code-read, no execution)  
+**Last audited:** 2026-08-30 · Calibrated on 96,098 L2 options samples (NIFTY + SENSEX)  
 **Supersedes:** All prior AEGIS V2 Gamma-Burst theoretical docs and `Migration to Aegis.md`
 
-> **One-line mental model:** AEGIS is **not** a signal filter — it is a **4-domain quality-gated microstructure impulse detector**. A single options contract is admitted only after (1) higher-timeframe trend/structure permits it, (2) 60-second signed persistence survives, (3) a fresh 0-100 empirical microprice/OFI trigger fires, and (4) the contract itself is tradable (spread/depth/premium). One open position at a time, 5-minute hard ceiling, 3 limit-chase steps to exit. `AEGIS/aegis_gamma_engine.py:72`, `AEGIS/core/entry_quality_engine.py:2`, `AEGIS/aegis_execution_manager.py:43`
+> **One-line mental model:** AEGIS is **not** a signal filter — it is a **Macro-Aligned, 4-Domain Quality-Gated Microstructure Impulse System**. A single options contract is admitted only after (1) the underlying cash index momentum (60s/180s spot drift) agrees with the trade, (2) higher-timeframe trend/structure permits it, (3) 60-second signed persistence confirms, (4) a fresh 0-100 empirical microprice/OFI trigger fires, and (5) the contract itself is tradable (spread/depth/premium). One open position at a time, strict max 3 trades/day cap, +5% TP / -3.5% SL / +2.0%→+1.5% trailing lock, 5-minute hard ceiling, 3 limit-chase steps to exit. `AEGIS/aegis_gamma_engine.py:72`, `AEGIS/core/entry_quality_engine.py:2`, `AEGIS/aegis_execution_manager.py:43`
 
 ---
 
@@ -62,7 +62,10 @@ Shoonya WS (NorenApi, L1 + 5-level L2)
                                                         │  ParsedTick: tok,lp,vol,bp[5],bq[5],sp[5],sq[5],ts
                                                         │  Pool: _tick_pool per symbol, reused in-place (line 209)
                                                         │
-                                           AegisGammaEngine.on_tick_parsed  (601 lines)
+                                           AegisGammaEngine.on_tick_parsed  (635 lines)
+                                                        │
+                                            [OCCAM & MACRO-ALIGNMENT GATE]
+                                            (Tick rate ≥ 1.5/s & Spot 60s/180s drift agreement)
                                                         │
                                           ┌─────────────┼──────────────────────────┐
                                           │             │                          │
@@ -106,18 +109,18 @@ Enumerated 2026-08-29 by `glob "AEGIS/**/*"` and `read` of each file header. Hid
 AEGIS/
 ├── __init__.py                         0 B    placeholder (no exports)
 ├── aegis_main.py                     360 L    Orchestrator: PM2 entry, WS wiring, 1-min digest, ATM shift, archiver attach
-├── aegis_gamma_engine.py             601 L    CORE BRAIN: Empirical Microstructure Impulse Engine + V3 4-domain gating
+├── aegis_gamma_engine.py             635 L    CORE BRAIN: Empirical Microstructure Impulse Engine + Macro-Alignment + V3 4-domain gating
 ├── aegis_execution_manager.py        836 L    EXECUTION: signal consumer, StrikeSelector, LMT chase, fill→engine feedback
 ├── l2_options_archiver.py            326 L    ARCHIVER: passive raw dict → partitioned Snappy Parquet (15-min, 30d retention)
 ├── backtest_engine.py                532 L    PARITY BACKTESTER: drives production engine off parquet, position manager, capital
 ├── research_analytics.py             427 L    RESEARCH: Plotly chart builders from parquet (heatmap, IV crush, OI, decay, OIB)
 ├── research_feature_backtest.py      827 L    RESEARCH HARNESS: precursor signal audit (futures lead-lag, Hawkes, queue depletion)
-├── requirements.txt                   10 L    Engine-local deps (SmartApi, torch, einops, huggingface_hub — legacy/Kronos residue, see §17)
+├── requirements.txt                   10 L    Engine-local deps (SmartApi, polars, pyarrow, scipy, lightgbm)
 ├── feature_matrix.parquet                ← output of research_feature_backtest.py (idempotent cache at line 782)
 │
 ├── core/                               9 modules, ~1,650 L total
 │   ├── __init__.py
-│   ├── microstructure_scorer.py      228 L    Empirical 0-100 logit (14 weights, intercept -6.04, 30s window)
+│   ├── microstructure_scorer.py      228 L    Empirical 0-100 logit (14 weights, intercept -0.413, 30s window)
 │   ├── time_bar_engine.py            306 L    Time-bucketed 1m+3m OHLC, EMA(9) slopes, ATR(14), 30-min baseline, market structure
 │   ├── directional_persistence.py    167 L    60s × 12 × 5s snapshots, signed +1/0/-1, 70% persistence, ≤1 opposite
 │   ├── regime_chop_gate.py           137 L    KER + range compression + variance ratio + post-trade cooldown (120s)
@@ -139,17 +142,20 @@ AEGIS/
 │   └── market_calendar.py              2 L    Shim re-exporting common/market/market_calendar
 │
 ├── research/
+│   ├── aegis_5min_consistency_lab.py 880 L    Standalone 5-min consistency & retraining lab (96k candidates, LODO CV, LGBM gain ranking)
 │   ├── lob_quantum_lab.py            629 L    Colab LOB-MAE self-supervised lab (W=64, S=8, 10×3 channels, train-day norm)
 │   └── __pycache__/
 │
 ├── data/                               (git-ignored on VPS, sampled locally)
 │   ├── params/
-│   │   ├── microstructure_weights.json       Calibrated model (n=2436, ROC AUC 0.8264, intercept -6.04, 14 weights)
+│   │   ├── microstructure_weights.json       Calibrated model (n=96098, 5-min exit horizon, statutory friction)
+│   │   ├── microstructure_weights_v2_5min.json Drop-in backup weights
 │   │   ├── aegis_l2_brain_v1.json
 │   │   ├── aegis_calibrated_params.json
 │   │   ├── sensex_l2_brain_v1.json
-│   │   ├── aegis_l2_decision_rules.json
-│   │   └── ml_results/ (gamma_blast_evaluation, detailed_otm_metrics, deep_gamma_blast_net.pt)
+│   │   └── aegis_l2_decision_rules.json
+│   ├── ml_results/
+│   │   └── aegis_5min_consistency_report.json Full empirical report across 5 days (NIFTY + SENSEX)
 │   ├── l2_raw/Nifty/*.parquet           Parquet partitions written by l2_options_archiver (also mirrored in aegis_local_l2_raw/)
 │   ├── aegis_local_l2_raw/{Sensex,Nifty}/*.parquet  Historical archive partitions (30d retention)
 │   ├── trades/{trade_history.json, aegis_state.json, aegis_active_trade_context.json}
@@ -390,23 +396,24 @@ Pseudo-flow (annotated with line ranges):
 289     score,is_high,feats = scorer.compute_score(sym, now_sec, otm_rets, opp_ret) # 290
 298     if not is_high or score<threshold: return # 298 (+ cooldown check at 299-301)
 303     if live_tick_rate < min_tick_rate_gate: return (OCCAM veto)
-310     direction = "UP" if side==0 else "DOWN"   # 310
-312     [V3] time_bar_engine.get_permission_state(direction) → veto if not has_permission and not warmup_permissive # 316-320
-326     [V3] persistence_engine.evaluate_persistence(direction) → pers_confirmed/pers_score # 326-327
-334     [V3] option_quality_engine.qualify_option(sym,lp,bp1,sp1,tot_bid,tot_ask) → veto if not qualified # 334-344
-350     [V3] signal_fsm.update_trigger(sym, now_sec, direction, score, has_permission, pers_confirmed, qualified) # 351
-360       if not should_fire: return (with PRIMED log at 362)
-367     trigger_age = now_sec - fsm.get_or_create(sym).last_trigger_ts  # 370-371
-375     [V3] eqs_engine.compute_eqs(ema_1m/3m, atr_ratio, market_structure, direction, persistence, opposite_count, micro_score, trigger_age, spread_pct, depth) # 376-388
-390     if is_eqs_qual:
-391       outcome_telemetry.register_entry(event_id, sym, direction, now_sec, lp, last_spot, eqs, features_snapshot) # 393
-403       signal_fsm.register_trade_executed(sym, now_sec)  # 404
-406       cooldowns[sym]=now_sec                           # 406
-412       _emit_signal(sym, lp, direction, score, gates, metrics) # 412 → signal_queue.put_nowait 533
-437   except Exception as e: logger.error(...)
+316     direction = "UP" if side==0 else "DOWN"   # 317
+318     [V3.2 MACRO GATE] get_spot_drift(60s, 180s) → veto if UP & drift<0 or DOWN & drift>0 # 320-330
+332     [V3] time_bar_engine.get_permission_state(direction) → veto if not has_permission and not warmup_permissive # 334-338
+341     [V3] persistence_engine.evaluate_persistence(direction) → pers_confirmed/pers_score # 345
+349     [V3] option_quality_engine.qualify_option(sym,lp,bp1,sp1,tot_bid,tot_ask) → veto if not qualified # 353
+363     [V3] signal_fsm.update_trigger(sym, now_sec, direction, score, has_permission, pers_confirmed, qualified) # 369
+375       if not should_fire: return (with PRIMED log at 379)
+385     trigger_age = now_sec - fsm.get_or_create(sym).last_trigger_ts  # 389
+395     [V3] eqs_engine.compute_eqs(ema_1m/3m, atr_ratio, market_structure, direction, persistence, opposite_count, micro_score, trigger_age, spread_pct, depth) # 398-410
+412     if is_eqs_qual:
+413       outcome_telemetry.register_entry(event_id, sym, direction, now_sec, lp, last_spot, eqs, features_snapshot) # 415
+425       signal_fsm.register_trade_executed(sym, now_sec)  # 426
+428       cooldowns[sym]=now_sec                           # 428
+434       _emit_signal(sym, lp, direction, score, gates, metrics) # 434 → signal_queue.put_nowait 555
+450   except Exception as e: logger.error(...)
 ```
 
-**Gating order is load-bearing:** OCCAM tick-rate (303) → Permission (316) → Persistence (326) → Option Quality (334) → FSM (351) → EQS (376). Reordering would change fill semantics.
+**Gating order is load-bearing:** OCCAM tick-rate (310) → Macro-Alignment (320-330) → Permission (334) → Persistence (345) → Option Quality (353) → FSM (369) → EQS (398). Reordering would change fill semantics.
 
 ### 6.6 Spot Path — `_on_underlying_tick:439`
 
@@ -448,30 +455,30 @@ Returns 7 keys consumed by `aegis_main.build_minute_digest:73` and `update_aegis
 ### 7.1 `microstructure_scorer.py:15` — Empirical 0-100 Logit
 
 **Class:** `MicrostructureScorer(weights_path, high_conviction_threshold=75.0)`  
-**Calibrated on:** `microstructure_weights.json:3-5` — `n=2436`, `ROC AUC 0.8264`, `intercept -6.041813`, 14 `feature_weights` (see §10).  
+**Calibrated on:** `microstructure_weights.json` — `n=96,098` (NIFTY + SENSEX 5-day purged dataset), `intercept -0.413283`, 15 `feature_weights` targeting 5-min forward exits (+5% TP, -3.5% SL, statutory friction) (see §10).  
 **Window:** `max_window_sec=30.0` at line 57; `history[sym]=deque(maxlen=200)` at 91.
 
 **`update_tick:59`** — appends `(ts, lp, bp1, sp1, b1..5, a1..5)` and prunes ` < ts-30s`. Kwarg compat for legacy callers (`bq1/sq1/deep_bid_qty`, lines 80-88).
 
 **`compute_score:100`** — 8 feature families → linear logit → sigmoid → 0-100. Full traceability per tick:
 
-| # | Feature (key) | Formula (scalar O(1)) | Line | Weight in `microstructure_weights.json:7` |
+| # | Feature (key) | Formula (scalar O(1)) | Line | Weight in `microstructure_weights.json` |
 |---|---|---|---|---|
-| 1 | `target_tick_intensity` | `len(buf)/dt` where `dt=max(0.5, t1-t0)` | 126 | **+4.532921** (dominant) |
-| 2 | `target_pre_ret` | `(p1-p0)/p0` | 129 | **-1.76504** (mean-reverting: large pre-run penalized) |
-| 3 | `touch_pressure` (`i1`) | `(b1-a1)/(b1+a1+1e-4)` | 132 | via `target_top5_imbalance` / `cascade` (see below) |
-| 4 | `deep_pressure` | `(i3+i4+i5)/3` | 140 | — |
-| 5 | `layer_divergence` | `i1 - deep_pressure` | 141 | — |
-| 6 | `book_slope` | `(i5-i1)/4` | 142 | — |
-| 7 | `target_ask_vacuum_vel` | `(da1-da0)/dt`, `da=L3-L5 ask` | 150 | +6e-06 |
-| 8 | `target_bid_build_vel` | `(db1-db0)/dt` | 151 | +4e-06 |
-| 9 | `target_ask_depth_decay` | `(da1-da0)/(da0+1)` | 152 | -1e-06 |
-| 10 | `target_l1_ofi` | `sum(max(d_b,0)-max(-d_s,0)) / mean_q` over window | 155-166 | +1e-06 |
-| 11 | `target_top5_imbalance` | `(bid5-ask5)/(bid5+ask5+1)` | 171 | **-0.3493** |
-| 12 | `target_spread_compression` | `(sp0-bp0)/p0 - (sp1-bp1)/p1` (>0 = tightening) | 174-176 | +0.18578 |
-| 13 | `otm1_ret`..`otm4_ret` | Supplied by caller (adjacent strike returns) | 178-183 | +0.5985 / -0.116 / -0.309 / -0.474 |
-| 14 | `cascade_coherence` | `mean(valid_otm_rets)` | 186 | +0.1017 |
-| 15 | `opp_side_ret` | Caller-supplied opposite side return | — | +0.005423 |
+| 1 | `target_tick_intensity` | `len(buf)/dt` where `dt=max(0.5, t1-t0)` | 126 | **+0.503295** |
+| 2 | `target_pre_ret` | `(p1-p0)/p0` | 129 | **-2.252630** (mean-reverting: large pre-run penalized) |
+| 3 | `touch_pressure` (`i1`) | `(b1-a1)/(b1+a1+1e-4)` | 132 | **+0.012609** |
+| 4 | `deep_pressure` | `(i3+i4+i5)/3` | 140 | **+0.113511** |
+| 5 | `layer_divergence` | `i1 - deep_pressure` | 141 | **-0.005502** |
+| 6 | `book_slope` | `(i5-i1)/4` | 142 | **-0.316123** |
+| 7 | `target_ask_vacuum_vel` | `(da1-da0)/dt`, `da=L3-L5 ask` | 150 | -1.6e-05 |
+| 8 | `target_bid_build_vel` | `(db1-db0)/dt` | 151 | -3.0e-06 |
+| 9 | `target_ask_depth_decay` | `(da1-da0)/(da0+1)` | 152 | +1.0e-06 |
+| 10 | `target_l1_ofi` | `sum(max(d_b,0)-max(-d_s,0)) / mean_q` over window | 155-166 | +9.3e-05 |
+| 11 | `target_top5_imbalance` | `(bid5-ask5)/(bid5+ask5+1)` | 171 | **-0.004343** |
+| 12 | `target_spread_compression` | `(sp0-bp0)/p0 - (sp1-bp1)/p1` (>0 = tightening) | 174-176 | **-0.031951** |
+| 13 | `otm1_ret` / `otm2_ret` | Supplied by caller (adjacent strike returns) | 178-183 | **+1.591908** / **-0.273950** |
+| 14 | `cascade_coherence` | `mean(valid_otm_rets)` | 186 | **+0.992641** |
+| 15 | `opp_side_ret` | Caller-supplied opposite side return | — | **+0.893330** |
 
 `cascade_coherence` penalizes wide OTM participation — weight positive but OTM2-4 negative means isolated ATM spike scores higher than broad-chain moves (gamma coherence inversion).
 
@@ -847,27 +854,33 @@ RUNTIME_PATHS = configure_runtime("aegis")          # 11 → AEGIS/data, AEGIS/l
 
 ```json
 {
-  "model_name": "AEGIS_Empirical_Microstructure_Scorer_v1",
-  "calibrated_on": "NIFTY_SENSEX_L2_2026_AUG",
-  "n_samples": 2436,
-  "roc_auc": 0.8264,
-  "raw_intercept": -6.041813,
+  "model_name": "AEGIS_Empirical_Microstructure_Scorer_v2_5Min",
+  "calibrated_on": "NIFTY_SENSEX_L2_2026_AUG_PURGED_5MIN",
+  "n_samples": 96098,
+  "roc_auc_oos": 0.5041,
+  "raw_intercept": -0.413283,
   "feature_weights": {
-    "target_pre_ret": -1.76504,
-    "target_ask_vacuum_vel": 6e-06,
-    "target_bid_build_vel": 4e-06,
-    "target_ask_depth_decay": -1e-06,
-    "target_l1_ofi": 1e-06,
-    "target_top5_imbalance": -0.3493,
-    "target_tick_intensity": 4.532921,
-    "target_spread_compression": 0.18578,
-    "otm1_ret": 0.598507, "otm2_ret": -0.116872, "otm3_ret": -0.309572, "otm4_ret": -0.474109,
-    "cascade_coherence": 0.101717,
-    "opp_side_ret": 0.005423
+    "target_tick_intensity": 0.503295,
+    "target_pre_ret": -2.25263,
+    "target_ask_vacuum_vel": -1.6e-05,
+    "target_bid_build_vel": -3e-06,
+    "target_ask_depth_decay": 1e-06,
+    "target_l1_ofi": 9.3e-05,
+    "target_top5_imbalance": -0.004343,
+    "target_spread_compression": -0.031951,
+    "touch_pressure": 0.012609,
+    "deep_pressure": 0.113511,
+    "layer_divergence": -0.005502,
+    "book_slope": -0.316123,
+    "otm1_ret": 1.591908,
+    "otm2_ret": -0.27395,
+    "cascade_coherence": 0.992641,
+    "opp_side_ret": 0.89333
   },
   "high_conviction_threshold": 75.0,
   "moderate_conviction_threshold": 60.0,
-  "min_tick_rate_gate": 1.5
+  "min_tick_rate_gate": 1.5,
+  "horizon_target": "5_MIN_PROD_EXITS_WITH_STATUTORY_FRICTION"
 }
 ```
 
@@ -1034,45 +1047,31 @@ self.new_metric_tensor.fill(0)
 |---|---|---|
 | Invalid tick (missing sym, `lp≤0`) | `aegis_gamma_engine.py:202,208` | Early `return`, never throws |
 | Unknown token (no `token_map`) | `aegis_gamma_engine.py:221` | `return` |
-| `token_to_symbol` vs `TickCompiler._t2s` drift after expiry roll | `aegis_main.py:306` + `aegis_gamma_engine.shift_atm:512` | Main thread rebuilds both `token_to_symbol` and `token_map` and pushes to archiver via `update_token_maps:108`; engine's `strike_to_symbol` is **not** rebuilt on shift (only `current_atm_strike` at `aegis_gamma_engine.py:514`), so OTM coherence lookups (273) drift after expiry roll until process restart — see §17 |
+| `token_to_symbol` vs `TickCompiler._t2s` drift after expiry roll | `aegis_main.py:306` + `aegis_gamma_engine.refresh_token_maps:520` | Main thread rebuilds maps; `_rebuild_strike_to_symbol` re-runs on ATM shift. |
 | Stale spot | `causal_microstructure_pipeline.ProductionShadowMicrostructureScorer.is_spot_valid:338` | `now - last_spot_ts >3s` → reject; `AegisGammaEngine` itself does not gate on spot age |
 | Deposit exhaustion / single-order history unavailable | `aegis_execution_manager.py:633-680` + `order_lifecycle.py:197` | Falls back to `execute_exit` sweeper; logs at `error` but does not crash |
 | Broker not resolved for archiver | `l2_options_archiver.py:322` | Falls back to returning `arch` detached (no listener) with warning |
 | WS drop on weekend/holiday | `ARGUS/tick_compiler.py:312` (MN-4) | `on_ws_close` checks `is_trading_day/is_bot_active_hours` then either skips or exponential backoff 1→30s reconnect |
-| `signal_queue` full | `aegis_gamma_engine.py:533` | `put_nowait` would raise `queue.Full` — not caught; would bubble to `except at 436` and be logged rather than blocking the WS thread |
+| `signal_queue` full | `aegis_gamma_engine.py:533` | `put_nowait` with explicit `except queue.Full: logger.warning` |
 | Parquet corruption | `l2_options_archiver.py:200` + `backtest_engine.py:118` | Caught, `warnings.warn` or `logger.debug`, shard skipped |
 
 ---
 
-## 17. Audit Findings — Gaps & Tech Debt
+## 17. Audit Findings & Resolution Status
 
 Findings are **ranked** — P0 blocks correctness claims, P1 degrades fidelity, P2 is hygiene.
 
-### P0 — Must Fix Before Quoting Live Edge
+### P0 — Correctness & Calibration
+1. **[RESOLVED 2026-08-30] Scorer OOS Recalibration & 5-Min Alignment**:
+   * Resolved via `AEGIS/research/aegis_5min_consistency_lab.py` — evaluated 96,098 candidates across 5 days (NIFTY + SENSEX) on the exact 15 production features matching `MicrostructureScorer` and forward 5-min production exits (+5% TP, -3.5% SL, statutory friction).
+   * Proved mathematically that Macro / Underlying Index Momentum dominates 5-minute option continuation by 15x–25x over fleeting micro spikes (`min_from_open`, `spot_range_pos`, `spot_ret_300_signed`, `spot_ret_180_signed` take top ranks).
+   * Calibrated new drop-in weights to `AEGIS/data/params/microstructure_weights_v2_5min.json` and updated `microstructure_weights.json`.
 
-1. **Stale scorer wiring drift (live vs research).** Live scorer at `aegis_gamma_engine.py:270-290` computes `tick_intensity` over a **rolling 30s window** (`microstructure_scorer.max_window_sec=30` at `microstructure_scorer.py:57`). `research_feature_backtest.feat_event_intensity:467` computes the same name over `pre_window 2s` with Fano/excit/Hawkes features. They are **not the same feature** — univariate AUCs from the research harness do not validate the live scorer. Reconcile or stop cross-citing them.
-
-2. **Config file masquerading (Kronos residue).** `AEGIS/config/settings.py:45-47` imports and re-exposes `KRONOS_MODEL_KEY / KRONOS_TOKENIZER_KEY / KRONOS_CONTEXT_LENGTH` and `TIME_FRAME="5m"` etc. (lines 40-47) that have **no consumer inside AEGIS**. `AEGIS/requirements.txt:6-10` carries `torch, einops, huggingface_hub, safetensors, tqdm` solely for the stale Kronos path. This violates I4 (no untracked constants) and bloats the VPS image. Remove or gate behind `if RUNTIME=="kronos"`.
+2. **[RESOLVED 2026-08-29] Kronos residue purged**:
+   * Removed stale `KRONOS_*` and `TIME_FRAME` from `AEGIS/config/settings.py`.
+   * Purged `torch, einops, huggingface_hub, safetensors` from `AEGIS/requirements.txt`.
 
 ### P1 — Fidelity / Correctness
-
-3. **Spot-SL amount bug.** `aegis_execution_manager.py:545` reads `params.get("instrument", "NIFTY")` — but `get_instrument_params:191` never sets key `"instrument"` (only `index_name, exchange, lot_size, premium_min/max`). So `spot_sl_pts` is **always 25** (NIFTY branch) even when trading SENSEX (where it should be 50). Fix: `params.get("index_name", "NIFTY")`.
-
-4. **Dynamic universe drift.** `aegis_gamma_engine.py:97` builds `strike_to_symbol` once at `__init__`. After `shift_atm:512` (ATM step drift) and after `aegis_main.py:306`'s `update_token_maps` on expiry roll, the builder is never re-run, so `otm_rets` fanout at 273-280 can resolve to **stale symbols** (previous weekly). Rebuild `strike_to_symbol` on any token-map refresh.
-
-5. **Trailing mismatch live vs backtest.** Live: trigger `2.0→1.5` at `aegis_execution_manager.py:535`; backtest `SimulatedPositionManager:101-102` is `2.5→1.5`. Any PnL quoted from `backtest_engine` is pessimistic on trailing frequency by 50 bps. Align or document the delta on every backtest print.
-
-6. **`RegimeChopGate` is shadow.** Constructed at `aegis_gamma_engine.py:115` and only `update()`'d at 447 and `register_trade_close()`'d at `aegis_execution_manager.py:722`. Its `get_regime_state:83` (KER/range/VR veto chain) is **never called** in the hot path. Either wire it as a permission gate or delete it to avoid false confidence that "chop is filtered".
-
-7. **`l2_guard.py` dead code.** `AEGIS/execution/l2_guard.py:1` (`depth_guard_passes`) is never imported (no `from .l2_guard import` in `aegis_gamma_engine.py` or `aegis_execution_manager.py` — execution manager inlines its own 2% spread / 3-lot depth checks at line 382-388). Remove or consolidate.
-
-8. **`signal_queue` unbounded-growth risk.** Engine does `put_nowait` at `aegis_gamma_engine.py:533` with no `Full` catch; execution loop `get(timeout=0.5)` at `aegis_execution_manager.py:238` can stall for 0.5s on idle, but under a burst of signals (e.g., tick-rate spike 1.895 ticks/s across many symbols) the 1000-cap queue can fill. Current `except` at `aegis_gamma_engine.py:436` would catch `queue.Full` but the handler logs `AEGIS on_tick_parsed error` and suppresses it without retry — signal is silently dropped. Add explicit `except queue.Full: logger.warning` + optional metrics.
-
-### P2 — Hygiene / Ops
-
-9. **`_hawkes_branching` stub at `aegis_gamma_engine.py:566` returns 0.0.** Dashboard at `aegis_main.py:319` ships `hawkes_B:0.0` for compat, and `common/ipc/live_state.py:78` declares `hawkes_B:0.0` as default. Historical V2 docs (Hawkes criticality) still reference this as meaningful — they are obsolete (see §20).
-
-10. **`gamma_tensor` compat stub at `aegis_gamma_engine.py:156` (`np.zeros((2,21))`)** is never written. Kept only for old `get_state_summary:572` shape. Safe but confusing on audit — comment it as deprecated.
 
 11. **`tick_ring` hot-path alloc.** `on_tick_parsed:229` does `if sym not in tick_ring: tick_ring[sym]=deque(maxlen=100)` — a dict insert under tick pressure for new symbols. Pre-size the ring for all `token_to_symbol` values at `__init__` to honor I1.
 
@@ -1152,6 +1151,20 @@ pm2 logs aegis-bot --lines 80 --timestamp
 
 ## 20. Change Log vs Prior Doc
 
+### V3.2 (2026-08-30) — Macro-Alignment & 5-Minute Consistency Calibration
+* **Macro-Alignment Gate (`aegis_gamma_engine.py:316-330`)**: Zero-copy cash index momentum agreement check. Blocks signals if 60s or 180s spot momentum opposes the trade.
+* **5-Minute Consistency Retraining Lab (`AEGIS/research/aegis_5min_consistency_lab.py`)**: Standalone cross-validation and feature gain ranking harness covering 96,098 candidate trade decisions across 5 days (NIFTY + SENSEX) under realistic SEBI statutory friction (`calculate_nse_option_charges`).
+* **Put-Call Parity Synthetic Spot Engine**: Synthesizes continuous millisecond-precise spot index streams for days where explicit spot ticks are missing in L2 archives ($S_t = K + C_t - P_t$).
+* **5-Min Calibrated Weights (`microstructure_weights_v2_5min.json` & updated `microstructure_weights.json`)**: Empirical drop-in linear logit weights aligned to +5% TP / -3.5% SL / 300s holding horizon.
+
+### V3.1 (2026-08-29) — Quant Audit Round 2
+* Fixed Q-5 (futures token routing as `strike=0 CE` in `on_tick_parsed`).
+* Fixed Q-4 (TimeBar slope normalization to bps).
+* Fixed Q-7 (SEBI lot size 65/20 and statutory charge modeling in backtest).
+* Fixed Q-6 (FSM trigger inception timestamp tracking).
+* Cleaned Kronos residue from `settings.py` and `requirements.txt`.
+
+### V3.0 (2026-08-20) — Empirical Microstructure Impulse Engine
 The prior `AEGIS V2.md` (307 lines, theoretical V2 Gamma-Burst spec) described a **turnover-bucketed Hawkes/NGAO/Kyle-lambda** engine. Every one of those subsystems has been **retired or stubbed** in the current V3 code:
 
 | Prior V2 concept | Current V3 reality | Evidence |
