@@ -426,10 +426,8 @@ class AegisGammaEngine:
                                 )
 
                             if is_eqs_qual:
-                                # Compute Dynamic Take-Profit Target % (5.5% to 10.0%)
-                                atr_ratio = float(perm_metrics.get("atr_ratio", 1.0))
-                                dtp_calc = 0.050 * atr_ratio + 0.020 * max(0.0, (eqs - 70.0) / 30.0)
-                                recommended_tp_pct = round(min(0.10, max(0.055, dtp_calc)), 4)
+                                # High-Probability 4.0% Target Profit (Resting Maker Limit)
+                                recommended_tp_pct = 0.040
 
                                 event_id = f"{sym}_{int(now_sec*1000)}"
                                 if self.outcome_telemetry:

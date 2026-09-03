@@ -100,9 +100,9 @@ class SimulatedPositionManager:
         start_capital: float = 2000.0,
         charges_per_trade: float = 16.50,
         lot_size: int = 65,   # default NIFTY 65; SENSEX 20
-        target_pct: float = 6.5,
+        target_pct: float = 4.0,
         stop_loss_pct: float = 3.5,
-        breakeven_trigger_pct: float = 3.0,
+        breakeven_trigger_pct: float = 2.0,
         breakeven_lock_pct: float = 0.5,
         runner_trigger_pct: float = 7.0,
         runner_floor_pct: float = 5.0,
