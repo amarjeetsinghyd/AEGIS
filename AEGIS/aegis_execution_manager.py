@@ -195,7 +195,9 @@ class AegisExecutionManager:
     def has_open_trade(self) -> bool:
         if getattr(self, "_is_entering", False):
             return True
-        return bool(self.trade_context and str(self.trade_context.status).upper() in ("OPEN", "PENDING", "EXIT_PENDING", "SUBMITTED"))
+        if getattr(self, "_is_exiting", False):
+            return False
+        return bool(self.trade_context and str(self.trade_context.status).upper() in ("OPEN", "PENDING", "SUBMITTED"))
 
     def get_instrument_params(self) -> dict:
         name, _ = self.data_fetcher.get_active_instrument()
@@ -501,7 +503,9 @@ class AegisExecutionManager:
         now = datetime.now()
         
         with self.trade_lock:
-            if not self.has_open_trade():
+            if not self.has_open_trade() or getattr(self, "_is_exiting", False):
+                return
+            if not self.trade_context or str(self.trade_context.status).upper() != "OPEN":
                 return
             context = self.trade_context
             legs = list(context.legs)
@@ -652,9 +656,11 @@ class AegisExecutionManager:
 
     def _close_all_legs(self, reason: str, is_tp_maker: bool = False, limit_fill_price: float = 0.0):
         with self.trade_lock:
-            if not self.has_open_trade():
+            if not self.has_open_trade() or getattr(self, "_is_exiting", False):
                 return
-            self.trade_context.status = "EXIT_PENDING"
+            self._is_exiting = True
+            if self.trade_context:
+                self.trade_context.status = "EXIT_PENDING"
         
         threading.Thread(
             target=self._chase_exit_thread,
@@ -664,10 +670,19 @@ class AegisExecutionManager:
 
     def _chase_exit_thread(self, reason: str, is_tp_maker: bool = False, limit_fill_price: float = 0.0):
         """Limit exit execution — preserves TP maker fills and chases emergency exits."""
+        try:
+            self._do_chase_exit(reason, is_tp_maker, limit_fill_price)
+        finally:
+            with self.trade_lock:
+                self._is_exiting = False
+
+    def _do_chase_exit(self, reason: str, is_tp_maker: bool = False, limit_fill_price: float = 0.0):
         params = self.get_instrument_params()
         exch_seg = params["exchange"]
         
         with self.trade_lock:
+            if not self.trade_context:
+                return
             legs = list(self.trade_context.legs)
             context = self.trade_context
         
