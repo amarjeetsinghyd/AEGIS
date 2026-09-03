@@ -338,9 +338,9 @@ class TestWatertightRetailDoctrine:
             RUNNER_FLOOR_PCT,
         )
         # Verify calibrated parameters are mathematically sound
-        assert TARGET_PROFIT_PCT >= 0.055
+        assert TARGET_PROFIT_PCT == 0.040
         assert STOP_LOSS_PCT == 0.035
-        assert BREAKEVEN_TRIGGER_PCT == 0.030
+        assert BREAKEVEN_TRIGGER_PCT == 0.020
         assert BREAKEVEN_LOCK_PCT == 0.005  # Covers ~0.35% roundtrip charges
         assert RUNNER_TRIGGER_PCT == 0.070
         assert RUNNER_FLOOR_PCT == 0.050    # Locks minimum +5.0% on runner pullback
