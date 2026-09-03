@@ -46,9 +46,9 @@ AEGIS_FORCE_FLATTEN = dt_time(15, 10, 0) # Force flatten at 15:10
 MAX_TRADES_PER_DAY = int(os.getenv("MAX_TRADES_PER_DAY", "3")) # Hard safety cap: max 3 trades per day
 
 # ─── Watertight Retail Target, Breakeven Guard & Runner Lock Constants ───
-TARGET_PROFIT_PCT = 0.040               # +4.0% Target Profit (Resting DAY Limit target)
+TARGET_PROFIT_PCT = 0.065               # +6.5% Baseline Target Profit (Dynamic scales 5.5% to 10.0%)
 STOP_LOSS_PCT = 0.035                   # -3.5% Hard Stop Loss
-BREAKEVEN_TRIGGER_PCT = 0.020           # Arm Breakeven Guard when peak >= +2.0%
+BREAKEVEN_TRIGGER_PCT = 0.030           # Arm Breakeven Guard when peak >= +3.0%
 BREAKEVEN_LOCK_PCT = 0.005              # Lock +0.5% (covers all statutory fees + brokerage)
 RUNNER_TRIGGER_PCT = 0.070              # Arm Runner Lock when peak >= +7.0%
 RUNNER_FLOOR_PCT = 0.050                # Minimum +5.0% floor on runner pullbacks
