@@ -119,6 +119,11 @@ class SignalStateMachine:
             return SignalState.OBSERVE, False, "observing"
 
         elif lc.state == SignalState.PRIMED:
+            # Refresh trigger inception if a fresh strong burst arrives while waiting for persistence
+            if micro_score >= 75.0:
+                lc.last_trigger_ts = now_sec
+                lc.prime_score = max(lc.prime_score, micro_score)
+
             # Check timeout
             if (now_sec - lc.prime_ts) > self.prime_timeout_sec:
                 lc.state = SignalState.OBSERVE
@@ -129,7 +134,7 @@ class SignalStateMachine:
                 lc.state = SignalState.CONFIRMED
                 lc.confirmed_ts = now_sec
                 # Immediately check trigger freshness for instant fire
-                if trigger_age <= self.max_trigger_freshness_sec:
+                if (now_sec - lc.last_trigger_ts) <= self.max_trigger_freshness_sec:
                     lc.state = SignalState.FIRED
                     lc.fired_ts = now_sec
                     return SignalState.FIRED, True, "instant_fresh_confirmed_fire"
@@ -142,15 +147,17 @@ class SignalStateMachine:
                 lc.state = SignalState.OBSERVE
                 return SignalState.OBSERVE, False, "confirmation_lost_reset"
 
-            # Stale trigger check
-            if trigger_age > self.max_trigger_acceptable_sec:
+            # Timeout check for confirmed state
+            if (now_sec - lc.confirmed_ts) > self.prime_timeout_sec:
                 lc.state = SignalState.OBSERVE
-                return SignalState.OBSERVE, False, f"stale_trigger_reset ({trigger_age:.1f}s)"
+                return SignalState.OBSERVE, False, "confirmed_timeout_reset"
 
-            if trigger_age <= self.max_trigger_freshness_sec and micro_score >= 75.0:
+            # Fresh microstructure trigger arrives while in confirmed state -> FIRE!
+            if micro_score >= 75.0:
+                lc.last_trigger_ts = now_sec
                 lc.state = SignalState.FIRED
                 lc.fired_ts = now_sec
-                return SignalState.FIRED, True, f"fresh_trigger_fired (age={trigger_age:.2f}s)"
+                return SignalState.FIRED, True, f"fresh_trigger_fired (score={micro_score:.1f})"
 
             return SignalState.CONFIRMED, False, "awaiting_fresh_timing_trigger"
 

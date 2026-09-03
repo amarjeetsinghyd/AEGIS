@@ -110,7 +110,7 @@ class AegisGammaEngine:
             self.scorer = None
 
         if RegimeChopGate is not None:
-            self.chop_gate = RegimeChopGate(strike_step=self.strike_step, cooldown_sec=240.0)
+            self.chop_gate = RegimeChopGate(strike_step=self.strike_step, cooldown_sec=120.0, ker_veto_threshold=0.15, range_compression_veto=0.04)
         else:
             self.chop_gate = None
 
@@ -130,11 +130,15 @@ class AegisGammaEngine:
         self.spot_1m_drift_gate = float(self.P.get("spot_1m_drift_gate", 1.5))
         self.option_cache: Dict[str, float] = {}
 
-        # V3 Horizon-Aligned Modules
+        # V3 Horizon-Aligned Modules (Adaptive for NIFTY vs SENSEX)
         telemetry_dir = os.path.join(PARAM_DIR, "..", "logs", "telemetry") if "PARAM_DIR" in globals() else "AEGIS/logs/telemetry"
         self.time_bar_engine = TimeBarEngine(ema_period=9, atr_period=14) if TimeBarEngine is not None else None
-        self.persistence_engine = DirectionalPersistenceEngine(window_sec=60.0, sample_interval_sec=5.0) if DirectionalPersistenceEngine is not None else None
-        self.option_quality_engine = OptionQualityEngine(max_spread_pct=2.5, min_top5_depth_qty=500.0) if OptionQualityEngine is not None else None
+        self.persistence_engine = DirectionalPersistenceEngine(window_sec=30.0, sample_interval_sec=5.0) if DirectionalPersistenceEngine is not None else None
+        
+        # SENSEX has lot size 20 (vs Nifty 65) -> depth threshold adaptive: 150 for Sensex, 400 for Nifty
+        is_sensex = (float(self.strike_step) == 100.0) or ("SENSEX" in str(getattr(self, "index_name", "")).upper()) or any("SENSEX" in str(s).upper() for s in self.t2s.values())
+        min_depth = 150.0 if is_sensex else 400.0
+        self.option_quality_engine = OptionQualityEngine(max_spread_pct=2.5, min_top5_depth_qty=min_depth) if OptionQualityEngine is not None else None
         self.signal_fsm = SignalStateMachine(max_trigger_freshness_sec=3.0, max_trigger_acceptable_sec=8.0) if SignalStateMachine is not None else None
         self.eqs_engine = EntryQualityEngine(dispatch_threshold=float(self.P.get("eqs_dispatch_threshold", 70.0))) if EntryQualityEngine is not None else None
         self.outcome_telemetry = OutcomeTelemetryEngine(log_dir=telemetry_dir) if OutcomeTelemetryEngine is not None else None
@@ -144,8 +148,9 @@ class AegisGammaEngine:
         self.post_fill_edge_buf = np.zeros(500, dtype=np.float32)
         self.fill_ptr = 0
         self._pending_edge_measures: List[Dict] = []
-        # Empirical Veto Gate from 5-day Backtest (Spikes avg 1.895 ticks/s vs controls 0.500)
-        self.min_tick_rate_gate = float(self.P.get("min_tick_rate_gate", 1.5))
+        
+        # Adaptive Veto Gate (SENSEX BSE tick speed is ~0.8-1.2 ticks/s vs NIFTY 1.8-3.0)
+        self.min_tick_rate_gate = 0.8 if is_sensex else float(self.P.get("min_tick_rate_gate", 1.2))
 
         # Compatibility attribute (deprecated, kept for dashboard schema — see audit P2.10)
         self.gamma_tensor = np.zeros((2, N_STRIKES), dtype=np.float32)
@@ -158,7 +163,8 @@ class AegisGammaEngine:
 
         logger.info(
             f"AEGIS Empirical Microstructure Engine initialised | "
-            f"Threshold={self.high_conviction_threshold:.1f} | MinTickRate={self.min_tick_rate_gate:.1f} | StrikeStep={self.strike_step}"
+            f"Threshold={self.high_conviction_threshold:.1f} | MinTickRate={self.min_tick_rate_gate:.1f} | "
+            f"MinDepth={min_depth:.0f} | StrikeStep={self.strike_step}"
         )
 
     def _load_or_default_params(self) -> Dict:
@@ -186,7 +192,8 @@ class AegisGammaEngine:
         """Hot-reload params from disk."""
         self.P = self._load_or_default_params()
         self.high_conviction_threshold = float(self.P.get("high_conviction_threshold", 75.0))
-        self.min_tick_rate_gate = float(self.P.get("min_tick_rate_gate", 1.5))
+        is_sensex = (float(self.strike_step) == 100.0) or ("SENSEX" in str(getattr(self, "index_name", "")).upper()) or any("SENSEX" in str(s).upper() for s in self.t2s.values())
+        self.min_tick_rate_gate = 0.8 if is_sensex else float(self.P.get("min_tick_rate_gate", 1.2))
         if self.scorer is not None:
             weights_file = os.path.join(PARAM_DIR, "microstructure_weights.json")
             self.scorer = MicrostructureScorer(weights_path=weights_file, high_conviction_threshold=self.high_conviction_threshold)
@@ -316,18 +323,27 @@ class AegisGammaEngine:
                         # V3 4-Domain Pipeline Evaluation
                         direction = "UP" if side == 0 else "DOWN"  # 0=CE -> UP, 1=PE -> DOWN
 
-                        # [MACRO ALIGNMENT GATE] Underlying Cash Index Momentum Agreement (60s & 180s)
-                        if len(self.spot_history) >= 2 and self.last_spot > 0:
-                            drift_60 = self.get_spot_drift(now_sec, 60.0)
-                            drift_180 = self.get_spot_drift(now_sec, 180.0)
-                            if direction == "UP" and (drift_60 < -1.0 or drift_180 < -2.0):
+                        # [REGIME CHOP GATE] Veto if market is in low-efficiency oscillation or dead compression
+                        if self.chop_gate:
+                            chop_ok, chop_reason, chop_metrics = self.chop_gate.get_regime_state(now_sec)
+                            if not chop_ok and chop_reason != "warmup":
                                 logger.info(
-                                    f"[MACRO ALIGN VETO] {sym} (UP) blocked: spot drifting down (60s: {drift_60:+.1f}pts, 180s: {drift_180:+.1f}pts)"
+                                    f"[REGIME CHOP VETO] {sym} ({direction}) blocked by '{chop_reason}' (KER={chop_metrics.get('ker', 0.0):.3f}, RangeComp={chop_metrics.get('range_ratio', 0.0):.3f})"
                                 )
                                 return
-                            elif direction == "DOWN" and (drift_60 > 1.0 or drift_180 > 2.0):
+
+                        # [MACRO ALIGNMENT GATE] Agile 60-Second Spot Drift Confirmation (>= 1.0 BPS / 2.4 pts)
+                        if len(self.spot_history) >= 2 and self.last_spot > 0:
+                            drift_60_bps = self.get_spot_drift_bps(now_sec, 60.0)
+                            drift_60_pts = self.get_spot_drift(now_sec, 60.0)
+                            if direction == "UP" and drift_60_bps < 1.0:
                                 logger.info(
-                                    f"[MACRO ALIGN VETO] {sym} (DOWN) blocked: spot drifting up (60s: {drift_60:+.1f}pts, 180s: {drift_180:+.1f}pts)"
+                                    f"[MACRO ALIGN VETO] {sym} (UP) blocked: 60s spot drift below momentum target ({drift_60_bps:+.1f}bps/{drift_60_pts:+.1f}pts)"
+                                )
+                                return
+                            elif direction == "DOWN" and drift_60_bps > -1.0:
+                                logger.info(
+                                    f"[MACRO ALIGN VETO] {sym} (DOWN) blocked: 60s spot drift above momentum target ({drift_60_bps:+.1f}bps/{drift_60_pts:+.1f}pts)"
                                 )
                                 return
 
@@ -410,6 +426,11 @@ class AegisGammaEngine:
                                 )
 
                             if is_eqs_qual:
+                                # Compute Dynamic Take-Profit Target % (5.5% to 10.0%)
+                                atr_ratio = float(perm_metrics.get("atr_ratio", 1.0))
+                                dtp_calc = 0.050 * atr_ratio + 0.020 * max(0.0, (eqs - 70.0) / 30.0)
+                                recommended_tp_pct = round(min(0.10, max(0.055, dtp_calc)), 4)
+
                                 event_id = f"{sym}_{int(now_sec*1000)}"
                                 if self.outcome_telemetry:
                                     self.outcome_telemetry.register_entry(
@@ -420,14 +441,14 @@ class AegisGammaEngine:
                                         entry_opt_price=lp,
                                         entry_spot_price=self.last_spot,
                                         eqs_score=eqs,
-                                        features_snapshot={**feats, **eqs_breakdown, **perm_metrics},
+                                        features_snapshot={**feats, **eqs_breakdown, **perm_metrics, "recommended_tp_pct": recommended_tp_pct},
                                     )
                                 if self.signal_fsm:
                                     self.signal_fsm.register_trade_executed(sym, now_sec)
 
                                 self.cooldowns[sym] = now_sec
                                 logger.info(
-                                    f"[AEGIS V3 FIRED] {sym} ({direction}) | EQS: {eqs:.1f}/100 | MicroScore: {score:.1f} | "
+                                    f"[AEGIS V3 FIRED] {sym} ({direction}) | EQS: {eqs:.1f}/100 | Target: +{recommended_tp_pct*100:.1f}% | "
                                     f"Persist: {pers_score:.2f} | Struct: {perm_metrics.get('market_structure', 'N/A')} | "
                                     f"ATR_Ratio: {perm_metrics.get('atr_ratio', 1.0):.2f} | Spread: {opt_metrics.get('spread_pct', 0.5):.2f}%"
                                 )
@@ -444,6 +465,7 @@ class AegisGammaEngine:
                                     },
                                     metrics={
                                         "eqs_score": eqs,
+                                        "recommended_tp_pct": recommended_tp_pct,
                                         "microstructure_score": round(score, 2),
                                         "persistence_score": round(pers_score, 3),
                                         "live_tick_rate": round(live_tick_rate, 2),
@@ -462,6 +484,13 @@ class AegisGammaEngine:
         """Processes underlying Spot price ticks and manages dynamic ATM strike alignment."""
         if lp <= 0:
             return
+
+        # Spot sanity filter: prevent cross-index contamination (e.g. SENSEX 75k polluting NIFTY 24k)
+        if self.strike_step <= 50.0 and lp > 45000.0:
+            return  # SENSEX tick received in NIFTY engine
+        if self.strike_step >= 100.0 and lp < 45000.0:
+            return  # NIFTY tick received in SENSEX engine
+
         self.last_spot = lp
         self.spot_history.append((now_sec, lp))
 
@@ -474,20 +503,27 @@ class AegisGammaEngine:
 
         # 2. Update V3 60s Directional Persistence Snapshot every 5s
         if self.persistence_engine and self.persistence_engine.should_sample(now_sec):
-            curr_dir = "NEUTRAL"
+            # True in-flight 5-second drift from spot history
             drift_5s = 0.0
-            if self.time_bar_engine and self.time_bar_engine.bars_1m:
-                drift_5s = lp - self.time_bar_engine.bars_1m[-1].open
-                if self.time_bar_engine.ema_1m_slope > 0.1:
+            if len(self.spot_history) >= 2:
+                p_5s = self.spot_history[0][1]
+                target_ts = now_sec - 5.0
+                for ts_h, px_h in reversed(self.spot_history):
+                    if ts_h <= target_ts:
+                        p_5s = px_h
+                        break
+                drift_5s = lp - p_5s
+
+            # In-flight directional determination using live EMA slope & live drift
+            curr_dir = "NEUTRAL"
+            if self.time_bar_engine:
+                _, live_slope_1m_bps, _, _ = self.time_bar_engine.get_live_ema_and_slope()
+                if live_slope_1m_bps > 0.5 and drift_5s > 0.2:
                     curr_dir = "UP"
-                elif self.time_bar_engine.ema_1m_slope < -0.1:
+                elif live_slope_1m_bps < -0.5 and drift_5s < -0.2:
                     curr_dir = "DOWN"
-            elif len(self.spot_history) >= 5:
-                drift_5s = lp - self.spot_history[-5][1]
-                if drift_5s > 0.5:
-                    curr_dir = "UP"
-                elif drift_5s < -0.5:
-                    curr_dir = "DOWN"
+            elif abs(drift_5s) >= 0.5:
+                curr_dir = "UP" if drift_5s > 0 else "DOWN"
 
             self.persistence_engine.record_snapshot(
                 now_sec=now_sec,
@@ -519,7 +555,7 @@ class AegisGammaEngine:
                 logger.info(f"[AEGIS] Dynamic ATM roll: shift={shift:+d} | New ATM={self.current_atm_strike:.0f}")
 
     def get_spot_drift(self, now_sec: float, lookback_sec: float = 60.0) -> float:
-        """Returns the spot price drift (current_spot - spot_lookback_ago)."""
+        """Returns the spot price drift in points (current_spot - spot_lookback_ago)."""
         if not self.spot_history or self.last_spot <= 0:
             return 0.0
         target_ts = now_sec - lookback_sec
@@ -530,6 +566,22 @@ class AegisGammaEngine:
             else:
                 break
         return self.last_spot - ref_price
+
+    def get_spot_drift_bps(self, now_sec: float, lookback_sec: float = 60.0) -> float:
+        """Returns the scale-invariant spot price drift in basis points (bps)."""
+        if not self.spot_history or self.last_spot <= 0:
+            return 0.0
+        target_ts = now_sec - lookback_sec
+        ref_price = self.spot_history[0][1]
+        for ts, price in self.spot_history:
+            if ts <= target_ts:
+                ref_price = price
+            else:
+                break
+        if ref_price <= 0 or abs(self.last_spot - ref_price) > 5000:
+            # Token switch / uninitialized history jump protection
+            return 0.0
+        return ((self.last_spot - ref_price) / ref_price) * 10000.0
 
     def _rebuild_strike_to_symbol(self):
         """Rebuild (side,strike)→symbol after token-map refresh (fixes P1.4 universe drift)."""

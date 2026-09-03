@@ -33,22 +33,22 @@ class DirectionalPersistenceEngine:
 
     def __init__(
         self,
-        window_sec: float = 60.0,
+        window_sec: float = 30.0,
         sample_interval_sec: float = 5.0,
-        max_snapshots: int = 12,
-        min_valid_snapshots: int = 4,
-        target_persistence_threshold: float = 0.70,  # Provisional hypothesis
+        max_snapshots: int | None = None,
+        min_valid_snapshots: int = 3,
+        target_persistence_threshold: float = 0.60,
         max_allowed_opposite: int = 1,
     ):
         self.window_sec = window_sec
         self.sample_interval_sec = sample_interval_sec
-        self.max_snapshots = max_snapshots
+        self.max_snapshots = max_snapshots or max(1, int(window_sec / sample_interval_sec))
         self.min_valid_snapshots = min_valid_snapshots
         self.target_persistence_threshold = target_persistence_threshold
         self.max_allowed_opposite = max_allowed_opposite
 
         # History of 5-second snapshots: deque of StateSnapshot
-        self.snapshots: deque[StateSnapshot] = deque(maxlen=max_snapshots)
+        self.snapshots: deque[StateSnapshot] = deque(maxlen=self.max_snapshots)
         self.last_sample_ts: float = 0.0
 
     def should_sample(self, now_sec: float) -> bool:

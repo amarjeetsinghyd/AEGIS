@@ -80,32 +80,37 @@ class ExecutedTrade:
     capital_after: float = 0.0
     peak_pnl_pct: float = 0.0
     max_drawdown_pct: float = 0.0
+    target_pct: float = 6.5
 
 
 class SimulatedPositionManager:
     """
     Simulates production single-trade execution lifecycle with realistic risk rules.
     - Single active position mutex (blocks overlapping entries)
-    - Target +5.0% profit, Stop Loss -3.5%
-    - Trailing profit lock (if peak >= +2.5%, lock +1.5%)
+    - Dynamic Target (+5.5% to +10.0%, baseline +6.5%), Stop Loss -3.5%
+    - Breakeven Guard (if peak >= +3.0%, lock +0.5% zero-friction floor)
+    - Runner Trailing Lock (if peak >= +7.0%, lock +5.0% floor, trail 2.0% below peak)
     - 5-minute hard time ceiling
     - Post-trade cooldown (60s)
-    - Rs 16.50 per-trade brokerage & statutory charge deduction
+    - Real Indian statutory charges (STT/exchange/SEBI/stamp/GST + ₹10 brokerage)
     """
 
     def __init__(
         self,
         start_capital: float = 2000.0,
         charges_per_trade: float = 16.50,
-        lot_size: int = 65,   # Q-7: default NIFTY 65 (was 25); SENSEX 20 passed by initialize_engine
-        target_pct: float = 5.0,
+        lot_size: int = 65,   # default NIFTY 65; SENSEX 20
+        target_pct: float = 6.5,
         stop_loss_pct: float = 3.5,
-        trail_trigger_pct: float = 2.0,  # aligned to live TRAIL_TRIGGER_PCT 2.0 (was 2.5 — fixed 2026-08-29 P1.5)
-        trail_lock_pct: float = 1.5,
+        breakeven_trigger_pct: float = 3.0,
+        breakeven_lock_pct: float = 0.5,
+        runner_trigger_pct: float = 7.0,
+        runner_floor_pct: float = 5.0,
+        runner_trail_pct: float = 2.0,
         max_hold_sec: float = 300.0,
         cooldown_sec: float = 60.0,
         max_trades_per_day: int = 8,
-        use_statutory_charges: bool = True,  # Q-7: real STT/exch/SEBI/stamp/GST instead of flat ₹16.50
+        use_statutory_charges: bool = True,
     ):
         self.start_capital = start_capital
         self.current_capital = start_capital
@@ -115,8 +120,11 @@ class SimulatedPositionManager:
         self.use_statutory_charges = use_statutory_charges
         self.target_pct = target_pct
         self.stop_loss_pct = stop_loss_pct
-        self.trail_trigger_pct = trail_trigger_pct
-        self.trail_lock_pct = trail_lock_pct
+        self.breakeven_trigger_pct = breakeven_trigger_pct
+        self.breakeven_lock_pct = breakeven_lock_pct
+        self.runner_trigger_pct = runner_trigger_pct
+        self.runner_floor_pct = runner_floor_pct
+        self.runner_trail_pct = runner_trail_pct
         self.max_hold_sec = max_hold_sec
         self.cooldown_sec = cooldown_sec
         self.max_trades_per_day = max_trades_per_day
@@ -125,7 +133,7 @@ class SimulatedPositionManager:
 
         self.active_trade: Optional[ExecutedTrade] = None
         self.completed_trades: List[ExecutedTrade] = []
-        self.last_exit_ts_sec: float = 0.0
+        self.last_exit_ts_sec: float = -1.0e18
         self.trade_counter: int = 0
 
     def on_signal(self, sig: Dict[str, Any], current_ts_sec: float) -> bool:
@@ -150,6 +158,8 @@ class SimulatedPositionManager:
         direction = sig.get("signal", "")
         lp = float(sig.get("lp", 0.0))
         eqs = float(sig.get("metrics", {}).get("eqs_score", 0.0))
+        rec_tp = float(sig.get("metrics", {}).get("recommended_tp_pct", 0.0)) * 100.0
+        eff_tp = rec_tp if rec_tp > 0 else self.target_pct
 
         if lp <= 0 or not sym:
             return False
@@ -172,6 +182,7 @@ class SimulatedPositionManager:
             qty=self.lot_size,
             trade_value=trade_val,
             eqs_score=eqs,
+            target_pct=eff_tp,
         )
         return True
 
@@ -190,23 +201,34 @@ class SimulatedPositionManager:
             trade.max_drawdown_pct = pnl_pct
 
         hold_time = current_ts_sec - trade.entry_ts_sec
+        eff_target = getattr(trade, "target_pct", self.target_pct)
 
-        # 1. Target Profit Hit (+5.0%)
-        if pnl_pct >= self.target_pct:
-            self._close_position(lp, self.target_pct, "TARGET_HIT (+5%)", current_ts_sec)
+        # 1. Target Profit Hit (Dynamic TP +5.5% to +10.0%)
+        if pnl_pct >= eff_target:
+            self._close_position(lp, eff_target, f"TARGET_HIT (+{eff_target:.1f}%)", current_ts_sec)
             return
 
-        # 2. Trailing Profit Lock
-        if trade.peak_pnl_pct >= self.trail_trigger_pct and pnl_pct <= self.trail_lock_pct:
-            self._close_position(lp, self.trail_lock_pct, f"TRAIL_LOCK (+{self.trail_lock_pct:.1f}%)", current_ts_sec)
-            return
+        # 2. Runner Trailing Lock (Arm when peak >= +7.0%, lock +5.0% floor, trail 2.0% below peak)
+        if trade.peak_pnl_pct >= self.runner_trigger_pct:
+            runner_floor = self.runner_floor_pct
+            trail_stop = trade.peak_pnl_pct - self.runner_trail_pct
+            eff_runner_sl = max(runner_floor, trail_stop)
+            if pnl_pct <= eff_runner_sl:
+                self._close_position(lp, pnl_pct, f"RUNNER_LOCK (+{pnl_pct:.1f}%)", current_ts_sec)
+                return
 
-        # 3. Stop Loss Hit (-3.5%)
+        # 3. Breakeven Guard (Arm when peak >= +3.0%, ratchet SL to Entry + 0.5% zero-friction floor)
+        if trade.peak_pnl_pct >= self.breakeven_trigger_pct:
+            if pnl_pct <= self.breakeven_lock_pct:
+                self._close_position(lp, pnl_pct, f"BREAKEVEN_GUARD (+{pnl_pct:.1f}%)", current_ts_sec)
+                return
+
+        # 4. Stop Loss Hit (-3.5%)
         if pnl_pct <= -self.stop_loss_pct:
             self._close_position(lp, -self.stop_loss_pct, f"STOP_LOSS (-{self.stop_loss_pct:.1f}%)", current_ts_sec)
             return
 
-        # 4. Max Time Ceiling (5 minutes)
+        # 5. Max Time Ceiling (5 minutes)
         if hold_time >= self.max_hold_sec:
             self._close_position(lp, pnl_pct, "TIME_EXPIRED (5m)", current_ts_sec)
             return
@@ -274,7 +296,7 @@ class AegisParquetBacktester:
         min_tick_rate_gate: float = 1.0,
         start_capital: float = 2000.0,
         charges_per_trade: float = 16.50,
-        target_pct: float = 5.0,
+        target_pct: float = 6.5,
         stop_loss_pct: float = 3.5,
         max_trades_per_day: int = 8,
         use_statutory_charges: bool = True,
@@ -303,13 +325,15 @@ class AegisParquetBacktester:
         self.position_manager: Optional[SimulatedPositionManager] = None
 
     def discover_files(self) -> List[str]:
-        """Discovers L2 parquet files for the given date or directory."""
+        """Discovers valid, non-stub L2 parquet files for the given date or directory."""
         if self.date_str:
             pattern = os.path.join(self.data_dir, f"aegis_l2_raw_{self.date_str}_part_*.parquet")
         else:
             pattern = os.path.join(self.data_dir, "aegis_l2_raw_*_part_*.parquet")
 
-        self.files = sorted(glob.glob(pattern))
+        all_files = sorted(glob.glob(pattern))
+        # Automatic Quality Gate: Filter out corrupt/stub files (< 50KB)
+        self.files = [f for f in all_files if os.path.getsize(f) >= 50000]
         return self.files
 
     def build_dynamic_universe(self) -> Tuple[Dict[str, str], Dict[str, Dict[str, Any]]]:
@@ -318,42 +342,50 @@ class AegisParquetBacktester:
         self.token_map = {}
 
         for f in self.files:
-            df_meta = pl.read_parquet(f, columns=["tok", "sym", "kind", "strike"])
-            for row in df_meta.unique().iter_rows(named=True):
-                tok_str = str(row["tok"])
-                sym_str = str(row["sym"])
-                kind_int = int(row["kind"])
-                strike_flt = float(row.get("strike", 0.0) or 0.0)
+            try:
+                df_meta = pl.read_parquet(f, columns=["tok", "sym", "kind", "strike"])
+                for row in df_meta.unique().iter_rows(named=True):
+                    tok_str = str(row["tok"])
+                    sym_str = str(row["sym"])
+                    kind_int = int(row["kind"])
+                    strike_flt = float(row.get("strike", 0.0) or 0.0)
 
-                self.token_to_symbol[tok_str] = sym_str
-                is_index = (tok_str in ("26000", "26009", "35938") or sym_str in ("NIFTY", "SENSEX", "BANKNIFTY") or "NIFTY-I" in sym_str or kind_int == 0)
+                    self.token_to_symbol[tok_str] = sym_str
+                    is_index = (tok_str in ("26000", "26009", "35938") or sym_str in ("NIFTY", "SENSEX", "BANKNIFTY") or "NIFTY-I" in sym_str or kind_int == 0)
 
-                # Determine side: kind 1 = CE (Call), kind 2 = PE (Put)
-                if kind_int == 1:
-                    side = 0
-                elif kind_int == 2:
-                    side = 1
-                elif "C" in sym_str and ("C2" in sym_str or "CE" in sym_str):
-                    side = 0
-                else:
-                    side = 1
+                    # Determine side: kind 1 = CE (Call), kind 2 = PE (Put)
+                    if kind_int == 1:
+                        side = 0
+                    elif kind_int == 2:
+                        side = 1
+                    elif "C" in sym_str and ("C2" in sym_str or "CE" in sym_str):
+                        side = 0
+                    else:
+                        side = 1
 
-                self.token_map[tok_str] = {
-                    "side": side,
-                    "strike": strike_flt,
-                    "is_index": is_index
-                }
+                    self.token_map[tok_str] = {
+                        "side": side,
+                        "strike": strike_flt,
+                        "is_index": is_index
+                    }
+            except Exception:
+                pass
 
         return self.token_to_symbol, self.token_map
 
     def initialize_engine(self) -> AegisGammaEngine:
         """Instantiates and configures the production AegisGammaEngine and Position Manager."""
-        underlying_toks = {k for k, v in self.token_map.items() if v.get("is_index")}
+        # Select matching underlying token for the current index (strict index isolation)
+        if self.strike_step <= 50:
+            underlying_toks = {"26000"}  # NIFTY cash index only
+        else:
+            underlying_toks = {"1"}      # SENSEX cash index only
+
         self.engine = create_aegis_engine(
             token_to_symbol=self.token_to_symbol,
             token_map=self.token_map,
             strike_step=self.strike_step,
-            underlying_tokens=underlying_toks or {"26000", "1", "99919000", "99926000"},
+            underlying_tokens=underlying_toks,
             signal_queue=self.signal_queue,
         )
         self.engine.high_conviction_threshold = self.high_conviction_threshold
@@ -372,8 +404,11 @@ class AegisParquetBacktester:
             lot_size=lot_size,
             target_pct=self.target_pct,
             stop_loss_pct=self.stop_loss_pct,
-            trail_trigger_pct=2.0,  # aligned to live (was 2.5)
-            trail_lock_pct=1.5,
+            breakeven_trigger_pct=3.0,
+            breakeven_lock_pct=0.5,
+            runner_trigger_pct=7.0,
+            runner_floor_pct=5.0,
+            runner_trail_pct=2.0,
             max_hold_sec=300.0,
             cooldown_sec=60.0,
             max_trades_per_day=self.max_trades_per_day,
@@ -525,7 +560,7 @@ def main():
     parser.add_argument("--date", type=str, default="2026-08-28", help="Date string YYYY-MM-DD to evaluate")
     parser.add_argument("--capital", type=float, default=2000.0, help="Starting capital in Rupees")
     parser.add_argument("--charges", type=float, default=16.50, help="Brokerage charges per trade in Rupees")
-    parser.add_argument("--target", type=float, default=5.0, help="Profit target percentage")
+    parser.add_argument("--target", type=float, default=6.5, help="Profit target percentage")
     parser.add_argument("--stop-loss", type=float, default=3.5, help="Stop loss percentage")
     parser.add_argument("--threshold", type=float, default=75.0, help="High conviction threshold")
     parser.add_argument("--eqs-threshold", type=float, default=70.0, help="EQS dispatch threshold")
