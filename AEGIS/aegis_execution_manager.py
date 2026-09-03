@@ -537,6 +537,28 @@ class AegisExecutionManager:
             if leg.current_price > getattr(leg, "highest_price", leg.entry_price):
                 leg.highest_price = leg.current_price
 
+        # 0. Check if resting TP order was ALREADY filled at the broker!
+        if self.tp_order_id and not str(self.tp_order_id).startswith("PAPER_"):
+            api = getattr(self.broker, "_api", None)
+            if api and hasattr(api, "single_order_history"):
+                try:
+                    hist = api.single_order_history(orderno=self.tp_order_id)
+                    if isinstance(hist, list) and hist:
+                        latest = hist[-1]
+                        status = latest.get("status", "")
+                        if status in ["FILLED", "COMPLETE"]:
+                            fill_px = float(latest.get("avgprc") or getattr(legs[0], "tp_price", 0.0))
+                            logger.info(f"🎉 [AegisEM] Resting TP order {self.tp_order_id} was FILLED at broker @ {fill_px:.2f}!")
+                            self.tp_order_id = None
+                            self._close_all_legs(
+                                f"Take-Profit Hit (+{(fill_px - legs[0].entry_price)/legs[0].entry_price*100:.1f}% @ {fill_px:.2f})",
+                                is_tp_maker=True,
+                                limit_fill_price=fill_px,
+                            )
+                            return
+                except Exception as e_tp_check:
+                    logger.warning(f"[AegisEM] Error checking TP order status: {e_tp_check}")
+
         # 1. Force flatten at session end
         if self.must_force_flatten(now):
             self._close_all_legs(f"Force Flatten (>= {AEGIS_FORCE_FLATTEN.strftime('%H:%M')})")
