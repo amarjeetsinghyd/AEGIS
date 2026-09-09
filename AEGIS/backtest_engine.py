@@ -19,9 +19,11 @@ import time
 import json
 import argparse
 import queue
+import logging
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from collections import deque
+import re
 import polars as pl
 import numpy as np
 
@@ -54,6 +56,7 @@ class ParquetTickAdapter:
     sq4: float
     bq5: float
     sq5: float
+    oi: float = 0.0
 
 
 @dataclass
@@ -80,17 +83,28 @@ class ExecutedTrade:
     capital_after: float = 0.0
     peak_pnl_pct: float = 0.0
     max_drawdown_pct: float = 0.0
-    target_pct: float = 6.5
+    target_pct: float = 4.0
+    breakeven_locked: bool = False
+    runner_locked: bool = False
+    spot_entry: float = 0.0
+    noise_floor: float = 1.50
+    eff_sl_pct: float = 5.0
+    be_exit_pct: float = 1.0
+    arm_runner_gain: float = 4.50
+    arm_be_gain: float = 3.75
+    min_trail_dist: float = 2.25
+    spot_confirm_pts: float = 8.4
+    pa_setup_name: str = ""
 
 
 class SimulatedPositionManager:
     """
     Simulates production single-trade execution lifecycle with realistic risk rules.
     - Single active position mutex (blocks overlapping entries)
-    - Dynamic Target (+5.5% to +10.0%, baseline +6.5%), Stop Loss -3.5%
-    - Breakeven Guard (if peak >= +3.0%, lock +0.5% zero-friction floor)
-    - Runner Trailing Lock (if peak >= +7.0%, lock +5.0% floor, trail 2.0% below peak)
-    - 5-minute hard time ceiling
+    - Fast Scalp Target (+4.0% live parity), Adaptive Spot-Driven Stop Loss
+    - Two-Key Breakeven Guard (peak >= 2.5x noise floor AND (60s OR 3.5bps spot confirm))
+    - Dynamic Runner Trailing (arm >= 3.0x noise floor or +15%, trail 20% of peak)
+    - Adaptive time ceiling (5m baseline -> 6m extension for running winners)
     - Post-trade cooldown (60s)
     - Real Indian statutory charges (STT/exchange/SEBI/stamp/GST + ₹10 brokerage)
     """
@@ -100,8 +114,8 @@ class SimulatedPositionManager:
         start_capital: float = 2000.0,
         charges_per_trade: float = 16.50,
         lot_size: int = 65,   # default NIFTY 65; SENSEX 20
-        target_pct: float = 6.5,
-        stop_loss_pct: float = 3.5,
+        target_pct: float = 4.0,   # Fast +4.0% Scalp Take-Profit (live RESTING_TP_LIMIT_PCT parity)
+        stop_loss_pct: float = 5.0,
         breakeven_trigger_pct: float = 3.0,
         breakeven_lock_pct: float = 0.5,
         runner_trigger_pct: float = 7.0,
@@ -134,7 +148,15 @@ class SimulatedPositionManager:
         self.active_trade: Optional[ExecutedTrade] = None
         self.completed_trades: List[ExecutedTrade] = []
         self.last_exit_ts_sec: float = -1.0e18
+        self.last_exited_route: str = ""
+        self.consecutive_route_cooldown_sec: float = 180.0
         self.trade_counter: int = 0
+        self.last_spot: float = 0.0
+
+    def update_spot(self, spot: float) -> None:
+        """Tracks latest underlying spot price for live parity and spot invalidation."""
+        if spot > 0:
+            self.last_spot = spot
 
     def on_signal(self, sig: Dict[str, Any], current_ts_sec: float) -> bool:
         """Handles new entry signals from AegisGammaEngine."""
@@ -148,6 +170,15 @@ class SimulatedPositionManager:
 
         if self.active_trade is not None:
             # In live execution: block new entries while a position is active
+            return False
+
+        # Strict Non-Consecutive Route Lockout (No Back-to-Back Same Setup)
+        incoming_route = str(sig.get("metrics", {}).get("pa_setup_name") or "")
+        if (
+            incoming_route
+            and self.last_exited_route
+            and incoming_route == self.last_exited_route
+        ):
             return False
 
         if (current_ts_sec - self.last_exit_ts_sec) < self.cooldown_sec:
@@ -164,13 +195,63 @@ class SimulatedPositionManager:
         if lp <= 0 or not sym:
             return False
 
-        # Premium filter: avoid super-cheap OTM lottery tickets where charges kill edge
-        if lp < 20.0 or lp > 300.0:
+        # Premium filter (live OptionQualityEngine parity: Rs 5 - Rs 400 tradable band)
+        if lp < 5.0 or lp > 400.0:
             return False
+
+        pa_name = str(sig.get("metrics", {}).get("pa_setup_name") or "")
 
         self.trade_counter += 1
         time_str = time.strftime("%H:%M:%S", time.localtime(current_ts_sec))
         trade_val = lp * self.lot_size
+
+        spot_val = float(sig.get("spot") or sig.get("metrics", {}).get("spot_price") or self.last_spot or 0.0)
+        ref_spot = spot_val if spot_val > 0 else 24000.0
+        noise_flr = max(1.50, 0.05 * lp)
+        spot_sl_pts = ref_spot * (6.5 / 10000.0)  # 6.5 basis points
+
+        # Dynamic Moneyness / Strike Delta derivation (Parity with Live Execution Manager)
+        opt_strike = float(sig.get("strike") or sig.get("metrics", {}).get("strike") or 0.0)
+        if opt_strike <= 0:
+            m_strike = re.search(r'(\d{4,5})(?:CE|PE)$', sym)
+            if m_strike:
+                try:
+                    opt_strike = float(m_strike.group(1))
+                except Exception:
+                    pass
+
+        strike_step = 50.0 if "NIFTY" in sym.upper() else 100.0
+        if opt_strike > 0 and ref_spot > 0:
+            if direction in ("UP", "CALL", "BUY_CALL"):
+                m = (ref_spot - opt_strike) / strike_step
+            else:
+                m = (opt_strike - ref_spot) / strike_step
+            if m >= 0.5:
+                est_delta = 0.55
+            elif m >= -0.5:
+                est_delta = 0.45
+            elif m >= -1.5:
+                est_delta = 0.35
+            else:
+                est_delta = 0.25
+        else:
+            if lp >= 80.0:
+                est_delta = 0.55
+            elif lp >= 40.0:
+                est_delta = 0.45
+            elif lp >= 20.0:
+                est_delta = 0.35
+            else:
+                est_delta = 0.25
+
+        opt_sl_dist = max(noise_flr, est_delta * spot_sl_pts)
+        max_sl_dist = lp * 0.35
+        eff_sl_dist = min(opt_sl_dist, max_sl_dist)
+        eff_sl_pct = (eff_sl_dist / lp) * 100.0
+
+        be_lock_buf = max(0.50, 0.5 * noise_flr)
+        be_exit_pct = (be_lock_buf / lp) * 100.0
+        spot_confirm_pts = ref_spot * (3.5 / 10000.0)  # 3.5 basis points
 
         self.active_trade = ExecutedTrade(
             trade_id=self.trade_counter,
@@ -182,56 +263,88 @@ class SimulatedPositionManager:
             qty=self.lot_size,
             trade_value=trade_val,
             eqs_score=eqs,
-            target_pct=eff_tp,
+            target_pct=(eff_tp if eff_tp > 0 else self.target_pct),
+            spot_entry=spot_val,
+            noise_floor=noise_flr,
+            eff_sl_pct=eff_sl_pct,
+            be_exit_pct=be_exit_pct,
+            arm_runner_gain=3.0 * noise_flr,
+            arm_be_gain=2.5 * noise_flr,
+            min_trail_dist=1.5 * noise_flr,
+            spot_confirm_pts=spot_confirm_pts,
+            pa_setup_name=pa_name,
         )
         return True
 
     def on_tick(self, sym: str, lp: float, current_ts_sec: float) -> None:
         """Updates active open position with real-time price ticks."""
-        if self.active_trade is None or self.active_trade.symbol != sym or lp <= 0:
+        trade = self.active_trade
+        if trade is None or trade.symbol != sym or lp <= 0:
             return
 
-        trade = self.active_trade
         entry_price = trade.entry_price
         pnl_pct = (lp - entry_price) / entry_price * 100.0
+        hold_time = current_ts_sec - trade.entry_ts_sec
 
         if pnl_pct > trade.peak_pnl_pct:
             trade.peak_pnl_pct = pnl_pct
         if pnl_pct < trade.max_drawdown_pct:
             trade.max_drawdown_pct = pnl_pct
 
-        hold_time = current_ts_sec - trade.entry_ts_sec
-        eff_target = getattr(trade, "target_pct", self.target_pct)
-
-        # 1. Target Profit Hit (Dynamic TP +5.5% to +10.0%)
-        if pnl_pct >= eff_target:
-            self._close_position(lp, eff_target, f"TARGET_HIT (+{eff_target:.1f}%)", current_ts_sec)
+        # 1. Target Profit Hit (Fast +4.0% Scalp Take-Profit, live parity)
+        if pnl_pct >= trade.target_pct:
+            self._close_position(lp, trade.target_pct, f"TARGET_HIT (+{trade.target_pct:.1f}%)", current_ts_sec)
             return
 
-        # 2. Runner Trailing Lock (Arm when peak >= +7.0%, lock +5.0% floor, trail 2.0% below peak)
-        if trade.peak_pnl_pct >= self.runner_trigger_pct:
-            runner_floor = self.runner_floor_pct
-            trail_stop = trade.peak_pnl_pct - self.runner_trail_pct
-            eff_runner_sl = max(runner_floor, trail_stop)
-            if pnl_pct <= eff_runner_sl:
+        # 1B. Volatility Squeeze 30s Momentum Timeout (live parity: checked BEFORE
+        # runner/BE/SL so theta-decay fakeouts exit immediately)
+        sq_name = getattr(trade, "pa_setup_name", "") or ""
+        if (sq_name == "volatility_squeeze_breakout" or "squeeze" in sq_name.lower()) and hold_time >= 30.0 and pnl_pct < 1.5:
+            self._close_position(lp, pnl_pct, f"SQUEEZE_MOMENTUM_TIMEOUT (30s, gain={pnl_pct:.1f}%)", current_ts_sec)
+            return
+
+        # 2. Dynamic Trailing Runner (Arm when peak gain >= 3.0x noise floor or peak >= +15%)
+        peak_gain_rs = (trade.peak_pnl_pct / 100.0) * entry_price
+        if (peak_gain_rs >= trade.arm_runner_gain) or (trade.peak_pnl_pct >= 15.0):
+            trade.runner_locked = True
+
+        if trade.runner_locked:
+            trail_dist = max(trade.min_trail_dist, 0.20 * peak_gain_rs)
+            runner_sl_pct = ((peak_gain_rs - trail_dist) / entry_price) * 100.0
+            if pnl_pct <= runner_sl_pct and pnl_pct > 0:
                 self._close_position(lp, pnl_pct, f"RUNNER_LOCK (+{pnl_pct:.1f}%)", current_ts_sec)
                 return
 
-        # 3. Breakeven Guard (Arm when peak >= +3.0%, ratchet SL to Entry + 0.5% zero-friction floor)
-        if trade.peak_pnl_pct >= self.breakeven_trigger_pct:
-            if pnl_pct <= self.breakeven_lock_pct:
+        # 3. Two-Key Breakeven Guard (Requires Gain >= 2.5x NoiseFloor AND (hold_time >= 60s OR spot favorable >= 3.5 bps))
+        spot_extreme_met = False
+        if trade.spot_entry > 0 and self.last_spot > 0:
+            if trade.direction in ("UP", "CALL", "BUY_CALL"):
+                spot_extreme_met = (self.last_spot - trade.spot_entry) >= trade.spot_confirm_pts
+            else:
+                spot_extreme_met = (trade.spot_entry - self.last_spot) >= trade.spot_confirm_pts
+
+        if peak_gain_rs >= trade.arm_be_gain and (hold_time >= 60.0 or spot_extreme_met):
+            trade.breakeven_locked = True
+
+        if trade.breakeven_locked:
+            if pnl_pct <= trade.be_exit_pct:
                 self._close_position(lp, pnl_pct, f"BREAKEVEN_GUARD (+{pnl_pct:.1f}%)", current_ts_sec)
                 return
 
-        # 4. Stop Loss Hit (-3.5%)
-        if pnl_pct <= -self.stop_loss_pct:
-            self._close_position(lp, -self.stop_loss_pct, f"STOP_LOSS (-{self.stop_loss_pct:.1f}%)", current_ts_sec)
+        # 4. Spot-Driven Invalidation Stop-Loss (Normalized 6.5 bps of spot entry)
+        if pnl_pct <= -trade.eff_sl_pct:
+            self._close_position(lp, -trade.eff_sl_pct, f"STOP_LOSS (-{trade.eff_sl_pct:.1f}%)", current_ts_sec)
             return
 
-        # 5. Max Time Ceiling (5 minutes)
-        if hold_time >= self.max_hold_sec:
-            self._close_position(lp, pnl_pct, "TIME_EXPIRED (5m)", current_ts_sec)
+        # 5. Adaptive Time Ceiling (5m baseline -> 6m extension for running winners, live parity)
+        if hold_time >= 360.0:
+            self._close_position(lp, pnl_pct, "TIME_EXPIRED (6m)", current_ts_sec)
             return
+        if hold_time >= self.max_hold_sec:
+            extended = (trade.peak_pnl_pct >= 2.0 or trade.breakeven_locked or trade.runner_locked)
+            if not extended:
+                self._close_position(lp, pnl_pct, "TIME_EXPIRED (5m)", current_ts_sec)
+                return
 
     def _close_position(self, exit_price: float, exit_pct: float, reason: str, current_ts_sec: float) -> None:
         """Closes active position and updates capital."""
@@ -270,6 +383,7 @@ class SimulatedPositionManager:
 
         self.completed_trades.append(trade)
         self.last_exit_ts_sec = current_ts_sec
+        self.last_exited_route = getattr(trade, "pa_setup_name", "") or ""
         self.active_trade = None
 
     def force_close_at_eod(self, last_prices: Dict[str, float], last_ts_sec: float) -> None:
@@ -297,7 +411,8 @@ class AegisParquetBacktester:
         start_capital: float = 2000.0,
         charges_per_trade: float = 16.50,
         target_pct: float = 6.5,
-        stop_loss_pct: float = 3.5,
+        stop_loss_pct: float = 5.0,
+        cooldown_sec: float = 120.0,
         max_trades_per_day: int = 8,
         use_statutory_charges: bool = True,
         telemetry_dir: Optional[str] = None,
@@ -312,6 +427,7 @@ class AegisParquetBacktester:
         self.charges_per_trade = charges_per_trade
         self.target_pct = target_pct
         self.stop_loss_pct = stop_loss_pct
+        self.cooldown_sec = cooldown_sec
         self.max_trades_per_day = max_trades_per_day
         self.use_statutory_charges = use_statutory_charges
         self.telemetry_dir = telemetry_dir or os.path.join(data_dir, "telemetry_eval")
@@ -333,7 +449,18 @@ class AegisParquetBacktester:
 
         all_files = sorted(glob.glob(pattern))
         # Automatic Quality Gate: Filter out corrupt/stub files (< 50KB)
-        self.files = [f for f in all_files if os.path.getsize(f) >= 50000]
+        valid_files = [f for f in all_files if os.path.getsize(f) >= 50000]
+
+        # Chronological sort: sort by actual initial tick timestamp
+        def get_file_start_ts(fpath):
+            try:
+                head_df = pl.read_parquet(fpath, n_rows=5, columns=["ts"])
+                return head_df["ts"].min()
+            except Exception:
+                return 0
+
+        valid_files.sort(key=get_file_start_ts)
+        self.files = valid_files
         return self.files
 
     def build_dynamic_universe(self) -> Tuple[Dict[str, str], Dict[str, Dict[str, Any]]]:
@@ -410,7 +537,7 @@ class AegisParquetBacktester:
             runner_floor_pct=5.0,
             runner_trail_pct=2.0,
             max_hold_sec=300.0,
-            cooldown_sec=60.0,
+            cooldown_sec=self.cooldown_sec,
             max_trades_per_day=self.max_trades_per_day,
             use_statutory_charges=self.use_statutory_charges,
         )
@@ -435,52 +562,80 @@ class AegisParquetBacktester:
         last_ts_sec = 0.0
         emitted_signals: List[Dict[str, Any]] = []
 
-        for fpath in self.files:
-            df = pl.read_parquet(fpath)
-            total_ticks += len(df)
+        gamma_logger = logging.getLogger("aegis_gamma")
+        prev_level = gamma_logger.level
+        gamma_logger.setLevel(logging.WARNING)
 
-            for row in df.iter_rows(named=True):
-                tok_str = str(row["tok"])
-                lp = float(row["lp"])
-                ts = int(row["ts"])
-                vol = float(row.get("vol", 0.0) or 0.0)
+        try:
+            for fpath in self.files:
+                df = pl.read_parquet(fpath)
+                total_ticks += len(df)
 
-                ts_sec = ts / 1000.0 if ts > 1e11 else float(ts)
-                last_ts_sec = ts_sec
+                cols = set(df.columns)
+                tok_col = [str(x) for x in df["tok"].to_list()]
+                lp_col = [float(x) for x in df["lp"].to_list()]
+                ts_col = [int(x) for x in df["ts"].to_list()]
+                vol_col = [float(x or 0.0) for x in df["vol"].to_list()] if "vol" in cols else [0.0] * len(df)
+                bp1_col = [float(x or 0.0) for x in df["bp1"].to_list()] if "bp1" in cols else [0.0] * len(df)
+                sp1_col = [float(x or 0.0) for x in df["sp1"].to_list()] if "sp1" in cols else [0.0] * len(df)
+                bq1_col = [float(x or 0.0) for x in df["bq1"].to_list()] if "bq1" in cols else [0.0] * len(df)
+                sq1_col = [float(x or 0.0) for x in df["sq1"].to_list()] if "sq1" in cols else [0.0] * len(df)
+                bq2_col = [float(x or 0.0) for x in df["bq2"].to_list()] if "bq2" in cols else [0.0] * len(df)
+                sq2_col = [float(x or 0.0) for x in df["sq2"].to_list()] if "sq2" in cols else [0.0] * len(df)
+                bq3_col = [float(x or 0.0) for x in df["bq3"].to_list()] if "bq3" in cols else [0.0] * len(df)
+                sq3_col = [float(x or 0.0) for x in df["sq3"].to_list()] if "sq3" in cols else [0.0] * len(df)
+                bq4_col = [float(x or 0.0) for x in df["bq4"].to_list()] if "bq4" in cols else [0.0] * len(df)
+                sq4_col = [float(x or 0.0) for x in df["sq4"].to_list()] if "sq4" in cols else [0.0] * len(df)
+                bq5_col = [float(x or 0.0) for x in df["bq5"].to_list()] if "bq5" in cols else [0.0] * len(df)
+                sq5_col = [float(x or 0.0) for x in df["sq5"].to_list()] if "sq5" in cols else [0.0] * len(df)
+                oi_col = [float(x or 0.0) for x in df["oi"].to_list()] if "oi" in cols else [0.0] * len(df)
 
-                sym_str = self.token_to_symbol.get(tok_str)
-                if sym_str and lp > 0:
-                    last_prices[sym_str] = lp
+                for tok_str, lp, ts, vol, bp1, sp1, bq1, sq1, bq2, sq2, bq3, sq3, bq4, sq4, bq5, sq5, oi_val in zip(
+                    tok_col, lp_col, ts_col, vol_col, bp1_col, sp1_col, bq1_col, sq1_col,
+                    bq2_col, sq2_col, bq3_col, sq3_col, bq4_col, sq4_col, bq5_col, sq5_col, oi_col
+                ):
+                    ts_sec = ts / 1000.0 if ts > 1e11 else float(ts)
+                    last_ts_sec = ts_sec
 
-                tick = ParquetTickAdapter(
-                    tok=tok_str,
-                    lp=lp,
-                    vol=vol,
-                    ts=ts,
-                    bp1=float(row.get("bp1", 0.0) or 0.0),
-                    sp1=float(row.get("sp1", 0.0) or 0.0),
-                    bq1=float(row.get("bq1", 0.0) or 0.0),
-                    sq1=float(row.get("sq1", 0.0) or 0.0),
-                    bq2=float(row.get("bq2", 0.0) or 0.0),
-                    sq2=float(row.get("sq2", 0.0) or 0.0),
-                    bq3=float(row.get("bq3", 0.0) or 0.0),
-                    sq3=float(row.get("sq3", 0.0) or 0.0),
-                    bq4=float(row.get("bq4", 0.0) or 0.0),
-                    sq4=float(row.get("sq4", 0.0) or 0.0),
-                    bq5=float(row.get("bq5", 0.0) or 0.0),
-                    sq5=float(row.get("sq5", 0.0) or 0.0),
-                )
-                self.engine.on_tick_parsed(tick)
+                    sym_str = self.token_to_symbol.get(tok_str)
+                    if sym_str and lp > 0:
+                        last_prices[sym_str] = lp
 
-                # Process newly emitted signals into position manager
-                while not self.signal_queue.empty():
-                    sig = self.signal_queue.get_nowait()
-                    emitted_signals.append(sig)
-                    self.position_manager.on_signal(sig, ts_sec)
+                    tick = ParquetTickAdapter(
+                        tok=tok_str,
+                        lp=lp,
+                        vol=vol,
+                        ts=ts,
+                        bp1=bp1,
+                        sp1=sp1,
+                        bq1=bq1,
+                        sq1=sq1,
+                        bq2=bq2,
+                        sq2=sq2,
+                        bq3=bq3,
+                        sq3=sq3,
+                        bq4=bq4,
+                        sq4=sq4,
+                        bq5=bq5,
+                        sq5=sq5,
+                        oi=oi_val,
+                    )
+                    self.engine.on_tick_parsed(tick)
 
-                # Update active position with current tick
-                if sym_str and lp > 0:
-                    self.position_manager.on_tick(sym_str, lp, ts_sec)
+                    # Process newly emitted signals into position manager
+                    while not self.signal_queue.empty():
+                        sig = self.signal_queue.get_nowait()
+                        emitted_signals.append(sig)
+                        self.position_manager.on_signal(sig, ts_sec)
+
+                    # Update active position with current tick
+                    if sym_str and lp > 0:
+                        if self.token_map.get(tok_str, {}).get("is_index"):
+                            self.position_manager.update_spot(lp)
+                        self.position_manager.on_tick(sym_str, lp, ts_sec)
+
+        finally:
+            gamma_logger.setLevel(prev_level)
 
         # Force-close any open position at session end
         self.position_manager.force_close_at_eod(last_prices, last_ts_sec)
@@ -561,7 +716,7 @@ def main():
     parser.add_argument("--capital", type=float, default=2000.0, help="Starting capital in Rupees")
     parser.add_argument("--charges", type=float, default=16.50, help="Brokerage charges per trade in Rupees")
     parser.add_argument("--target", type=float, default=6.5, help="Profit target percentage")
-    parser.add_argument("--stop-loss", type=float, default=3.5, help="Stop loss percentage")
+    parser.add_argument("--stop-loss", type=float, default=5.0, help="Stop loss percentage")
     parser.add_argument("--threshold", type=float, default=75.0, help="High conviction threshold")
     parser.add_argument("--eqs-threshold", type=float, default=70.0, help="EQS dispatch threshold")
     parser.add_argument("--min-tick-rate", type=float, default=1.0, help="Min live tick rate gate")
