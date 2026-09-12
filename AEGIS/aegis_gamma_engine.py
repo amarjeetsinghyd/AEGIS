@@ -934,9 +934,10 @@ class AegisGammaEngine:
 
                                 slot_admit = True
                                 slot_reason = "slot_policy_off"
+                                slot_score = float(ml_score if (self.ml_gatekeeper and self.ml_gatekeeper_mode != "DISABLED") else micro_m.get("energy_score", score))
                                 if self.slot_policy:
                                     slot_admit, slot_reason = self.slot_policy.admit(
-                                        score=float(micro_m.get("energy_score", score)),
+                                        score=slot_score,
                                         now_sec=now_sec,
                                         consec_losses=int(getattr(self, "_em_consec_losses", 0)),
                                         daily_pnl=float(getattr(self, "_em_daily_pnl", 0.0)),
@@ -1022,7 +1023,7 @@ class AegisGammaEngine:
 
                                 # Quality stack: consume slot + arm post-trigger stability telemetry
                                 if self.slot_policy and slot_admit:
-                                    self.slot_policy.mark_admitted(float(micro_m.get("energy_score", score)))
+                                    self.slot_policy.mark_admitted(slot_score, now_sec=now_sec)
 
                                 if self.stability_tracker and micro_m:
                                     _sbp = float(micro_m.get("bp1", 0.0) or 0.0)

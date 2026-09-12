@@ -44,8 +44,18 @@ logger = get_logger("aegis_execution_manager")
 MAX_HOLD_SEC = 300.0                    # 5-minute baseline hard ceiling
 MAX_HOLD_EXTENDED_SEC = 360.0           # 6-minute conditional extension for running winners
 HOLD_EXTEND_MIN_PROFIT_PCT = 0.020      # +2.0% minimum gain required to qualify for 6-min hold
-AEGIS_ENTRY_CUTOFF = dt_time(15, 0, 0)  # No new entries after 15:00
-AEGIS_FORCE_FLATTEN = dt_time(15, 10, 0) # Force flatten at 15:10
+def _parse_time_env(env_name: str, default_h: int, default_m: int, default_s: int = 0) -> dt_time:
+    raw = os.getenv(env_name, "").strip()
+    if not raw:
+        return dt_time(default_h, default_m, default_s)
+    try:
+        parts = [int(p) for p in raw.split(":")]
+        return dt_time(*parts)
+    except Exception:
+        return dt_time(default_h, default_m, default_s)
+
+AEGIS_ENTRY_CUTOFF = _parse_time_env("AEGIS_ENTRY_CUTOFF", 15, 0, 0)   # No new entries after 15:00 (>=8 min before 15:08 flatten)
+AEGIS_FORCE_FLATTEN = _parse_time_env("AEGIS_FORCE_FLATTEN", 15, 8, 0) # Force flatten at 15:08 (CAS / broker square-off shield)
 MAX_TRADES_PER_DAY = int(os.getenv("MAX_TRADES_PER_DAY", "3")) # Hard safety cap: max 3 trades per day
 
 # ─── Adaptive Quantitative Exit Constants (Claude's 4-Pillar Framework) ───

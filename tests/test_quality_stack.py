@@ -128,6 +128,39 @@ def test_quality_slot_policy_dynamic_bar():
     policy.mark_admitted(78.0)
 
 
+def test_quality_slot_policy_afternoon_fresh_bar():
+    # Reserve release at 14:45 IST (885 min)
+    policy = QualitySlotPolicy(max_trades_per_day=3, dynamic_bar=True, reserve_release_min=885)
+    ts_morning = datetime(2026, 9, 14, 11, 0, 0).timestamp()
+    ts_afternoon = datetime(2026, 9, 14, 14, 50, 0).timestamp()
+
+    # Trade 1 in morning with very high score 0.38
+    admit, _ = policy.admit(score=0.38, now_sec=ts_morning)
+    assert admit is True
+    policy.mark_admitted(0.38, now_sec=ts_morning)
+
+    # Trade 2 in morning with 0.35 <= 0.38 -> BLOCKED by morning dynamic bar
+    admit, reason = policy.admit(score=0.35, now_sec=ts_morning)
+    assert admit is False
+    assert reason == "slot_dynamic_bar"
+
+    # In afternoon: Trade 2 with 0.35 is now ALLOWED because afternoon gets fresh bar!
+    admit, reason = policy.admit(score=0.35, now_sec=ts_afternoon)
+    assert admit is True
+    assert reason == "slot_admit"
+    policy.mark_admitted(0.35, now_sec=ts_afternoon)
+
+    # In afternoon: Trade 3 with 0.34 <= 0.35 -> BLOCKED by afternoon dynamic bar
+    admit, reason = policy.admit(score=0.34, now_sec=ts_afternoon)
+    assert admit is False
+    assert reason == "slot_dynamic_bar"
+
+    # In afternoon: Trade 3 with 0.37 > 0.35 -> ALLOWED!
+    admit, reason = policy.admit(score=0.37, now_sec=ts_afternoon)
+    assert admit is True
+    assert reason == "slot_admit"
+
+
 def test_post_trigger_stability_tracker_lifecycle():
     tracker = PostTriggerStabilityTracker(window_sec=10.0, fade_frac=0.25)
     t0 = 1000.0

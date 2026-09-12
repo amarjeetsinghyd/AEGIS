@@ -35,6 +35,7 @@ class QualitySlotPolicy:
         self.used = 0
         self._date = ""
         self.day_best_score = -1.0
+        self.afternoon_best_score = -1.0
 
     def roll_date(self, now_sec: float) -> None:
         d = datetime.fromtimestamp(now_sec).strftime("%Y-%m-%d")
@@ -42,6 +43,7 @@ class QualitySlotPolicy:
             self._date = d
             self.used = 0
             self.day_best_score = -1.0
+            self.afternoon_best_score = -1.0
 
     def admit(
         self,
@@ -52,6 +54,7 @@ class QualitySlotPolicy:
     ) -> Tuple[bool, str]:
         """Decides whether a candidate may consume one of today's slots."""
         self.roll_date(now_sec)
+        self._last_admit_ts = float(now_sec)
         if self.used >= self.max_trades_per_day:
             return False, "slot_limit"
         if self.consec_loss_stop > 0 and int(consec_losses) >= self.consec_loss_stop:
@@ -60,23 +63,34 @@ class QualitySlotPolicy:
             return False, "daily_loss_cap"
         dt = datetime.fromtimestamp(now_sec)
         tmin = dt.hour * 60 + dt.minute
-        if tmin < self.reserve_release_min and self.used >= (self.max_trades_per_day - 1):
+        is_afternoon = tmin >= self.reserve_release_min
+        if not is_afternoon and self.used >= (self.max_trades_per_day - 1):
             return False, "slot_reserved_afternoon"
-        if self.used >= 1 and self.dynamic_bar and float(score) <= self.day_best_score:
-            return False, "slot_dynamic_bar"
+        if self.used >= 1 and self.dynamic_bar:
+            if not is_afternoon and float(score) <= self.day_best_score:
+                return False, "slot_dynamic_bar"
+            elif is_afternoon and self.afternoon_best_score > 0 and float(score) <= self.afternoon_best_score:
+                return False, "slot_dynamic_bar"
         return True, "slot_admit"
 
-    def mark_admitted(self, score: float) -> None:
+    def mark_admitted(self, score: float, now_sec: float = 0.0) -> None:
         self.used += 1
         s = float(score)
         if s > self.day_best_score:
             self.day_best_score = s
+        eff_ts = now_sec if now_sec > 0 else getattr(self, "_last_admit_ts", 0.0)
+        if eff_ts > 0:
+            dt = datetime.fromtimestamp(eff_ts)
+            tmin = dt.hour * 60 + dt.minute
+            if tmin >= self.reserve_release_min and s > self.afternoon_best_score:
+                self.afternoon_best_score = s
 
     def state(self) -> Dict[str, Any]:
         return {
             "used": self.used,
             "max_trades_per_day": self.max_trades_per_day,
             "day_best_score": round(self.day_best_score, 4),
+            "afternoon_best_score": round(self.afternoon_best_score, 4),
             "date": self._date,
         }
 

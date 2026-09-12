@@ -17,7 +17,9 @@ module.exports = {
         AEGIS_QUALITY_STACK_MODE: "ACTIVE",
         MAX_TRADES_PER_DAY: "3",
         AEGIS_CONSEC_LOSS_STOP: "2",
-        AEGIS_DAILY_LOSS_CAP_RS: "2000.0"
+        AEGIS_DAILY_LOSS_CAP_RS: "2000.0",
+        AEGIS_ENTRY_CUTOFF: "15:00:00",
+        AEGIS_FORCE_FLATTEN: "15:08:00"
       }
     },
     {
