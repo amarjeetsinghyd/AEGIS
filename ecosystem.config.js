@@ -12,7 +12,12 @@ module.exports = {
       restart_delay: 5000,
       env: {
         PYTHONPATH: "/home/opc",
-        BOT_RUNTIME: "aegis"
+        BOT_RUNTIME: "aegis",
+        AEGIS_ML_GATEKEEPER_MODE: "ACTIVE",
+        AEGIS_QUALITY_STACK_MODE: "ACTIVE",
+        MAX_TRADES_PER_DAY: "3",
+        AEGIS_CONSEC_LOSS_STOP: "2",
+        AEGIS_DAILY_LOSS_CAP_RS: "2000.0"
       }
     },
     {
@@ -42,36 +47,6 @@ module.exports = {
       restart_delay: 3000,
       env: {
         PYTHONPATH: "/home/opc"
-      }
-    },
-    {
-      name: "eod-calibrator",
-      script: "ARGUS/eod_calibrator.py",
-      args: "--cron",
-      cwd: "/home/opc",
-      interpreter: "python3",
-      autorestart: true,
-      watch: false,
-      max_memory_restart: "1G",
-      restart_delay: 5000,
-      env: {
-        PYTHONPATH: "/home/opc",
-        BOT_RUNTIME: "ARGUS"
-      }
-    },
-    {
-      name: "stratos-bot",
-      script: "STRATOS/main.py",
-      cwd: "/home/opc",
-      interpreter: "python3",
-      autorestart: true,
-      watch: false,
-      max_memory_restart: "1G",
-      max_restarts: 20,
-      restart_delay: 5000,
-      env: {
-        PYTHONPATH: "/home/opc",
-        BOT_RUNTIME: "stratos"
       }
     }
   ]

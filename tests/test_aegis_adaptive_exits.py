@@ -87,6 +87,9 @@ def create_test_manager(entry_price=19.30, spot_entry=23700.0, signal_type="PUT"
     em.daily_pnl = 0.0
     em.inter_trade_cooldown_sec = 120.0
     em.post_loss_cooloff_sec = 120.0
+    em.consec_loss_stop = 2
+    em.daily_loss_cap_rs = 2000.0
+    em._consec_losses = 0
     em._is_exiting = False
     em._is_entering = False
 
@@ -600,12 +603,13 @@ def test_consecutive_route_lockout_and_alternate_route_switch():
     assert em.trade_context is not None
     assert em.trade_context.pa_setup_name == "20_ema_rejection"
 
-    # Case 3: Strict Lockout — Same route arriving again (even after 300s) -> Must STILL be BLOCKED!
+    # Case 3: Momentum chain — same route after cooldown (300s) -> ALLOWED!
+    # Strict unconditional lockout removed; 3rd/4th-high chain trades permitted.
     em.trade_context = None
     em.last_exited_route = "volatility_squeeze_breakout"
-    em.last_trade_exit_time = time.time() - 300.0  # Time does not lift strict lockout
+    em.last_trade_exit_time = time.time() - 300.0  # Cooldown (180s) elapsed
     em._process_aegis_signal(same_signal)
-    assert em.trade_context is None  # Blocked! Alternate route required first.
+    assert em.trade_context is not None  # Chain allowed after cooldown.
 
     # Case 4: Alternate route executed and exited (setting last_exited_route to alternate)
     em.last_exited_route = "20_ema_rejection"
