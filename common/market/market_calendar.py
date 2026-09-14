@@ -13,6 +13,7 @@ NSE_HOLIDAYS_2026 = {
     date(2026, 4, 14),  # Ambedkar Jayanti
     date(2026, 5, 1),   # Maharashtra Day
     date(2026, 8, 15),  # Independence Day
+    date(2026, 9, 14),  # Ganesh Chaturthi
     date(2026, 10, 2),  # Gandhi Jayanti
     date(2026, 10, 20), # Dussehra
     date(2026, 11, 8),  # Diwali Laxmi Pujan

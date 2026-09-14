@@ -943,15 +943,14 @@ class AegisGammaEngine:
                                         daily_pnl=float(getattr(self, "_em_daily_pnl", 0.0)),
                                     )
 
+                                logger.info(
+                                    f"[QUALITY STACK TELEMETRY] {sym} ({direction}) {pa_setup_name} | "
+                                    f"skew={qs_skew_ok} leads={qs_leads_ok} energy={energy_score:.0f}>={self.quality_energy_min:.0f}:{qs_energy_ok} "
+                                    f"spread={spread_pct_val:.3f}<={self.quality_max_spread_pct}:{qs_spread_ok} | "
+                                    f"slot={slot_reason} (used={self.slot_policy.used if self.slot_policy else 0}/{(self.slot_policy.max_trades_per_day if self.slot_policy else 3)})"
+                                )
+
                                 if self.quality_stack_mode == "ACTIVE":
-                                    if not qs_all_ok:
-                                        self._purge_impulse_memory(sym)
-                                        self._throttled_veto_log(
-                                            "quality_stack_veto",
-                                            f"[QUALITY STACK VETO] {sym} ({direction}) {pa_setup_name} blocked: "
-                                            f"skew={qs_skew_ok} leads={qs_leads_ok} energy={qs_energy_ok} spread={qs_spread_ok}",
-                                        )
-                                        return None
                                     if not slot_admit:
                                         self._purge_impulse_memory(sym)
                                         self._throttled_veto_log(
@@ -959,13 +958,6 @@ class AegisGammaEngine:
                                             f"[SLOT POLICY VETO] {sym} ({direction}) {pa_setup_name} blocked: {slot_reason}",
                                         )
                                         return None
-                                else:
-                                    logger.info(
-                                        f"[QUALITY STACK SHADOW] {sym} ({direction}) {pa_setup_name} | "
-                                        f"skew={qs_skew_ok} leads={qs_leads_ok} energy={energy_score:.0f}>={self.quality_energy_min:.0f}:{qs_energy_ok} "
-                                        f"spread={spread_pct_val:.3f}<={self.quality_max_spread_pct}:{qs_spread_ok} | "
-                                        f"slot={slot_reason} (used={self.slot_policy.used if self.slot_policy else 0}/{(self.slot_policy.max_trades_per_day if self.slot_policy else 3)})"
-                                    )
 
                                 telemetry_metrics = {
                                     "impulse_timestamp": now_sec,

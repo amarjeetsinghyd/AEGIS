@@ -252,6 +252,12 @@ class AegisExecutionManager:
             return True
         return bool(self.trade_context and str(self.trade_context.status).upper() in ("OPEN", "PENDING", "SUBMITTED", "EXIT_PENDING"))
 
+    def _rollback_slot(self) -> None:
+        """Rollback slot usage in quality slot policy if entry is blocked downstream."""
+        sp = getattr(self.aegis_engine, "slot_policy", None)
+        if sp and hasattr(sp, "rollback_admission"):
+            sp.rollback_admission()
+
     def get_instrument_params(self) -> dict:
         name, _ = self.data_fetcher.get_active_instrument()
         if name == "SENSEX":
@@ -407,29 +413,34 @@ class AegisExecutionManager:
                 f"[AegisEM] Entry blocked — same-route cooldown active for '{incoming_route}' ({rem}s remaining). "
                 f"Chain allowed after cooldown (3rd/4th high)."
             )
+            self._rollback_slot()
             return
 
         # Inter-trade Cooldown (General pause between trade exits to prevent whip capture)
         if self.last_trade_exit_time > 0 and now_epoch < (self.last_trade_exit_time + self.inter_trade_cooldown_sec):
             rem = int((self.last_trade_exit_time + self.inter_trade_cooldown_sec) - now_epoch)
             logger.warning(f"[AegisEM] Entry blocked — inter-trade cooldown active ({rem}s remaining)")
+            self._rollback_slot()
             return
 
         # Post-Loss Freeze (Mandatory 5-minute freeze after a loss to allow market turbulence to settle)
         if self.last_trade_loss and self.last_trade_exit_time > 0 and now_epoch < (self.last_trade_exit_time + self.post_loss_cooloff_sec):
             rem = int((self.last_trade_exit_time + self.post_loss_cooloff_sec) - now_epoch)
             logger.warning(f"[AegisEM] Entry blocked — post-loss cooloff active ({rem}s remaining)")
+            self._rollback_slot()
             return
 
         with self.trade_lock:
             if self.has_open_trade():
                 logger.warning("[AegisEM] Entry blocked — trade already open")
+                self._rollback_slot()
                 return
             self._is_entering = True
 
         try:
             if not self.can_enter(now):
                 logger.warning(f"[AegisEM] Entry blocked — outside window (cutoff {AEGIS_ENTRY_CUTOFF})")
+                self._rollback_slot()
                 return
 
             direction = signal.get("signal")  # "UP" or "DOWN"

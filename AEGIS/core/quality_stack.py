@@ -85,6 +85,11 @@ class QualitySlotPolicy:
             if tmin >= self.reserve_release_min and s > self.afternoon_best_score:
                 self.afternoon_best_score = s
 
+    def rollback_admission(self) -> None:
+        """Rolls back the last admitted slot if downstream execution manager rejects the signal."""
+        if self.used > 0:
+            self.used -= 1
+
     def state(self) -> Dict[str, Any]:
         return {
             "used": self.used,
