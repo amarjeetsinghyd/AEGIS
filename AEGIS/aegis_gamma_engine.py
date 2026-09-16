@@ -706,16 +706,21 @@ class AegisGammaEngine:
                             # 2. ADAPTIVE ORDER FLOW ENERGY VALIDATOR (OFEE)
                             # Evaluates Price Momentum (40 pts), Buyer Aggression I1 (35 pts), Velocity & Depth (25 pts)
                             # Pass condition: Total Energy Score >= 60.0 / 100.
+                            # BOS-breakout confirmations use the strict momentum gate
+                            # (>= 70.0 + aligned touch + accelerating close + no deep wall).
+                            # Weak break = no momentum = instant discard.
                             energy_score = 100.0
                             micro_m = {}
                             if use_anchor and self.adaptive_micro_validator and self.scorer:
                                 buf = self.scorer.history.get(sym, [])
+                                is_bos_break = pa_details.get("rejection_type") in ("bos_breakout_confirmation", "bos_breakdown_confirmation")
                                 micro_ok, energy_score, micro_m = self.adaptive_micro_validator.evaluate(
                                     target_sym=sym,
                                     tick_buffer=buf,
                                     anchor_T=anchor_T,
                                     direction=direction,
                                     pillar=pillar,
+                                    strict_bos=is_bos_break,
                                 )
                                 if not micro_ok:
                                     self._purge_impulse_memory(sym)

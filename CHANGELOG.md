@@ -1,5 +1,31 @@
 # Changelog
 
+## [Unreleased] - 2026-09-16 (BOS Breakout Quality + Strict Micro Gate)
+
+### Added
+- **BOS Confirmation Quality Filter (`AEGIS/core/price_action_engine.py`)**: Pending-BOS break bars must now carry momentum — range >= 0.30x ATR(14), body >= 40% of range, close in the outer 35% edge, extension past the level <= max(1.0x ATR, buffer). Weak breaks are discarded (`bos_weak_breakout_discarded` / `bos_weak_breakdown_discarded`) so a genuine retest can arrive via a fresh signal instead of chasing chop.
+- **BOS-Strict Micro Gate (`AEGIS/core/adaptive_micro_validator.py`, `strict_bos` flag)**: BOS-breakout confirmations need energy >= 70.0 plus three vetoes — 10s momentum acceleration >= 0, direction-aligned touch (I1 >= +0.10 CALL / <= -0.10 PUT), no deep L3-L5 wall (PUT/CALL mirrored at +/-0.60). Wired in `aegis_gamma_engine.py` for `bos_breakout_confirmation` only; all other setups keep legacy 60.0 behaviour. Exit logic untouched (full-lot model, no partial exits).
+
+### Tests
+- New weak-break discard tests (CALL + PUT) in `tests/test_price_action_engines.py`; new strict-gate tests (aggression veto, deep-wall veto, genuine pass) in `tests/test_adaptive_micro_validator.py`.
+
+## [Unreleased] - 2026-09-11 (AEGIS V3.5 Pure Price-Action Primary + Quantitative Exits & Semantic Architecture Authority)
+
+### Added
+- **AEGIS V3 Architecture Authority Specification (`AEGIS/AEGIS V3.md`)**: Comprehensive, code-grounded L1 architecture specification superseding `AEGIS V2.md`. Documents all 3 Price Action Scalper Pillars, 09:14 AM pre-market auto-seeding, secondary microstructure shield, and Claude's 4-pillar adaptive quantitative exits with exact code line numbers, mathematical formulations, and governance laws.
+- **Master Semantic Architecture Graph**: End-to-end Mermaid flowchart embedded in `AEGIS/AEGIS V3.md` visualizing tick ingestion, spot path, macro PA trigger, event-bound anchor $T$, microstructure shield, execution manager, and quantitative exit lifecycle.
+- **Pre-Market 09:14 AM Bar Seeding (`aegis_main.py:260-312`)**: Eliminates 15-minute cold-start warmup by pre-warming `PriceActionEngine` with historical 1-minute bars from Shoonya REST API, ensuring mature 20 EMA, 50 EMA, and ATR from tick 1 (09:15:01 AM).
+- **Execution Guardrails (`aegis_execution_manager.py`)**:
+  - Strict non-consecutive setup lockout (`incoming_route == last_exited_route` blocked for 180s until an alternate route executes).
+  - 30-second Squeeze Momentum Timeout (+1.5% hurdle) to cut false breakouts before theta decay.
+  - Resting Maker Limit TP at +4.0% with zero slippage.
+  - Two-key breakeven guard (2.5x noise floor hurdle + 60s hold / 3.5 bps spot move).
+
+### Changed
+- Promoted `PriceActionEngine` to primary macro signal trigger; non-PA ticks are immediately discarded without buffering or scoring.
+- Updated `SYSTEM_ARCHITECTURE.md` and `README.md` to reference `AEGIS/AEGIS V3.md`.
+- Added deprecation/redirection banner to `AEGIS/AEGIS V2.md`.
+
 ## [Unreleased] - 2026-08-30 (AEGIS V3.2 Macro-Alignment & 5-Min Consistency Calibration)
 
 ### Added

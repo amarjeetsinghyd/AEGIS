@@ -530,30 +530,28 @@ def test_trade_attribution_and_telemetry_capture():
         assert telem["futures_move_pts"] == 15.0
 
 
-def test_volatility_squeeze_30s_timeout_exit():
+def test_volatility_squeeze_sustains_five_minute_baseline():
     """
-    Verifies Volatility Squeeze Hard Time-Stop:
-    - If elapsed_seconds >= 30 and gain < +1.5%, trigger SQUEEZE_MOMENTUM_TIMEOUT.
-    - If elapsed_seconds >= 30 and gain >= +1.5%, trade stays open to reach +4.0% TP.
+    Verifies that Volatility Squeeze trades sustain the user's 5-minute baseline hold time:
+    - Premature 30s timeout is disabled.
+    - Squeeze trade with low/moderate momentum at 35s stays open to allow 1m candle formation / TP.
+    - Squeeze trade running strong at 35s stays open.
+    - Flat squeeze trade exits at 5-Min Hard Time Stop (300s).
     """
-    # 1. Squeeze trade with low momentum (< +1.5% at 35s) -> Must exit immediately!
+    # 1. Squeeze trade at 35s -> Must STAY OPEN (no premature 30s cut)!
     em, ctx, leg = create_test_manager(entry_price=100.0, spot_entry=24000.0, signal_type="CALL")
     ctx.pa_setup_name = "volatility_squeeze_breakout"
     ctx.entry_time = datetime.now() - timedelta(seconds=35)
     em.broker.market_data_provider._quote = {"ltp": 101.0, "bp1": 100.95, "sp1": 101.05}
     em._manage_open_trade()
 
+    assert len(em.exit_reasons) == 0  # Sustains through 35s!
+
+    # 2. At 301s (5 minutes elapsed) -> Exits via 5-Min Hard Time Stop
+    ctx.entry_time = datetime.now() - timedelta(seconds=301)
+    em._manage_open_trade()
     assert len(em.exit_reasons) == 1
-    assert "SQUEEZE_MOMENTUM_TIMEOUT" in em.exit_reasons[0]
-
-    # 2. Squeeze trade running strong (>= +1.5% at 35s) -> Must stay open!
-    em2, ctx2, leg2 = create_test_manager(entry_price=100.0, spot_entry=24000.0, signal_type="CALL")
-    ctx2.pa_setup_name = "volatility_squeeze_breakout"
-    ctx2.entry_time = datetime.now() - timedelta(seconds=35)
-    em2.broker.market_data_provider._quote = {"ltp": 102.5, "bp1": 102.45, "sp1": 102.55}
-    em2._manage_open_trade()
-
-    assert len(em2.exit_reasons) == 0  # Running winner stays open to reach 4% TP!
+    assert "5-Min Hard Time Stop" in em.exit_reasons[0]
 
 
 def test_consecutive_route_lockout_and_alternate_route_switch():
@@ -634,7 +632,7 @@ def _make_backtest_squeeze_signal(lp=100.0, pa_setup="volatility_squeeze_breakou
 
 
 def test_backtest_squeeze_timeout_and_route_lockout_parity():
-    """Backtest must fire SQUEEZE_MOMENTUM_TIMEOUT and enforce strict route lockout (live parity)."""
+    """Backtest must allow squeeze trades to sustain the 5-minute window (live parity)."""
     from AEGIS.backtest_engine import SimulatedPositionManager
     pos_mgr = SimulatedPositionManager()
     pos_mgr.update_spot(24000.0)
@@ -645,16 +643,20 @@ def test_backtest_squeeze_timeout_and_route_lockout_parity():
     assert trade.pa_setup_name == "volatility_squeeze_breakout"
     assert trade.target_pct == pytest.approx(4.0)
 
-    # +0.5% at 35s hold -> squeeze momentum timeout must fire (before BE/runner/SL)
+    # +0.5% at 35s hold -> trade STAYS OPEN (no premature 30s exit)
     pos_mgr.on_tick("NIFTY26SEP24500CE", 100.5, current_ts_sec=1035.0)
+    assert pos_mgr.active_trade is not None
+
+    # At 301s (5m time stop) -> exits with TIME_EXPIRED (5m)
+    pos_mgr.on_tick("NIFTY26SEP24500CE", 100.5, current_ts_sec=1305.0)
     assert pos_mgr.active_trade is None
-    assert "SQUEEZE_MOMENTUM_TIMEOUT" in pos_mgr.completed_trades[-1].exit_reason
+    assert "TIME_EXPIRED (5m)" in pos_mgr.completed_trades[-1].exit_reason
     assert pos_mgr.last_exited_route == "volatility_squeeze_breakout"
 
     # Same route immediately after cooldown -> BLOCKED by strict lockout
-    assert pos_mgr.on_signal(_make_backtest_squeeze_signal(), current_ts_sec=1200.0) is False
+    assert pos_mgr.on_signal(_make_backtest_squeeze_signal(), current_ts_sec=1370.0) is False
     # Alternate route -> ALLOWED
-    assert pos_mgr.on_signal(_make_backtest_squeeze_signal(pa_setup="20_ema_rejection"), current_ts_sec=1200.0) is True
+    assert pos_mgr.on_signal(_make_backtest_squeeze_signal(pa_setup="20_ema_rejection"), current_ts_sec=1370.0) is True
 
 
 def test_backtest_fast_four_percent_tp():
@@ -690,6 +692,118 @@ def test_backtest_adaptive_six_min_extension():
     pos_mgr2.on_tick("NIFTY26SEP24500CE", 100.0, current_ts_sec=1301.0)
     assert pos_mgr2.active_trade is None
     assert "TIME_EXPIRED (5m)" in pos_mgr2.completed_trades[-1].exit_reason
+
+
+def test_tp_maker_fill_preserves_profit_when_tp_id_cleared():
+    """Verify that if tp_order_id was cleared in Section 0B, _do_chase_exit still verifies last_tp_order_id and records maker fill."""
+    em, ctx, leg = create_test_manager(entry_price=10.0, spot_entry=24000.0, signal_type="CALL")
+    em.tp_order_id = None
+    em.last_tp_order_id = "123456"
+    leg.tp_price = 10.40
+    leg.status = "OPEN"
+    ctx = TradeContext("CALL", "AEGIS_GAMMA_BURST", 24000.0)
+    ctx.entry_time = datetime.now()
+    ctx.add_leg(leg)
+    em.trade_context = ctx
+    
+    class MockCapitalEngine:
+        def add_funds(self, amt):
+            pass
+    em.capital_engine = MockCapitalEngine()
+    em.history_file = "test_hist_tmp.json"
+    em.active_context_file = "test_ctx_tmp.json"
+    
+    class MockApi:
+        def single_order_history(self, orderno):
+            assert orderno == "123456"
+            return [{"status": "COMPLETE", "avgprc": "10.45"}]
+    em.broker._api = MockApi()
+    
+    em._do_chase_exit("Take-Profit Hit", is_tp_maker=True, limit_fill_price=10.40)
+    
+    assert leg.status == "CLOSED"
+    assert leg.exit_price == 10.45
+    assert leg.pnl == pytest.approx((10.45 - 10.0) * 1 * 65)
+    import os
+    for f in ["test_hist_tmp.json", "test_ctx_tmp.json"]:
+        if os.path.exists(f):
+            try:
+                os.remove(f)
+            except Exception:
+                pass
+
+
+def test_point4_gate1_breakeven_lock_at_two_percent():
+    """Verify that touching +2.0% peak gain locks breakeven defense at Entry + buffer."""
+    em, ctx, leg = create_test_manager(entry_price=100.0, spot_entry=24000.0, signal_type="CALL")
+    ctx.entry_time = datetime.now() - timedelta(seconds=40)
+    
+    # Tick 1: Peak gain reaches +2.2% (102.20)
+    em.broker.market_data_provider._quote = {"ltp": 102.20, "bp1": 102.20, "sp1": 102.30, "sq1": 500, "bq1": 500}
+    em._manage_open_trade()
+    assert leg.breakeven_locked is True
+    assert len(em.exit_reasons) == 0
+
+    # Tick 2: Pullback to 100.25 (below Entry + 0.30 buffer = 100.30)
+    em.broker.market_data_provider._quote = {"ltp": 100.25, "bp1": 100.25, "sp1": 100.35, "sq1": 500, "bq1": 500}
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 1
+    assert "Breakeven Guard" in em.exit_reasons[0]
+
+
+def test_point4_gate2_three_minute_harvest_exit():
+    """Verify that a trade held >= 180s with profit +1.5% to +4.0% exits via Time Harvest."""
+    em, ctx, leg = create_test_manager(entry_price=100.0, spot_entry=24000.0, signal_type="CALL")
+    ctx.entry_time = datetime.now() - timedelta(seconds=185)
+    
+    # Floating gain is +2.5% (102.50)
+    em.broker.market_data_provider._quote = {"ltp": 102.50, "bp1": 102.50, "sp1": 102.60, "sq1": 500, "bq1": 500}
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 1
+    assert "TIME_HARVEST_LOCKED_GAIN" in em.exit_reasons[0]
+
+
+def test_point2_0dte_afternoon_time_stop():
+    """Verify that on Expiry day after 12:30 PM, maximum holding duration is compressed to 180s."""
+    em, ctx, leg = create_test_manager(entry_price=100.0, spot_entry=24000.0, signal_type="CALL")
+    em._is_active_instrument_expiry = lambda now=None, l=None: True
+    sim_now = datetime(2026, 9, 16, 13, 0, 0)
+    ctx.entry_time = sim_now - timedelta(seconds=182)
+    
+    # Flat trade at 100.0 (gain 0%)
+    em.broker.market_data_provider._quote = {"ltp": 100.0, "bp1": 100.0, "sp1": 100.10, "sq1": 500, "bq1": 500}
+    
+    # Simulate post-12:30 PM by passing sim_now
+    em._manage_open_trade(now=sim_now)
+    assert len(em.exit_reasons) == 1
+    assert "Time Stop" in em.exit_reasons[0]
+
+
+def test_point2_0dte_stagnation_trap_exit():
+    """Verify that on Expiry after 12:30 PM, holding >= 90s with gain < +0.5% and opposed 50-EMA exits."""
+    em, ctx, leg = create_test_manager(entry_price=100.0, spot_entry=24000.0, signal_type="CALL")
+    em._is_active_instrument_expiry = lambda now=None, l=None: True
+    sim_now = datetime(2026, 9, 16, 13, 0, 0)
+    ctx.entry_time = sim_now - timedelta(seconds=95)
+    
+    # Gain is +0.2% (100.20)
+    em.broker.market_data_provider._quote = {"ltp": 100.20, "bp1": 100.20, "sp1": 100.30, "sq1": 500, "bq1": 500}
+    
+    # Mock time bar engine with 50 EMA opposed (Spot 24000 < 50-EMA 24050 for CALL)
+    class MockTBEngine:
+        def get_market_structure(self, sig):
+            return "NEUTRAL"
+        def get_live_50_ema_and_slope(self):
+            return (24050.0, -1.0)
+        def get_live_ema_and_slope(self):
+            return (24000.0, 0.0, 0.0, 0.0)
+    em.aegis_engine.time_bar_engine = MockTBEngine()
+    
+    em._manage_open_trade(now=sim_now)
+    assert len(em.exit_reasons) == 1
+    assert "0DTE_STAGNATION_TRAP_EXIT" in em.exit_reasons[0]
+
+
 
 
 
