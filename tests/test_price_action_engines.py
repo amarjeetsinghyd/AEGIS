@@ -827,7 +827,7 @@ def test_hybrid_option_flow_and_pain_zone_vwaps():
 
     # 9. Verify Pain Zone VWAPs:
     # Spot is 22850.0. All trades happened at Spot 22850.0.
-    vwaps = engine.get_pain_zone_vwaps(lot_size=1.0)
+    vwaps = engine.get_pain_zone_vwaps(lot_size=1.0, min_bars=0)
     # Warmup threshold is 200 lots * 1.0 = 200 vol.
     # Call buy vol = 800 >= 200 -> VWAP active!
     assert round(vwaps["vwap_call_buy"], 1) == 22850.0
@@ -844,7 +844,7 @@ def test_hybrid_option_flow_and_pain_zone_vwaps():
     engine._reset_option_day_state()
     assert engine._cum_cb_vol == 0.0
     assert engine._cum_pb_vol == 0.0
-    vwaps_reset = engine.get_pain_zone_vwaps(lot_size=1.0)
+    vwaps_reset = engine.get_pain_zone_vwaps(lot_size=1.0, min_bars=0)
     assert vwaps_reset["vwap_call_buy"] == 0.0
 
 
@@ -857,6 +857,9 @@ def test_pain_zone_confluence_scorecard():
     """
     engine = PriceActionEngine(strike_step=50.0)
     engine.current_atr_1m = 10.0
+    # Warmup requirement: 30 bars for institutional stabilization
+    for i in range(30):
+        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 22800.0, 22805.0, 22795.0, 22800.0))
 
     # Setup simulated lines (> 5000.0 warmup threshold):
     # CallBuy = 22850.0 (vol=6000), PutBuy = 22820.0 (vol=6000)

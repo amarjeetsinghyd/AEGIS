@@ -237,8 +237,13 @@ class AegisGammaEngine:
 
         # V3 Horizon-Aligned Modules (Adaptive for NIFTY vs SENSEX)
         telemetry_dir = os.path.join(PARAM_DIR, "..", "logs", "telemetry") if "PARAM_DIR" in globals() else "AEGIS/logs/telemetry"
+        # SENSEX has lot size 20 (vs Nifty 65) -> depth threshold adaptive: 150 for Sensex, 400 for Nifty
+        is_sensex = (float(self.strike_step) == 100.0) or ("SENSEX" in str(getattr(self, "index_name", "")).upper()) or any("SENSEX" in str(s).upper() for s in self.t2s.values())
+        min_depth = 50.0 if is_sensex else 150.0
+        engine_lot = 20.0 if is_sensex else 65.0
+
         # Dedicated End-to-End Price Action Engine (replaces legacy TimeBarEngine)
-        self.price_action_engine = PriceActionEngine(strike_step=self.strike_step, atr_period=14) if PriceActionEngine is not None else None
+        self.price_action_engine = PriceActionEngine(strike_step=self.strike_step, atr_period=14, lot_size=engine_lot) if PriceActionEngine is not None else None
         # Alias time_bar_engine to price_action_engine for 100% backward compatibility
         self.time_bar_engine = self.price_action_engine
         # V3.0 Event-Bound: 60s persistence window, Dp >= 0.70, opposite <= 2.
@@ -248,10 +253,6 @@ class AegisGammaEngine:
             target_persistence_threshold=0.70,
             max_allowed_opposite=2,
         ) if DirectionalPersistenceEngine is not None else None
-        
-        # SENSEX has lot size 20 (vs Nifty 65) -> depth threshold adaptive: 150 for Sensex, 400 for Nifty
-        is_sensex = (float(self.strike_step) == 100.0) or ("SENSEX" in str(getattr(self, "index_name", "")).upper()) or any("SENSEX" in str(s).upper() for s in self.t2s.values())
-        min_depth = 50.0 if is_sensex else 150.0
         # Testing phase: premium floor Rs 4.0 (env AEGIS_MIN_PREMIUM) so Rs 4.30
         # candidates are not vetoed while funds are tiny.
         _min_prem = float(os.getenv("AEGIS_MIN_PREMIUM", "4.0"))

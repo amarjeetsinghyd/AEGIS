@@ -74,10 +74,19 @@ class PriceActionEngine:
         strike_step: float = 50.0,
         max_history_bars: int = 120,
         atr_period: int = 14,
+        lot_size: Optional[float] = None,
     ):
         self.strike_step = strike_step
         self.max_history_bars = max_history_bars
         self.atr_period = atr_period
+
+        # Adaptive lot size (SENSEX=20, NIFTY=25)
+        if lot_size is not None:
+            self.lot_size = float(lot_size)
+        elif strike_step == 100.0:
+            self.lot_size = 20.0
+        else:
+            self.lot_size = float(os.getenv("AEGIS_LOT_SIZE", "25.0"))
 
         # ─── 1-Minute and 5-Minute Bar Building State ───
         self._curr_1m_bar: Optional[OHLCBar] = None
@@ -246,14 +255,15 @@ class PriceActionEngine:
         self._opt_last_frac[sym] = frac
         return frac
 
-    def get_pain_zone_vwaps(self, lot_size: float = 25.0, min_bars: Optional[int] = None) -> Dict[str, float]:
+    def get_pain_zone_vwaps(self, lot_size: Optional[float] = None, min_bars: Optional[int] = None) -> Dict[str, float]:
         """
         Returns the 4-Line Trapped-Buyer Pain Zone VWAPs and Composite Option VWAP.
         Enforces both volume threshold (>= 200 lots) AND time threshold (>= 30 bars)
         before lines become active (DeepSeek V4 Pro AND-gate specification).
         """
-        min_vol = float(os.getenv("AEGIS_PAIN_ZONE_MIN_LOTS", "200")) * lot_size
-        req_bars = int(os.getenv("AEGIS_PAIN_ZONE_MIN_BARS", "0")) if min_bars is None else int(min_bars)
+        eff_lot = float(lot_size) if lot_size is not None else getattr(self, "lot_size", 65.0)
+        min_vol = float(os.getenv("AEGIS_PAIN_ZONE_MIN_LOTS", "200")) * eff_lot
+        req_bars = int(os.getenv("AEGIS_PAIN_ZONE_MIN_BARS", "30")) if min_bars is None else int(min_bars)
         time_ok = (len(self.bars_1m) >= req_bars) if req_bars > 0 else True
 
         def _v(pv: float, v: float) -> float:
