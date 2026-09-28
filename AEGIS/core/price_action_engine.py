@@ -2275,11 +2275,12 @@ class PriceActionEngine:
                 pillar=1, direction=direction, spot=curr_spot, atr=self.current_atr_1m, gamma_regime=gamma_regime
             )
             if not pz_ok:
-                logger.info(f"[PAIN ZONE INFO]: P1 {direction} non-confluent ({pz_reason}), proceeding with PA entry")
-            details_20["pain_zone_score"] = pz_score
-            details_20["pain_zone_reason"] = pz_reason
-            details_20["pain_zone_metrics"] = pz_metrics
-            return True, "20_ema_rejection", self._enrich_details(details_20)
+                logger.info(f"[PAIN ZONE VETO]: P1 {direction} blocked ({pz_reason})")
+            else:
+                details_20["pain_zone_score"] = pz_score
+                details_20["pain_zone_reason"] = pz_reason
+                details_20["pain_zone_metrics"] = pz_metrics
+                return True, "20_ema_rejection", self._enrich_details(details_20)
 
         # Pillar 2: Micro-Sweep & Reclaim (Parallel Shadow A/B Tracking)
         if getattr(self, "hvg_engine", None) is not None:
@@ -2296,14 +2297,15 @@ class PriceActionEngine:
                 pillar=2, direction=direction, spot=curr_spot, atr=self.current_atr_1m, gamma_regime=gamma_regime
             )
             if not pz_ok:
-                logger.info(f"[PAIN ZONE INFO]: P2 {direction} non-confluent ({pz_reason}), proceeding with PA entry")
-            details_sw["pain_zone_score"] = pz_score
-            details_sw["pain_zone_reason"] = pz_reason
-            details_sw["pain_zone_metrics"] = pz_metrics
-            details_sw["strategy_variant"] = "LEGACY_P2"
-            bar_ts = self.bars_1m[-1].ts_start if self.bars_1m else self.last_ts
-            details_sw["event_id"] = f"LEGACY_P2_{int(bar_ts)}_{direction.upper()}"
-            return True, "micro_sweep_reclaim", self._enrich_details(details_sw)
+                logger.info(f"[PAIN ZONE VETO]: P2 {direction} blocked ({pz_reason})")
+            else:
+                details_sw["pain_zone_score"] = pz_score
+                details_sw["pain_zone_reason"] = pz_reason
+                details_sw["pain_zone_metrics"] = pz_metrics
+                details_sw["strategy_variant"] = "LEGACY_P2"
+                bar_ts = self.bars_1m[-1].ts_start if self.bars_1m else self.last_ts
+                details_sw["event_id"] = f"LEGACY_P2_{int(bar_ts)}_{direction.upper()}"
+                return True, "micro_sweep_reclaim", self._enrich_details(details_sw)
 
         # V4.0 (2026-09-21): Al Brooks 2-Legged Pullback retired from the live
         # ladder — P1 -> P2 -> P3 -> P4 only. Method kept for offline reference.
@@ -2317,11 +2319,12 @@ class PriceActionEngine:
                 pillar=3, direction=direction, spot=curr_spot, atr=self.current_atr_1m, gamma_regime=gamma_regime
             )
             if not pz_ok:
-                logger.info(f"[PAIN ZONE INFO]: P3 {direction} non-confluent ({pz_reason}), proceeding with PA entry")
-            details_sq["pain_zone_score"] = pz_score
-            details_sq["pain_zone_reason"] = pz_reason
-            details_sq["pain_zone_metrics"] = pz_metrics
-            return True, "volatility_squeeze_breakout", self._enrich_details(details_sq)
+                logger.info(f"[PAIN ZONE VETO]: P3 {direction} blocked ({pz_reason})")
+            else:
+                details_sq["pain_zone_score"] = pz_score
+                details_sq["pain_zone_reason"] = pz_reason
+                details_sq["pain_zone_metrics"] = pz_metrics
+                return True, "volatility_squeeze_breakout", self._enrich_details(details_sq)
 
         # Pillar 4 (V4 Final): 0-D Prominence Hub Structural Breakout (\hat{\pi} >= 1.75, VR_t >= 1.4, 5m Alignment)
         ok_prom, reason_prom, details_prom = self.check_topological_prominence_breakout(direction, eff_vwap)
@@ -2332,14 +2335,15 @@ class PriceActionEngine:
                 pillar=4, direction=direction, spot=curr_spot, atr=self.current_atr_1m, gamma_regime=gamma_regime
             )
             if not pz_ok:
-                logger.info(f"[PAIN ZONE INFO]: P4 {direction} non-confluent ({pz_reason}), proceeding with PA entry")
-            details_prom["pain_zone_score"] = pz_score
-            details_prom["pain_zone_reason"] = pz_reason
-            details_prom["pain_zone_metrics"] = pz_metrics
-            bar_ts = self.bars_1m[-1].ts_start if self.bars_1m else self.last_ts
-            details_prom["timestamp"] = bar_ts
-            details_prom["event_id"] = f"P4_PROM_{int(bar_ts)}_{direction.upper()}"
-            return True, "topological_prominence_breakout", self._enrich_details(details_prom)
+                logger.info(f"[PAIN ZONE VETO]: P4 {direction} blocked ({pz_reason})")
+            else:
+                details_prom["pain_zone_score"] = pz_score
+                details_prom["pain_zone_reason"] = pz_reason
+                details_prom["pain_zone_metrics"] = pz_metrics
+                bar_ts = self.bars_1m[-1].ts_start if self.bars_1m else self.last_ts
+                details_prom["timestamp"] = bar_ts
+                details_prom["event_id"] = f"P4_PROM_{int(bar_ts)}_{direction.upper()}"
+                return True, "topological_prominence_breakout", self._enrich_details(details_prom)
 
         # Pillar 4 Fallback: Topological HVG Phase Shift Breakout (Dual-Timeframe 1m + 5m)
         if getattr(self, "hvg_engine", None) is not None:
