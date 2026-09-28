@@ -80,13 +80,13 @@ class PriceActionEngine:
         self.max_history_bars = max_history_bars
         self.atr_period = atr_period
 
-        # Adaptive lot size (SENSEX=20, NIFTY=25)
+        # Adaptive lot size (SENSEX=20, NIFTY=65)
         if lot_size is not None:
             self.lot_size = float(lot_size)
         elif strike_step == 100.0:
             self.lot_size = 20.0
         else:
-            self.lot_size = float(os.getenv("AEGIS_LOT_SIZE", "25.0"))
+            self.lot_size = float(os.getenv("AEGIS_LOT_SIZE", "65.0"))
 
         # ─── 1-Minute and 5-Minute Bar Building State ───
         self._curr_1m_bar: Optional[OHLCBar] = None

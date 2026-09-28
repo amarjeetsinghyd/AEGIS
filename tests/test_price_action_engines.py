@@ -861,13 +861,13 @@ def test_pain_zone_confluence_scorecard():
     for i in range(30):
         engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 22800.0, 22805.0, 22795.0, 22800.0))
 
-    # Setup simulated lines (> 5000.0 warmup threshold):
-    # CallBuy = 22850.0 (vol=6000), PutBuy = 22820.0 (vol=6000)
-    # CallSell = 22860.0 (vol=6000), PutSell = 22810.0 (vol=6000)
-    engine._cum_cb_pv = 22850.0 * 6000.0; engine._cum_cb_vol = 6000.0
-    engine._cum_pb_pv = 22820.0 * 6000.0; engine._cum_pb_vol = 6000.0
-    engine._cum_cs_pv = 22860.0 * 6000.0; engine._cum_cs_vol = 6000.0
-    engine._cum_ps_pv = 22810.0 * 6000.0; engine._cum_ps_vol = 6000.0
+    # Setup simulated lines (> 13000.0 warmup threshold with 200 lots * 65):
+    # CallBuy = 22850.0 (vol=15000), PutBuy = 22820.0 (vol=15000)
+    # CallSell = 22860.0 (vol=15000), PutSell = 22810.0 (vol=15000)
+    engine._cum_cb_pv = 22850.0 * 15000.0; engine._cum_cb_vol = 15000.0
+    engine._cum_pb_pv = 22820.0 * 15000.0; engine._cum_pb_vol = 15000.0
+    engine._cum_cs_pv = 22860.0 * 15000.0; engine._cum_cs_vol = 15000.0
+    engine._cum_ps_pv = 22810.0 * 15000.0; engine._cum_ps_vol = 15000.0
 
     # Test 1: P1 PE setup with Spot at 22805 (Below CallBuy 22850 AND Below PutSell 22810)
     # Call buyers trapped (< 22850) AND Put writers underwater (< 22810) -> DUAL FUEL BOOST!
@@ -940,14 +940,15 @@ def test_flow_symmetry_diagnostic_and_and_gate_warmup():
     assert diag_skew["alarm"] is True
 
     # AND-Gate Warmup: Even with 200 lots volume, if min_bars=30 and len(bars) < 30 -> Inactive!
-    engine._cum_cb_pv = 12000.0 * 22800.0
-    pz_inactive = engine.get_pain_zone_vwaps(lot_size=25.0, min_bars=30)
+    engine._cum_cb_pv = 15000.0 * 22800.0
+    engine._cum_cb_vol = 15000.0
+    pz_inactive = engine.get_pain_zone_vwaps(lot_size=65.0, min_bars=30)
     assert pz_inactive["vwap_call_buy"] == 0.0  # Blocked by time gate!
 
     # Once 30 bars are present -> Active!
     for i in range(30):
         engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 22800.0, 22805.0, 22795.0, 22800.0))
-    pz_active = engine.get_pain_zone_vwaps(lot_size=25.0, min_bars=30)
+    pz_active = engine.get_pain_zone_vwaps(lot_size=65.0, min_bars=30)
     assert pz_active["vwap_call_buy"] == 22800.0
 
 
