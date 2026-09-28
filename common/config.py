@@ -26,7 +26,10 @@ OI_REVERSAL_EXIT_ENABLED = os.getenv("OI_REVERSAL_EXIT_ENABLED", "False").upper(
 OI_REVERSAL_EXIT_THRESHOLD = 50000.0
 OI_REVERSAL_MIN_HOLD_SEC = 60.0
 
-ENABLE_LIVE_BROKERAGE_EXECUTION = False
+# LIVE switch: ONLY via explicit VPS env (AEGIS_LIVE_TRADING=TRUE).
+# Default stays False (PAPER) so local runs, tests, and fresh clones can
+# never place real orders by accident. Flip ONLY with human approval.
+ENABLE_LIVE_BROKERAGE_EXECUTION = os.getenv("AEGIS_LIVE_TRADING", "False").upper() == "TRUE"
 BROKER = os.getenv("BROKER", "SHOONYA").upper()
 
 _runtime_name: Optional[str] = None

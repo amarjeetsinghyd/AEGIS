@@ -180,21 +180,31 @@ def test_realized_delta_calculation():
 
 def test_spot_invalidation_sl_prevents_trade1_noise_stopout():
     """
-    Trade 1 Reproduction: Entry @ ₹19.30.
-    In the old code, a dip to ₹18.20 triggered -5.0% Hard SL.
-    In the new code, 18.20 must NOT trigger SL because Spot is intact!
+    V4.0 (2026-09-23 update): Entry @ ₹19.30. The tick-cadence Premium Hard SL
+    is relaxed to -12.0% disaster floor. Shallow noise dips inside the floor
+    (e.g. 18.70 [-3.1%], 18.20 [-5.7%]) must still stay OPEN to breathe.
+    Catastrophic drops beyond -12.0% (e.g. 16.80 [-12.9%]) fire immediately.
     """
     em, context, leg = create_test_manager(entry_price=19.30, spot_entry=23700.0, signal_type="PUT")
-    
-    # Simulate a 2-point adverse spot wiggle (23702.0) and option quote dipping to 18.20
+
+    # Shallow dip inside the floor: spot intact, premium -3.1% -> stays OPEN
     em.data_fetcher._spot = 23702.0
-    em.broker.market_data_provider._quote = {"ltp": 18.20, "bp1": 18.20, "sp1": 18.35}
-    
+    em.broker.market_data_provider._quote = {"ltp": 18.70, "bp1": 18.70, "sp1": 18.85}
     em._manage_open_trade()
-    
-    # Must NOT have exited!
     assert len(em.exit_reasons) == 0, f"Premature exit occurred: {em.exit_reasons}"
     assert leg.status == "OPEN"
+
+    # Spread/noise dip at -5.7% (18.20): stays OPEN under 12% disaster floor
+    em.broker.market_data_provider._quote = {"ltp": 18.20, "bp1": 18.20, "sp1": 18.35}
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 0, f"Premature exit occurred: {em.exit_reasons}"
+    assert leg.status == "OPEN"
+
+    # Deep crash through the 12% disaster floor: premium -12.95% (16.80) -> Premium Hard SL fires
+    em.broker.market_data_provider._quote = {"ltp": 16.80, "bp1": 16.80, "sp1": 16.90}
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 1
+    assert "Premium Hard SL" in em.exit_reasons[0]
 
 
 def test_breakeven_guard_two_key_prevents_trade3_premature_cut():
@@ -222,37 +232,38 @@ def test_breakeven_guard_two_key_prevents_trade3_premature_cut():
 
 
 def test_breakeven_guard_arms_on_genuine_impulse():
-    """Verify that Breakeven arms once genuine hurdle (>= 2.5x noise floor) AND time/spot confirmed."""
+    """Verify that Cost-Shield / Breakeven arms once peak gain reaches >= +3.0%."""
     em, context, leg = create_test_manager(entry_price=13.00, spot_entry=23700.0, signal_type="PUT")
     
-    # Gain of ₹4.50 (peak reaches 17.50, +34.6%)
-    em.broker.market_data_provider._quote = {"ltp": 17.50, "bp1": 17.40, "sp1": 17.55}
+    # Gain reaches +3.2% (13.42, armed cost-shield / breakeven)
+    em.broker.market_data_provider._quote = {"ltp": 13.42, "bp1": 13.42, "sp1": 13.45}
     # Simulate 65s elapsed
     context.entry_time = datetime.now() - timedelta(seconds=65)
     
     em._manage_open_trade()
     
-    # Breakeven must be armed!
+    # Breakeven / Cost-Shield must be armed!
     assert getattr(leg, "breakeven_locked", False)
     
-    # Now if price drops below breakeven lock floor (Entry + buffer), it should exit
-    em.broker.market_data_provider._quote = {"ltp": 13.50, "bp1": 13.50, "sp1": 13.60}
+    # Now if price drops back to entry (13.00), it should exit scratch
+    em.broker.market_data_provider._quote = {"ltp": 13.00, "bp1": 13.00, "sp1": 13.05}
     em._manage_open_trade()
     
     assert len(em.exit_reasons) == 1
-    assert "Breakeven Guard" in em.exit_reasons[0]
+    assert "Cost-Shield Scratch Exit" in em.exit_reasons[0] or "Breakeven Guard" in em.exit_reasons[0]
 
 
 def test_dynamic_runner_trailing_and_ema_slope_exit():
-    """Verify that dynamic runner arms, trails peak gain, and exits on 9-EMA slope reversal."""
+    """V4.0 (2026-09-21): runner trailing is disabled (single-target mode) —
+    peak gain must NOT arm the runner; 9-EMA slope reversal still exits."""
     em, context, leg = create_test_manager(entry_price=13.00, spot_entry=23700.0, signal_type="PUT")
-    
+
     # Peak reaches 20.00 (+53.8% gain)
     em.broker.market_data_provider._quote = {"ltp": 20.00, "bp1": 19.95, "sp1": 20.05}
     em._manage_open_trade()
-    
-    # Runner must be armed!
-    assert getattr(leg, "runner_locked", False)
+
+    # Runner must NOT be armed in V4 single-target mode!
+    assert not getattr(leg, "runner_locked", False)
     assert leg.highest_price == 20.00
     
     # Configure mock TimeBarEngine with bullish reversal for PUT trade
@@ -277,11 +288,12 @@ def test_dynamic_runner_trailing_and_ema_slope_exit():
 
 def test_unconditional_ema_reversal_exit_on_negative_pnl():
     """
-    Trade Reproduction (09:46 IST):
+    Trade Reproduction (09:46 IST) under V4.0 (2026-09-21):
     PUT entry at ₹17.40, peak was only ₹18.10 (+4.0%, runner NEVER locked).
-    At 09:46, option dips to ₹16.00 (-8.0% loss).
+    Option dips to ₹17.00 (-2.3% loss, inside the -3.5% premium floor).
     Spot crosses back above 9-EMA with positive slope.
-    Under Rule 3B, it MUST exit immediately without waiting for 5-minute timeout!
+    It MUST exit via Trend Reversal immediately without waiting for timeout!
+    (Deeper dips through -3.5% exit via Premium Hard SL first by design.)
     """
     em, context, leg = create_test_manager(entry_price=17.40, spot_entry=23670.0, signal_type="PUT")
     leg.highest_price = 18.10
@@ -297,8 +309,8 @@ def test_unconditional_ema_reversal_exit_on_negative_pnl():
     em.aegis_engine.time_bar_engine = DummyTBEngine()
     em.data_fetcher._spot = 23681.0  # Spot (23681) crossed above 9-EMA (23675)
 
-    # Option is in loss at ₹16.00
-    em.broker.market_data_provider._quote = {"ltp": 16.00, "bp1": 15.95, "sp1": 16.05}
+    # Option is in shallow loss at ₹17.00 (-2.3%, above the premium floor)
+    em.broker.market_data_provider._quote = {"ltp": 17.00, "bp1": 16.95, "sp1": 17.05}
     em._manage_open_trade()
 
     assert len(em.exit_reasons) == 1
@@ -319,8 +331,9 @@ def test_scale_invariance_across_nifty_and_sensex():
     em_nifty.data_fetcher.get_active_instrument = lambda: ("NIFTY", "NIFTY")
     
     # 10 pts adverse move on Nifty (10/24000 = 4.17 bps < 6.5 bps) -> Must stay OPEN
+    # (premium dip kept inside the -3.5% V4 floor so only spot scaling is tested)
     em_nifty.data_fetcher._spot = 24010.0
-    em_nifty.broker.market_data_provider._quote = {"ltp": 16.0, "bp1": 15.90, "sp1": 16.10}
+    em_nifty.broker.market_data_provider._quote = {"ltp": 19.50, "bp1": 19.40, "sp1": 19.60}
     em_nifty._manage_open_trade()
     assert len(em_nifty.exit_reasons) == 0
     
@@ -330,8 +343,9 @@ def test_scale_invariance_across_nifty_and_sensex():
     
     # 35 pts adverse move on Sensex (35/80000 = 4.37 bps < 6.5 bps) -> In old hardcoded code this was stopped out!
     # In normalized code, 35 pts is within the 6.5 bps buffer (52 pts), so it must stay OPEN!
+    # (premium dip kept inside the -3.5% V4 floor so only spot scaling is tested)
     em_sensex.data_fetcher._spot = 80035.0
-    em_sensex.broker.market_data_provider._quote = {"ltp": 42.0, "bp1": 41.80, "sp1": 42.20}
+    em_sensex.broker.market_data_provider._quote = {"ltp": 48.75, "bp1": 48.60, "sp1": 48.90}
     em_sensex._manage_open_trade()
     assert len(em_sensex.exit_reasons) == 0, f"Sensex falsely exited on 35 pts: {em_sensex.exit_reasons}"
     
@@ -435,6 +449,7 @@ def test_adaptive_time_exit_behavior():
     """Verify adaptive time stop: 5m hard stop on flat/loss vs 6m conditional extension on profit."""
     # Case 1: Unprofitable / flat trade at 300s exits immediately with 5-Min Hard Time Stop
     em, context, leg = create_test_manager(entry_price=100.0, spot_entry=24000.0, signal_type="PUT")
+    em._is_active_instrument_expiry = lambda *args: False
     context.entry_time = datetime.now() - timedelta(seconds=301)
 
     # Current price flat @ 100.0 (0% gain)
@@ -446,6 +461,7 @@ def test_adaptive_time_exit_behavior():
 
     # Case 2: Profitable trade (+3.0%) at 300s extends beyond 300s without premature exit
     em2, context2, leg2 = create_test_manager(entry_price=100.0, spot_entry=24000.0, signal_type="PUT")
+    em2._is_active_instrument_expiry = lambda *args: False
     context2.entry_time = datetime.now() - timedelta(seconds=305)
 
     # Current price is 103.0 (+3.0% gain > HOLD_EXTEND_MIN_PROFIT_PCT 2.0%)
@@ -540,6 +556,7 @@ def test_volatility_squeeze_sustains_five_minute_baseline():
     """
     # 1. Squeeze trade at 35s -> Must STAY OPEN (no premature 30s cut)!
     em, ctx, leg = create_test_manager(entry_price=100.0, spot_entry=24000.0, signal_type="CALL")
+    em._is_active_instrument_expiry = lambda *args: False
     ctx.pa_setup_name = "volatility_squeeze_breakout"
     ctx.entry_time = datetime.now() - timedelta(seconds=35)
     em.broker.market_data_provider._quote = {"ltp": 101.0, "bp1": 100.95, "sp1": 101.05}
@@ -734,26 +751,49 @@ def test_tp_maker_fill_preserves_profit_when_tp_id_cleared():
 
 
 def test_point4_gate1_breakeven_lock_at_two_percent():
-    """Verify that touching +2.0% peak gain locks breakeven defense at Entry + buffer."""
+    """Verify V4.1 Stepped Risk Compression: +2.0% peak arms -3.0% safety net, does NOT choke pullback."""
     em, ctx, leg = create_test_manager(entry_price=100.0, spot_entry=24000.0, signal_type="CALL")
     ctx.entry_time = datetime.now() - timedelta(seconds=40)
     
-    # Tick 1: Peak gain reaches +2.2% (102.20)
+    # Tick 1: Peak gain reaches +2.2% (102.20) -> Stepped Safety Net (-3.0% SL) arms
     em.broker.market_data_provider._quote = {"ltp": 102.20, "bp1": 102.20, "sp1": 102.30, "sq1": 500, "bq1": 500}
     em._manage_open_trade()
-    assert leg.breakeven_locked is True
+    assert getattr(leg, "step1_sl_armed", False) is True
     assert len(em.exit_reasons) == 0
 
-    # Tick 2: Pullback to 100.25 (below Entry + 0.30 buffer = 100.30)
+    # Tick 2: Pullback to 100.25 (User fix: must NOT choke winning trades!)
     em.broker.market_data_provider._quote = {"ltp": 100.25, "bp1": 100.25, "sp1": 100.35, "sq1": 500, "bq1": 500}
     em._manage_open_trade()
+    assert len(em.exit_reasons) == 0, f"Trade was prematurely choked on 25p pullback: {em.exit_reasons}"
+
+    # Tick 3: Extreme drop to 96.90 (<= -3.0% SL floor) -> triggers stepped safety exit
+    em.broker.market_data_provider._quote = {"ltp": 96.90, "bp1": 96.90, "sp1": 97.00, "sq1": 500, "bq1": 500}
+    em._manage_open_trade()
     assert len(em.exit_reasons) == 1
-    assert "Breakeven Guard" in em.exit_reasons[0]
+    assert "Stepped Safety Net SL" in em.exit_reasons[0]
+
+
+def test_v41_near_target_profit_lock():
+    """Verify that when peak reaches >= +3.5%, a 0.5% pullback locks profit."""
+    em, ctx, leg = create_test_manager(entry_price=100.0, spot_entry=24000.0, signal_type="CALL")
+    ctx.entry_time = datetime.now() - timedelta(seconds=40)
+
+    # Peak reaches +3.8% (103.80)
+    em.broker.market_data_provider._quote = {"ltp": 103.80, "bp1": 103.80, "sp1": 103.90}
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 0
+
+    # Pullback by 0.55% from peak (drops to 103.25 = +3.25% gain, drop is 0.55% >= 0.5%)
+    em.broker.market_data_provider._quote = {"ltp": 103.25, "bp1": 103.25, "sp1": 103.35}
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 1
+    assert "Near-Target Profit Lock" in em.exit_reasons[0]
 
 
 def test_point4_gate2_three_minute_harvest_exit():
     """Verify that a trade held >= 180s with profit +1.5% to +4.0% exits via Time Harvest."""
     em, ctx, leg = create_test_manager(entry_price=100.0, spot_entry=24000.0, signal_type="CALL")
+    em._is_active_instrument_expiry = lambda *args: False
     ctx.entry_time = datetime.now() - timedelta(seconds=185)
     
     # Floating gain is +2.5% (102.50)
@@ -802,6 +842,168 @@ def test_point2_0dte_stagnation_trap_exit():
     em._manage_open_trade(now=sim_now)
     assert len(em.exit_reasons) == 1
     assert "0DTE_STAGNATION_TRAP_EXIT" in em.exit_reasons[0]
+
+
+def test_pillar3_12pct_disaster_sl_allows_small_noise():
+    """Verify that a -3.5% noise dip does NOT trigger SL, but >= -12% disaster drop does."""
+    em, ctx, leg = create_test_manager(entry_price=25.20, spot_entry=74884.0, signal_type="CALL")
+    ctx.entry_time = datetime.now() - timedelta(seconds=20)
+    
+    # Tick 1: Dip by 88 paise to 24.32 (-3.49% to -3.57%) - normal spread noise
+    em.broker.market_data_provider._quote = {"ltp": 24.30, "bp1": 24.30, "sp1": 24.50, "sq1": 500, "bq1": 500}
+    em._manage_open_trade()
+    # Trade MUST remain OPEN under the -12% disaster floor
+    assert len(em.exit_reasons) == 0
+    assert leg.status == "OPEN"
+
+    # Tick 2: Severe drop to 22.00 (-12.7%) -> MUST trigger disaster circuit breaker!
+    em.broker.market_data_provider._quote = {"ltp": 22.00, "bp1": 22.00, "sp1": 22.10, "sq1": 500, "bq1": 500}
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 1
+    assert "disaster floor" in em.exit_reasons[0]
+
+
+def test_pillar2_9ema_structural_exit():
+    """Verify that when completed 1m bar closes below 9-EMA for CALL, structural exit triggers."""
+    from AEGIS.core.time_bar_engine import OHLCBar
+    em, ctx, leg = create_test_manager(entry_price=25.20, spot_entry=74884.0, signal_type="CALL")
+    t0 = datetime.now() - timedelta(seconds=70)
+    ctx.entry_time = t0
+    
+    # Mock TimeBarEngine with completed 1m bar closing below 9-EMA
+    class MockTBEngineWith9EMA:
+        def __init__(self):
+            self.ema_1m = 74875.0
+            self.bars_1m = [
+                OHLCBar(
+                    ts_start=t0.timestamp(),
+                    ts_end=t0.timestamp() + 5.0,
+                    open=74880.0,
+                    high=74882.0,
+                    low=74868.0,
+                    close=74870.0,  # Closed below 9-EMA (74870.0 < 74875.0)
+                    volume=1000
+                )
+            ]
+        def get_market_structure(self, sig):
+            return "NEUTRAL"
+        def get_live_ema_and_slope(self):
+            return (74875.0, 0.0, 74870.0, 0.0)
+        def get_live_50_ema_and_slope(self):
+            return (74850.0, 0.0)
+
+    em.aegis_engine.time_bar_engine = MockTBEngineWith9EMA()
+    em.data_fetcher._spot = 74870.0
+    em.broker.market_data_provider._quote = {"ltp": 24.80, "bp1": 24.80, "sp1": 24.90, "sq1": 500, "bq1": 500}
+
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 1
+    assert "Closed Below 9-EMA" in em.exit_reasons[0]
+
+
+def test_atomic_modify_in_place_on_exit():
+    """Verify that when resting TP exists, exit modifies the TP in-place without separate prior cancel."""
+    em, ctx, leg = create_test_manager(entry_price=100.0, spot_entry=24000.0, signal_type="CALL")
+    ctx.entry_time = datetime.now() - timedelta(seconds=30)
+    em.tp_order_id = "240925000999"
+    leg.highest_bid = 103.60  # +3.6% reached
+    
+    # Tick: pullback to 103.00 (pullback 0.6% >= 0.5% tolerance) -> Near-Target Profit Lock
+    em.broker.market_data_provider._quote = {"ltp": 103.00, "bp1": 103.00, "sp1": 103.10, "sq1": 500, "bq1": 500}
+    
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 1
+    assert "Near-Target Profit Lock" in em.exit_reasons[0]
+    # TP order ID MUST NOT be wiped prematurely!
+    assert em.tp_order_id == "240925000999"
+
+    # Now verify _do_chase_exit executes modify_order directly
+    modified_orders = []
+    cancelled_orders = []
+    placed_orders = []
+
+    class MockShoonyaAPI:
+        def __init__(self):
+            self.modified = False
+        def modify_order(self, **kwargs):
+            modified_orders.append(kwargs)
+            self.modified = True
+            return {"stat": "Ok", "result": kwargs.get("orderno")}
+        def cancel_order(self, orderno):
+            cancelled_orders.append(orderno)
+            return {"stat": "Ok"}
+        def place_order(self, **kwargs):
+            placed_orders.append(kwargs)
+            return {"stat": "Ok", "norenordno": "NEW_SELL_123"}
+        def single_order_history(self, orderno):
+            if self.modified:
+                return [{"status": "COMPLETE", "flprc": "103.00"}]
+            return [{"status": "OPEN", "flprc": "0.00"}]
+
+    em.broker._api = MockShoonyaAPI()
+    em.get_instrument_params = lambda: {"exchange": "NFO", "lot_size": 25}
+    em._append_history = lambda r, p: None
+    
+    em._do_chase_exit(em.exit_reasons[0])
+    
+    # Must have called modify_order with resting TP orderno
+    assert len(modified_orders) == 1
+    assert modified_orders[0]["orderno"] == "240925000999"
+    assert modified_orders[0]["newprice_type"] == "LMT"
+    # Must NOT have cancelled or placed fresh order
+    assert len(cancelled_orders) == 0
+    assert len(placed_orders) == 0
+    assert leg.status == "CLOSED"
+    assert em.tp_order_id is None  # Cleaned up at end of trade
+
+
+def test_atomic_modify_fallback_on_error():
+    """Verify that if modify_order fails, safe fallback cancels TP and places fresh exit order."""
+    em, ctx, leg = create_test_manager(entry_price=100.0, spot_entry=24000.0, signal_type="CALL")
+    ctx.entry_time = datetime.now() - timedelta(seconds=30)
+    em.tp_order_id = "240925000888"
+    leg.highest_bid = 103.60
+    
+    em.broker.market_data_provider._quote = {"ltp": 103.00, "bp1": 103.00, "sp1": 103.10, "sq1": 500, "bq1": 500}
+    em._manage_open_trade()
+    
+    modified_orders = []
+    cancelled_orders = []
+    placed_orders = []
+
+    class FailingShoonyaAPI:
+        def __init__(self):
+            self.placed = False
+        def modify_order(self, **kwargs):
+            modified_orders.append(kwargs)
+            return {"stat": "Not_Ok", "emsg": "Order cannot be modified"}
+        def cancel_order(self, orderno):
+            cancelled_orders.append(orderno)
+            return {"stat": "Ok"}
+        def place_order(self, **kwargs):
+            placed_orders.append(kwargs)
+            self.placed = True
+            return {"stat": "Ok", "norenordno": "NEW_SELL_456"}
+        def single_order_history(self, orderno):
+            if self.placed:
+                return [{"status": "COMPLETE", "flprc": "102.50"}]
+            return [{"status": "OPEN", "flprc": "0.00"}]
+
+    em.broker._api = FailingShoonyaAPI()
+    em.get_instrument_params = lambda: {"exchange": "NFO", "lot_size": 25}
+    em._append_history = lambda r, p: None
+    
+    em._do_chase_exit(em.exit_reasons[0])
+    
+    assert len(modified_orders) == 1
+    # On failure, it safely cancelled the old TP order
+    assert len(cancelled_orders) == 1
+    assert cancelled_orders[0] == "240925000888"
+    # And placed fresh sell order
+    assert len(placed_orders) == 1
+    assert leg.status == "CLOSED"
+
+
 
 
 

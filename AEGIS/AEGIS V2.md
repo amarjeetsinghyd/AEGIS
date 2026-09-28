@@ -1,5 +1,9 @@
 # AEGIS — Autonomous Execution & Gamma Imbalance System
 
+> 🚨 **SUPERSEDED BY AEGIS V3 SPECIFICATION**  
+> **This document (AEGIS V2.md) has been officially superseded and upgraded to [`AEGIS_V3_ARCHITECTURE.md`](AEGIS_V3_ARCHITECTURE.md).**  
+> For the definitive, code-grounded L1 Architecture Authority, Master Semantic Graph, 4 Price Action Pillars, and 4-Pillar Adaptive Quantitative Exits, refer strictly to **[`AEGIS/AEGIS_V3_ARCHITECTURE.md`](AEGIS_V3_ARCHITECTURE.md)**.
+
 **Architecture Authority — Code-Grounded Audit**  
 **Version:** 3.5 (V3.5 Price-Action Primary + Adaptive Quantitative Exits — Live)  
 **Status:** ACTIVE · PM2 `aegis-bot` · `AEGIS/aegis_main.py:87`  

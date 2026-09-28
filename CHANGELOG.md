@@ -1,5 +1,33 @@
 # Changelog
 
+## [Unreleased] - 2026-09-21 (AEGIS V4.0 Live Wiring: Premium SL, Confirm15, Single-Target)
+
+### Added
+- **Premium Hard SL circuit breaker (-3.5%, `AEGIS/aegis_execution_manager.py`)**: Tick-cadence (2 Hz poll) option premium floor evaluated immediately after the TP checks and before all lagging spot-level exits. Closes 100% quantity the instant bid drops >= 3.5% under entry — fixes the 2026-09-21 Trade 3 leak (-8.2% via delayed Trend Reversal Exit).
+- **Confirm15 futures-confirmation gate (wired, `AEGIS/aegis_gamma_engine.py`)**: Pillar fire now ARMs a per-symbol `Confirm15StateMachine`; entry proceeds only after continuous front-month futures flow TRIGGERs (z15 >= 0.75, ER >= 0.55, elastic phi, r_opt >= +1.0%, 0.45x ATR invalidation, 45s timeout). Fail-open while the futures feed is blind; fail-closed once armed. Mode via `confirm15_mode` param (`ACTIVE`/`SHADOW`/`DISABLED`).
+- **V4 core robustness (`AEGIS/core/aegis_v4_core.py`)**: P4 anchors use genuine 0-D persistence prominence (pi-hat >= 1.75) instead of the degree-ratio proxy; P2 sweep requires a full 17-bar window; Top-5 spread guard enforces an absolute 1.0%-of-mid cap while unprimed; `arm()` refuses uninitialized futures references; standalone exit sender flagged as research-harness stub.
+
+### Changed
+- **Retired ladder stages removed (`AEGIS/core/price_action_engine.py`)**: `albrooks_2legged_pullback` and standalone `break_of_structure` no longer participate in `evaluate_setup` — strict P1 -> P2 -> P3 -> P4 single-admission ladder only.
+- **Runner trailing disabled in live exits**: `V4_SINGLE_TARGET_MODE = True` gates the legacy Dynamic Runner Trailing block — 100% quantity TP/SL/time exits only.
+- **Confirm15 relocated post-gates/pre-commit (2026-09-22)**: ARM now happens after conviction/ML/quality pass on the same tick (snapshot stored for telemetry); TRIGGER path is fresh depth guard + fire only. Slot consume, FSM registration and outcome telemetry run solely on TRIGGER pass-through, never on ARM. Resilient optional imports — one missing module can never kill engine init.
+- **Shield v2 sweep-trap guards (2026-09-22, in existing files)**: `delta_inflection_check` in `aegis_gamma_engine.py` (I1 sign-flip ≥ 0.15 against direction vetoes, fail-open under 6 ticks) and `get_oi_kinematics` in `oi_builtup_gate.py` (60s OI velocity + acceleration, fresh-dumping veto below -1.0%/min, fail-open on sparse history). Both wired post-TRIGGER/pre-depth as blocking vetoes. 6 new tests (201 green total).
+- **Backtest/live parity (`AEGIS/backtest_engine.py`)**: Default `stop_loss_pct` 5.0 -> 3.5 plus per-tick `PREMIUM_HARD_SL` matching the live breaker.
+
+### Tests
+- Full suite `python -m pytest tests/ -q`: 195 passed, 0 failed.
+
+## [Unreleased] - 2026-09-20 (AEGIS V3.9 Dual-Timeframe HVG Topological Engine & Architecture Renaming)
+
+### Added
+- **AEGIS V3.9 Architecture Authority Specification (`AEGIS/AEGIS_V3_ARCHITECTURE.md`)**: Comprehensive, code-grounded definitive specification superseding `AEGIS V3.md` and `AEGIS V2.md`. Eliminates whitespace in file paths, updates line counts across all 28 AEGIS modules, details the active 4 Price Action Scalper Pillars, and documents the full 277-test suite matrix (100% green).
+- **Dual-Timeframe (1m+5m) Horizontal Visibility Graph (HVG) Engine (`AEGIS/core/hvg_engine.py`)**: Strict equality line-of-sight in $O(N)$ monotonic stack, IST clock-aligned 5m aggregation, day rollover separation, macro structural alignment & overhead proximity shield, and 400ms Anti-Spoofing L2 Wall Shield.
+- **Topological Structural Sweep & Reclaim (`check_topological_sweep_reclaim`)**: Causal $T-1$ frozen graph, $T-1$ seeded unbroken anchor tracking (`post_anchor_min = lows[pre_n - 1]`), local extremum validation, signed VWAP distance $D_{VWAP}$, and explicit immutable A/B experiment arms (`TOPO_P2` vs `LEGACY_P2`) logged to `logs/hvg_shadow_telemetry.jsonl`.
+- **Dispatcher Single-Admission Invariant**: Deterministic first-hit priority resolution (P1 $\to$ P2 $\to$ P3 $\to$ P4) ensuring exactly one setup is admitted per candle without duplicate orders.
+
+### Changed
+- Renamed architecture documentation authority from `AEGIS/AEGIS V3.md` to `AEGIS/AEGIS_V3_ARCHITECTURE.md` across `SYSTEM_ARCHITECTURE.md`, `README.md`, and `AEGIS/AEGIS V2.md`.
+
 ## [Unreleased] - 2026-09-16 (BOS Breakout Quality + Strict Micro Gate)
 
 ### Added

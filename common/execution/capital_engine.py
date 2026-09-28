@@ -31,7 +31,9 @@ class CapitalEngine:
             try:
                 with open(self.STATE_FILE, "r") as f:
                     data = json.load(f)
-                    self._paper_capital = float(data.get("available_funds", INITIAL_PAPER_CAPITAL))
+                    # Accept legacy keys (current_capital) plus current format.
+                    raw = data.get("available_funds", data.get("current_capital", data.get("capital", INITIAL_PAPER_CAPITAL)))
+                    self._paper_capital = float(raw)
                     self._locked_amount = float(data.get("locked_withdrawal_amount", 0.0))
                 logger.info(f"[CapitalEngine] Loaded paper capital state: {self._paper_capital}, Locked: {self._locked_amount}")
             except Exception as e:
@@ -60,13 +62,17 @@ class CapitalEngine:
         if self.mode == "LIVE":
             if not self.portfolio_provider:
                 raise ValueError("Portfolio provider is required for LIVE mode")
-            if hasattr(self.portfolio_provider, "get_available_funds"):
-                base = float(self.portfolio_provider.get_available_funds())
-            elif hasattr(self.portfolio_provider, "portfolio_provider") and hasattr(
-                self.portfolio_provider.portfolio_provider, "get_available_funds"
-            ):
-                base = float(self.portfolio_provider.portfolio_provider.get_available_funds())
-            else:
+            base = self._paper_capital
+            try:
+                if hasattr(self.portfolio_provider, "get_available_funds"):
+                    base = float(self.portfolio_provider.get_available_funds())
+                elif hasattr(self.portfolio_provider, "portfolio_provider") and hasattr(
+                    self.portfolio_provider.portfolio_provider, "get_available_funds"
+                ):
+                    base = float(self.portfolio_provider.portfolio_provider.get_available_funds())
+                logger.info(f"[CapitalEngine] LIVE funds from broker: ₹{base:.2f}")
+            except Exception as e:
+                logger.warning(f"[CapitalEngine] Broker funds fetch failed ({e}); using cached ₹{self._paper_capital:.2f}")
                 base = self._paper_capital
             if base > 0 and self._paper_capital != base:
                 self._paper_capital = base

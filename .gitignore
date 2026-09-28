@@ -1,4 +1,4 @@
-﻿__pycache__/
+__pycache__/
 *.pyc
 logs/
 *.log
@@ -18,7 +18,13 @@ Oracle SSH keys/
 # Runtime data
 data/shm/
 *.parquet
+*.db
+catboost_info/
+*_symbols.txt
+AEGIS/data/l2_raw/
 
 # Archives (read-only history)
 _archive/
+AEGIS/_archive/
+ARGUS/_archive/
 deepseek-harness-master/

@@ -67,9 +67,41 @@ class AngelMarketDataProvider(IMarketDataProvider):
             jwt_token, api_key, client_id, feed_token
         )
         
-        # Wrap on_data to standard format (Angel returns standard format by default but just pass it through)
+        # Wrap on_data: Normalize Angel SmartWebSocketV2 tick to Shoonya-like dict (tok, lp, bp1/bq1 etc)
+        def _normalize_angel_tick(msg):
+            if not isinstance(msg, dict):
+                return msg
+            # Angel V2 tick keys: token, last_traded_price, best_5_buy_data, best_5_sell_data, exchange_timestamp
+            # Map to Shoonya-like keys expected by TickCompiler/value_engine
+            if "last_traded_price" in msg or "token" in msg:
+                tok = str(msg.get("token", msg.get("tk", "")))
+                # Best 5 buy/sell are lists of dicts: [{"price":..., "quantity":...}, ...]
+                buys = msg.get("best_5_buy_data", [])
+                sells = msg.get("best_5_sell_data", [])
+                norm = {
+                    "tk": tok, "token": tok,
+                    "lp": float(msg.get("last_traded_price", msg.get("lp", 0)) or 0),
+                    "v": float(msg.get("volume_trade_for_the_day", msg.get("vol", 0)) or 0),
+                    "e": msg.get("exchange_type", "NSE"),
+                }
+                for i in range(5):
+                    if i < len(buys) and isinstance(buys[i], dict):
+                        norm[f"bp{i+1}"] = float(buys[i].get("price", 0) or 0)
+                        norm[f"bq{i+1}"] = int(buys[i].get("quantity", 0) or 0)
+                    if i < len(sells) and isinstance(sells[i], dict):
+                        norm[f"sp{i+1}"] = float(sells[i].get("price", 0) or 0)
+                        norm[f"sq{i+1}"] = int(sells[i].get("quantity", 0) or 0)
+                # Fallback single L1 if best_5 missing
+                if "bp1" not in norm:
+                    norm["bp1"] = float(msg.get("best_bid_price", 0) or 0)
+                    norm["bq1"] = int(msg.get("best_bid_quantity", 0) or 0)
+                    norm["sp1"] = float(msg.get("best_ask_price", 0) or 0)
+                    norm["sq1"] = int(msg.get("best_ask_quantity", 0) or 0)
+                return norm
+            return msg
+
         def wrapped_on_data(wsapp, message):
-            on_tick_callback(message)
+            on_tick_callback(_normalize_angel_tick(message))
 
         def wrapped_on_open(wsapp):
             if on_open_callback: on_open_callback()
@@ -83,9 +115,24 @@ class AngelMarketDataProvider(IMarketDataProvider):
         
         self.ws.connect()
 
-    def subscribe(self, tokens: list, exchange: str) -> None:
+    def subscribe(self, tokens: list, exchange: str, feed_type: str = "t", **kwargs) -> None:
         exch_type = 1 if exchange == "NSE" else (2 if exchange == "NFO" else 3)
-        self.ws.subscribe("mega_sub", 3, [{"exchangeType": exch_type, "tokens": tokens}])
+        # Lazy start if WS not yet connected
+        if not hasattr(self, "ws") or self.ws is None:
+            if not hasattr(self, "_pending_tokens"):
+                self._pending_tokens = []
+            self._pending_tokens.extend(tokens)
+            try:
+                self.start_live_feed(lambda x: None)
+            except Exception:
+                pass
+            return
+        try:
+            self.ws.subscribe("mega_sub", 3, [{"exchangeType": exch_type, "tokens": tokens}])
+        except TypeError:
+            self.ws.subscribe("mega_sub", 3, [{"exchangeType": exch_type, "tokens": tokens}], **kwargs)
+        except AttributeError:
+            pass
         
     def unsubscribe(self, tokens: list, exchange: str) -> None:
         pass # Angel One does not have a clean unsubscribe list method via SmartWebSocketV2 without mode switch
@@ -214,7 +261,7 @@ class AngelOneAdapter(IBrokerGateway):
             websocket=WebSocketCapability(
                 max_subscriptions=500,
                 tick_format="json",
-                depth_supported=False,
+                depth_supported=True,
                 heartbeat_interval_seconds=30,
                 auto_reconnect=True,
             ),
@@ -222,7 +269,7 @@ class AngelOneAdapter(IBrokerGateway):
                 live_quotes=True,
                 ohlc=True,
                 open_interest=False,
-                market_depth=False,
+                market_depth=True,
                 greeks=False,
                 streaming_supported=True,
             ),

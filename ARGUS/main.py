@@ -20,8 +20,21 @@ if BASE_DIR not in sys.path:
 from common.config import configure_runtime, get_data_dir
 configure_runtime("argus")
 
-from common.broker import ShoonyaAdapter
 from common.logger import get_logger
+
+def _get_broker_adapter():
+    # ARGUS now on Angel One to free Shoonya WS for AEGIS (2026-09-01)
+    broker_name = os.getenv("BROKER", "ANGEL").upper()
+    # Force Angel for ARGUS regardless of global BROKER env (AEGIS stays on Shoonya)
+    if os.getenv("ARGUS_BROKER", "ANGEL").upper() == "ANGEL":
+        try:
+            from common.broker.angel_one_adapter import AngelOneAdapter
+            logger.info("[BROKER] ARGUS using AngelOneAdapter (Shoonya freed for AEGIS)")
+            return AngelOneAdapter()
+        except Exception as e:
+            logger.warning(f"[BROKER] AngelOneAdapter failed ({e}) — fallback to ShoonyaAdapter")
+    from common.broker import ShoonyaAdapter
+    return ShoonyaAdapter()
 from common.ipc.live_state import update_argus_live_state
 from common.ipc.premarket_bridge import publish_premarket_state, NIFTY_WEIGHTS
 from common.market.market_calendar import (
@@ -276,6 +289,7 @@ class TradingSystem:
         self.shutdown_event = threading.Event()
         self.main_thread = None
         self.universe = {}  # Cached universe to avoid disk I/O on hot path
+        self.pillar_setups = {}  # Pilot: per-stock pillar setups (scan-only, no order impact)
         
         # Archiver Symbols (for Token Map Union) - Single Source of Truth
         self.archiver_symbols = SUBSCRIPTION_UNIVERSE
@@ -285,11 +299,14 @@ class TradingSystem:
         logger.info("INITIALIZING ARGUS — Algorithmic Real-Time Granular Ultra-Microstructure Scalper (v3.6)")
         logger.info("=" * 70)
 
-        # 1. Broker & Login
-        self.broker = ShoonyaAdapter()
+        # 1. Broker & Login (Angel for ARGUS)
+        self.broker = _get_broker_adapter()
         if hasattr(self.broker, "session_provider"):
-            self.broker.session_provider._restore_or_login()
-        logger.info("[OK] Broker Session Restored")
+            try:
+                self.broker.session_provider._restore_or_login()
+            except AttributeError:
+                pass  # Angel session already via AngelOneAdapter.__init__
+        logger.info(f"[OK] Broker Session Restored ({type(self.broker).__name__})")
 
         # 2. Load Universe (Scanner Output)
         self.universe = load_universe()
@@ -421,39 +438,102 @@ class TradingSystem:
             try:
                 now = datetime.now()
                 
-                # --- HEARTBEAT & LOGGING (1 Min) ---
+                # --- HEARTBEAT & LOGGING (1 Min) — ACCURATE SYSTEM TELEMETRY ---
                 if now.minute != last_heartbeat_min:
                     last_heartbeat_min = now.minute
                     if is_trading_day(now.date()) and is_market_open(now) and not is_pre_market(now):
-                        summary = self.engine.get_market_state_summary()
-                        pos_summary = self.executor.get_open_positions_summary()
-                        logger.info(f"[HB] {now.strftime('%H:%M')} | {summary}")
-                        if pos_summary != "No open positions":
-                            logger.info(f"[POS]\n{pos_summary}")
-                        
-                        # ULTRA-DETAILED TELEMETRY: Gate status summary for active symbols
-                        active_symbols = [s for s in self.engine.cur_tot_val if self.engine.cur_tot_val[s] > 0]
-                        if active_symbols:
-                            gate_status = []
-                            for sym in active_symbols[:5]:  # Limit to top 5 to avoid log spam
-                                st = self.engine.last_snap.get(sym, {})
-                                adv = st.get("_adv", {})
-                                tc = self.engine.cur_tick_count.get(sym, 0)
-                                tv = self.engine.cur_tot_val.get(sym, 0)
-                                target_bucket = self.engine.bucket_map.get(sym, self.engine.CFG["bucket_turnover"])
-                                pct = (tv / target_bucket) * 100
-                                
-                                # Quick gate check
-                                gate_ticks = tc >= self.engine.TRIG["min_ticks"]
-                                gate_status.append(f"{sym}:{pct:.0f}% T:{tc} {'✅' if gate_ticks else '❌'}")
-                            
-                            logger.info(f"[GATE_STATUS] Active Buckets: {' | '.join(gate_status)}")
+                        # 1. Microstructure Telemetry: Rank symbols to find top active stock
+                        try:
+                            snaps = getattr(self.engine, "last_snap", {}) or {}
+                            def _sym_activity_score(item):
+                                s_name, s_data = item
+                                if not isinstance(s_data, dict):
+                                    return -1.0
+                                conv = float(s_data.get("conviction", 0.0) or 0.0)
+                                if conv > 0:
+                                    return 100.0 + conv
+                                sflow = float(s_data.get("s_flow", 0.0) or 0.0)
+                                if sflow > 0:
+                                    return 50.0 + sflow
+                                bkt_val = float(getattr(self.engine, "cur_tot_val", {}).get(s_name, 0.0) or 0.0)
+                                bkt_tgt = float(getattr(self.engine, "bucket_map", {}).get(s_name, 1.0) or 1.0)
+                                return (bkt_val / max(bkt_tgt, 1.0)) * 20.0
 
-                        # --- TIER 2 INTRADAY FILTER (Every 15 min: :00, :15, :30, :45) ---
-                        if now.minute % 15 == 0 and now.second < 10:
-                            if not hasattr(self, '_last_tier2_min') or self._last_tier2_min != now.minute:
-                                self._last_tier2_min = now.minute
-                                self._run_intraday_tier2()
+                            top_sym = max(snaps.keys(), key=lambda s: _sym_activity_score((s, snaps.get(s))), default="-") if snaps else "-"
+                            top_st = snaps.get(top_sym, {}) if top_sym != "-" else {}
+                            adv = top_st.get("_adv", {})
+                            
+                            top_lp = float(top_st.get("lp", 0.0) or 0.0)
+                            top_conv = float(top_st.get("conviction", 0.0) or 0.0)
+                            sflow = float(top_st.get("s_flow", 0.0) or 0.0)
+                            sflow_l = float(top_st.get("s_flow_long", 0.0) or 0.0)
+                            sflow_s = float(top_st.get("s_flow_short", 0.0) or 0.0)
+                            dyn_thresh = float(top_st.get("dynamic_threshold", 0.45) or 0.45)
+                            m_align = float(top_st.get("m_align", 0.50) or 0.50)
+                            regime = top_st.get("regime", "SCANNING")
+                            adv_sel = float(top_st.get("adv_sel_prob", 0.0) or 0.0)
+                            adv_shield = "VETO" if adv_sel > 0.60 else "CLEAR"
+                            kyle_lam = float(adv.get("eff_lam", 0.0) or 0.0)
+                            net_vac = float(getattr(self.engine, "cur_net_vacuum", {}).get(top_sym, 0.0) or 0.0)
+                            
+                            ml_status = "ON" if getattr(self.engine, "_lgbm_model", None) else "OFF"
+                            trades_count = self.executor.get_today_trades_count() if hasattr(self.executor, "get_today_trades_count") else 0
+                            
+                            logger.info(
+                                f"[HB] {now.strftime('%H:%M')} | Top:{top_sym}@{top_lp:.1f} Conv:{top_conv:.1f} "
+                                f"S_flow:{sflow:.2f}(L:{sflow_l:.2f}/S:{sflow_s:.2f}) Thresh:{dyn_thresh:.2f} | "
+                                f"M_Align:{m_align:.2f} | AdvSel:{adv_shield}({adv_sel:.2f}) | "
+                                f"Kyle_Lam:{kyle_lam:.1f}bps | Vac:{net_vac:+.0f}bps | "
+                                f"Regime:{regime} | ML:{ml_status} | Trades:{trades_count}"
+                            )
+                        except Exception:
+                            summary = self.engine.get_market_state_summary()
+                            logger.info(f"[HB] {now.strftime('%H:%M')} | {summary}")
+
+                        # 2. Pilot: pillar scan on top symbols (closed 1m, scan-only).
+                        try:
+                            from ARGUS.pillar_overlay import PillarOverlay
+                            if not hasattr(self, "_pillar_overlay") or self._pillar_overlay is None:
+                                self._pillar_overlay = PillarOverlay(max_stocks=30, value_engine=self.engine)
+                            else:
+                                try:
+                                    self._pillar_overlay.value_engine = self.engine
+                                except Exception:
+                                    pass
+                            snaps = getattr(self.engine, "last_snap", {}) or {}
+                            ranked = sorted(
+                                snaps.items(),
+                                key=lambda kv: (
+                                    float((kv[1] or {}).get("conviction", 0.0) or 0.0) * 100.0
+                                    + float((kv[1] or {}).get("s_flow", 0.0) or 0.0) * 10.0
+                                    + float(getattr(self.engine, "cur_tot_val", {}).get(kv[0], 0.0) or 0.0)
+                                      / max(float(getattr(self.engine, "bucket_map", {}).get(kv[0], 1.0) or 1.0), 1.0)
+                                ),
+                                reverse=True
+                            )[:15]
+                            found = {}
+                            rejected = 0
+                            for sym, snap in ranked:
+                                lp = float((snap or {}).get("lp", 0.0) or 0.0)
+                                if lp <= 0:
+                                    continue
+                                ok, name, det = self._pillar_overlay.on_minute(sym, lp, now.timestamp(), 0.0)
+                                if ok:
+                                    found[sym] = {"setup": name, "pillar": (det or {}).get("pillar", 0)}
+                                elif str(name).startswith("validator_reject_"):
+                                    rejected += 1
+                            self.pillar_setups = found
+                            if found:
+                                logger.info(f"[PILLAR] {len(found)} setups: " + ", ".join(f"{s}:{v['setup']}(P{v['pillar']})" for s, v in list(found.items())[:8]))
+                            elif rejected:
+                                logger.debug(f"[PILLAR] {rejected} pillar fires held by trailing-micro validator")
+                        except Exception as e_pillar:
+                            logger.debug(f"Pillar overlay scan skipped: {e_pillar}")
+
+                        # 3. Position status (FLAT or open trade details)
+                        pos_summary = self.executor.get_open_positions_summary()
+                        if pos_summary != "No open positions":
+                            logger.info(f"[POS] {pos_summary}")
 
                 # --- TIME GATES ---
                 if not is_bot_active_hours(now):
@@ -506,6 +586,8 @@ class TradingSystem:
                             "trades_today": len(self.executor.trade_history) + len(self.executor.open_trades),
                             "has_open_trade": len(self.executor.open_trades) > 0,
                             "active_trade": self.executor.open_trades,
+                            "pillar_setups": getattr(self, "pillar_setups", {}),
+                            "pillar_count": len(getattr(self, "pillar_setups", {}) or {}),
                         })
                     except Exception:
                         pass

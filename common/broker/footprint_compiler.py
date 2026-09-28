@@ -133,10 +133,17 @@ class FootprintCompiler:
         vol = float(message.get("v") or message.get("ltq") or 0.0)
         price = float(message.get("lp") or message.get("c") or 0.0)
 
-        if (token == index_token or token == "26000") and price > 0:
+        # Exchange-aware index match. Legacy fallback to known index tokens only
+        # while provider has not locked _index_token yet (startup window).
+        known_index = {"26000", "1", "99919000", "99926000"}
+        if index_token:
+            is_index = (token == str(index_token))
+        else:
+            is_index = (token in known_index)
+        if is_index and price > 0:
             self.current_spot = price
 
-        if token != index_token and token != "26000":
+        if not is_index:
             if self.deduplicator.is_duplicate(token, ts, oi, vol):
                 return
 

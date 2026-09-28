@@ -2,7 +2,7 @@ import importlib
 
 
 def test_shared_runtime_paths_delegate_to_common():
-    from shared_runtime.paths import get_runtime_paths
+    from common.runtime.paths import get_runtime_paths
 
     astra = get_runtime_paths("astra")
     kronos = get_runtime_paths("kronos")

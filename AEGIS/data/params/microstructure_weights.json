@@ -24,6 +24,6 @@
   },
   "high_conviction_threshold": 75.0,
   "moderate_conviction_threshold": 60.0,
-  "min_tick_rate_gate": 1.5,
+  "min_tick_rate_gate": 0.05,
   "horizon_target": "5_MIN_PROD_EXITS_WITH_STATUTORY_FRICTION"
 }

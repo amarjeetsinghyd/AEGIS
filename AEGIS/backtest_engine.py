@@ -115,7 +115,7 @@ class SimulatedPositionManager:
         charges_per_trade: float = 16.50,
         lot_size: int = 65,   # default NIFTY 65; SENSEX 20
         target_pct: float = 4.0,   # Fast +4.0% Scalp Take-Profit (live RESTING_TP_LIMIT_PCT parity)
-        stop_loss_pct: float = 5.0,
+        stop_loss_pct: float = 12.0,  # V4 premium floor parity (live PREMIUM_HARD_SL_PCT)
         breakeven_trigger_pct: float = 3.0,
         breakeven_lock_pct: float = 0.5,
         runner_trigger_pct: float = 7.0,
@@ -291,31 +291,33 @@ class SimulatedPositionManager:
         if pnl_pct < trade.max_drawdown_pct:
             trade.max_drawdown_pct = pnl_pct
 
+        peak_gain_rs = (trade.peak_pnl_pct / 100.0) * entry_price
+
         # 1. Target Profit Hit (Fast +4.0% Scalp Take-Profit, live parity)
         if pnl_pct >= trade.target_pct:
             self._close_position(lp, trade.target_pct, f"TARGET_HIT (+{trade.target_pct:.1f}%)", current_ts_sec)
             return
 
-        # 1B. Volatility Squeeze 30s Momentum Timeout (live parity: checked BEFORE
-        # runner/BE/SL so theta-decay fakeouts exit immediately)
-        sq_name = getattr(trade, "pa_setup_name", "") or ""
-        if (sq_name == "volatility_squeeze_breakout" or "squeeze" in sq_name.lower()) and hold_time >= 30.0 and pnl_pct < 1.5:
-            self._close_position(lp, pnl_pct, f"SQUEEZE_MOMENTUM_TIMEOUT (30s, gain={pnl_pct:.1f}%)", current_ts_sec)
+        # 1A. Premium Hard SL (-3.5% floor, V4 live parity 2026-09-21: overrides
+        # all lagging spot-level checks, evaluated every tick).
+        if pnl_pct <= -3.5:
+            self._close_position(lp, pnl_pct, f"PREMIUM_HARD_SL (-3.5% floor: {pnl_pct:.1f}%)", current_ts_sec)
             return
 
-        # 2. Dynamic Trailing Runner (Arm when peak gain >= 3.0x noise floor or peak >= +15%)
-        peak_gain_rs = (trade.peak_pnl_pct / 100.0) * entry_price
-        if (peak_gain_rs >= trade.arm_runner_gain) or (trade.peak_pnl_pct >= 15.0):
-            trade.runner_locked = True
+        # 1B. Point 4 Gate 2: 3-Minute Profit Harvest (+1.5% to +2.5%)
+        # If trade has spent >= 180s and profit is hovering in +1.5% to +2.5%, lock in gains
+        if hold_time >= 180.0 and hold_time < self.max_hold_sec and 1.5 <= pnl_pct <= 2.5:
+            self._close_position(lp, pnl_pct, f"TIME_HARVEST_LOCKED_GAIN (+{pnl_pct:.1f}%)", current_ts_sec)
+            return
 
-        if trade.runner_locked:
-            trail_dist = max(trade.min_trail_dist, 0.20 * peak_gain_rs)
-            runner_sl_pct = ((peak_gain_rs - trail_dist) / entry_price) * 100.0
-            if pnl_pct <= runner_sl_pct and pnl_pct > 0:
-                self._close_position(lp, pnl_pct, f"RUNNER_LOCK (+{pnl_pct:.1f}%)", current_ts_sec)
+        # ─── Stepped Risk Compression + Cost-Shield + Near-Target Engine (Parity with Live V4.1) ───
+        # 1. Near-Target Profit Lock (Peak >= +3.5%, exits on >= 0.5% drop from peak)
+        if trade.peak_pnl_pct >= 3.5:
+            if (trade.peak_pnl_pct - pnl_pct) >= 0.5:
+                self._close_position(lp, pnl_pct, f"NEAR_TARGET_LOCK (+{pnl_pct:.1f}%)", current_ts_sec)
                 return
 
-        # 3. Two-Key Breakeven Guard (Requires Gain >= 2.5x NoiseFloor AND (hold_time >= 60s OR spot favorable >= 3.5 bps))
+        # Two-Key Breakeven Guard Spot Confirmation Hook
         spot_extreme_met = False
         if trade.spot_entry > 0 and self.last_spot > 0:
             if trade.direction in ("UP", "CALL", "BUY_CALL"):
@@ -326,9 +328,15 @@ class SimulatedPositionManager:
         if peak_gain_rs >= trade.arm_be_gain and (hold_time >= 60.0 or spot_extreme_met):
             trade.breakeven_locked = True
 
-        if trade.breakeven_locked:
-            if pnl_pct <= trade.be_exit_pct:
-                self._close_position(lp, pnl_pct, f"BREAKEVEN_GUARD (+{pnl_pct:.1f}%)", current_ts_sec)
+        # 2. Dynamic SL & Cost-Shield Level Evaluation
+        if trade.peak_pnl_pct >= 3.0 or getattr(trade, "breakeven_locked", False):
+            trade.breakeven_locked = True
+            if pnl_pct <= 0.0:
+                self._close_position(lp, pnl_pct, f"COST_SHIELD_SCRATCH (0.0%)", current_ts_sec)
+                return
+        elif trade.peak_pnl_pct >= 2.0:
+            if pnl_pct <= -3.0:
+                self._close_position(lp, pnl_pct, f"STEPPED_SAFETY_SL (-3.0%)", current_ts_sec)
                 return
 
         # 4. Spot-Driven Invalidation Stop-Loss (Normalized 6.5 bps of spot entry)
@@ -411,7 +419,7 @@ class AegisParquetBacktester:
         start_capital: float = 2000.0,
         charges_per_trade: float = 16.50,
         target_pct: float = 6.5,
-        stop_loss_pct: float = 5.0,
+        stop_loss_pct: float = 12.0,  # V4 premium floor parity (live PREMIUM_HARD_SL_PCT)
         cooldown_sec: float = 120.0,
         max_trades_per_day: int = 8,
         use_statutory_charges: bool = True,

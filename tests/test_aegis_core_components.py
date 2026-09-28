@@ -286,6 +286,28 @@ class TestRegimeChopGate:
         assert not can_trade
         assert reason == "post_trade_cooldown"
 
+    def test_regime_chop_gate_pullback_memory(self):
+        # 3-minute trend followed by 40s pause (1m consolidation pullback)
+        gate = RegimeChopGate(ker_window_sec=60.0, mid_window_sec=180.0, range_compression_veto=0.0)
+        t = 100.0
+        price = 24150.0
+        # Phase 1: Trend runs up 20 points over 100s
+        for i in range(100):
+            t += 1.0
+            price += 0.20
+            gate.update(price, t)
+
+        # Phase 2: Micro-pause/consolidation for 30s (+/- 0.2 pt)
+        for i in range(30):
+            t += 1.0
+            price_noise = price + (0.2 if i % 2 == 0 else -0.2)
+            can_trade, reason, metrics = gate.update(price_noise, t)
+
+        # In the 60s window net_move is small, but 180s mid_move >= 5.0 pts
+        assert metrics["mid_move_pts"] >= 5.0
+        assert can_trade
+        assert reason == "regime_ok"
+
 
 class TestWatertightRetailDoctrine:
     """Tests the retail 5%-10% Dynamic TP, Breakeven Guard, and Runner Lock."""
@@ -338,8 +360,8 @@ class TestWatertightRetailDoctrine:
             RUNNER_FLOOR_PCT,
         )
         # Verify calibrated parameters are mathematically sound
-        assert TARGET_PROFIT_PCT >= 0.055
-        assert STOP_LOSS_PCT == 0.035
+        assert TARGET_PROFIT_PCT >= 0.040
+        assert STOP_LOSS_PCT == 0.050
         assert BREAKEVEN_TRIGGER_PCT == 0.030
         assert BREAKEVEN_LOCK_PCT == 0.005  # Covers ~0.35% roundtrip charges
         assert RUNNER_TRIGGER_PCT == 0.070

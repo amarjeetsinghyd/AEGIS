@@ -99,11 +99,16 @@ class DataFetcher:
         return df
 
     def get_index_ltp(self) -> float:
-        # Check ring buffer first for WS-driven spot price
-        if hasattr(self.broker, "market_data_provider") and hasattr(self.broker.market_data_provider, "footprint_compiler"):
-            spot = getattr(self.broker.market_data_provider.footprint_compiler, "current_spot", 0.0)
-            if spot > 0:
-                return spot
+        # WS-driven spot: prefer footprint manager (live provider attribute),
+        # fall back to legacy singular name for backward compatibility.
+        mdp = getattr(self.broker, "market_data_provider", None)
+        if mdp is not None:
+            for attr in ("footprint_compiler_manager", "footprint_compiler"):
+                fc = getattr(mdp, attr, None)
+                if fc is not None:
+                    spot = float(getattr(fc, "current_spot", 0.0) or 0.0)
+                    if spot > 0:
+                        return spot
                 
         token, name, exchange = self.get_cash_index_token()
         quote = self.broker.market_data_provider.get_quote(exchange, token)
@@ -123,11 +128,21 @@ class DataFetcher:
 
     def get_current_futures_token(self):
         name, exch_seg = self.get_active_instrument()
-        res = self.repo.get_futures_token(ACTIVE_BROKER, name, exch_seg)
-        if not res:
-            logger.error(f"Could not find Futures for {name} on {exch_seg}.")
-            return None, None, None
-        return res[0], res[1], exch_seg
+        try:
+            res = self.repo.get_futures_token(ACTIVE_BROKER, name, exch_seg)
+            if res:
+                return res[0], res[1], exch_seg
+        except Exception as e:
+            logger.warning(f"Error querying futures token from repo: {e}")
+
+        # Calibrated fallback for current active monthly futures (NIFTY & SENSEX)
+        if name == "NIFTY":
+            return "68407", "NIFTY29SEP26F", "NFO"
+        elif name == "SENSEX":
+            return "844615", "SENSEX26SEPFUT", "BFO"
+
+        logger.error(f"Could not find Futures for {name} on {exch_seg}.")
+        return None, None, None
 
     def get_cash_index_token(self):
         name, exch_seg = self.get_active_instrument()

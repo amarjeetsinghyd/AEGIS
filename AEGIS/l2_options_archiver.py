@@ -46,6 +46,9 @@ AUCTION_LOG_INTERVAL = 2.0
 # Underlying cash-index tokens (Nifty 26000, Sensex 1, Nifty Midcap 99919000)
 UNDERLYING_TOKENS = {"26000", "1", "99919000"}
 
+# Active Index Futures tokens (Nifty 68407, Sensex 844615)
+FUTURES_TOKENS = {"68407", "844615"}
+
 # ─── Schema Definition (Options-Enriched) ───
 # Adds `oi` (open interest) and `kind` (0=index, 1=CE, 2=PE, 3=FUT) vs the equity archiver.
 SCHEMA_DTYPES = {
@@ -100,10 +103,28 @@ class AegisL2Archiver:
         self.auction_buf: list[dict] = []
         self.last_flush = pytime.time()
         self.last_aflush = pytime.time()
-        self.partition_seq = 0
         self.current_date = datetime.now().strftime("%Y-%m-%d")
+        self.partition_seq = self._find_next_partition_seq()
         self._last_auction_ts = 0.0
+        self._last_known_oi: dict[str, float] = {}
         self._prune_old_files()
+
+    def _find_next_partition_seq(self) -> int:
+        """Finds max existing partition sequence for today to avoid overwriting files on restart."""
+        try:
+            target_dir = self._get_partition_dir(self.current_date)
+            max_seq = -1
+            if os.path.exists(target_dir):
+                for f in os.listdir(target_dir):
+                    if f.startswith(f"aegis_l2_raw_{self.current_date}_part_") and f.endswith(".parquet"):
+                        try:
+                            seq_part = f.replace(f"aegis_l2_raw_{self.current_date}_part_", "").replace(".parquet", "")
+                            max_seq = max(max_seq, int(seq_part))
+                        except Exception:
+                            pass
+            return max_seq + 1
+        except Exception:
+            return 0
 
     def update_token_maps(self, token_to_symbol: dict, token_map: dict | None = None):
         """Hot-refresh token metadata on ATM shift / expiry rollover.
@@ -114,7 +135,7 @@ class AegisL2Archiver:
         self.tok_to_sym = {str(k): str(v) for k, v in token_to_symbol.items()}
         if token_map:
             self.token_meta = {str(k): v for k, v in token_map.items()}
-        self.target_tokens = set(self.tok_to_sym.keys()) | UNDERLYING_TOKENS
+        self.target_tokens = set(self.tok_to_sym.keys()) | UNDERLYING_TOKENS | FUTURES_TOKENS
         logger.info(
             f"AegisL2Archiver: token maps refreshed — now tracking {len(self.target_tokens)} tokens"
         )
@@ -169,6 +190,9 @@ class AegisL2Archiver:
 
         try:
             df = pd.DataFrame(self.buffer)
+            # FIX 2026-09-02: dedup on (ts, tok) keep-last — WS reconnects push
+            # duplicate ticks (today 12% dups); store only the latest row per key.
+            df = df.drop_duplicates(subset=["ts", "tok"], keep="last").reset_index(drop=True)
             # Enforce Schema / Types
             for col, dtype in SCHEMA_DTYPES.items():
                 if col in df.columns:
@@ -223,7 +247,7 @@ class AegisL2Archiver:
             if not tok or tok not in self.target_tokens:
                 return
 
-            sym = self.tok_to_sym.get(tok) or ("NIFTY" if tok == "26000" else "SENSEX" if tok == "1" else "")
+            sym = self.tok_to_sym.get(tok) or ("NIFTY" if tok == "26000" else "SENSEX" if tok == "1" else "NIFTY29SEP26F" if tok == "68407" else "SENSEX26SEPFUT" if tok == "844615" else "")
             if not sym:
                 return
 
@@ -239,7 +263,7 @@ class AegisL2Archiver:
             # Resolve kind + strike from token metadata
             meta = self.token_meta.get(tok, {})
             is_underlying = tok in UNDERLYING_TOKENS
-            is_futures = (isinstance(meta, dict) and meta.get("is_futures", False)) or (sym and ("FUT" in sym.upper()))
+            is_futures = (tok in FUTURES_TOKENS) or (isinstance(meta, dict) and meta.get("is_futures", False)) or (sym and ("FUT" in sym.upper()))
 
             if is_underlying:
                 kind = 0
@@ -266,8 +290,16 @@ class AegisL2Archiver:
                         {"ts": ts_sec, "sym": sym, "lp": lp, "imb": (sb - sa) / max(sb + sa, 1.0)}
                     )
 
-            # Open interest (options only; Shoonya sends `oi` on depth ticks)
-            oi = np.float32(msg.get("oi") or 0)
+            # Open interest (options only; forward-fill last known non-zero OI)
+            raw_oi = msg.get("oi") or msg.get("poi") or msg.get("oiv")
+            if raw_oi is not None:
+                try:
+                    oi_f = float(raw_oi)
+                    if oi_f > 0:
+                        self._last_known_oi[tok] = oi_f
+                except (ValueError, TypeError):
+                    pass
+            oi = np.float32(self._last_known_oi.get(tok, 0.0))
 
             # Raw Row Construction (Unrolled for Speed)
             row = {

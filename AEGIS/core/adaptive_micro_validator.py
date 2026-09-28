@@ -34,8 +34,9 @@ class AdaptiveMicroValidator:
         pillar: int = 1,
         min_pass_score: Optional[float] = None,
         strict_bos: bool = False,
+        lookback_sec: float = 30.0,
     ) -> Tuple[bool, float, Dict[str, Any]]:
-        """Evaluates 30-second order flow energy bound to candle close anchor T.
+        """Evaluates order flow energy bound to candle close anchor T across lookback_sec (default 30s, supports 60s).
 
         Args:
             target_sym: Target option symbol (e.g. NIFTY15SEP26C23650)
@@ -48,6 +49,7 @@ class AdaptiveMicroValidator:
             strict_bos: BOS-breakout momentum gate — direction-aligned touch,
                         non-negative 10s acceleration and no deep-book wall.
                         Weak break = discard. Default False (legacy behaviour).
+            lookback_sec: Lookback duration in seconds (default 30.0s, supports 60.0s).
 
         Returns:
             (is_passed, total_score, metrics_dict)
@@ -64,14 +66,15 @@ class AdaptiveMicroValidator:
                 "n_ticks": 0,
             }
 
-        # ─── 1. Slice Strictly to the Final 30s Window [T-30, T] ───
+        # ─── 1. Slice to the Lookback Window [anchor_T - lookback_sec, anchor_T] ───
+        lookback = float(lookback_sec or 30.0)
         if anchor_T is not None and anchor_T > 0:
-            w_start = anchor_T - 30.0
+            w_start = anchor_T - lookback
             sl = [r for r in tick_buffer if w_start <= r[0] <= anchor_T]
         else:
             # Fallback for unanchored/unit test callers
             last_ts = tick_buffer[-1][0]
-            w_start = last_ts - 30.0
+            w_start = last_ts - lookback
             sl = [r for r in tick_buffer if r[0] >= w_start]
 
         if len(sl) < 2:
@@ -160,11 +163,14 @@ class AdaptiveMicroValidator:
                 mid_10 = (r_bp + r_sp) / 2.0 if (r_bp > 0 and r_sp > 0) else float(r[1])
                 break
         ret_10 = (mid_px - mid_10) / mid_10 if mid_10 > 0 else 0.0
-        momentum_accel_10s = float(ret_10 - (micro_ret / 3.0))
+        lookback_ratio = max(lookback / 10.0, 1.0)
+        momentum_accel_10s = float(ret_10 - (micro_ret / lookback_ratio))
 
         base_metrics = {
             "anchor_T": float(anchor_T or 0.0),
             "target_sym": target_sym,
+            "lookback_sec": float(lookback),
+            "micro_ret": float(micro_ret),
             "micro_ret_30s": float(micro_ret),
             "option_ret_30s": float(micro_ret),
             "kyle_lambda_30s": float(kyle_lambda_30s),

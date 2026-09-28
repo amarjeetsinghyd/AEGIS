@@ -16,8 +16,11 @@ from __future__ import annotations
 import json
 import os
 import time
+import logging
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, asdict, field
+
+logger = logging.getLogger("aegis_outcome_telemetry")
 
 
 @dataclass
@@ -54,6 +57,7 @@ class ForwardOutcomeRecord:
     time_to_tp_8pct_sec: float = 0.0
     mae_before_tp_5pct: float = 0.0
 
+    trade_status: str = "FIRED"  # "FIRED", "DROPPED_BY_ML", "SHADOW_VETO"
     is_complete: bool = False
 
 
@@ -77,8 +81,9 @@ class OutcomeTelemetryEngine:
         entry_spot_price: float,
         eqs_score: float,
         features_snapshot: Optional[Dict[str, Any]] = None,
+        trade_status: str = "FIRED",
     ) -> None:
-        """Starts forward tracking for a newly fired signal/entry."""
+        """Starts forward tracking for a newly fired signal/entry or dropped trade."""
         if entry_opt_price <= 0:
             return
 
@@ -91,6 +96,7 @@ class OutcomeTelemetryEngine:
             entry_spot_price=entry_spot_price,
             eqs_score=eqs_score,
             features_snapshot=features_snapshot or {},
+            trade_status=trade_status,
         )
         self.active_records[event_id] = record
 
@@ -133,7 +139,7 @@ class OutcomeTelemetryEngine:
                 if ret_pct < rec.mae_180s_pct:
                     rec.mae_180s_pct = ret_pct
 
-            if dt <= 300.0:
+            if dt <= 300.0 or not rec.is_complete:
                 if ret_pct > rec.mfe_300s_pct:
                     rec.mfe_300s_pct = ret_pct
                 if ret_pct < rec.mae_300s_pct:
@@ -170,3 +176,11 @@ class OutcomeTelemetryEngine:
                 f.write(json.dumps(asdict(record)) + "\n")
         except Exception:
             pass
+
+        if record.trade_status in ("DROPPED_BY_ML", "SHADOW_VETO"):
+            verdict = "MISSED_WINNER" if record.hit_tp_5pct else "TRAP_AVOIDED"
+            logger.info(
+                f"[DROPPED TRADE 5M AUDIT] {record.symbol} ({record.direction}) | "
+                f"MFE_5m: +{record.mfe_300s_pct:.1f}% | MAE_5m: {record.mae_300s_pct:.1f}% | "
+                f"Verdict: {verdict} ({record.trade_status})"
+            )

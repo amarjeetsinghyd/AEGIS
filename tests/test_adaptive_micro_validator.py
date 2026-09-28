@@ -207,3 +207,37 @@ def test_strict_bos_vetoes_deep_sell_wall():
     assert passed is False
     assert m["reason"] == "bos_deep_opposition"
 
+
+def test_prior_60s_candle_lookback_captures_early_burst():
+    """Validates that lookback_sec=60.0 captures an order-flow burst that occurred
+    in the first half of the 1-minute candle [T-60 to T-30] even if [T-30 to T] is quiet."""
+    validator = AdaptiveMicroValidator()
+    anchor_T = 1000.0
+
+    ticks = []
+    # 1. First 30s of the candle (T-60 to T-30): massive buyer aggression and price surge
+    for i in range(20):
+        t = anchor_T - 60.0 + i * (30.0 / 19)
+        p = 20.0 + 1.50 * (i / 19)  # 20.0 -> 21.50 (+7.5% surge)
+        ticks.append(_make_tick(t, p, p - 0.05, p + 0.05, b1=600, a1=100, b2=500, a2=100))
+
+    # 2. Final 30s of the candle (T-30 to T): quiet drift (price drifts 21.50 -> 21.35, mild ask dominance)
+    for i in range(20):
+        t = anchor_T - 30.0 + (i + 1) * (30.0 / 20)
+        p = 21.50 - 0.15 * (i / 19)  # mild dip (-0.7%)
+        ticks.append(_make_tick(t, p, p - 0.05, p + 0.05, b1=100, a1=300, b2=100, a2=300))
+
+    # Slicing strictly to 30s misses the early surge -> rejected
+    passed_30, score_30, m_30 = validator.evaluate(
+        "NIFTY26SEP24000CE", ticks, anchor_T=anchor_T, direction="CALL", lookback_sec=30.0
+    )
+    assert passed_30 is False
+
+    # Slicing to 60s captures the full candle surge -> passed!
+    passed_60, score_60, m_60 = validator.evaluate(
+        "NIFTY26SEP24000CE", ticks, anchor_T=anchor_T, direction="CALL", lookback_sec=60.0
+    )
+    assert passed_60 is True
+    assert score_60 >= 60.0
+    assert m_60["micro_ret"] > 0.05
+

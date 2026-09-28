@@ -43,6 +43,9 @@ try:
     from AEGIS.core.shadow_quant_tracker import ShadowQuantTracker
     from AEGIS.core.ml_gatekeeper import MLGatekeeper
     from AEGIS.core.quality_stack import QualitySlotPolicy, PostTriggerStabilityTracker
+    from AEGIS.core.composite_conviction_engine import CompositeConvictionEngine, ConvictionResult
+    from AEGIS.core.volume_profile_engine import VolumeProfileEngine
+    from AEGIS.core.wyckoff_volume_engine import WyckoffVolumeEngine
 except ImportError:
     try:
         from core.price_action_engine import PriceActionEngine
@@ -60,9 +63,18 @@ except ImportError:
         from core.shadow_quant_tracker import ShadowQuantTracker
         from core.ml_gatekeeper import MLGatekeeper
         from core.quality_stack import QualitySlotPolicy, PostTriggerStabilityTracker
+        from core.composite_conviction_engine import CompositeConvictionEngine, ConvictionResult
+        from core.volume_profile_engine import VolumeProfileEngine
+        from core.wyckoff_volume_engine import WyckoffVolumeEngine
+        from core.ai_shadow_reviewer import AIShadowReviewer
+        from core.hvg_engine import HVGEngine
+        from core.signature_inflection_engine import AEGISv4Pipeline, V4TickSnapshot
     except ImportError:
         PriceActionEngine = None
         MicrostructureScorer = None
+        CompositeConvictionEngine = None
+        VolumeProfileEngine = None
+        WyckoffVolumeEngine = None
         AdaptiveMicroValidator = None
         RegimeChopGate = None
         TimeBarEngine = None
@@ -77,6 +89,60 @@ except ImportError:
         MLGatekeeper = None
         QualitySlotPolicy = None
         PostTriggerStabilityTracker = None
+        AIShadowReviewer = None
+        HVGEngine = None
+        AEGISv4Pipeline = None
+        V4TickSnapshot = None
+
+# ─── Resilient optional imports (hardening 2026-09-21: each isolated so one
+# missing/stale module on a deploy target can never kill engine init; every
+# consumer already guards `is not None`) ───
+try:
+    from AEGIS.core.aegis_v4_core import (
+        FastTickRingBuffer,
+        Top5DepthGuard,
+        Confirm15StateMachine,
+        Direction as V4Direction,
+        SignalSource as V4SignalSource,
+        WatchSlotState,
+        AsymmetricExecutionEngine,
+        FastMonotonicStack,
+    )
+except ImportError:
+    try:
+        from core.aegis_v4_core import (
+            FastTickRingBuffer,
+            Top5DepthGuard,
+            Confirm15StateMachine,
+            Direction as V4Direction,
+            SignalSource as V4SignalSource,
+            WatchSlotState,
+            AsymmetricExecutionEngine,
+            FastMonotonicStack,
+        )
+    except ImportError:
+        FastTickRingBuffer = None
+        Top5DepthGuard = None
+        Confirm15StateMachine = None
+        V4Direction = None
+        V4SignalSource = None
+        WatchSlotState = None
+        AsymmetricExecutionEngine = None
+        FastMonotonicStack = None
+try:
+    from AEGIS.core.ai_shadow_reviewer import AIShadowReviewer
+except ImportError:
+    try:
+        from core.ai_shadow_reviewer import AIShadowReviewer
+    except ImportError:
+        AIShadowReviewer = None
+try:
+    from AEGIS.core.hvg_engine import HVGEngine
+except ImportError:
+    try:
+        from core.hvg_engine import HVGEngine
+    except ImportError:
+        HVGEngine = None
 
 logger = get_logger("aegis_gamma")
 
@@ -167,6 +233,7 @@ class AegisGammaEngine:
         self.spot_1m_drift_gate = float(self.P.get("spot_1m_drift_gate", 1.5))
         self.option_cache: Dict[str, float] = {}
         self.last_known_depth: Dict[str, Tuple[float, float]] = {}  # sym -> (tot_bid_depth, tot_ask_depth)
+        self._l2_depth_history: Dict[str, deque[Tuple[float, float, float, float]]] = {}  # sym -> deque[(ts, bid, ask, imb)]
 
         # V3 Horizon-Aligned Modules (Adaptive for NIFTY vs SENSEX)
         telemetry_dir = os.path.join(PARAM_DIR, "..", "logs", "telemetry") if "PARAM_DIR" in globals() else "AEGIS/logs/telemetry"
@@ -203,9 +270,20 @@ class AegisGammaEngine:
             zone2_strike_dist=1.00,
             zone1_unwind_speed_pct=-1.0,
             zone2_unwind_speed_pct=-0.5,
-            require_builtup_confirmation=True,
+            require_builtup_confirmation=False,
             enabled=True,
         ) if OIBuiltupGate is not None else None
+
+        # ─── OI Shield telemetry counters (visibility only — gates untouched) ───
+        # Tracks how often kinematics/delta/wall shields arm, skip (fail-open
+        # on thin history) or veto. Exposed via get_oi_telemetry() for the
+        # live state and the 15-minute wall snapshot log.
+        self._oi_kin_armed = 0
+        self._oi_kin_skipped = 0
+        self._oi_kin_vetoed = 0
+        self._oi_gate_vetoed = 0
+        self._di_vetoed = 0
+        self._last_wall_log_min = -1
 
         self.vwap_engine = IndexVWAPEngine(
             index_name="SENSEX" if self.strike_step >= 100.0 else "NIFTY",
@@ -217,11 +295,22 @@ class AegisGammaEngine:
         # Shadow Quant Telemetry Tracker (Tracks 5 novel quant edges in passive shadow mode)
         self.shadow_quant_tracker = ShadowQuantTracker() if ShadowQuantTracker is not None else None
 
-        # ML Gatekeeper Engine (LightGBM Secondary Validation)
+        # ML Gatekeeper Engine (100% Independent SHADOW Telemetry & Standalone Paper Trader)
         self.is_sensex = is_sensex
         self.index_name = "SENSEX" if is_sensex else "NIFTY"
-        self.ml_gatekeeper_mode = str(self.P.get("ml_gatekeeper_mode", os.getenv("AEGIS_ML_GATEKEEPER_MODE", "SHADOW"))).upper()
+        self.ml_gatekeeper_mode = "SHADOW"
         self.ml_gatekeeper = MLGatekeeper() if (MLGatekeeper is not None and self.ml_gatekeeper_mode != "DISABLED") else None
+        if self.ml_gatekeeper is not None:
+            self.ml_gatekeeper.strike_to_symbol = self.strike_to_symbol
+            self.ml_gatekeeper.option_cache = self.option_cache
+            self.ml_gatekeeper.get_spot = lambda: getattr(self, "last_spot", 0.0)
+            self.ml_gatekeeper.get_atm = lambda: getattr(self, "current_atm_strike", 0.0)
+        if self.price_action_engine is not None and self.ml_gatekeeper is not None:
+            self.price_action_engine.ml_gatekeeper = self.ml_gatekeeper
+        # ─── Option Quality Mode (SHADOW = log but don't block) ───
+        # Index options (NIFTY/SENSEX) always have institutional liquidity; premium floor
+        # and depth checks are over-specified for 0DTE affordable index option testing.
+        self.option_quality_mode = str(self.P.get("option_quality_mode", os.getenv("AEGIS_OPTION_QUALITY_MODE", "SHADOW"))).upper()
 
         # ─── Quality Stack (SHADOW-first safety gear) ───
         # 3-quality-slots/day policy + shadow AND-gate + post-trigger stability telemetry.
@@ -245,6 +334,45 @@ class AegisGammaEngine:
         # Cross-wired EM safety state (execution manager writes, engine reads)
         self._em_consec_losses = 0
         self._em_daily_pnl = 0.0
+
+        # ─── Composite Conviction Scoring Engine (0-100 Continuous Evaluator) ───
+        self.conviction_engine = CompositeConvictionEngine(
+            min_approval_score=float(self.P.get("conviction_min_approval_score", 80.0)),
+            high_conviction_score=float(self.P.get("conviction_high_score", 85.0)),
+            standard_tp_pct=float(self.P.get("standard_tp_pct", 0.040)),
+            high_conviction_tp_pct=float(self.P.get("high_conviction_tp_pct", 0.050)),
+        ) if CompositeConvictionEngine is not None else None
+
+        # ─── Volume Profile & Auction Market Engine (100% Passive Shadow Telemetry) ───
+        self.volume_profile_engine = VolumeProfileEngine(
+            index_name=getattr(self, "index_name", "NIFTY"),
+        ) if VolumeProfileEngine is not None else None
+
+        # ─── Wyckoff Volume & Delta Engine (Parallel Price & Volume Confirmation Gate) ───
+        self.wyckoff_mode = str(self.P.get("wyckoff_mode", os.getenv("AEGIS_WYCKOFF_MODE", "ACTIVE"))).upper()
+        self.wyckoff_volume_engine = WyckoffVolumeEngine(
+            mode=self.wyckoff_mode,
+        ) if WyckoffVolumeEngine is not None else None
+
+        # ─── AI Shadow Reviewer (Gemini 3.8 Flash Technical Analyst Co-Pilot) ───
+        self.ai_reviewer_mode = str(self.P.get("ai_reviewer_mode", os.getenv("AEGIS_AI_REVIEWER_MODE", "SHADOW"))).upper()
+        self.ai_shadow_reviewer = AIShadowReviewer(mode=self.ai_reviewer_mode) if (AIShadowReviewer is not None and self.ai_reviewer_mode != "DISABLED") else None
+
+        # ─── Topological HVG Dual-Envelope Engine (Pillar 4 Legacy / Shadow Evaluator) ───
+        self.hvg_mode = str(self.P.get("hvg_mode", os.getenv("AEGIS_HVG_MODE", "SHADOW"))).upper()
+        hvg_shadow = (self.hvg_mode != "ACTIVE")
+        self.hvg_engine = HVGEngine(log_dir=telemetry_dir, shadow_only=hvg_shadow) if HVGEngine is not None else None
+        if self.price_action_engine and self.hvg_engine:
+            self.price_action_engine.hvg_engine = self.hvg_engine
+
+        # ─── AEGIS V4.0 Futures RingBuffer & Top-5 Depth Guard (Pillar 4 / Micro Guard) ───
+        self.v4_futures_buffer = FastTickRingBuffer(size=256) if FastTickRingBuffer is not None else None
+        self.top5_depth_guard = Top5DepthGuard(history_len=30) if Top5DepthGuard is not None else None
+        self.v4_state_machines: Dict[str, Any] = {}
+        # V4 Confirm15 futures-confirmation gate (wired 2026-09-21):
+        # ACTIVE = pillar fires arm, futures flow must TRIGGER before entry;
+        # SHADOW = evaluate + telemetry only, never blocks; DISABLED = legacy path.
+        self.confirm15_mode = str(self.P.get("confirm15_mode", os.getenv("AEGIS_CONFIRM15_MODE", "SHADOW"))).upper()
 
         # Fill & Edge tracking
         self.fill_latency_buf = np.zeros(500, dtype=np.float32)
@@ -363,6 +491,8 @@ class AegisGammaEngine:
                 self.outcome_telemetry.update_tick(sym, lp, now_sec)
             if self.shadow_quant_tracker and sym:
                 self.shadow_quant_tracker.update_option(sym, lp, now_sec)
+            if self.ml_gatekeeper and getattr(self.ml_gatekeeper, "paper_trader", None) and sym:
+                self.ml_gatekeeper.paper_trader.on_option_tick(sym, lp, now_sec)
 
             info = self.token_map.get(tok_str)
             if not info:
@@ -381,8 +511,8 @@ class AegisGammaEngine:
             # OTM coherence or book mathematics. Vetoed ticks abort immediately
             # with return None and are never buffered, scored, or queued.
             _early_direction = "UP" if side == 0 else "DOWN"  # 0=CE/CALL, 1=PE/PUT
-            if self.vwap_engine is not None and self.vwap_engine.current_vwap > 0 and self.last_spot > 0:
-                _vwap_val = self.vwap_engine.current_vwap
+            _vwap_val = (getattr(self.price_action_engine, "current_vwap", 0.0) if self.price_action_engine else 0.0) or (self.vwap_engine.current_vwap if self.vwap_engine else 0.0)
+            if _vwap_val > 0 and self.last_spot > 0:
                 if _early_direction == "UP" and self.last_spot < _vwap_val:
                     return None
                 if _early_direction == "DOWN" and self.last_spot > _vwap_val:
@@ -404,7 +534,15 @@ class AegisGammaEngine:
             # Extract Level 1-5 Depth - Scalar O(1) Math (Invariant I1)
             if hasattr(tick, "bp") and hasattr(tick, "sp") and len(tick.bp) >= 5 and len(tick.sp) >= 5:
                 bp1 = float(tick.bp[0])
+                bp2 = float(tick.bp[1])
+                bp3 = float(tick.bp[2])
+                bp4 = float(tick.bp[3])
+                bp5 = float(tick.bp[4])
                 sp1 = float(tick.sp[0])
+                sp2 = float(tick.sp[1])
+                sp3 = float(tick.sp[2])
+                sp4 = float(tick.sp[3])
+                sp5 = float(tick.sp[4])
                 b1 = float(tick.bq[0])
                 a1 = float(tick.sq[0])
                 b2 = float(tick.bq[1])
@@ -417,7 +555,15 @@ class AegisGammaEngine:
                 a5 = float(tick.sq[4])
             else:
                 bp1 = float(getattr(tick, "bp1", 0.0) or 0.0)
+                bp2 = float(getattr(tick, "bp2", 0.0) or (bp1 - 0.05 if bp1 > 0 else 0.0))
+                bp3 = float(getattr(tick, "bp3", 0.0) or (bp1 - 0.10 if bp1 > 0 else 0.0))
+                bp4 = float(getattr(tick, "bp4", 0.0) or (bp1 - 0.15 if bp1 > 0 else 0.0))
+                bp5 = float(getattr(tick, "bp5", 0.0) or (bp1 - 0.20 if bp1 > 0 else 0.0))
                 sp1 = float(getattr(tick, "sp1", 0.0) or 0.0)
+                sp2 = float(getattr(tick, "sp2", 0.0) or (sp1 + 0.05 if sp1 > 0 else 0.0))
+                sp3 = float(getattr(tick, "sp3", 0.0) or (sp1 + 0.10 if sp1 > 0 else 0.0))
+                sp4 = float(getattr(tick, "sp4", 0.0) or (sp1 + 0.15 if sp1 > 0 else 0.0))
+                sp5 = float(getattr(tick, "sp5", 0.0) or (sp1 + 0.20 if sp1 > 0 else 0.0))
                 b1 = float(getattr(tick, "bq1", 0.0) or 0.0)
                 a1 = float(getattr(tick, "sq1", 0.0) or 0.0)
                 b2 = float(getattr(tick, "bq2", 0.0) or 0.0)
@@ -445,10 +591,36 @@ class AegisGammaEngine:
                 tot_bid_depth = curr_b_depth
                 tot_ask_depth = curr_a_depth
                 self.last_known_depth[sym] = (tot_bid_depth, tot_ask_depth)
+                # Rolling 2.0s depth history with stale tick pruning
+                if sym not in self._l2_depth_history:
+                    self._l2_depth_history[sym] = deque(maxlen=20)
+                tot_d = tot_bid_depth + tot_ask_depth
+                imb_d = (tot_bid_depth - tot_ask_depth) / float(tot_d) if tot_d > 0 else 0.0
+                self._l2_depth_history[sym].append((now_sec, tot_bid_depth, tot_ask_depth, imb_d))
+                # Prune stale ticks older than 2.0s
+                while self._l2_depth_history[sym] and (now_sec - self._l2_depth_history[sym][0][0]) > 2.0:
+                    self._l2_depth_history[sym].popleft()
             else:
                 tot_bid_depth, tot_ask_depth = self.last_known_depth.get(sym, (0.0, 0.0))
 
             vol_val = float(getattr(tick, "vol", 0.0) or getattr(tick, "v", 0.0) or getattr(tick, "volume", 0.0) or (tick.get("v", 0.0) if isinstance(tick, dict) else 0.0) or 0.0)
+
+            # ─── 1-Minute Option Flow Accumulator (ATM ± 7 Window) ───
+            if self.price_action_engine is not None and strike > 0 and side in (0, 1):
+                self.price_action_engine.update_option_tick(
+                    sym=sym,
+                    strike=strike,
+                    side=side,
+                    lp=lp,
+                    bp1=bp1,
+                    sp1=sp1,
+                    vol=vol_val,
+                    atm_strike=self.current_atm_strike,
+                )
+
+            # ─── Volume Profile Strike Accumulator ───
+            if self.volume_profile_engine is not None and strike > 0 and vol_val > 0:
+                self.volume_profile_engine.record_option_tick(strike=strike, side=side, vol=vol_val)
 
             if self.scorer is not None:
                 self.scorer.update_tick(sym, now_sec, lp, bp1, sp1, b1, a1, b2, a2, b3, a3, b4, a4, b5, a5, vol=vol_val)
@@ -481,26 +653,65 @@ class AegisGammaEngine:
                 # Kept attribute stays empty for backward compat.
                 self._purge_impulse_memory(sym)
 
-                # ─── THE 3 ACTIVE PRICE ACTION & MICROSTRUCTURE SCALPER ENGINES ───
-                # Pillar 1: 20 EMA + Wick Rejection (User's System - Top Performer)
-                # Pillar 2: Al Brooks 2-Legged Pullback (H2 / L2 Exhaustion at 50 EMA)
+                # ─── THE 4 ACTIVE PRICE ACTION & MICROSTRUCTURE SCALPER ENGINES ───
+                # Pillar 1: 20 EMA + Wick Rejection (Top Performer)
+                # Pillar 2: Liquidity Sweep & Reclaim (Turtle Soup / 5-Bar Liquidity Grab)
                 # Pillar 3: Volatility Squeeze to Expansion Breakout (100% WR Scalper)
+                # Pillar 4: 0-D Prominence Hub Structural Breakout (V4 Final / HVG Shadow)
                 is_pa_setup = False
                 pa_setup_name = ""
                 pa_details = {}
                 if self.price_action_engine:
-                    current_vwap = getattr(self.vwap_engine, "current_vwap", 0.0) if self.vwap_engine else 0.0
-                    is_pa_setup, pa_setup_name, pa_details = self.price_action_engine.evaluate_setup(direction, current_vwap)
+                    current_vwap = getattr(self.price_action_engine, "current_vwap", 0.0) or (getattr(self.vwap_engine, "current_vwap", 0.0) if self.vwap_engine else 0.0)
+                    if sym in self._l2_depth_history:
+                        self.price_action_engine._l2_depth_history = list(self._l2_depth_history[sym])
+                    is_pa_setup, pa_setup_name, pa_details = self.price_action_engine.evaluate_setup(direction, current_vwap, current_time=now_sec)
 
-                # Legacy alias for backward compatibility with telemetry/logs
-                is_50ema_pullback = (pa_setup_name == "albrooks_2legged_pullback")
+                # Legacy alias (V4.0 retired albrooks from the ladder: always False).
+                is_50ema_pullback = False
 
                 # PA-only mode: hidden microstructure route removed.
-                # System fires ONLY on 3 pillars; microstructure stays as validator.
+                # System fires ONLY on the 4 pillars; microstructure stays as validator.
                 # V3.0 DROP policy: no pillar => instant discard, purge impulse.
                 if not is_pa_setup:
                     self._purge_impulse_memory(sym)
                     return None
+
+                # ─── Wyckoff Volume & Order Flow Delta Gate (Parallel Price & Volume Confirmation) ───
+                wyckoff_passed = True
+                wyckoff_reason = "wyckoff_passed"
+                wyckoff_m = {}
+                if self.wyckoff_volume_engine is not None and is_pa_setup:
+                    recent_bars = list(self.price_action_engine.bars_1m) if self.price_action_engine else []
+                    atr_val = getattr(self.price_action_engine, "current_atr_1m", 10.0) if self.price_action_engine else 10.0
+                    pillar_num = int(pa_details.get("pillar", 1))
+
+                    wyckoff_passed, wyckoff_reason, wyckoff_m = self.wyckoff_volume_engine.evaluate(
+                        pillar=pillar_num,
+                        direction=direction,
+                        bars=recent_bars,
+                        atr=atr_val,
+                        pa_details=pa_details,
+                    )
+
+                    if not wyckoff_passed:
+                        self._purge_impulse_memory(sym)
+                        self._throttled_veto_log(
+                            "wyckoff_veto",
+                            f"[WYCKOFF VETO] {sym} ({direction}) {pa_setup_name} P{pillar_num} blocked: {wyckoff_reason} | {wyckoff_m}"
+                        )
+                        return None
+                    else:
+                        logger.info(
+                            f"[WYCKOFF CONFIRMED] {sym} ({direction}) {pa_setup_name} P{pillar_num} | "
+                            f"{wyckoff_reason} | VDR={wyckoff_m.get('vdr', 0.0):.2f}, "
+                            f"Absorption={wyckoff_m.get('absorption_score', 0.0):.1f}x, "
+                            f"OFI={wyckoff_m.get('opt_delta_flow', 0.0):+.0f}"
+                        )
+                        pa_details["wyckoff_metrics"] = wyckoff_m
+                        pa_details["wyckoff_reason"] = wyckoff_reason
+
+
 
                 # Adaptive Conviction Threshold based on Spot Drift confirmation or Price Action trigger
                 drift_60_bps = self.get_spot_drift_bps(now_sec, 60.0) if len(self.spot_history) >= 2 else 0.0
@@ -606,6 +817,19 @@ class AegisGammaEngine:
                         # [VWAP OVER-EXTENSION GATE DECOMMISSIONED]
                         # Retained pure directional alignment (Spot vs VWAP) without artificial distance cap.
 
+                        # Domain 0.5: Key Structural Level Proximity Veto (PDH Resistance / PDL Support)
+                        pa_eng = getattr(self, "price_action_engine", None)
+                        if pa_eng and hasattr(pa_eng, "check_key_level_proximity"):
+                            key_ok, key_reason, key_m = pa_eng.check_key_level_proximity(direction, self.last_spot)
+                            if not key_ok:
+                                self._purge_impulse_memory(sym)
+                                self._throttled_veto_log(
+                                    "key_level_veto",
+                                    f"[KEY LEVEL VETO] {sym} ({direction}) blocked: {key_reason} "
+                                    f"(dist={key_m.get('dist_pts')}pts <= {key_m.get('threshold_pts')}pts threshold | Spot: {self.last_spot:.1f})"
+                                )
+                                return None
+
                         # Domain 1: Permission (Higher Timeframe Trend & Structure)
                         has_permission = True
                         perm_reason = "permission_ok"
@@ -654,20 +878,14 @@ class AegisGammaEngine:
                                 top5_ask_qty=tot_ask_depth,
                             )
                             if not opt_qualified:
-                                self._throttled_veto_log("option_quality_veto", f"[OPTION QUALITY VETO] {sym} blocked: {opt_reason}")
-                                return
+                                if self.option_quality_mode == "ACTIVE":
+                                    self._throttled_veto_log("option_quality_veto", f"[OPTION QUALITY VETO] {sym} blocked: {opt_reason}")
+                                    return
+                                elif self.option_quality_mode == "SHADOW":
+                                    self._throttled_veto_log("option_quality_shadow", f"[OPTION QUALITY SHADOW] {sym} would block: {opt_reason}")
 
-                        # Domain 7: Real-Time Open Interest (OI) Built-up & Wall Defense Gate
-                        if self.oi_gate:
-                            oi_allowed, oi_reason, oi_metrics = self.oi_gate.evaluate_gate(
-                                sym=sym,
-                                spot_price=self.last_spot,
-                                direction=direction,
-                                now_sec=now_sec,
-                            )
-                            if not oi_allowed:
-                                self._throttled_veto_log("oi_gate_veto", f"[OI GATE VETO] {sym} ({direction}) blocked: {oi_reason}")
-                                return
+                        # Domain 7: Real-Time Open Interest (OI) Built-up & Wall Defense Gate permanently decommissioned from entry path.
+                        # (OI tracking maintained passively for live state telemetry / dashboard walls only; it never blocks scalper entries).
 
                         # Centralized Signal FSM Lifecycle Evaluation
                         fsm_state = None
@@ -684,23 +902,31 @@ class AegisGammaEngine:
                             # Pullback Archetypes (Pillar 1 & 2): Macro Structure (Spot vs VWAP & 20>50 EMA)
                             # establishes trend alignment. Pullbacks retrace counter-trend by definition,
                             # so spot-drift persistence is bypassed.
-                            # Breakout Archetypes (Pillar 3 Volatility Squeeze): Retain 60s directional confirmation.
-                            if pillar == 3 and self.persistence_engine:
-                                pers60_ok, pers60_score, pers60_m = self.persistence_engine.evaluate_persistence(
-                                    direction,
-                                    lookback_sec=60.0,
-                                    min_threshold=0.70,
-                                    max_allowed_opposite=2,
-                                    anchor_ts_sec=anchor_arg,
-                                )
-                                if not pers60_ok and pers60_m.get("reason") not in ("warmup_zero_obs_permissive", "warmup_aligned_permissive"):
-                                    self._purge_impulse_memory(sym)
-                                    self._throttled_veto_log("v3_drop_60s", f"[V3 DROP 60s] {sym} ({direction}) {pa_setup_name} failed persistence at T={anchor_T:.0f}: {pers60_m.get('reason')} (Dp60={pers60_score:.2f})")
-                                    return None
-                                pers_score = float(pers60_score)
-                                pers_confirmed = bool(pers60_ok)
+                            # Breakout Archetypes (Pillar 3 & 4): 15s Futures Path Efficiency (V4 Final) or 60s fallback.
+                            if pillar in (3, 4):
+                                if self.v4_futures_buffer is not None and self.v4_futures_buffer.count >= 5:
+                                    drift_15, er_15, _ = self.v4_futures_buffer.get_window_metrics(15.0)
+                                    pers_score = float(np.clip(er_15, 0.0, 1.0))
+                                    pers_confirmed = bool(er_15 >= 0.50)
+                                elif self.persistence_engine:
+                                    pers60_ok, pers60_score, pers60_m = self.persistence_engine.evaluate_persistence(
+                                        direction,
+                                        lookback_sec=60.0,
+                                        min_threshold=0.70,
+                                        max_allowed_opposite=2,
+                                        anchor_ts_sec=anchor_arg,
+                                    )
+                                    if not pers60_ok and pers60_m.get("reason") not in ("warmup_zero_obs_permissive", "warmup_aligned_permissive"):
+                                        self._purge_impulse_memory(sym)
+                                        self._throttled_veto_log("v3_drop_60s", f"[V3 DROP 60s] {sym} ({direction}) {pa_setup_name} failed persistence at T={anchor_T:.0f}: {pers60_m.get('reason')} (Dp60={pers60_score:.2f})")
+                                        return None
+                                    pers_score = float(pers60_score)
+                                    pers_confirmed = bool(pers60_ok)
+                                else:
+                                    pers_score = 1.0
+                                    pers_confirmed = True
                             else:
-                                pers_score = 1.0
+                                pers_score = float(pa_details.get("dp_micro", 1.0))
                                 pers_confirmed = True
 
                             # 2. ADAPTIVE ORDER FLOW ENERGY VALIDATOR (OFEE)
@@ -711,17 +937,87 @@ class AegisGammaEngine:
                             # Weak break = no momentum = instant discard.
                             energy_score = 100.0
                             micro_m = {}
+                            time_since_close = (now_sec - anchor_T) if (anchor_T and anchor_T > 0) else 0.0
                             if use_anchor and self.adaptive_micro_validator and self.scorer:
                                 buf = self.scorer.history.get(sym, [])
                                 is_bos_break = pa_details.get("rejection_type") in ("bos_breakout_confirmation", "bos_breakdown_confirmation")
-                                micro_ok, energy_score, micro_m = self.adaptive_micro_validator.evaluate(
-                                    target_sym=sym,
-                                    tick_buffer=buf,
-                                    anchor_T=anchor_T,
-                                    direction=direction,
-                                    pillar=pillar,
-                                    strict_bos=is_bos_break,
-                                )
+                                micro_ok = False
+
+                                # 1) Pre-close check across previous 60 seconds [T-60, T]:
+                                # Check trailing 30s [T-30, T], full candle 60s [T-60, T], and first half [T-60, T-30]
+                                if use_anchor and anchor_T is not None and anchor_T > 0:
+                                    micro_ok, energy_score, micro_m = self.adaptive_micro_validator.evaluate(
+                                        target_sym=sym,
+                                        tick_buffer=buf,
+                                        anchor_T=anchor_T,
+                                        direction=direction,
+                                        pillar=pillar,
+                                        strict_bos=is_bos_break,
+                                        lookback_sec=30.0,
+                                    )
+                                    if not micro_ok:
+                                        # Check full 60s candle lookback [T-60, T] (earlier surge during candle formation)
+                                        micro_60_ok, energy_60, micro_60_m = self.adaptive_micro_validator.evaluate(
+                                            target_sym=sym,
+                                            tick_buffer=buf,
+                                            anchor_T=anchor_T,
+                                            direction=direction,
+                                            pillar=pillar,
+                                            strict_bos=is_bos_break,
+                                            lookback_sec=60.0,
+                                        )
+                                        if micro_60_ok:
+                                            micro_ok = True
+                                            energy_score = energy_60
+                                            micro_m = micro_60_m
+                                    if not micro_ok:
+                                        # Also check first half of candle [T-60, T-30]
+                                        micro_h1_ok, energy_h1, micro_h1_m = self.adaptive_micro_validator.evaluate(
+                                            target_sym=sym,
+                                            tick_buffer=buf,
+                                            anchor_T=anchor_T - 30.0,
+                                            direction=direction,
+                                            pillar=pillar,
+                                            strict_bos=is_bos_break,
+                                            lookback_sec=30.0,
+                                        )
+                                        if micro_h1_ok:
+                                            micro_ok = True
+                                            energy_score = energy_h1
+                                            micro_m = micro_h1_m
+
+                                # 2) Live trailing window [now_sec-30, now_sec] / [now_sec-60, now_sec] within 60s of candle close:
+                                # if flow hadn't arrived in the past 60s, wait up to 60s for post-breakout flow confirmation
+                                if not micro_ok and (0.0 <= time_since_close <= 60.0 or not use_anchor):
+                                    live_ok, live_energy, live_micro_m = self.adaptive_micro_validator.evaluate(
+                                        target_sym=sym,
+                                        tick_buffer=buf,
+                                        anchor_T=now_sec,
+                                        direction=direction,
+                                        pillar=pillar,
+                                        strict_bos=is_bos_break,
+                                        lookback_sec=30.0,
+                                    )
+                                    if not live_ok:
+                                        live_60_ok, live_60_energy, live_60_micro_m = self.adaptive_micro_validator.evaluate(
+                                            target_sym=sym,
+                                            tick_buffer=buf,
+                                            anchor_T=now_sec,
+                                            direction=direction,
+                                            pillar=pillar,
+                                            strict_bos=is_bos_break,
+                                            lookback_sec=60.0,
+                                        )
+                                        if live_60_ok:
+                                            live_ok = True
+                                            live_energy = live_60_energy
+                                            live_micro_m = live_60_micro_m
+
+                                    if live_ok:
+                                        micro_ok = True
+                                        energy_score = live_energy
+                                        micro_m = live_micro_m
+
                                 if not micro_ok:
                                     self._purge_impulse_memory(sym)
                                     self._throttled_veto_log(
@@ -784,8 +1080,8 @@ class AegisGammaEngine:
                             eqs_breakdown = {}
                             if is_pa_setup:
                                 # Per-pillar EQS: P1 top performer, P2 trap needs confirmation,
-                                # P3 blast is fast but thin — all above dispatch 70.
-                                _pillar_eqs = {1: 85.0, 2: 83.0, 3: 82.0}.get(pillar, 85.0)
+                                # P3 blast is fast but thin, P4 clean structural breakout — all above dispatch 70.
+                                _pillar_eqs = {1: 85.0, 2: 83.0, 3: 82.0, 4: 85.0}.get(pillar, 85.0)
                                 eqs = _pillar_eqs
                                 is_eqs_qual = True
                                 eqs_breakdown = {
@@ -804,6 +1100,167 @@ class AegisGammaEngine:
                                 spread_val = opt_metrics.get("spread_pct", 0.0) if isinstance(opt_metrics, dict) else 0.0
                                 tot_depth_val = tot_bid_depth + tot_ask_depth
                                 fut_basis_m = self.get_futures_basis_metrics(now_sec, 60.0)
+                                vwap_val = (getattr(self.price_action_engine, "current_vwap", 0.0) if self.price_action_engine else 0.0) or (getattr(self.vwap_engine, "current_vwap", 0.0) if self.vwap_engine else 0.0)
+                                if vwap_val <= 0:
+                                    vwap_val = self.last_spot
+
+                                # ─── COMPOSITE CONVICTION SCORING ENGINE (0-100 CONTINUOUS EVALUATOR) ───
+                                conviction_res = None
+                                sizing_tier = "STANDARD_SIZE"
+                                conviction_score_val = float(eqs)
+                                conviction_breakdown = {}
+                                conviction_sub_scores = {}
+                                if self.conviction_engine and self.price_action_engine:
+                                    current_bar = self.price_action_engine._curr_1m_bar or (self.price_action_engine.bars_1m[-1] if self.price_action_engine.bars_1m else None)
+                                    conviction_res = self.conviction_engine.compute_conviction_score(
+                                        direction=direction,
+                                        setup_name=pa_setup_name,
+                                        spot_price=self.last_spot,
+                                        prior_bars=list(self.price_action_engine.bars_1m),
+                                        current_bar=current_bar,
+                                        atr=atr_1m_val,
+                                        ema_20=getattr(self.price_action_engine, "ema_20_1m", 0.0),
+                                        ema_50=getattr(self.price_action_engine, "ema_50_1m", 0.0),
+                                        vwap=vwap_val,
+                                        pdh=getattr(self.price_action_engine, "pdh", 0.0),
+                                        pdl=getattr(self.price_action_engine, "pdl", 0.0),
+                                        vol_sma10=self.price_action_engine.get_volume_sma(10),
+                                        persistence_dp=pers_score,
+                                        touch_i1=float(micro_m.get("touch_i1", 0.0)),
+                                        delta_fut_60s_bps=float(fut_basis_m.get("delta_fut_60s_bps", 0.0)),
+                                        delta_basis_60s_bps=float(fut_basis_m.get("basis_change_60s_bps", 0.0)),
+                                        option_delta=None,
+                                        option_strike=float(strike),
+                                        spread_pct=float(spread_val or (micro_m.get("spread_pct", 0.5))),
+                                    )
+
+                                    if not conviction_res.is_approved:
+                                        # 1) Pre-Close 60s Lookback [T-60, T]:
+                                        # Check if flow during the entire prior 60s candle formation approves conviction
+                                        if use_anchor and anchor_T is not None and anchor_T > 0 and self.adaptive_micro_validator and self.scorer:
+                                            buf = self.scorer.history.get(sym, [])
+                                            past_60_ok, past_60_energy, past_60_m = self.adaptive_micro_validator.evaluate(
+                                                target_sym=sym,
+                                                tick_buffer=buf,
+                                                anchor_T=anchor_T,
+                                                direction=direction,
+                                                pillar=pillar,
+                                                strict_bos=is_bos_break,
+                                                lookback_sec=60.0,
+                                            )
+                                            if past_60_ok:
+                                                past_conv_res = self.conviction_engine.compute_conviction_score(
+                                                    direction=direction,
+                                                    setup_name=pa_setup_name,
+                                                    spot_price=self.last_spot,
+                                                    prior_bars=list(self.price_action_engine.bars_1m),
+                                                    current_bar=current_bar,
+                                                    atr=atr_1m_val,
+                                                    ema_20=getattr(self.price_action_engine, "ema_20_1m", 0.0),
+                                                    ema_50=getattr(self.price_action_engine, "ema_50_1m", 0.0),
+                                                    vwap=vwap_val,
+                                                    pdh=getattr(self.price_action_engine, "pdh", 0.0),
+                                                    pdl=getattr(self.price_action_engine, "pdl", 0.0),
+                                                    vol_sma10=self.price_action_engine.get_volume_sma(10),
+                                                    persistence_dp=pers_score,
+                                                    touch_i1=float(past_60_m.get("touch_i1", 0.0)),
+                                                    delta_fut_60s_bps=float(fut_basis_m.get("delta_fut_60s_bps", 0.0)),
+                                                    delta_basis_60s_bps=float(fut_basis_m.get("basis_change_60s_bps", 0.0)),
+                                                    option_delta=None,
+                                                    option_strike=float(strike),
+                                                    spread_pct=float(spread_val or (past_60_m.get("spread_pct", 0.5))),
+                                                )
+                                                if past_conv_res.is_approved:
+                                                    conviction_res = past_conv_res
+                                                    micro_m = past_60_m
+                                                    energy_score = past_60_energy
+                                                    logger.info(
+                                                        f"[AEGIS V3 PRE-CLOSE 60S FIRED] {sym} ({direction}) {pa_setup_name} "
+                                                        f"order flow confirmed from prior 60s candle | "
+                                                        f"Conviction: {conviction_res.total_score:.1f}/100"
+                                                    )
+
+                                    if not conviction_res.is_approved:
+                                        # 2) 60s Asynchronous Order Flow Confirmation Window (Future):
+                                        # If pre-close conviction failed, evaluate live trailing flow [now_sec-30, now_sec] / [now_sec-60, now_sec]
+                                        # within 60s of candle close to confirm post-breakout surge
+                                        if 0.0 < time_since_close <= 60.0 and self.adaptive_micro_validator and self.scorer:
+                                            buf = self.scorer.history.get(sym, [])
+                                            live_ok, live_energy, live_micro_m = self.adaptive_micro_validator.evaluate(
+                                                target_sym=sym,
+                                                tick_buffer=buf,
+                                                anchor_T=now_sec,
+                                                direction=direction,
+                                                pillar=pillar,
+                                                strict_bos=is_bos_break,
+                                                lookback_sec=30.0,
+                                            )
+                                            if not live_ok:
+                                                live_60_ok, live_60_energy, live_60_micro_m = self.adaptive_micro_validator.evaluate(
+                                                    target_sym=sym,
+                                                    tick_buffer=buf,
+                                                    anchor_T=now_sec,
+                                                    direction=direction,
+                                                    pillar=pillar,
+                                                    strict_bos=is_bos_break,
+                                                    lookback_sec=60.0,
+                                                )
+                                                if live_60_ok:
+                                                    live_ok = True
+                                                    live_energy = live_60_energy
+                                                    live_micro_m = live_60_micro_m
+
+                                            if live_ok:
+                                                live_conv_res = self.conviction_engine.compute_conviction_score(
+                                                    direction=direction,
+                                                    setup_name=pa_setup_name,
+                                                    spot_price=self.last_spot,
+                                                    prior_bars=list(self.price_action_engine.bars_1m),
+                                                    current_bar=current_bar,
+                                                    atr=atr_1m_val,
+                                                    ema_20=getattr(self.price_action_engine, "ema_20_1m", 0.0),
+                                                    ema_50=getattr(self.price_action_engine, "ema_50_1m", 0.0),
+                                                    vwap=vwap_val,
+                                                    pdh=getattr(self.price_action_engine, "pdh", 0.0),
+                                                    pdl=getattr(self.price_action_engine, "pdl", 0.0),
+                                                    vol_sma10=self.price_action_engine.get_volume_sma(10),
+                                                    persistence_dp=pers_score,
+                                                    touch_i1=float(live_micro_m.get("touch_i1", 0.0)),
+                                                    delta_fut_60s_bps=float(fut_basis_m.get("delta_fut_60s_bps", 0.0)),
+                                                    delta_basis_60s_bps=float(fut_basis_m.get("basis_change_60s_bps", 0.0)),
+                                                    option_delta=None,
+                                                    option_strike=float(strike),
+                                                    spread_pct=float(spread_val or (live_micro_m.get("spread_pct", 0.5))),
+                                                )
+                                                if live_conv_res.is_approved:
+                                                    conviction_res = live_conv_res
+                                                    micro_m = live_micro_m
+                                                    energy_score = live_energy
+                                                    logger.info(
+                                                        f"[AEGIS V3 60S ARMED FIRED] {sym} ({direction}) {pa_setup_name} "
+                                                        f"order flow confirmed at T+{time_since_close:.1f}s | "
+                                                        f"Conviction: {conviction_res.total_score:.1f}/100"
+                                                    )
+
+                                    if not conviction_res.is_approved:
+                                        self._purge_impulse_memory(sym)
+                                        self._throttled_veto_log(
+                                            "conviction_veto",
+                                            f"[CONVICTION VETO] {sym} ({direction}) {pa_setup_name} blocked: "
+                                            f"Score {conviction_res.total_score:.1f}/100 < {self.conviction_engine.min_approval_score:.1f} ({conviction_res.reason}) | "
+                                            f"Struct: {conviction_res.sub_scores.get('structure', 0)} | "
+                                            f"Impulse: {conviction_res.sub_scores.get('impulse', 0)} | "
+                                            f"Flow: {conviction_res.sub_scores.get('flow', 0)} | "
+                                            f"Contract: {conviction_res.sub_scores.get('contract', 0)}"
+                                        )
+                                        return None
+
+                                    # Sizing tier and dynamic TP scaling
+                                    recommended_tp_pct = conviction_res.recommended_tp_pct
+                                    sizing_tier = conviction_res.sizing_tier
+                                    conviction_score_val = conviction_res.total_score
+                                    conviction_breakdown = conviction_res.breakdown
+                                    conviction_sub_scores = conviction_res.sub_scores
 
                                 # ─── ML Gatekeeper Evaluation (LightGBM Secondary Validation) ───
                                 idx_id = 1 if ("SENSEX" in str(getattr(self, "index_name", "")).upper() or self.strike_step >= 100.0) else 0
@@ -891,18 +1348,70 @@ class AegisGammaEngine:
                                 ml_reason = "ML_GATEKEEPER_DISABLED"
 
                                 if self.ml_gatekeeper and self.ml_gatekeeper_mode != "DISABLED":
+                                    # 1. Instantaneous Microstructure Check
                                     ml_passed, ml_score, ml_reason = self.ml_gatekeeper.evaluate(
                                         ml_feats, index_name=getattr(self, "index_name", "NIFTY")
                                     )
-                                    if self.ml_gatekeeper_mode == "ACTIVE" and not ml_passed:
+                                    # 2. Rolling 5-Minute Confluence Memory Check
+                                    # Adaptive ML Confluence Hurdle:
+                                    # When Conviction Score is high (>= 80.0), the setup has verified structural
+                                    # and price action confluence. We adaptively relax the ML option order flow
+                                    # hurdle from the rigid day-median (~30%) down to 15% (0.15) [or 10% if score >= 81],
+                                    # preventing high-conviction winning moves (e.g. 10:43 PE +4.5%, 12:01 PE +8.2%)
+                                    # from being vetoed by lagging option flow.
+                                    adaptive_ml_thresh = None
+                                    if conviction_score_val >= 81.0:
+                                        adaptive_ml_thresh = 0.10
+                                    elif conviction_score_val >= 80.0:
+                                        adaptive_ml_thresh = 0.15
+
+                                    conf_passed, conf_max_score, conf_details = self.ml_gatekeeper.check_rolling_confluence(
+                                        threshold=adaptive_ml_thresh,
+                                        current_ts=now_sec
+                                    )
+                                    effective_ml_passed = ml_passed or conf_passed
+                                    effective_score = max(ml_score, conf_max_score)
+                                    if conf_passed:
+                                        ml_reason = f"{ml_reason} | {conf_details.get('reason', '')}"
+
+                                    if self.ml_gatekeeper_mode == "ACTIVE" and not effective_ml_passed:
                                         self._purge_impulse_memory(sym)
-                                        self._throttled_veto_log("ml_gatekeeper_veto", f"[ML GATEKEEPER VETO] {sym} ({direction}) {pa_setup_name} P{pillar} blocked: {ml_reason}")
+                                        self._throttled_veto_log("ml_gatekeeper_veto", f"[ML CONFLUENCE VETO] {sym} ({direction}) {pa_setup_name} P{pillar} blocked: {conf_details.get('reason', ml_reason)}")
+                                        # Register dropped trade for 5-minute counterfactual audit
+                                        if self.outcome_telemetry:
+                                            self.outcome_telemetry.register_entry(
+                                                event_id=f"VETO_{sym}_{int(now_sec*1000)}",
+                                                symbol=sym,
+                                                direction=direction,
+                                                entry_ts=now_sec,
+                                                entry_opt_price=lp,
+                                                entry_spot_price=self.last_spot,
+                                                eqs_score=conviction_score_val,
+                                                features_snapshot=ml_feats,
+                                                trade_status="DROPPED_BY_ML"
+                                            )
                                         return None
                                     elif self.ml_gatekeeper_mode == "SHADOW":
                                         logger.info(
-                                            f"[ML GATEKEEPER SHADOW] {sym} ({direction}) {pa_setup_name} P{pillar} | "
-                                            f"Score: {ml_score:.4f} | Passed: {ml_passed} | Reason: {ml_reason}"
+                                            f"[ML CONFLUENCE SHADOW] {sym} ({direction}) {pa_setup_name} P{pillar} | "
+                                            f"Score: {effective_score:.4f} | Peak5m: {conf_max_score:.4f} | "
+                                            f"Passed: {effective_ml_passed} | Reason: {conf_details.get('reason', ml_reason)}"
                                         )
+                                        # Track dropped candidates in shadow mode for counterfactual evaluation
+                                        if not effective_ml_passed and self.outcome_telemetry:
+                                            self.outcome_telemetry.register_entry(
+                                                event_id=f"SHADOW_VETO_{sym}_{int(now_sec*1000)}",
+                                                symbol=sym,
+                                                direction=direction,
+                                                entry_ts=now_sec,
+                                                entry_opt_price=lp,
+                                                entry_spot_price=self.last_spot,
+                                                eqs_score=conviction_score_val,
+                                                features_snapshot=ml_feats,
+                                                trade_status="SHADOW_VETO"
+                                            )
+                                    ml_score = effective_score
+                                    ml_passed = effective_ml_passed
 
                                 # Extract Passive Shadow Quant Telemetry (Zero-Veto, 100% Observation)
                                 shadow_m = {}
@@ -930,6 +1439,61 @@ class AegisGammaEngine:
                                             f"Charm: {shadow_m.get('shadow_is_charm_window')} | Zone: {shadow_m.get('shadow_seasonality_zone')}"
                                         )
 
+                                # Extract Passive Volume Profile Telemetry (100% Shadow Observation)
+                                vp_metrics = {}
+                                if self.volume_profile_engine:
+                                    vp_metrics = self.volume_profile_engine.get_profile_metrics(
+                                        spot_price=self.last_spot,
+                                        atr_1m=atr_1m_val,
+                                        direction=direction,
+                                    )
+                                    if vp_metrics:
+                                        logger.info(
+                                            f"[VOLUME PROFILE SHADOW] {sym} ({direction}) | "
+                                            f"SpotPOC: {vp_metrics.get('poc_price', 0.0):.1f} | "
+                                            f"VA: [{vp_metrics.get('val_price', 0.0):.1f} - {vp_metrics.get('vah_price', 0.0):.1f}] "
+                                            f"({vp_metrics.get('auction_zone', 'N/A')}) | "
+                                            f"DistPOC: {vp_metrics.get('dist_to_poc_pts', 0.0):+.1f}pts ({vp_metrics.get('dist_to_poc_atr', 0.0):+.2f} ATR) | "
+                                            f"POCAlign: {vp_metrics.get('poc_alignment', 'N/A')} | "
+                                            f"LVN: {vp_metrics.get('is_lvn_zone', False)} | "
+                                            f"CallPOC_K: {vp_metrics.get('call_poc_strike', 0.0):.0f} | "
+                                            f"PutPOC_K: {vp_metrics.get('put_poc_strike', 0.0):.0f}"
+                                        )
+
+                                # ─── AI Shadow Reviewer (Gemini 3.8 Flash Technical Analyst Co-Pilot in Shadow Mode) ───
+                                if self.ai_shadow_reviewer:
+                                    pa_eng = getattr(self, "price_action_engine", None)
+                                    pdh_val = getattr(pa_eng, "pdh", 0.0) if pa_eng else 0.0
+                                    pdl_val = getattr(pa_eng, "pdl", 0.0) if pa_eng else 0.0
+                                    pdc_val = getattr(pa_eng, "pdc", 0.0) if pa_eng else 0.0
+                                    bars_1m_deque = getattr(pa_eng, "bars_1m", None)
+                                    day_open_val = bars_1m_deque[0].open if (bars_1m_deque and len(bars_1m_deque) > 0) else self.last_spot
+                                    bars_list = list(bars_1m_deque) if bars_1m_deque else []
+                                    self.ai_shadow_reviewer.review_setup_async(
+                                        symbol=sym,
+                                        direction=direction,
+                                        setup_name=pa_setup_name,
+                                        pillar=pillar,
+                                        spot_price=self.last_spot,
+                                        pdh=pdh_val,
+                                        pdl=pdl_val,
+                                        pdc=pdc_val,
+                                        session_high=self.session_high,
+                                        session_low=self.session_low,
+                                        day_open=day_open_val,
+                                        vwap=vwap_val,
+                                        ema_20=ema_20,
+                                        ema_50=ema_50,
+                                        atr_1m=atr_1m_val,
+                                        index_name=getattr(self, "index_name", "NIFTY"),
+                                        strike_step=self.strike_step,
+                                        bars_1m=bars_list,
+                                        machine_conviction_score=conviction_score_val,
+                                        conviction_breakdown=conviction_breakdown,
+                                        micro_metrics=micro_m,
+                                        now_sec=now_sec,
+                                    )
+
                                 # ─── Quality Stack (SHADOW-first): shadow AND-gate + 3-slot policy ───
                                 qs_skew_ok = bool(shadow_m.get("shadow_skew_aligned", False)) if shadow_m else False
                                 qs_leads_ok = bool(shadow_m.get("shadow_option_leads_spot", False)) if shadow_m else False
@@ -939,7 +1503,7 @@ class AegisGammaEngine:
 
                                 slot_admit = True
                                 slot_reason = "slot_policy_off"
-                                slot_score = float(ml_score if (self.ml_gatekeeper and self.ml_gatekeeper_mode != "DISABLED") else micro_m.get("energy_score", score))
+                                slot_score = float(conviction_score_val if conviction_score_val > 0 else micro_m.get("energy_score", score))
                                 if self.slot_policy:
                                     slot_admit, slot_reason = self.slot_policy.admit(
                                         score=slot_score,
@@ -964,6 +1528,56 @@ class AegisGammaEngine:
                                         )
                                         return None
 
+                                # ─── V4 CONFIRM15 FUTURES CONFIRMATION (relocated 2026-09-22:
+                                # post-gates / pre-commit). All independent gates above
+                                # (conviction/ML/quality) already passed on this tick, so
+                                # ARM snapshots them; TRIGGER path is fresh depth + fire
+                                # only. Commits below (slot consume, FSM, telemetry) run
+                                # solely on TRIGGER pass-through — never on ARM.
+                                if Confirm15StateMachine is not None and self.v4_futures_buffer is not None:
+                                    _c15_snap = {
+                                        "conviction": conviction_score_val,
+                                        "sizing": sizing_tier,
+                                        "ml_score": ml_score,
+                                        "slot": slot_reason,
+                                    }
+                                    _c15 = self._confirm15_gate(sym, direction, pa_setup_name,
+                                                                pa_details, lp, now_sec,
+                                                                snapshot=_c15_snap)
+                                    if _c15 is False:
+                                        self._purge_impulse_memory(sym)
+                                        return None
+                                    if _c15 is None:
+                                        return None  # armed, holding for futures confirmation
+
+                                # ─── Shield v2 (2026-09-22): delta inflection + OI kinematics ───
+                                # Both run post-TRIGGER / pre-commit on fresh data; either veto
+                                # blocks the entry. Fail-open when data is missing.
+                                _di_veto, _di_detail = self._delta_inflection_check(sym, direction)
+                                if _di_veto:
+                                    self._di_vetoed += 1
+                                    self._purge_impulse_memory(sym)
+                                    self._throttled_veto_log("delta_inflection_veto",
+                                                             f"[DELTA INFLECTION VETO] {sym} ({direction}) "
+                                                             f"{pa_setup_name} blocked: {_di_detail}")
+                                    return None
+                                if self.oi_gate is not None:
+                                    _oi_vel, _oi_acc, _oi_n = self.oi_gate.get_oi_kinematics(sym, now_sec)
+                                    if _oi_n >= 2:
+                                        self._oi_kin_armed += 1
+                                        _oi_dumping = (_oi_vel < -1.0) or (_oi_vel < 0 and _oi_acc < -0.5)
+                                        if _oi_dumping:
+                                            self._oi_kin_vetoed += 1
+                                            self._purge_impulse_memory(sym)
+                                            self._throttled_veto_log(
+                                                "oi_kinematics_veto",
+                                                f"[OI KINEMATICS VETO] {sym} ({direction}) {pa_setup_name} "
+                                                f"blocked: fresh dumping vel={_oi_vel:.2f}%/min acc={_oi_acc:+.2f}")
+                                            return None
+                                    else:
+                                        # Thin OI history (<2 points): fail-open, counted for visibility.
+                                        self._oi_kin_skipped += 1
+
                                 telemetry_metrics = {
                                     "impulse_timestamp": now_sec,
                                     "impulse_time_iso": datetime.fromtimestamp(now_sec).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
@@ -979,6 +1593,10 @@ class AegisGammaEngine:
                                     "is_50ema_pullback": is_50ema_pullback,
                                     "is_price_action_setup": is_pa_setup,
                                     "pa_setup_name": pa_setup_name,
+                                    "conviction_score": conviction_score_val,
+                                    "sizing_tier": sizing_tier,
+                                    "conviction_sub_scores": conviction_sub_scores,
+                                    "conviction_breakdown": conviction_breakdown,
                                     "energy_score": round(energy_score, 1),
                                     "ml_gatekeeper_score": round(ml_score, 4),
                                     "ml_gatekeeper_passed": ml_passed,
@@ -991,7 +1609,9 @@ class AegisGammaEngine:
                                     "quality_spread_ok": qs_spread_ok,
                                     "slot_verdict": slot_reason,
                                     "slot_used": self.slot_policy.used if self.slot_policy else 0,
+                                    "oi_snapshot": self._get_oi_snapshot(sym, direction, now_sec),
                                     **shadow_m,
+                                    **vp_metrics,
                                     **fut_basis_m,
                                     **pa_details,
                                     **micro_m,
@@ -1039,9 +1659,27 @@ class AegisGammaEngine:
                                             },
                                         )
 
+                                # ─── V4 DEFENSIVE TOP-5 DEPTH GUARD (BBO Micro-Price Skew + Spread Veto) ───
+                                if self.top5_depth_guard is not None:
+                                    bids_mat = np.array([
+                                        [bp1, b1], [bp2, b2], [bp3, b3], [bp4, b4], [bp5, b5]
+                                    ], dtype=np.float64)
+                                    asks_mat = np.array([
+                                        [sp1, a1], [sp2, a2], [sp3, a3], [sp4, a4], [sp5, a5]
+                                    ], dtype=np.float64)
+                                    dir_enum = V4Direction.BULLISH if direction == "UP" else V4Direction.BEARISH
+                                    guard_ok, guard_reason = self.top5_depth_guard.validate_execution(
+                                        dir_enum, bids_mat, asks_mat
+                                    )
+                                    if not guard_ok:
+                                        self._purge_impulse_memory(sym)
+                                        self._throttled_veto_log("v4_depth_guard_veto", f"[V4 DEPTH GUARD VETO] {sym} ({direction}) blocked: {guard_reason}")
+                                        return None
+
                                 self.cooldowns[sym] = now_sec
                                 logger.info(
-                                    f"[AEGIS V3 FIRED] {sym} ({direction}) | Energy: {energy_score:.1f}/100 | EQS: {eqs:.1f}/100 | "
+                                    f"[AEGIS V3 FIRED] {sym} ({direction}) | Conviction: {conviction_score_val:.1f}/100 ({sizing_tier}) | "
+                                    f"Energy: {energy_score:.1f}/100 | EQS: {eqs:.1f}/100 | "
                                     f"ML: {ml_score:.4f} ({self.ml_gatekeeper_mode}) | Target: +{recommended_tp_pct*100:.1f}% | "
                                     f"Basis: {self.last_basis_pts:+.1f}pts ({self.last_basis_bps:+.1f}bps) | FutPx: {self.last_futures_price:.1f} | "
                                     f"Persist: {pers_score:.2f} | Struct: {perm_metrics.get('market_structure', 'N/A')} | "
@@ -1051,14 +1689,18 @@ class AegisGammaEngine:
                                     sym=sym,
                                     lp=lp,
                                     direction=direction,
-                                    conviction=score,
+                                    conviction=conviction_score_val,
                                     gates={
                                         "permission_granted": has_permission,
                                         "persistence_confirmed": pers_confirmed,
                                         "option_qualified": opt_qualified,
                                         "eqs_qualified": is_eqs_qual,
+                                        "conviction_approved": True,
                                     },
                                     metrics={
+                                        "conviction_score": conviction_score_val,
+                                        "sizing_tier": sizing_tier,
+                                        "conviction_sub_scores": conviction_sub_scores,
                                         "eqs_score": eqs,
                                         "recommended_tp_pct": recommended_tp_pct,
                                         "microstructure_score": round(score, 2),
@@ -1076,6 +1718,210 @@ class AegisGammaEngine:
         except Exception as e:
             logger.error(f"AEGIS on_tick_parsed error: {e}", exc_info=True)
 
+    # ─── V4 CONFIRM15 helpers (wired 2026-09-21) ───
+    @staticmethod
+    def _confirm15_source(pa_setup_name: str):
+        s = str(pa_setup_name or "")
+        if "20_ema" in s:
+            return V4SignalSource.P1_EMA_WICK
+        if "sweep" in s:
+            return V4SignalSource.P2_LIQUIDITY_SWEEP
+        if "squeeze" in s:
+            return V4SignalSource.P3_VOL_SQUEEZE
+        return V4SignalSource.P4_TOPOLOGICAL_HUB
+
+    def _futures_candle_60s(self, now_sec: float):
+        """Rolling 60s futures candle (open/high/low/last) for Confirm15 phi gate."""
+        hist = [p for p in self.futures_history if p[0] >= now_sec - 60.0]
+        if not hist:
+            return 0.0, 0.0, 0.0, 0.0
+        px = [float(p[1]) for p in hist]
+        return px[0], max(px), min(px), px[-1]
+
+    def _delta_inflection_check(self, sym: str, direction: str):
+        """Delta inflection veto (Shield, added 2026-09-22).
+
+        Compares mean L1 touch imbalance I1 = (b1-a1)/(b1+a1) of the first
+        vs second half of the 30s tick history. A sign flip against the
+        trade direction with magnitude >= 0.15 means aggression changed
+        sides (trap warning). Returns (vetoed: bool, detail: str).
+        """
+        hist = self.history_30s.get(sym) if hasattr(self, "history_30s") else None
+        if not hist or len(hist) < 6:
+            return False, "insufficient_history"
+        n = len(hist)
+        half = n // 2
+        def _mean_i1(rows):
+            vals = []
+            for r in rows:
+                try:
+                    b1, a1 = float(r[4]), float(r[5])
+                except (IndexError, TypeError, ValueError):
+                    continue
+                if b1 + a1 > 0:
+                    vals.append((b1 - a1) / (b1 + a1))
+            return sum(vals) / len(vals) if vals else 0.0
+        i1_early = _mean_i1(list(hist)[:half])
+        i1_late = _mean_i1(list(hist)[half:])
+        flip_mag = abs(i1_late - i1_early)
+        flipped_against = (direction == "UP" and i1_early > 0 and i1_late < 0) or \
+                          (direction == "DOWN" and i1_early < 0 and i1_late > 0)
+        if flipped_against and flip_mag >= 0.15:
+            return True, f"delta_inflection_flip {i1_early:+.2f}->{i1_late:+.2f} (mag {flip_mag:.2f})"
+        return False, f"no_flip early={i1_early:+.2f} late={i1_late:+.2f}"
+
+    def _get_oi_snapshot(self, sym: str, direction: str, now_sec: float) -> Dict[str, Any]:
+        """Read-only OI snapshot for telemetry (never vetoes, fail-safe).
+
+        Captures kinematics velocity/acceleration, buildup class, wall
+        distance and unwind speed at trigger time so every fill carries
+        a post-trade OI audit trail in decision_payload.
+        """
+        snap: Dict[str, Any] = {
+            "vel": 0.0, "acc": 0.0, "n": 0,
+            "builtup": "UNKNOWN", "wall_dist_strikes": 0.0, "wall_speed": 0.0,
+        }
+        try:
+            gate = getattr(self, "oi_gate", None)
+            if gate is None:
+                snap["builtup"] = "GATE_MISSING"
+                return snap
+            vel, acc, n = gate.get_oi_kinematics(sym, float(now_sec or 0.0))
+            snap["vel"] = round(float(vel), 2)
+            snap["acc"] = round(float(acc), 2)
+            snap["n"] = int(n)
+            try:
+                builtup, _dp, _doi = gate.get_contract_builtup(sym)
+                snap["builtup"] = str(builtup)
+            except Exception:
+                pass
+            try:
+                spot = float(getattr(self, "last_spot", 0.0) or 0.0)
+                wall = gate.get_wall_snapshot(spot)
+                is_pe = str(direction).upper() in ("DOWN", "PE", "PUT") or ("PE" in str(sym).upper())
+                if is_pe:
+                    snap["wall_dist_strikes"] = float(wall.get("pe_dist_strikes", 0.0))
+                else:
+                    snap["wall_dist_strikes"] = float(wall.get("ce_dist_strikes", 0.0))
+                snap["wall_ce_strike"] = float(wall.get("max_ce_strike", 0.0))
+                snap["wall_pe_strike"] = float(wall.get("max_pe_strike", 0.0))
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return snap
+
+    def get_oi_telemetry(self) -> Dict[str, Any]:
+        """Shield arm/skip/veto counters + wall snapshot for live state."""
+        out: Dict[str, Any] = {
+            "kin_armed": int(getattr(self, "_oi_kin_armed", 0)),
+            "kin_skipped": int(getattr(self, "_oi_kin_skipped", 0)),
+            "kin_vetoed": int(getattr(self, "_oi_kin_vetoed", 0)),
+            "gate_vetoed": int(getattr(self, "_oi_gate_vetoed", 0)),
+            "delta_vetoed": int(getattr(self, "_di_vetoed", 0)),
+        }
+        try:
+            gate = getattr(self, "oi_gate", None)
+            spot = float(getattr(self, "last_spot", 0.0) or 0.0)
+            if gate is not None:
+                out["walls"] = gate.get_wall_snapshot(spot)
+            else:
+                out["walls"] = {}
+        except Exception:
+            out["walls"] = {}
+        return out
+
+    def maybe_log_wall_snapshot(self, spot_price: float = 0.0, now_sec: float = 0.0) -> bool:
+        """Logs the fortress snapshot at most once per 15-minute bucket.
+
+        Called from the 1-minute main loop (off hot path). Returns True
+        when a snapshot line was emitted.
+        """
+        try:
+            ts = float(now_sec or time.time())
+            bucket = int(ts // 900)
+            if bucket == int(getattr(self, "_last_wall_log_min", -1)):
+                return False
+            self._last_wall_log_min = bucket
+            gate = getattr(self, "oi_gate", None)
+            if gate is None:
+                return False
+            spot = float(spot_price or getattr(self, "last_spot", 0.0) or 0.0)
+            wall = gate.get_wall_snapshot(spot)
+            tele = self.get_oi_telemetry()
+            logger.info(
+                f"[OI WALL SNAPSHOT] Spot:{spot:.1f} "
+                f"CE_wall:{wall.get('max_ce_strike', 0.0):.0f}@{wall.get('max_ce_oi', 0.0):.0f}"
+                f"({wall.get('ce_dist_strikes', 0.0):+.2f}stk) "
+                f"PE_wall:{wall.get('max_pe_strike', 0.0):.0f}@{wall.get('max_pe_oi', 0.0):.0f}"
+                f"({wall.get('pe_dist_strikes', 0.0):+.2f}stk) "
+                f"tracked:{wall.get('n_tracked', 0)} "
+                f"kin[armed:{tele.get('kin_armed', 0)} skipped:{tele.get('kin_skipped', 0)} "
+                f"vetoed:{tele.get('kin_vetoed', 0)}] gate_vetoed:{tele.get('gate_vetoed', 0)} "
+                f"delta_vetoed:{tele.get('delta_vetoed', 0)}"
+            )
+            return True
+        except Exception:
+            return False
+
+    def _confirm15_gate(self, sym: str, direction: str, pa_setup_name: str,
+                        pa_details: Dict, opt_lp: float, now_sec: float,
+                        snapshot: Dict = None):
+        """V4 futures-confirmation gate. True=proceed, False=vetoed, None=waiting.
+        Snapshot holds pre-computed gate outputs from the ARM tick (conviction /
+        ML / slot) for telemetry; TRIGGER re-evaluates fresh (milliseconds)."""
+        if self.confirm15_mode == "DISABLED":
+            return True
+        # Blind without futures flow: fail-open, preserve legacy behavior
+        # (keeps unit tests and feed outages from starving all signals).
+        if self.last_futures_price <= 0 or self.v4_futures_buffer.count < 5:
+            return True
+        v4dir = V4Direction.BULLISH if direction == "UP" else V4Direction.BEARISH
+        entry = self.v4_state_machines.get(sym)
+        if entry is not None and (entry.get("direction") != direction
+                                  or now_sec - float(entry["m"].armed_ts) > 60.0):
+            entry = None  # direction flip or stale arm: drop and re-arm below
+        if entry is None:
+            m = Confirm15StateMachine()
+            hub = float(pa_details.get("hub_price") or pa_details.get("sl_price")
+                        or self.last_spot or 0.0)
+            atr = float(getattr(self.price_action_engine, "current_atr_1m", 0.0) or 0.0)
+            m.arm(source=self._confirm15_source(pa_setup_name), direction=v4dir,
+                  hub_price=hub, opt_ltp=opt_lp, atr_1m=atr, ts=now_sec,
+                  candle_open=self.last_futures_price, fut_price=self.last_futures_price)
+            if m.state != WatchSlotState.ARMED:
+                return True  # arm guard refused: fail-open
+            self.v4_state_machines[sym] = {"m": m, "direction": direction,
+                                           "setup": pa_setup_name,
+                                           "snapshot": dict(snapshot or {})}
+            logger.info(f"[CONFIRM15 ARMED] {sym} ({direction}) {pa_setup_name} "
+                        f"hub={hub:.1f} fut={self.last_futures_price:.1f}")
+            if self.confirm15_mode == "SHADOW":
+                return True
+            return None
+        m = entry["m"]
+        fut_o, fut_h, fut_l, _ = self._futures_candle_60s(now_sec)
+        st = m.evaluate_tick(self.v4_futures_buffer, opt_lp, self.last_futures_price,
+                             fut_h, fut_l, fut_o, now_sec)
+        if st == WatchSlotState.TRIGGERED:
+            armed_for = now_sec - float(m.armed_ts)
+            self.v4_state_machines.pop(sym, None)
+            logger.info(f"[CONFIRM15 TRIGGERED] {sym} ({direction}) {pa_setup_name} "
+                        f"armed_for={armed_for:.1f}s snap={entry.get('snapshot', {})} "
+                        f"-> fresh depth + fire")
+            return True
+        if st in (WatchSlotState.INVALIDATED, WatchSlotState.TIMEOUT):
+            self.v4_state_machines.pop(sym, None)
+            if self.confirm15_mode == "SHADOW":
+                logger.info(f"[CONFIRM15 SHADOW] {sym} ({direction}) {pa_setup_name} "
+                            f"would veto: {st}")
+                return True
+            self._throttled_veto_log("confirm15_veto",
+                                     f"[CONFIRM15 VETO] {sym} ({direction}) {pa_setup_name} "
+                                     f"blocked: futures_{str(st).lower()} (adverse/timeout)")
+            return False
+        return None  # still ARMED: hold for futures confirmation (8-45s window)
+
     def _on_futures_tick(self, sym: str, lp: float, tick: Any, now_sec: float):
         """Processes active index futures ticks for Basis, volume, and lead-lag analysis."""
         if lp <= 0:
@@ -1087,6 +1933,11 @@ class AegisGammaEngine:
             self.last_basis_pts = lp - self.last_spot
             self.last_basis_bps = (self.last_basis_pts / self.last_spot) * 10000.0
             self.futures_history.append((now_sec, lp, self.last_basis_pts))
+
+        if self.v4_futures_buffer is not None:
+            bid = float(getattr(tick, "bp1", 0.0) or lp)
+            ask = float(getattr(tick, "sp1", 0.0) or lp)
+            self.v4_futures_buffer.push(now_sec, lp, vol, bid, ask)
 
     @staticmethod
     def is_plausible_spot_tick(lp: float, ref_lp: float, gap_sec: float) -> bool:
@@ -1155,6 +2006,14 @@ class AegisGammaEngine:
             pe_px = self._resolve_option_ltp(atm_pe_sym, None) if atm_pe_sym else 0.0
             if ce_px > 0 and pe_px > 0:
                 self.shadow_quant_tracker.update_straddle(ce_px, pe_px, now_sec)
+
+        # Update Topological HVG Shadow Telemetry (Pillar 4 Shadow)
+        if self.hvg_engine:
+            self.hvg_engine.on_underlying_tick(lp, now_sec)
+
+        # Update Volume Profile Engine (Spot tick volume accumulation)
+        if self.volume_profile_engine:
+            self.volume_profile_engine.record_spot_tick(lp, 1.0)
 
         # 1. Update V3 TimeBarEngine & 5-minute Volatility Impulse Memory
         if self.time_bar_engine:
@@ -1347,7 +2206,7 @@ class AegisGammaEngine:
         return max(pts), min(pts)
 
     def get_futures_basis_metrics(self, now_sec: float, lookback_sec: float = 60.0) -> Dict[str, float]:
-        """Returns 60s pre-trade Futures Basis metrics for shadow forensics telemetry."""
+        """Returns 60s pre-trade Futures Basis metrics and Futures Lead-Lag Momentum for conviction scoring."""
         if not self.futures_history or self.last_spot <= 0:
             return {
                 "basis_current": round(self.last_basis_pts, 2),
@@ -1355,19 +2214,27 @@ class AegisGammaEngine:
                 "basis_change_60s": 0.0,
                 "basis_change_60s_bps": 0.0,
                 "basis_z_score": 0.0,
+                "delta_fut_60s_pts": 0.0,
+                "delta_fut_60s_bps": 0.0,
             }
 
         target_ts = now_sec - lookback_sec
         ref_basis = self.futures_history[0][2]
+        ref_fut_px = self.futures_history[0][1]
         basis_vals = []
         for ts, px, b_pts in self.futures_history:
             basis_vals.append(b_pts)
             if ts <= target_ts:
                 ref_basis = b_pts
+                ref_fut_px = px
 
         current_basis = self.last_basis_pts
         delta_basis = current_basis - ref_basis
         delta_bps = (delta_basis / self.last_spot) * 10000.0 if self.last_spot > 0 else 0.0
+
+        current_fut_px = self.last_futures_price if self.last_futures_price > 0 else ref_fut_px
+        delta_fut_px = current_fut_px - ref_fut_px
+        delta_fut_bps = (delta_fut_px / ref_fut_px * 10000.0) if ref_fut_px > 0 else 0.0
 
         z = 0.0
         if len(basis_vals) >= 10:
@@ -1383,6 +2250,8 @@ class AegisGammaEngine:
             "basis_change_60s": round(delta_basis, 2),
             "basis_change_60s_bps": round(delta_bps, 2),
             "basis_z_score": round(z, 2),
+            "delta_fut_60s_pts": round(delta_fut_px, 2),
+            "delta_fut_60s_bps": round(delta_fut_bps, 2),
         }
 
     def _rebuild_strike_to_symbol(self):
@@ -1516,6 +2385,20 @@ class AegisGammaEngine:
             "basis_bps": self.last_basis_bps,
             "futures_volume": self.futures_volume,
         }
+
+    def close(self) -> None:
+        """Gracefully flushes pending shadow telemetry and shuts down background resources."""
+        if self.hvg_engine is not None:
+            try:
+                self.hvg_engine.flush_all_pending()
+            except Exception:
+                pass
+        if self.ai_shadow_reviewer is not None:
+            try:
+                self.ai_shadow_reviewer.close()
+            except Exception:
+                pass
+        self.v4_pipelines.clear()
 
 
 def create_aegis_engine(

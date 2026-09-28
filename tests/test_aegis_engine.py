@@ -94,6 +94,8 @@ def test_aegis_spot_tick_and_dynamic_atm_roll():
 
 
 def test_aegis_microstructure_signal_emission():
+    # PA-only mode: pure microstructure burst WITHOUT a pillar setup must NOT emit.
+    # Hidden 4th route removed — pillars are the sole trigger source.
     sig_q = queue.Queue()
     token_to_symbol = {
         "26000": "NIFTY",
@@ -125,12 +127,8 @@ def test_aegis_microstructure_signal_emission():
             sq=[20, 20, 20, 20, 20]
         )
         engine.on_tick_parsed(tick)
-        
-    assert not sig_q.empty()
-    sig = sig_q.get_nowait()
-    assert sig["type"] == "GAMMA_BURST_ENTRY"
-    assert sig["signal"] == "UP"
-    assert sig["conviction"] >= 70.0
+
+    assert sig_q.empty()  # PA-only: no pillar setup, no signal.
 
 
 def test_strike_selector_otm_sweet_spot():
@@ -178,3 +176,34 @@ def test_strike_selector_budget_adaptation_2000():
     assert chosen_row["symbol"] == "SENSEX2682077800CE"
     assert ltp == 190.0
     assert qty == 1
+
+
+def _stub_with_history(rows):
+    """Minimal stub exposing history_30s for the delta inflection helper."""
+    import types
+    from collections import deque
+    return types.SimpleNamespace(history_30s={"SYM": deque(rows, maxlen=300)})
+
+
+def test_delta_inflection_veto_on_flip_against_up():
+    """Buyers (+I1) flipping to sellers (-I1) vetoes an UP entry."""
+    rows = [(float(i), 10.0, 10.0, 10.1, 800.0, 200.0) for i in range(6)]
+    rows += [(float(i + 6), 10.0, 10.0, 10.1, 200.0, 800.0) for i in range(6)]
+    vetoed, detail = AegisGammaEngine._delta_inflection_check(_stub_with_history(rows), "SYM", "UP")
+    assert vetoed
+    assert "flip" in detail
+
+
+def test_delta_inflection_no_veto_when_aligned():
+    """Consistent buyer aggression never vetoes an UP entry."""
+    rows = [(float(i), 10.0, 10.0, 10.1, 800.0, 200.0) for i in range(12)]
+    vetoed, _ = AegisGammaEngine._delta_inflection_check(_stub_with_history(rows), "SYM", "UP")
+    assert not vetoed
+
+
+def test_delta_inflection_fail_open_on_sparse_history():
+    """Fewer than 6 ticks => fail-open, never a veto."""
+    rows = [(float(i), 10.0, 10.0, 10.1, 800.0, 200.0) for i in range(3)]
+    vetoed, detail = AegisGammaEngine._delta_inflection_check(_stub_with_history(rows), "SYM", "DOWN")
+    assert not vetoed
+    assert detail == "insufficient_history"

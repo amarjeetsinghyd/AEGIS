@@ -1,14 +1,18 @@
 """
 AEGIS DirectionalPersistence — Rolling 60s State Sampling & Signed Directional Persistence.
 
-Architecture:
+V3.0 Event-Bound Architecture:
 1. Maintains 12 discrete 5-second snapshot observations across a rolling 60-second sliding window.
 2. Signed state arithmetic:
    - Bullish State = +1.0
    - Neutral State =  0.0
    - Bearish State = -1.0
 3. Tracks Directional Persistence and Opposite-State Count separately.
-4. If opposite_state_count >= max_allowed_opposite (default 2), directional persistence is invalidated.
+4. If opposite_state_count > max_allowed_opposite (default 2), directional persistence is invalidated.
+5. V3.0: Evaluation is strictly bound to closed-candle timestamp T via anchor_ts_sec.
+   Pool = snapshots with ts in [T-lookback, T]; post-T snapshots (ts > T) are excluded
+   so T+1s ticks can never pollute the trigger decision. Thresholds: Dp >= 0.70,
+   opposite_count <= 2.
 """
 
 from __future__ import annotations
@@ -33,12 +37,12 @@ class DirectionalPersistenceEngine:
 
     def __init__(
         self,
-        window_sec: float = 30.0,
+        window_sec: float = 60.0,
         sample_interval_sec: float = 5.0,
         max_snapshots: int | None = None,
         min_valid_snapshots: int = 3,
-        target_persistence_threshold: float = 0.60,
-        max_allowed_opposite: int = 1,
+        target_persistence_threshold: float = 0.70,
+        max_allowed_opposite: int = 2,
     ):
         self.window_sec = window_sec
         self.sample_interval_sec = sample_interval_sec
@@ -90,14 +94,38 @@ class DirectionalPersistenceEngine:
         while self.snapshots and self.snapshots[0].ts_sec < cutoff:
             self.snapshots.popleft()
 
-    def evaluate_persistence(self, target_direction: str) -> Tuple[bool, float, Dict[str, Any]]:
+    def evaluate_persistence(
+        self,
+        target_direction: str,
+        lookback_sec: Optional[float] = None,
+        min_threshold: Optional[float] = None,
+        max_allowed_opposite: Optional[int] = None,
+        anchor_ts_sec: Optional[float] = None,
+    ) -> Tuple[bool, float, Dict[str, Any]]:
         """
         Evaluates directional persistence for a proposed target trade direction.
-        
+
+        V3.0 Event-Bound Slicing:
+        - When anchor_ts_sec (closed-candle timestamp T) is provided, the pool is
+          strictly snapshots with ts in [T - lookback, T]. Snapshots with
+          ts > T (post-close T+1s ticks) are excluded by construction.
+        - When anchor is None, legacy behaviour is kept (cutoff from
+          last_sample_ts) for backward compatibility with unit tests.
+
         Returns:
             (is_confirmed, persistence_score_0_to_1, metrics_dict)
         """
-        n_obs = len(self.snapshots)
+        if anchor_ts_sec is not None and anchor_ts_sec > 0:
+            eff_lookback = lookback_sec if lookback_sec is not None else self.window_sec
+            cutoff = anchor_ts_sec - eff_lookback
+            pool = [s for s in self.snapshots if s.ts_sec >= cutoff and s.ts_sec <= anchor_ts_sec]
+        elif lookback_sec is not None and self.last_sample_ts > 0:
+            cutoff = self.last_sample_ts - lookback_sec
+            pool = [s for s in self.snapshots if s.ts_sec >= cutoff]
+        else:
+            pool = list(self.snapshots)
+
+        n_obs = len(pool)
         metrics: Dict[str, Any] = {
             "total_observations": n_obs,
             "bullish_count": 0,
@@ -111,10 +139,10 @@ class DirectionalPersistenceEngine:
         if n_obs == 0:
             return True, 1.0, {**metrics, "reason": "warmup_zero_obs_permissive"}
 
-        bull_cnt = sum(1 for s in self.snapshots if s.strength > 0)
-        bear_cnt = sum(1 for s in self.snapshots if s.strength < 0)
-        neut_cnt = sum(1 for s in self.snapshots if s.strength == 0)
-        avg_score = sum(s.micro_score for s in self.snapshots) / n_obs
+        bull_cnt = sum(1 for s in pool if s.strength > 0)
+        bear_cnt = sum(1 for s in pool if s.strength < 0)
+        neut_cnt = sum(1 for s in pool if s.strength == 0)
+        avg_score = sum(s.micro_score for s in pool) / n_obs
 
         metrics["bullish_count"] = bull_cnt
         metrics["bearish_count"] = bear_cnt
@@ -127,11 +155,11 @@ class DirectionalPersistenceEngine:
         if is_call:
             aligned_count = bull_cnt
             opposite_count = bear_cnt
-            signed_sum = sum(s.strength for s in self.snapshots)
+            signed_sum = sum(s.strength for s in pool)
         elif is_put:
             aligned_count = bear_cnt
             opposite_count = bull_cnt
-            signed_sum = sum(-s.strength for s in self.snapshots)
+            signed_sum = sum(-s.strength for s in pool)
         else:
             return False, 0.0, {**metrics, "reason": "invalid_direction"}
 
@@ -145,23 +173,24 @@ class DirectionalPersistenceEngine:
             return False, 0.0, {**metrics, "reason": "insufficient_observations"}
 
         # Directional Persistence = Normalized Signed Alignment (0.0 to 1.0)
-        # E.g. All aligned: signed_sum == n_obs -> 1.0
-        # Half aligned, half neutral: signed_sum == n_obs/2 -> 0.5
         persistence = max(0.0, signed_sum / float(n_obs))
         metrics["directional_persistence"] = round(persistence, 3)
 
-        # Invalidation Condition 1: Too many opposite states (Market is alternating / reversing)
-        if opposite_count > self.max_allowed_opposite:
+        eff_threshold = min_threshold if min_threshold is not None else self.target_persistence_threshold
+        eff_max_opposite = max_allowed_opposite if max_allowed_opposite is not None else self.max_allowed_opposite
+
+        # Invalidation Condition 1: Too many opposite states
+        if opposite_count > eff_max_opposite:
             return False, persistence, {
                 **metrics,
-                "reason": f"excessive_opposite_states ({opposite_count} > {self.max_allowed_opposite})",
+                "reason": f"excessive_opposite_states ({opposite_count} > {eff_max_opposite})",
             }
 
         # Invalidation Condition 2: Persistence below research threshold
-        if persistence < self.target_persistence_threshold:
+        if persistence < eff_threshold:
             return False, persistence, {
                 **metrics,
-                "reason": f"low_persistence ({persistence:.2f} < {self.target_persistence_threshold:.2f})",
+                "reason": f"low_persistence ({persistence:.2f} < {eff_threshold:.2f})",
             }
 
         return True, persistence, {**metrics, "reason": "persistence_confirmed"}

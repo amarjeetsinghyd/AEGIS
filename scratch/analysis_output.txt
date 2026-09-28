@@ -1,0 +1,196 @@
+﻿======================================================================
+  AEGIS 22-Sep-2026  —  WHY NO TRADE? (PLAIN LANGUAGE REPORT)
+======================================================================
+
+📊 MARKET HOURS MONITORED: 09:15 → 15:16
+   Total minutes scanned: 355
+   Spot range: 23288 → 23467
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PILLAR 1 — PA SIGNAL (क्या market ने direction दिखाई?)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ✅ ACTIVE SIGNAL  IDLE                                 298 minutes
+  ✅ ACTIVE SIGNAL  DOWN(20_ema_rejection)               30 minutes
+  ✅ ACTIVE SIGNAL  UP(20_ema_rejection)                 15 minutes
+  ✅ ACTIVE SIGNAL  DOWN(micro_sweep_reclaim)            8 minutes
+  ✅ ACTIVE SIGNAL  DOWN(volatility_squeeze_breakout)    3 minutes
+  ✅ ACTIVE SIGNAL  UP(volatility_squeeze_breakout)      1 minutes
+
+  → Setup windows (PA ≠ IDLE): 355 minutes
+  → Key PA signal windows:
+       09:15 → 09:34  IDLE  Spot~23435
+       09:38 → 09:38  UP(volatility_squeeze_breakout)  Spot~23446
+       09:39 → 09:50  IDLE  Spot~23455
+       09:51 → 09:51  UP(20_ema_rejection)  Spot~23459
+       09:52 → 09:55  IDLE  Spot~23457
+       09:56 → 09:56  UP(20_ema_rejection)  Spot~23454
+       09:57 → 10:00  IDLE  Spot~23457
+       10:01 → 10:01  UP(20_ema_rejection)  Spot~23462
+       10:02 → 10:07  IDLE  Spot~23454
+       10:08 → 10:08  UP(20_ema_rejection)  Spot~23459
+       10:09 → 10:13  IDLE  Spot~23463
+       10:14 → 10:15  UP(20_ema_rejection)  Spot~23465
+       10:16 → 10:21  IDLE  Spot~23455
+       10:22 → 10:22  DOWN(20_ema_rejection)  Spot~23448
+       10:23 → 10:29  IDLE  Spot~23440
+       10:30 → 10:30  DOWN(20_ema_rejection)  Spot~23437
+       10:31 → 10:50  IDLE  Spot~23377
+       10:51 → 10:51  DOWN(volatility_squeeze_breakout)  Spot~23369
+       10:52 → 10:56  IDLE  Spot~23378
+       10:57 → 10:57  DOWN(micro_sweep_reclaim)  Spot~23377
+       10:58 → 11:11  IDLE  Spot~23382
+       11:12 → 11:12  DOWN(micro_sweep_reclaim)  Spot~23382
+       11:13 → 11:23  IDLE  Spot~23396
+       11:24 → 11:24  DOWN(micro_sweep_reclaim)  Spot~23395
+       11:25 → 11:31  IDLE  Spot~23387
+       11:32 → 11:32  DOWN(20_ema_rejection)  Spot~23382
+       11:33 → 11:33  IDLE  Spot~23383
+       11:34 → 11:34  DOWN(20_ema_rejection)  Spot~23382
+       11:35 → 11:49  IDLE  Spot~23366
+       11:50 → 11:50  DOWN(20_ema_rejection)  Spot~23364
+       11:51 → 12:00  IDLE  Spot~23361
+       12:01 → 12:03  DOWN(20_ema_rejection)  Spot~23356
+       12:04 → 12:13  IDLE  Spot~23360
+       12:14 → 12:16  DOWN(20_ema_rejection)  Spot~23351
+       12:17 → 12:19  IDLE  Spot~23360
+       12:20 → 12:20  UP(20_ema_rejection)  Spot~23367
+       12:21 → 12:21  IDLE  Spot~23362
+       12:22 → 12:22  UP(20_ema_rejection)  Spot~23367
+       12:23 → 12:23  IDLE  Spot~23364
+       12:24 → 12:24  UP(20_ema_rejection)  Spot~23364
+       12:25 → 12:25  IDLE  Spot~23361
+       12:26 → 12:28  UP(20_ema_rejection)  Spot~23362
+       12:29 → 12:30  IDLE  Spot~23358
+       12:31 → 12:31  DOWN(20_ema_rejection)  Spot~23354
+       12:32 → 12:33  IDLE  Spot~23361
+       12:36 → 12:36  UP(20_ema_rejection)  Spot~23364
+       12:37 → 12:40  IDLE  Spot~23359
+       12:41 → 12:41  UP(20_ema_rejection)  Spot~23362
+       12:42 → 12:42  IDLE  Spot~23360
+       12:43 → 12:45  DOWN(20_ema_rejection)  Spot~23346
+       12:46 → 12:50  IDLE  Spot~23343
+       12:51 → 12:51  DOWN(20_ema_rejection)  Spot~23336
+       12:52 → 12:53  IDLE  Spot~23342
+       12:54 → 12:54  DOWN(20_ema_rejection)  Spot~23339
+       12:55 → 12:58  IDLE  Spot~23334
+       12:59 → 12:59  DOWN(20_ema_rejection)  Spot~23332
+       13:00 → 13:10  IDLE  Spot~23341
+       13:11 → 13:11  DOWN(micro_sweep_reclaim)  Spot~23341
+       13:12 → 13:17  IDLE  Spot~23339
+       13:18 → 13:18  DOWN(20_ema_rejection)  Spot~23332
+       13:19 → 13:19  IDLE  Spot~23333
+       13:20 → 13:20  DOWN(20_ema_rejection)  Spot~23335
+       13:21 → 13:25  IDLE  Spot~23332
+       13:26 → 13:27  DOWN(20_ema_rejection)  Spot~23331
+       13:28 → 13:32  IDLE  Spot~23343
+       13:33 → 13:33  DOWN(micro_sweep_reclaim)  Spot~23341
+       13:34 → 13:36  IDLE  Spot~23346
+       13:37 → 13:37  DOWN(micro_sweep_reclaim)  Spot~23345
+       13:38 → 13:41  IDLE  Spot~23346
+       13:42 → 13:42  DOWN(micro_sweep_reclaim)  Spot~23346
+       13:43 → 13:43  UP(20_ema_rejection)  Spot~23352
+       13:44 → 13:46  IDLE  Spot~23332
+       13:47 → 13:49  DOWN(20_ema_rejection)  Spot~23329
+       13:50 → 13:53  IDLE  Spot~23327
+       13:54 → 13:54  DOWN(volatility_squeeze_breakout)  Spot~23308
+       13:55 → 14:00  IDLE  Spot~23305
+       14:01 → 14:01  DOWN(volatility_squeeze_breakout)  Spot~23288
+       14:02 → 14:21  IDLE  Spot~23394
+       14:22 → 14:22  DOWN(micro_sweep_reclaim)  Spot~23394
+       14:23 → 14:44  IDLE  Spot~23371
+       14:45 → 14:45  DOWN(20_ema_rejection)  Spot~23369
+       14:46 → 14:48  IDLE  Spot~23376
+       14:49 → 14:49  DOWN(20_ema_rejection)  Spot~23375
+       14:50 → 14:57  IDLE  Spot~23371
+       14:58 → 14:58  DOWN(20_ema_rejection)  Spot~23366
+       14:59 → 15:05  IDLE  Spot~23358
+       15:06 → 15:06  DOWN(20_ema_rejection)  Spot~23358
+       15:07 → 15:13  IDLE  Spot~23360
+       15:14 → 15:14  DOWN(20_ema_rejection)  Spot~23354
+       15:15 → 15:16  IDLE  Spot~23350
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PILLAR 2,3,4 — WHICH GATE STOPPED THE TRADE?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  🚫 OPTION QUALITY VETO                  9x blocked
+  🚫 CONVICTION VETO                      9x blocked
+  🚫 ML GATEKEEPER VETO                   5x blocked
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NEAR-MISSES — Setups closest to passing (within 5 points/score)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ⚠️  15:14:15  ML GATEKEEPER VETO
+       NIFTY22SEP26P23350 (DOWN) 20_ema_rejection P1
+       Score: 0.3292 vs threshold 0.334  →  gap = 0.00  (needed 0.00 more)
+
+  ⚠️  15:03:12  ML GATEKEEPER VETO
+       NIFTY22SEP26P23250 (DOWN) 20_ema_rejection P1
+       Score: 0.301 vs threshold 0.334  →  gap = 0.03  (needed 0.03 more)
+
+  ⚠️  14:22:00  ML GATEKEEPER VETO
+       NIFTY22SEP26P23350 (DOWN) micro_sweep_reclaim P2
+       Score: 0.2782 vs threshold 0.334  →  gap = 0.06  (needed 0.06 more)
+
+  ⚠️  14:58:00  ML GATEKEEPER VETO
+       NIFTY22SEP26P23350 (DOWN) 20_ema_rejection P1
+       Score: 0.232 vs threshold 0.334  →  gap = 0.10  (needed 0.10 more)
+
+  ⚠️  09:35:02  ML GATEKEEPER VETO
+       NIFTY22SEP26P23500 (DOWN) 20_ema_rejection P1
+       Score: 0.1829 vs threshold 0.334  →  gap = 0.15  (needed 0.15 more)
+
+  ⚠️  09:35:00  OPTION QUALITY VETO
+       NIFTY22SEP26P23150
+       Score: 2.6 vs threshold 4.0  →  gap = 1.40  (needed 1.40 more)
+
+  ⚠️  14:22:00  CONVICTION VETO
+       NIFTY22SEP26P23600 (DOWN) micro_sweep_reclaim
+       Score: 73.0 vs threshold 75.0  →  gap = 2.00  (needed 2.00 more)
+
+  ⚠️  14:58:00  CONVICTION VETO
+       NIFTY22SEP26P23550 (DOWN) 20_ema_rejection
+       Score: 72.7 vs threshold 75.0  →  gap = 2.30  (needed 2.30 more)
+
+  ⚠️  09:36:00  OPTION QUALITY VETO
+       NIFTY22SEP26P22950
+       Score: 1.1 vs threshold 4.0  →  gap = 2.90  (needed 2.90 more)
+
+  ⚠️  14:22:00  OPTION QUALITY VETO
+       NIFTY22SEP26P23000
+       Score: 0.7 vs threshold 4.0  →  gap = 3.30  (needed 3.30 more)
+
+  ⚠️  14:45:00  OPTION QUALITY VETO
+       NIFTY22SEP26P23000
+       Score: 0.5 vs threshold 4.0  →  gap = 3.50  (needed 3.50 more)
+
+  ⚠️  15:06:00  OPTION QUALITY VETO
+       NIFTY22SEP26P23000
+       Score: 0.4 vs threshold 4.0  →  gap = 3.60  (needed 3.60 more)
+
+  ⚠️  14:58:00  OPTION QUALITY VETO
+       NIFTY22SEP26P22950
+       Score: 0.35 vs threshold 4.0  →  gap = 3.65  (needed 3.65 more)
+
+  ⚠️  15:03:12  OPTION QUALITY VETO
+       NIFTY22SEP26P22900
+       Score: 0.3 vs threshold 4.0  →  gap = 3.70  (needed 3.70 more)
+
+  ⚠️  15:14:00  OPTION QUALITY VETO
+       NIFTY22SEP26P22950
+       Score: 0.25 vs threshold 4.0  →  gap = 3.75  (needed 3.75 more)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SUMMARY — कल calibration के लिए
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Total setup evaluations blocked: 23
+  Near-misses (within 5 pts):      16
+
+  Dominant blocker today:
+    → Option Premium < ₹4 (Expiry decay): 9x
+    → Conviction < 75: 9x
+    → ML model < 0.334: 5x
+
+  ℹ️  All veto gates are working as designed.
+  ℹ️  Expiry day + flat market = genuine no-setup day.
+======================================================================

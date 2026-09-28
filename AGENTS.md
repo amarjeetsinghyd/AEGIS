@@ -69,6 +69,12 @@ Shared library: `common/` (broker / execution / market / ipc / runtime / config 
 - Hot-path modules (`value_engine.py`, `tick_compiler.py`, `on_tick` handlers) must not
   import `pandas`/`scipy`/`sklearn`. Heavy libs are allowed only off-hot-path
   (e.g. `l2_archiver.py` 15-min flush).
+- **Scale-Invariance & Normalization Mandatory**: NEVER hardcode fixed point thresholds
+  (e.g. `15.0 pts`, `8.0 pts`) for index calculations. NIFTY (24k), SENSEX (80k),
+  BANKNIFTY (51k), and FINNIFTY (23k) operate on radically different point scales. ALL
+  spot distances, triggers, invalidations, and confirmation thresholds must be
+  normalized via Basis Points (bps, where 1 bps = 0.01% of spot), percentage of spot,
+  or localized volatility multiples ($k \times \text{ATR}_{1m}$).
 - Single source of truth for symbols: `common/symbols.py` (`SUBSCRIPTION_UNIVERSE`,
   `NIFTY100`). Do not hardcode symbol lists elsewhere.
 - Never modify Shoonya/Noren API assumptions lightly; see harness doc §1.1.1

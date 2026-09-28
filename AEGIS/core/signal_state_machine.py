@@ -47,8 +47,8 @@ class SignalStateMachine:
 
     def __init__(
         self,
-        max_trigger_freshness_sec: float = 3.0,     # Excellent freshness window
-        max_trigger_acceptable_sec: float = 8.0,    # Max acceptable latency
+        max_trigger_freshness_sec: float = 45.0,    # 45s aligned freshness window
+        max_trigger_acceptable_sec: float = 45.0,   # 45s acceptable latency
         cooldown_duration_sec: float = 120.0,       # 2-minute post-trade cooldown
         prime_timeout_sec: float = 60.0,            # Reset if not confirmed within 60s
     ):
@@ -108,8 +108,8 @@ class SignalStateMachine:
 
         # 4. State Transitions
         if lc.state == SignalState.OBSERVE:
-            # Transition to PRIMED if score >= 78.0 and permission active
-            if micro_score >= 78.0:
+            # Transition to PRIMED if score >= 75.0 and permission active
+            if micro_score >= 75.0:
                 lc.state = SignalState.PRIMED
                 lc.direction = direction
                 lc.prime_ts = now_sec
@@ -152,8 +152,8 @@ class SignalStateMachine:
                 lc.state = SignalState.OBSERVE
                 return SignalState.OBSERVE, False, "confirmed_timeout_reset"
 
-            # Fresh microstructure trigger arrives while in confirmed state -> FIRE!
-            if micro_score >= 75.0:
+            # Moderate conviction (>= 60.0) is sufficient once macro persistence is confirmed!
+            if micro_score >= 60.0:
                 lc.last_trigger_ts = now_sec
                 lc.state = SignalState.FIRED
                 lc.fired_ts = now_sec

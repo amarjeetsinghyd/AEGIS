@@ -81,6 +81,17 @@ DELTA_MIN_SPOT_BPS = 1.25               # 1.25 bps minimum spot move for empiric
 # Legacy fallbacks maintained for external callers/tests
 TARGET_PROFIT_PCT = RESTING_TP_LIMIT_PCT
 STOP_LOSS_PCT = 0.050
+
+# ─── AEGIS V4.1 Stepped Risk Compression + Cost-Shield + Near-Target Engine ───
+# Scale-Invariant Normalized Percentage Model (strictly %, no fixed paise)
+PREMIUM_HARD_SL_PCT = float(os.environ.get("AEGIS_PREMIUM_HARD_SL_PCT", "0.120"))   # Tick-cadence option premium disaster circuit breaker (-12.0%)
+V4_SINGLE_TARGET_MODE = True  # Runner trailing disabled; 100% qty TP/SL/time exits
+STEP1_TRIGGER_PCT = float(os.environ.get("AEGIS_STEP1_TRIGGER_PCT", "0.020"))         # +2.0% peak gain arms stepped safety net
+STEP1_SL_PCT = float(os.environ.get("AEGIS_STEP1_SL_PCT", "-0.030"))                  # Tightens disaster floor from -12% to -3.0%
+STEP2_TRIGGER_PCT = float(os.environ.get("AEGIS_STEP2_TRIGGER_PCT", "0.030"))         # +3.0% peak gain arms cost-shield scratch
+STEP2_SL_PCT = float(os.environ.get("AEGIS_STEP2_SL_PCT", "0.000"))                   # Tightens SL to 0.0% (Entry Price / Scratch)
+NEAR_TARGET_TRIGGER_PCT = float(os.environ.get("AEGIS_NEAR_TARGET_TRIGGER_PCT", "0.035")) # +3.5% peak gain arms near-target lock
+NEAR_TARGET_PULLBACK_TOLERANCE = float(os.environ.get("AEGIS_NEAR_TARGET_TOLERANCE", "0.005")) # 0.5% pullback from peak triggers market exit
 BREAKEVEN_TRIGGER_PCT = 0.030
 BREAKEVEN_LOCK_PCT = 0.005
 RUNNER_TRIGGER_PCT = 0.070
@@ -476,14 +487,26 @@ class AegisExecutionManager:
             
             if not allocations:
                 logger.warning(f"[AegisEM] No affordable strike for {signal_type}")
+                self._rollback_slot()
                 return
 
-            opt_row, quantity, ltp = allocations[0]
+            opt_row, raw_quantity, ltp = allocations[0]
             symbol = opt_row["symbol"]
             token_str = str(opt_row["token"])
+
+            sizing_tier = str(metrics.get("sizing_tier") or signal.get("sizing_tier") or "STANDARD_SIZE").upper()
+            if sizing_tier == "BLOCKED":
+                logger.warning(f"[AegisEM] Entry blocked: signal sizing_tier is BLOCKED (conviction < 75.0)")
+                self._rollback_slot()
+                return
+
+            # Strictly Fixed 1 Lot Sizing (Core Execution Discipline — No Multi-Lot Scaling)
+            quantity = 1
+            logger.info(f"[AegisEM] Sizing: Fixed 1 lot (Cost: ₹{ltp * params['lot_size']:.2f})")
             
             if symbol in self.strike_cooldowns and now < self.strike_cooldowns[symbol]:
                 logger.warning(f"[AegisEM] Strike {symbol} in cooldown")
+                self._rollback_slot()
                 return
 
             # Spread & liquidity check
@@ -501,13 +524,16 @@ class AegisExecutionManager:
                             spread = (ask - bid) / mid
                             if spread > 0.02:
                                 logger.warning(f"[AegisEM] Spread too high: {spread*100:.1f}%")
+                                self._rollback_slot()
                                 return
                             sq1 = int(float(q.get("sq1") or 0))
                             if sq1 < 3:
                                 logger.warning(f"[AegisEM] Ask size too thin: sq1={sq1}")
+                                self._rollback_slot()
                                 return
                 except Exception as e:
                     logger.error(f"[AegisEM] Pre-trade check failed: {e}")
+                    self._rollback_slot()
                     return
 
             # Execute entry
@@ -531,6 +557,7 @@ class AegisExecutionManager:
                     if not self.order_lifecycle.execute_entry(leg, live_ask=live_ask or ltp):
                         logger.error(f"[AegisEM] Entry order rejected for {symbol}")
                         self.trade_context = None
+                        self._rollback_slot()
                         return
                     
                     fill_ts = time.time()
@@ -544,6 +571,9 @@ class AegisExecutionManager:
 
                     dp = {
                         "conviction": conviction,
+                        "sizing_tier": sizing_tier,
+                        "conviction_score": float(metrics.get("conviction_score", conviction or 0.0)),
+                        "conviction_sub_scores": metrics.get("conviction_sub_scores", {}),
                         "direction": direction,
                         "metrics": metrics,
                         "iv": metrics.get("iv", 0.15),
@@ -578,6 +608,13 @@ class AegisExecutionManager:
                         "spot_sl_price": float(metrics.get("sl_price", 0.0) or 0.0),
                         "candle_high": float(metrics.get("bar_high", 0.0) or 0.0),
                         "candle_low": float(metrics.get("bar_low", 0.0) or 0.0),
+                        # ─── OI shield audit trail (visibility only — gates untouched) ───
+                        "oi_snapshot": metrics.get("oi_snapshot", {}),
+                        "oi_vel": float((metrics.get("oi_snapshot", {}) or {}).get("vel", 0.0)),
+                        "oi_acc": float((metrics.get("oi_snapshot", {}) or {}).get("acc", 0.0)),
+                        "oi_n": int((metrics.get("oi_snapshot", {}) or {}).get("n", 0)),
+                        "oi_builtup": str((metrics.get("oi_snapshot", {}) or {}).get("builtup", "UNKNOWN")),
+                        "oi_wall_dist_strikes": float((metrics.get("oi_snapshot", {}) or {}).get("wall_dist_strikes", 0.0)),
                     }
                     self.trade_context.decision_payload = dp
                     self.trade_context.spot_sl_price = dp["spot_sl_price"]
@@ -626,6 +663,7 @@ class AegisExecutionManager:
         leg.initial_tp_pct = eff_tp_pct
         leg.highest_price = leg.entry_price
         leg.breakeven_locked = False
+        leg.step1_sl_armed = False
         leg.runner_locked = False
         
         if isinstance(self.order_lifecycle, PaperOrderLifecycle):
@@ -649,6 +687,24 @@ class AegisExecutionManager:
         except Exception as e:
             logger.error(f"[AegisEM] TP place failed: {e}")
 
+    @staticmethod
+    def _check_hist_filled(hist: Any) -> Tuple[bool, float]:
+        """
+        Safely inspects Shoonya single_order_history list (returned newest-first).
+        Checks all events in history: if any is FILLED/COMPLETE or rpt == 'Fill',
+        returns (True, fill_price).
+        """
+        if not isinstance(hist, list) or not hist:
+            return False, 0.0
+        for h in hist:
+            if isinstance(h, dict):
+                status = str(h.get("status", "")).upper()
+                rpt = str(h.get("rpt", "")).upper()
+                if status in ("FILLED", "COMPLETE") or rpt == "FILL":
+                    px = float(h.get("flprc") or h.get("avgprc") or 0.0)
+                    return True, px
+        return False, 0.0
+
     def _cancel_tp(self):
         if not self.tp_order_id or str(self.tp_order_id).startswith("PAPER_"):
             self.tp_order_id = None
@@ -660,12 +716,11 @@ class AegisExecutionManager:
             if api and hasattr(api, "single_order_history"):
                 # Fast check if already filled before cancelling
                 hist = api.single_order_history(orderno=ordno)
-                if isinstance(hist, list) and hist:
-                    latest = hist[-1]
-                    if latest.get("status") in ["FILLED", "COMPLETE"]:
-                        logger.info(f"[AegisEM] Resting TP order {ordno} already FILLED at broker! Skipping cancel.")
-                        self.tp_order_id = None
-                        return
+                filled, fill_px = self._check_hist_filled(hist)
+                if filled:
+                    logger.info(f"[AegisEM] Resting TP order {ordno} already FILLED at broker @ {fill_px:.2f}! Skipping cancel.")
+                    self.tp_order_id = None
+                    return
             if api and hasattr(api, "cancel_order"):
                 resp = api.cancel_order(orderno=ordno)
                 logger.info(f"[AegisEM] Cancelled TP order {ordno} (resp: {resp})")
@@ -817,6 +872,9 @@ class AegisExecutionManager:
             if not hasattr(leg, "lowest_price") or leg.current_price < leg.lowest_price:
                 leg.lowest_price = leg.current_price
                 leg.time_to_lowest_sec = hold_sec_now
+            eff_bid_now = live_bid if live_bid > 0 else leg.current_price
+            if eff_bid_now > getattr(leg, "highest_bid", 0.0):
+                leg.highest_bid = eff_bid_now
 
             # Record in rolling trade history
             self._trade_quote_history.append((now_ts, curr_spot, leg.current_price, live_bid, live_ask))
@@ -827,20 +885,18 @@ class AegisExecutionManager:
             if api and hasattr(api, "single_order_history"):
                 try:
                     hist = api.single_order_history(orderno=self.tp_order_id)
-                    if isinstance(hist, list) and hist:
-                        latest = hist[-1]
-                        status = latest.get("status", "")
-                        if status in ["FILLED", "COMPLETE"]:
-                            fill_px = float(latest.get("avgprc") or getattr(legs[0], "tp_price", 0.0))
-                            logger.info(f"🎉 [AegisEM] Resting TP order {self.tp_order_id} was FILLED at broker @ {fill_px:.2f}!")
-                            self.last_tp_order_id = self.tp_order_id
-                            self.tp_order_id = None
-                            self._close_all_legs(
-                                f"Take-Profit Hit (+{(fill_px - legs[0].entry_price)/legs[0].entry_price*100:.1f}% @ {fill_px:.2f})",
-                                is_tp_maker=True,
-                                limit_fill_price=fill_px,
-                            )
-                            return
+                    filled, fill_px = self._check_hist_filled(hist)
+                    if filled:
+                        actual_px = fill_px if fill_px > 0 else float(getattr(legs[0], "tp_price", 0.0))
+                        logger.info(f"🎉 [AegisEM] Resting TP order {self.tp_order_id} was FILLED at broker @ {actual_px:.2f}!")
+                        self.last_tp_order_id = self.tp_order_id
+                        self.tp_order_id = None
+                        self._close_all_legs(
+                            f"Take-Profit Hit (+{(actual_px - legs[0].entry_price)/legs[0].entry_price*100:.1f}% @ {actual_px:.2f})",
+                            is_tp_maker=True,
+                            limit_fill_price=actual_px,
+                        )
+                        return
                 except Exception as e_tp_check:
                     logger.warning(f"[AegisEM] Error checking TP order status: {e_tp_check}")
 
@@ -864,11 +920,10 @@ class AegisExecutionManager:
                         if api and hasattr(api, "single_order_history"):
                             try:
                                 hist = api.single_order_history(orderno=self.tp_order_id)
-                                if isinstance(hist, list) and hist:
-                                    latest = hist[-1]
-                                    if latest.get("status") in ["FILLED", "COMPLETE"]:
-                                        actual_fill_px = float(latest.get("avgprc") or tp_price)
-                                        logger.info(f"🎉 [AegisEM] Resting TP {self.tp_order_id} verified FILLED @ {actual_fill_px:.2f}")
+                                filled, fill_px = self._check_hist_filled(hist)
+                                if filled and fill_px > 0:
+                                    actual_fill_px = fill_px
+                                    logger.info(f"🎉 [AegisEM] Resting TP {self.tp_order_id} verified FILLED @ {actual_fill_px:.2f}")
                             except Exception as e_tp:
                                 logger.debug(f"[AegisEM] Error checking TP order in 0B: {e_tp}")
                     self.last_tp_order_id = self.tp_order_id
@@ -877,6 +932,20 @@ class AegisExecutionManager:
                         f"Take-Profit Hit (+{gain_pct:.1f}% @ {actual_fill_px:.2f})",
                         is_tp_maker=True,
                         limit_fill_price=actual_fill_px,
+                    )
+                    return
+
+        # 0C. Tick-Cadence Option Premium Hard SL (-12.0% disaster floor).
+        # Aborts the millisecond the option bid drops >= 12.0% under entry (disaster circuit breaker).
+        for leg in legs:
+            if leg.status != "OPEN" or leg.entry_price <= 0:
+                continue
+            eff_px = live_bid if live_bid > 0 else leg.current_price
+            if eff_px > 0:
+                loss_frac = (eff_px - leg.entry_price) / leg.entry_price
+                if loss_frac <= -PREMIUM_HARD_SL_PCT:
+                    self._close_all_legs(
+                        f"Premium Hard SL (-{PREMIUM_HARD_SL_PCT*100:.1f}% disaster floor: {loss_frac*100:.1f}% @ {eff_px:.2f})"
                     )
                     return
 
@@ -916,7 +985,6 @@ class AegisExecutionManager:
                         elif context.signal_type == "PUT" and curr_spot > live_50:
                             is_opposed = True
                     if is_opposed:
-                        self._cancel_tp()
                         self._close_all_legs(
                             f"0DTE_STAGNATION_TRAP_EXIT ({int(hold_sec)}s, gain {cur_gain_pct*100:+.1f}%, 50-EMA opposed)"
                         )
@@ -968,14 +1036,12 @@ class AegisExecutionManager:
         if spot_wick_sl > 0 and curr_spot > 0:
             pa_name = getattr(context, "pa_setup_name", "") or "50 EMA Pullback"
             if context.signal_type == "PUT" and curr_spot >= spot_wick_sl:
-                self._cancel_tp()
                 c_high = getattr(context, "candle_high", 0.0)
                 self._close_all_legs(
                     f"{pa_name} Wick SL Hit (Spot {curr_spot:.1f} >= SL {spot_wick_sl:.1f} [Candle High {c_high:.1f} + buffer])"
                 )
                 return
             elif context.signal_type == "CALL" and curr_spot <= spot_wick_sl:
-                self._cancel_tp()
                 c_low = getattr(context, "candle_low", 0.0)
                 self._close_all_legs(
                     f"{pa_name} Wick SL Hit (Spot {curr_spot:.1f} <= SL {spot_wick_sl:.1f} [Candle Low {c_low:.1f} - buffer])"
@@ -985,11 +1051,9 @@ class AegisExecutionManager:
         # 3B. Spot Adverse Movement SL (Normalized Basis Points + 1m ATR regime expansion)
         if curr_spot > 0 and context.index_entry > 0:
             if context.signal_type == "CALL" and curr_spot <= (context.index_entry - spot_sl_pts):
-                self._cancel_tp()
                 self._close_all_legs(f"Spot Adverse Breakdown SL ({curr_spot:.1f} vs entry {context.index_entry:.1f}, -{spot_sl_pts:.1f}pts [{(spot_sl_pts/ref_spot)*10000:.1f}bps])")
                 return
             elif context.signal_type == "PUT" and curr_spot >= (context.index_entry + spot_sl_pts):
-                self._cancel_tp()
                 self._close_all_legs(f"Spot Adverse Rally SL ({curr_spot:.1f} vs entry {context.index_entry:.1f}, +{spot_sl_pts:.1f}pts [{(spot_sl_pts/ref_spot)*10000:.1f}bps])")
                 return
 
@@ -1005,29 +1069,43 @@ class AegisExecutionManager:
 
             trend_flipped = False
             flip_reason = ""
-            if context.signal_type == "PUT":
-                if live_ema_50 > 0 and curr_spot > (live_ema_50 + 5.0) and live_slope_50_bps > 0.5:
-                    trend_flipped = True
-                    flip_reason = f"Spot broke above 50-EMA ({curr_spot:.1f} > {live_ema_50:.1f}, slope +{live_slope_50_bps:.1f}bps)"
-                elif curr_spot > live_ema_1m and live_slope_1m_bps > 1.0:
-                    trend_flipped = True
-                    flip_reason = f"Spot crossed above 9-EMA ({curr_spot:.1f} > {live_ema_1m:.1f}, slope +{live_slope_1m_bps:.1f}bps)"
-                elif market_struct == "OPPOSED":
-                    trend_flipped = True
-                    flip_reason = "1m Market Structure OPPOSED (Higher Highs/Lows)"
-            elif context.signal_type == "CALL":
-                if live_ema_50 > 0 and curr_spot < (live_ema_50 - 5.0) and live_slope_50_bps < -0.5:
-                    trend_flipped = True
-                    flip_reason = f"Spot broke below 50-EMA ({curr_spot:.1f} < {live_ema_50:.1f}, slope {live_slope_50_bps:.1f}bps)"
-                elif curr_spot < live_ema_1m and live_slope_1m_bps < -1.0:
-                    trend_flipped = True
-                    flip_reason = f"Spot crossed below 9-EMA ({curr_spot:.1f} < {live_ema_1m:.1f}, slope {live_slope_1m_bps:.1f}bps)"
-                elif market_struct == "OPPOSED":
-                    trend_flipped = True
-                    flip_reason = "1m Market Structure OPPOSED (Lower Highs/Lows)"
+
+            # Completed 1m Candle Invalidation Exit (Pillar 2: 9 EMA Structural Exit)
+            bars_1m = getattr(tb_engine, "bars_1m", None)
+            if bars_1m and context.entry_time:
+                last_bar = bars_1m[-1]
+                bar_ts = getattr(last_bar, "ts_end", getattr(last_bar, "timestamp", 0.0))
+                if bar_ts >= context.entry_time.timestamp():
+                    if context.signal_type == "CALL" and last_bar.close < live_ema_1m:
+                        trend_flipped = True
+                        flip_reason = f"Spot 1m Bar Closed Below 9-EMA ({last_bar.close:.1f} < {live_ema_1m:.1f})"
+                    elif context.signal_type == "PUT" and last_bar.close > live_ema_1m:
+                        trend_flipped = True
+                        flip_reason = f"Spot 1m Bar Closed Above 9-EMA ({last_bar.close:.1f} > {live_ema_1m:.1f})"
+
+            if not trend_flipped:
+                if context.signal_type == "PUT":
+                    if live_ema_50 > 0 and curr_spot > (live_ema_50 + 5.0) and live_slope_50_bps > 0.5:
+                        trend_flipped = True
+                        flip_reason = f"Spot broke above 50-EMA ({curr_spot:.1f} > {live_ema_50:.1f}, slope +{live_slope_50_bps:.1f}bps)"
+                    elif curr_spot > live_ema_1m and live_slope_1m_bps > 1.0:
+                        trend_flipped = True
+                        flip_reason = f"Spot crossed above 9-EMA ({curr_spot:.1f} > {live_ema_1m:.1f}, slope +{live_slope_1m_bps:.1f}bps)"
+                    elif market_struct == "OPPOSED":
+                        trend_flipped = True
+                        flip_reason = "1m Market Structure OPPOSED (Higher Highs/Lows)"
+                elif context.signal_type == "CALL":
+                    if live_ema_50 > 0 and curr_spot < (live_ema_50 - 5.0) and live_slope_50_bps < -0.5:
+                        trend_flipped = True
+                        flip_reason = f"Spot broke below 50-EMA ({curr_spot:.1f} < {live_ema_50:.1f}, slope {live_slope_50_bps:.1f}bps)"
+                    elif curr_spot < live_ema_1m and live_slope_1m_bps < -1.0:
+                        trend_flipped = True
+                        flip_reason = f"Spot crossed below 9-EMA ({curr_spot:.1f} < {live_ema_1m:.1f}, slope {live_slope_1m_bps:.1f}bps)"
+                    elif market_struct == "OPPOSED":
+                        trend_flipped = True
+                        flip_reason = "1m Market Structure OPPOSED (Lower Highs/Lows)"
 
             if trend_flipped:
-                self._cancel_tp()
                 pnl_str = ""
                 if legs and legs[0].entry_price > 0:
                     eff_bid = live_bid if live_bid > 0 else legs[0].current_price
@@ -1054,46 +1132,69 @@ class AegisExecutionManager:
             # If trade has spent >= 180s and profit is hovering in +1.5% to +2.5%,
             # lock in gains immediately to prevent late-bar theta melt and reversals.
             if hold_sec >= 180.0 and 1.5 <= cur_pnl_pct <= 2.5:
-                self._cancel_tp()
                 self._close_all_legs(
                     f"TIME_HARVEST_LOCKED_GAIN (+{cur_pnl_pct:.1f}% after {int(hold_sec)}s @ {effective_bid:.2f})"
                 )
                 return
 
-            # ─── Point 4 Gate 1: Breakeven Defense Activation (+2.0% Peak Hurdle) ───
-            pct_hurdle_met = (peak_pnl_pct >= 2.0 and peak_gain_rs >= 0.50)
+            # ─── Point 4: Stepped Risk Compression + Cost-Shield + Near-Target Engine (V4.1) ───
+            # Scale-Invariant Normalized Percentage Model (strictly % normalized, no fixed paise!)
+            peak_bid = getattr(leg, "highest_bid", effective_bid)
+            peak_bid_gain = max(peak_gain_rs, peak_bid - leg.entry_price)
+            peak_pnl_frac = peak_bid_gain / leg.entry_price if leg.entry_price > 0 else 0.0
+            cur_pnl_frac = cur_pnl_rs / leg.entry_price if leg.entry_price > 0 else 0.0
+            peak_bid_frac = (peak_bid - leg.entry_price) / leg.entry_price if leg.entry_price > 0 else 0.0
 
-            # 4. Two-Key Breakeven Guard (Requires Gain >= 2.5x NoiseFloor AND (60s hold OR Normalized Spot confirmation))
-            move_hurdle_met = peak_gain_rs >= (BREAKEVEN_NOISE_MULT * noise_floor)
-            spot_extreme_met = False
-            spot_confirm_pts = max(ref_spot * (BREAKEVEN_SPOT_CONFIRM_BPS / 10000.0), BREAKEVEN_SPOT_ATR_MULT * atr_1m) if atr_1m > 0 else (ref_spot * (BREAKEVEN_SPOT_CONFIRM_BPS / 10000.0))
-            
-            if context.index_entry > 0 and curr_spot > 0:
-                if context.signal_type == "PUT":
-                    spot_extreme_met = (context.index_entry - curr_spot) >= spot_confirm_pts
-                elif context.signal_type == "CALL":
-                    spot_extreme_met = (curr_spot - context.index_entry) >= spot_confirm_pts
-
-            if not getattr(leg, "breakeven_locked", False):
-                if pct_hurdle_met or (move_hurdle_met and (hold_sec >= BREAKEVEN_TIME_SEC or spot_extreme_met)):
-                    leg.breakeven_locked = True
-                    logger.info(
-                        f"🛡️ [AegisEM] Breakeven Defense Armed: {leg.symbol} peak +{peak_pnl_pct:.1f}% (₹{peak_gain_rs:.2f}) -> "
-                        f"SL locked at Entry + buffer"
-                    )
-
-            if getattr(leg, "breakeven_locked", False):
-                be_lock_buffer = max(0.30, BREAKEVEN_LOCK_BUFFER_RS)
-                be_sl_price = _round_tick(leg.entry_price + be_lock_buffer)
-                if effective_bid > 0 and effective_bid <= be_sl_price:
-                    self._cancel_tp()
+            # 1. Near-Target Profit Lock (Peak Bid >= +3.5%, exits on >= 0.5% pullback from peak bid)
+            if peak_bid_frac >= NEAR_TARGET_TRIGGER_PCT:
+                pullback_frac = peak_bid_frac - cur_pnl_frac
+                if pullback_frac >= NEAR_TARGET_PULLBACK_TOLERANCE:
                     self._close_all_legs(
-                        f"Breakeven Guard (+{cur_pnl_pct:.1f}% @ {effective_bid:.2f}, gain ₹{cur_pnl_rs:.2f})"
+                        f"Near-Target Profit Lock (+{cur_pnl_pct:.1f}% @ {effective_bid:.2f} | Peak was +{peak_pnl_pct:.1f}%)"
                     )
                     return
 
-            # 5. Dynamic Runner Trailing
-            runner_hurdle_met = (peak_gain_rs >= RUNNER_ARM_NOISE_MULT * noise_floor) or ((peak_gain_rs / leg.entry_price) >= 0.15)
+            # 2. Dynamic SL & Cost-Shield Level Evaluation
+            dynamic_sl_price = None
+            dynamic_sl_reason = ""
+
+            if peak_pnl_frac >= STEP2_TRIGGER_PCT or getattr(leg, "breakeven_locked", False):
+                # Step 2: Peak reached >= +3.0% -> Cost-Shield Scratch Active (SL = Entry Price / 0.0%)
+                if not getattr(leg, "breakeven_locked", False):
+                    leg.breakeven_locked = True
+                    logger.info(
+                        f"🛡️ [AegisEM] Cost-Shield Scratch Armed: {leg.symbol} peak +{peak_pnl_pct:.1f}% (₹{peak_gain_rs:.2f}) -> "
+                        f"SL locked at Entry Price ₹{leg.entry_price:.2f} (0.0% Scratch / Loss Prevented)"
+                    )
+                dynamic_sl_price = _round_tick(leg.entry_price * (1.0 + STEP2_SL_PCT))  # 0.0%
+                dynamic_sl_reason = (
+                    f"Cost-Shield Scratch Exit (Breakeven Guard 0.0% @ {effective_bid:.2f} | "
+                    f"Peak was +{peak_pnl_pct:.1f}% | Loss Prevented!)"
+                )
+            elif peak_pnl_frac >= STEP1_TRIGGER_PCT or getattr(leg, "step1_sl_armed", False):
+                # Step 1: Peak reached >= +2.0% -> Stepped Safety Net Active (SL tightened from -12% to -3.0%)
+                if not getattr(leg, "step1_sl_armed", False):
+                    leg.step1_sl_armed = True
+                    logger.info(
+                        f"🛡️ [AegisEM] Stepped Safety Net Armed: {leg.symbol} peak +{peak_pnl_pct:.1f}% -> "
+                        f"SL tightened to -3.0% (₹{_round_tick(leg.entry_price * (1.0 + STEP1_SL_PCT)):.2f}, 5% cushion)"
+                    )
+                dynamic_sl_price = _round_tick(leg.entry_price * (1.0 + STEP1_SL_PCT))  # -3.0%
+                dynamic_sl_reason = (
+                    f"Stepped Safety Net SL ({cur_pnl_pct:+.1f}% @ {effective_bid:.2f} | "
+                    f"Peak was +{peak_pnl_pct:.1f}%)"
+                )
+
+            # 3. Dynamic SL Trigger Check
+            if dynamic_sl_price is not None and effective_bid > 0 and effective_bid <= dynamic_sl_price:
+                self._close_all_legs(dynamic_sl_reason)
+                return
+
+            # 5. Dynamic Runner Trailing (legacy — disabled in V4 single-target mode)
+            if V4_SINGLE_TARGET_MODE:
+                runner_hurdle_met = False
+            else:
+                runner_hurdle_met = (peak_gain_rs >= RUNNER_ARM_NOISE_MULT * noise_floor) or ((peak_gain_rs / leg.entry_price) >= 0.15)
             if runner_hurdle_met:
                 leg.runner_locked = True
 
@@ -1104,7 +1205,6 @@ class AegisExecutionManager:
 
                 # Dynamic trailing floor
                 if effective_bid > 0 and effective_bid <= runner_sl_price:
-                    self._cancel_tp()
                     pnl_rs = effective_bid - leg.entry_price
                     pnl_pct = (pnl_rs / leg.entry_price) * 100.0
                     self._close_all_legs(f"Runner Dynamic Trail Exit (+{pnl_pct:.1f}% @ {effective_bid:.2f})")
@@ -1119,7 +1219,6 @@ class AegisExecutionManager:
             effective_sl_price = _round_tick(leg.entry_price - effective_sl_dist)
 
             if effective_bid > 0 and effective_bid <= effective_sl_price:
-                self._cancel_tp()
                 loss_rs = leg.entry_price - effective_bid
                 loss_pct = (loss_rs / leg.entry_price) * 100.0
                 self._close_all_legs(
@@ -1202,22 +1301,21 @@ class AegisExecutionManager:
                             time.sleep(0.5)
                             if hasattr(api, "single_order_history"):
                                 hist = api.single_order_history(orderno=check_ordno)
-                                if isinstance(hist, list) and hist:
-                                    latest = hist[-1]
-                                    if latest.get("status") in ["FILLED", "COMPLETE"]:
-                                        filled = True
-                                        fill_price = float(latest.get("avgprc") or limit_fill_price)
-                                        logger.info(
-                                            f"🎉 [AegisEM] Case A: TP order {check_ordno} CONFIRMED FILLED @ "
-                                            f"{fill_price:.2f} (limit_fill_price={limit_fill_price:.2f})"
-                                        )
-                                    else:
-                                        logger.info(
-                                            f"[AegisEM] Case A: TP order {check_ordno} status={latest.get('status')} "
-                                            f"— accepting limit_fill_price={limit_fill_price:.2f} as fill reference"
-                                        )
-                                        filled = True
-                                        fill_price = limit_fill_price
+                                hist_filled, hist_fill_px = self._check_hist_filled(hist)
+                                if hist_filled:
+                                    filled = True
+                                    fill_price = hist_fill_px if hist_fill_px > 0 else limit_fill_price
+                                    logger.info(
+                                        f"🎉 [AegisEM] Case A: TP order {check_ordno} CONFIRMED FILLED @ "
+                                        f"{fill_price:.2f} (limit_fill_price={limit_fill_price:.2f})"
+                                    )
+                                else:
+                                    logger.info(
+                                        f"[AegisEM] Case A: TP order {check_ordno} hist check unconfirmed "
+                                        f"— accepting limit_fill_price={limit_fill_price:.2f} as fill reference"
+                                    )
+                                    filled = True
+                                    fill_price = limit_fill_price
                         except Exception as e_tp:
                             logger.warning(f"[AegisEM] Maker TP status check warning: {e_tp}")
                     
@@ -1247,32 +1345,69 @@ class AegisExecutionManager:
                 if check_ordno and not str(check_ordno).startswith("PAPER_") and api and hasattr(api, "single_order_history"):
                     try:
                         hist = api.single_order_history(orderno=check_ordno)
-                        if isinstance(hist, list) and hist:
-                            latest = hist[-1]
-                            if latest.get("status") in ["FILLED", "COMPLETE"]:
-                                filled = True
-                                fill_price = float(latest.get("avgprc") or getattr(leg, "tp_price", 0.0) or leg.current_price)
-                                logger.info(
-                                    f"🎉 [AegisEM] Resting TP order {check_ordno} was already FILLED at broker @ {fill_price:.2f}! "
-                                    f"Skipping chase exit (position already flat)."
-                                )
+                        hist_filled, hist_fill_px = self._check_hist_filled(hist)
+                        if hist_filled:
+                            filled = True
+                            fill_price = hist_fill_px if hist_fill_px > 0 else (getattr(leg, "tp_price", 0.0) or leg.current_price)
+                            logger.info(
+                                f"🎉 [AegisEM] Resting TP order {check_ordno} was already FILLED at broker @ {fill_price:.2f}! "
+                                f"Skipping chase exit (position already flat)."
+                            )
                     except Exception as e_hist:
                         logger.warning(f"[AegisEM] Pre-chase TP check warning: {e_hist}")
 
             if not filled:
                 # Step 1: Anchor to fresh live bid (marketable fill)
                 live_bid_1 = _get_live_bid(leg.current_price)
-                price_1 = _round_tick(min(live_bid_1, leg.current_price * 0.99))
+                price_1 = _round_tick(get_marketable_exit_limit_price(live_bid_1)) if live_bid_1 > 0 else _round_tick(leg.current_price * 0.99)
                 ordno = None
                 
                 if self.tp_order_id and not str(self.tp_order_id).startswith("PAPER_"):
                     ordno = self.tp_order_id
                     if api and hasattr(api, "modify_order"):
-                        api.modify_order(exchange=exch_seg, tradingsymbol=leg.symbol, orderno=ordno,
-                                         newquantity=qty, newprice_type="LMT", newprice=f"{price_1:.2f}")
-                else:
-                    if api and hasattr(self.order_lifecycle, "_build_kwargs"):
-                        kwargs = self.order_lifecycle._build_kwargs("S", exch_seg, leg.symbol, qty, f"{price_1:.2f}")
+                        try:
+                            logger.info(
+                                f"[AegisEM] ⚡ ATOMIC IN-PLACE EXIT: Modifying resting TP order {ordno} -> "
+                                f"LMT @ {price_1:.2f} (live_bid={live_bid_1:.2f}) for instant fill"
+                            )
+                            resp = api.modify_order(
+                                exchange=exch_seg,
+                                tradingsymbol=leg.symbol,
+                                orderno=ordno,
+                                newquantity=qty,
+                                newprice_type="LMT",
+                                newprice=f"{price_1:.2f}",
+                            )
+                            logger.info(f"[AegisEM] modify_order response: {resp}")
+                            if isinstance(resp, dict) and resp.get("stat") != "Ok":
+                                emsg = str(resp.get("emsg", "")).lower()
+                                if "complete" in emsg or "filled" in emsg:
+                                    logger.info(f"[AegisEM] Resting TP order {ordno} already filled at broker: {resp}")
+                                    filled = True
+                                    fill_price = getattr(leg, "tp_price", price_1)
+                                else:
+                                    logger.warning(f"[AegisEM] modify_order failed: {resp}. Cancelling before fallback place_order.")
+                                    self._cancel_tp()
+                                    ordno = None
+                        except Exception as e_mod:
+                            logger.error(f"[AegisEM] Exception in modify_order: {e_mod}. Cancelling before fallback place_order.")
+                            self._cancel_tp()
+                            ordno = None
+                
+                if not ordno and not filled:
+                    if api:
+                        if hasattr(self.order_lifecycle, "_build_kwargs"):
+                            kwargs = self.order_lifecycle._build_kwargs("S", exch_seg, leg.symbol, qty, f"{price_1:.2f}")
+                        else:
+                            kwargs = {
+                                "buy_or_sell": "S",
+                                "product_type": "M",
+                                "exchange": exch_seg,
+                                "tradingsymbol": leg.symbol,
+                                "quantity": qty,
+                                "price_type": "LMT",
+                                "price": f"{price_1:.2f}",
+                            }
                         place = getattr(api, "place_order", None)
                         if place:
                             resp = place(**kwargs)
@@ -1282,27 +1417,23 @@ class AegisExecutionManager:
                 if ordno:
                     time.sleep(0.8)
                     history = api.single_order_history(orderno=ordno) if hasattr(api, "single_order_history") else []
-                    latest = history[0] if history and isinstance(history, list) else {}
-                    status = latest.get("status", "OPEN")
-                    
-                    if status in ["FILLED", "COMPLETE"]:
+                    h_filled, h_px = self._check_hist_filled(history)
+                    if h_filled:
                         filled = True
-                        fill_price = float(latest.get("avgprc") or price_1)
+                        fill_price = h_px if h_px > 0 else price_1
                     else:
                         # Step 2: Refresh live bid and chase 1% below current bid
                         live_bid_2 = _get_live_bid(price_1)
-                        price_2 = _round_tick(min(live_bid_2 * 0.99, leg.current_price * 0.98))
+                        price_2 = _round_tick(get_marketable_exit_limit_price(live_bid_2 * 0.99)) if live_bid_2 > 0 else _round_tick(leg.current_price * 0.98)
                         if api and hasattr(api, "modify_order"):
                             api.modify_order(exchange=exch_seg, tradingsymbol=leg.symbol, orderno=ordno,
                                              newquantity=qty, newprice_type="LMT", newprice=f"{price_2:.2f}")
                         time.sleep(1.0)
                         history = api.single_order_history(orderno=ordno) if hasattr(api, "single_order_history") else []
-                        latest = history[0] if history and isinstance(history, list) else {}
-                        status = latest.get("status", "OPEN")
-                        
-                        if status in ["FILLED", "COMPLETE"]:
+                        h_filled, h_px = self._check_hist_filled(history)
+                        if h_filled:
                             filled = True
-                            fill_price = float(latest.get("avgprc") or price_2)
+                            fill_price = h_px if h_px > 0 else price_2
                         else:
                             # Step 3: Cancel & Replace at aggressive exit 2% below fresh live bid
                             if api and hasattr(api, "cancel_order"):
@@ -1319,13 +1450,14 @@ class AegisExecutionManager:
                                     if ordno_3:
                                         time.sleep(0.8)
                                         history = api.single_order_history(orderno=ordno_3) if hasattr(api, "single_order_history") else []
-                                        latest = history[0] if history and isinstance(history, list) else {}
-                                        status = latest.get("status", "OPEN")
-                                        if status in ["FILLED", "COMPLETE"]:
-                                            fill_price = float(latest.get("avgprc") or price_3)
+                                        h_filled, h_px = self._check_hist_filled(history)
+                                        if h_filled:
+                                            fill_price = h_px if h_px > 0 else price_3
                                             filled = True
                                             fill_ts = time.time()
                                         else:
+                                            latest = history[0] if history and isinstance(history, list) and isinstance(history[0], dict) else {}
+                                            status = latest.get("status", "OPEN")
                                             logger.error(f"[AegisEM Chaser] Step-3 exit order {ordno_3} NOT filled (status={status}) — position may still be open at broker")
                                     else:
                                         logger.error(f"[AegisEM Chaser] Step-3 aggressive exit order placement failed: {resp}")
@@ -1640,6 +1772,7 @@ class AegisExecutionManager:
                         "tp_price": getattr(leg, "tp_price", None),
                         "highest_price": getattr(leg, "highest_price", leg.entry_price),
                         "breakeven_locked": getattr(leg, "breakeven_locked", False),
+                        "step1_sl_armed": getattr(leg, "step1_sl_armed", False),
                         "runner_locked": getattr(leg, "runner_locked", False),
                     }
                     for leg in self.trade_context.legs
@@ -1693,6 +1826,7 @@ class AegisExecutionManager:
                     leg.tp_price = float(ld["tp_price"])
                 leg.highest_price = float(ld.get("highest_price") or leg.entry_price)
                 leg.breakeven_locked = bool(ld.get("breakeven_locked", False))
+                leg.step1_sl_armed = bool(ld.get("step1_sl_armed", False))
                 leg.runner_locked = bool(ld.get("runner_locked", False))
                 self.trade_context.add_leg(leg)
             self.trade_context.status = "OPEN"

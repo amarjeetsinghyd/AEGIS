@@ -57,8 +57,11 @@ class TickCompiler:
         # The backoff thread is OFF the hot path — on_message is never blocked.
         # Weekend/holiday WS drops are expected (AGENTS.md SHOONYA) and skipped via
         # is_trading_day before any re-subscribe attempt.
-        self._subscribed_tokens = []
+        # Exchange-aware: tokens are tracked per-exchange so BSE spot (1) and
+        # BFO options are never re-subscribed as NSE on reconnect.
+        self._subscribed_tokens = {}
         self._subscribed_exchange = "NSE"
+        self._wired_listeners = False
         self._reconnect_lock = threading.Lock()
         self._reconnecting = False
         # ─── TIER 2 INTRADAY FILTER (15-min rolling stats) ───
@@ -72,9 +75,12 @@ class TickCompiler:
         self._stats_window_start = time.time()
 
     def set_symbol_map(self, token_to_symbol: dict):
-        self._t2s = {str(k): str(v) for k, v in token_to_symbol.items()}
+        # Refresh-safe: merges new tokens (09:15 universe expansion) without
+        # dropping pool entries. Never shrinks pool to avoid hot-path churn.
+        merged = {str(k): str(v) for k, v in token_to_symbol.items()}
+        self._t2s.update(merged)
         # Initialize tick pool for zero-copy path
-        for sym in self._t2s.values():
+        for sym in merged.values():
             if sym not in self._tick_pool:
                 self._tick_pool[sym] = ParsedTick()
 
@@ -110,7 +116,6 @@ class TickCompiler:
             sp1 = self._as_float(message, "ask", "sp1", default=0.0)
             ts = datetime.now()
 
-            import time
             with self.lock:
                 prev = self.market_depth.get(token, {"v": 0.0, "lp": 0.0, "bp1": 0.0, "sp1": 0.0})
                 old_vol = float(prev.get("v", 0.0))
@@ -279,26 +284,52 @@ class TickCompiler:
         if mdp is None:
             logger.error("TICK WIRING FAILED: no add_tick_listener/subscribe found on broker chain!")
             return
-        # MN-4: remember what we subscribed so a mid-session WS close can re-issue it.
-        self._subscribed_tokens = list([str(t) for t in tokens])
-        self._subscribed_exchange = exchange
-        if hasattr(mdp, "add_tick_listener"):
-            mdp.add_tick_listener(self.on_message)
-        # MN-4: register as a WS-close listener so the broker hands us the
-        # socket_close_callback without us owning the WS lifecycle. Guarded so
-        # brokers without close-listener support silently skip reconnect wiring.
-        if hasattr(mdp, "add_close_listener"):
-            mdp.add_close_listener(self.on_ws_close)
+        # Exchange-aware accumulate: same token on different exchange stays distinct.
+        # Old single-exchange overwrite caused BSE:1 / BFO options to be
+        # re-subscribed as NSE on reconnect → Spot 0.
+        if not isinstance(self._subscribed_tokens, dict):
+            legacy = list(self._subscribed_tokens) if isinstance(self._subscribed_tokens, list) else []
+            self._subscribed_tokens = {}
+            for t in legacy:
+                self._subscribed_tokens[str(t)] = self._subscribed_exchange
+        exch = str(exchange or "NSE").upper()
+        for t in (tokens or []):
+            self._subscribed_tokens[str(t)] = exch
+        self._subscribed_exchange = exch
+        if not self._wired_listeners:
+            if hasattr(mdp, "add_tick_listener"):
+                mdp.add_tick_listener(self.on_message)
+            # MN-4: register as a WS-close listener so the broker hands us the
+            # socket_close_callback without us owning the WS lifecycle. Guarded so
+            # brokers without close-listener support silently skip reconnect wiring.
+            if hasattr(mdp, "add_close_listener"):
+                mdp.add_close_listener(self.on_ws_close)
+            self._wired_listeners = True
         if hasattr(mdp, "subscribe"):
             try:
-                mdp.subscribe(tokens, exchange, feed_type="t")
-            except TypeError:
-                mdp.subscribe(tokens, exchange, "t")
-            try:
-                mdp.subscribe(tokens, exchange, feed_type="d")
-            except TypeError:
-                mdp.subscribe(tokens, exchange, "d")
+                self._subscribe_feeds(mdp, tokens, exchange)
+            except Exception as e_sub:
+                logger.warning(f"Subscribe deferred ({exchange} {len(tokens)} tokens): {e_sub}")
         logger.info(f"Subscribed {len(tokens)} equities on {exchange} (touchline+depth) for 3m+15m WS candles + footprints.")
+
+    @staticmethod
+    def _subscribe_feeds(mdp, tokens, exchange) -> None:
+        """Broker-tolerant subscribe: Shoonya (feed_type) and Angel (tokens, exchange)."""
+        try:
+            mdp.subscribe(tokens, exchange, feed_type="t")
+        except TypeError:
+            try:
+                mdp.subscribe(tokens, exchange, "t")
+            except TypeError:
+                mdp.subscribe(tokens, exchange)
+                return
+        try:
+            mdp.subscribe(tokens, exchange, feed_type="d")
+        except TypeError:
+            try:
+                mdp.subscribe(tokens, exchange, "d")
+            except TypeError:
+                pass
 
     # ─── MN-4: WebSocket reconnection with exponential backoff ───
     # on_ws_close is called by the broker's socket_close_callback (NorenApiPy).
@@ -337,19 +368,27 @@ class TickCompiler:
                 if mdp is None:
                     logger.warning("Reconnect cannot re-issue subscribe: no MDP resolved.")
                     return
-                tokens = self._subscribed_tokens
-                exchange = self._subscribed_exchange
+                # Group by exchange so BSE spot and BFO options keep their segment.
+                grouped = {}
+                if isinstance(self._subscribed_tokens, dict):
+                    for tok, exch in self._subscribed_tokens.items():
+                        grouped.setdefault(str(exch or "NSE").upper(), []).append(tok)
+                else:
+                    grouped[str(self._subscribed_exchange or "NSE").upper()] = list(self._subscribed_tokens or [])
+                if not grouped or all(len(v) == 0 for v in grouped.values()):
+                    logger.info("WS reconnect skipped: no subscribed tokens remembered.")
+                    return
                 try:
                     if hasattr(mdp, "subscribe"):
-                        try:
-                            mdp.subscribe(tokens, exchange, feed_type="t")
-                        except TypeError:
-                            mdp.subscribe(tokens, exchange, "t")
-                        try:
-                            mdp.subscribe(tokens, exchange, feed_type="d")
-                        except TypeError:
-                            mdp.subscribe(tokens, exchange, "d")
-                    logger.info(f"WS reconnect re-subscribed {len(tokens)} tokens on {exchange} after {backoff:.1f}s backoff.")
+                        for exch, toks in grouped.items():
+                            if not toks:
+                                continue
+                            try:
+                                TickCompiler._subscribe_feeds(mdp, toks, exch)
+                            except Exception as e_sub:
+                                logger.warning(f"Reconnect subscribe deferred ({exch}): {e_sub}")
+                    total = sum(len(v) for v in grouped.values())
+                    logger.info(f"WS reconnect re-subscribed {total} tokens across {len(grouped)} exchanges after {backoff:.1f}s backoff.")
                     return  # re-issue succeeded — close listener will fire again on the next drop
                 except Exception as exc:
                     logger.warning(f"WS reconnect re-subscribe failed ({exc}); backing off {min(backoff*2, 30.0):.1f}s.")

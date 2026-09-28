@@ -15,6 +15,7 @@ module.exports = {
         BOT_RUNTIME: "aegis",
         AEGIS_ML_GATEKEEPER_MODE: "ACTIVE",
         AEGIS_QUALITY_STACK_MODE: "ACTIVE",
+        AEGIS_CONFIRM15_MODE: "SHADOW",
         MAX_TRADES_PER_DAY: "3",
         AEGIS_CONSEC_LOSS_STOP: "2",
         AEGIS_DAILY_LOSS_CAP_RS: "2000.0",

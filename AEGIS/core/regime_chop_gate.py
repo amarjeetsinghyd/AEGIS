@@ -21,7 +21,8 @@ class RegimeChopGate:
     def __init__(
         self,
         ker_window_sec: float = 60.0,
-        ker_veto_threshold: float = 0.01,       # veto only on virtually zero net displacement
+        ker_veto_threshold: float = 0.04,       # veto if KER < 0.04 (calibrated to index tick noise)
+        mid_window_sec: float = 180.0,          # 3-min intermediate trend memory window
         range_window_sec: float = 60.0,
         range_ref_window_sec: float = 1800.0,   # 30-min reference window
         range_compression_veto: float = 0.04,   # veto only on ultra-compressed dead range (< 4%)
@@ -33,6 +34,7 @@ class RegimeChopGate:
     ):
         self.ker_window_sec = ker_window_sec
         self.ker_veto_threshold = ker_veto_threshold
+        self.mid_window_sec = mid_window_sec
         self.range_window_sec = range_window_sec
         self.range_ref_window_sec = range_ref_window_sec
         self.range_compression_veto = range_compression_veto
@@ -42,8 +44,9 @@ class RegimeChopGate:
         self.cooldown_sec = cooldown_sec
         self.strike_step = strike_step
 
-        self._short: deque = deque()             # (ts, price), time-windowed
-        self._long: deque = deque()               # (ts, price), time-windowed
+        self._short: deque = deque()             # (ts, price), time-windowed (60s)
+        self._mid: deque = deque()               # (ts, price), time-windowed (180s trend memory)
+        self._long: deque = deque()               # (ts, price), time-windowed (1800s)
         self._vr_prices: deque = deque(maxlen=vr_window_ticks + 1)  # fixed-count
 
         self._ker_path_sum: float = 0.0
@@ -53,14 +56,14 @@ class RegimeChopGate:
         """Call when a trade closes (SL, TP, or time-stop) to start the cooldown."""
         self._last_trade_close_ts = ts
 
-    def update(self, spot: float, ts: float) -> Tuple[bool, str, Dict[str, Optional[float]]]:
+    def update(self, spot: float, ts: float, evaluate: bool = True) -> Optional[Tuple[bool, str, Dict[str, Optional[float]]]]:
         """Call on every new underlying spot tick."""
         if spot <= 0:
-            return False, "invalid_spot", {}
+            return (False, "invalid_spot", {}) if evaluate else None
 
         # Avoid polluting incremental sum with identical stagnant spot ticks
         if self._short and spot == self._short[-1][1] and (ts - self._short[-1][0]) < 0.2:
-            return self.get_regime_state(ts)
+            return self.get_regime_state(ts) if evaluate else None
 
         # Maintain short window & incremental path-length sum
         if self._short:
@@ -75,6 +78,11 @@ class RegimeChopGate:
                 if self._ker_path_sum < 0.0:
                     self._ker_path_sum = 0.0  # guard against float drift
 
+        # Maintain mid (3-min trend memory) window
+        self._mid.append((ts, spot))
+        while self._mid and (ts - self._mid[0][0]) > self.mid_window_sec:
+            self._mid.popleft()
+
         # Maintain long (reference range) window
         self._long.append((ts, spot))
         while self._long and (ts - self._long[0][0]) > self.range_ref_window_sec:
@@ -83,7 +91,7 @@ class RegimeChopGate:
         # Maintain fixed-count window for variance ratio
         self._vr_prices.append(spot)
 
-        return self.get_regime_state(ts)
+        return self.get_regime_state(ts) if evaluate else None
 
     def get_regime_state(self, ts: float) -> Tuple[bool, str, Dict[str, Optional[float]]]:
         """Read-only evaluation of the current regime state."""
@@ -98,10 +106,12 @@ class RegimeChopGate:
         metrics["ker"] = ker
 
         # 2. Range compression: current short-window range vs long reference range
-        short_high = max(p for _, p in self._short)
-        short_low = min(p for _, p in self._short)
-        long_high = max(p for _, p in self._long)
-        long_low = min(p for _, p in self._long)
+        s_prices = [p for _, p in self._short]
+        short_high = max(s_prices)
+        short_low = min(s_prices)
+        l_prices = [p for _, p in self._long]
+        long_high = max(l_prices)
+        long_low = min(l_prices)
         short_range = short_high - short_low
         long_range = long_high - long_low
         range_ratio = (short_range / long_range) if long_range > 1e-9 else 0.0
@@ -133,10 +143,19 @@ class RegimeChopGate:
         if range_ratio < self.range_compression_veto:
             return False, "range_compressed", metrics
 
-        if ker < self.ker_veto_threshold:
-            return False, "low_efficiency_chop", metrics
+        # Multi-Window Adaptive Displacement:
+        # If 60s displacement >= min_trend_pts OR 180s (3m) displacement >= 2.0 * min_trend_pts (5.0 pts on Nifty / 10.0 pts on Sensex),
+        # the market is actively trending (not dead chop) — short-term 1m pauses/pullbacks are recognized as trend continuation.
+        min_trend_pts = 2.5 if self.strike_step == 50.0 else 5.0
+        mid_move = abs(self._mid[-1][1] - self._mid[0][1]) if len(self._mid) >= 2 else 0.0
+        metrics["mid_move_pts"] = mid_move
 
-        if vr is not None and vr < self.vr_veto_threshold:
-            return False, "mean_reversion_signature", metrics
+        is_trending = (net_move >= min_trend_pts) or (mid_move >= (2.0 * min_trend_pts))
+        if not is_trending:
+            if ker < self.ker_veto_threshold:
+                return False, "low_efficiency_chop", metrics
+
+            if vr is not None and vr < self.vr_veto_threshold:
+                return False, "mean_reversion_signature", metrics
 
         return True, "regime_ok", metrics

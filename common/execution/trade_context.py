@@ -27,6 +27,13 @@ class TradeLeg:
         self.sl_limit_price = 0.0
         self.last_sl_modify_time = 0.0
         self.highest_price = entry_price
+        self.lowest_price = entry_price
+        self.time_to_highest_sec = 0.0
+        self.time_to_lowest_sec = 0.0
+
+    @property
+    def realized_pnl(self):
+        return self.pnl
 
     def close_leg(self, exit_price: float, reason: str):
         self.status = "CLOSED"
@@ -56,7 +63,10 @@ class TradeLeg:
             "sl_orderno": self.sl_orderno,
             "sl_trigger_price": self.sl_trigger_price,
             "sl_limit_price": self.sl_limit_price,
-            "highest_price": self.highest_price
+            "highest_price": self.highest_price,
+            "lowest_price": getattr(self, "lowest_price", self.entry_price),
+            "time_to_highest_sec": getattr(self, "time_to_highest_sec", 0.0),
+            "time_to_lowest_sec": getattr(self, "time_to_lowest_sec", 0.0),
         }
 
 

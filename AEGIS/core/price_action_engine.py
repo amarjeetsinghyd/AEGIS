@@ -1,10 +1,11 @@
 """
 AEGIS PriceActionEngine — End-to-End Pure Price Action & Microstructure Scalper Engine.
 
-Implements the 3 empirically verified, zero-lag price action scalp pillars:
+Implements the 4 empirically verified, zero-lag price action scalp pillars:
   Pillar 1: 20 EMA + Wick Rejection (User's System — #1 Performer on NIFTY & SENSEX)
-  Pillar 2: Al Brooks 2-Legged Pullback (H2 / L2 Exhaustion Sweep into 50 EMA)
-  Pillar 3: Volatility Squeeze to Expansion Breakout (100% Win-Rate Microstructure Scalper)
+  Pillar 2: Al Brooks 2-Legged Pullback / Micro-Sweep Reclaim (H2/L2 Sweep into 50 EMA)
+  Pillar 3: Volatility Squeeze to Expansion Breakout (3-Bar Tight Box Expansion)
+  Pillar 4: Break of Structure (BOS Level Breakout above PDH/Pivot or below PDL/Pivot)
 
 Key Architectural Principles:
   - Scale-Invariant: Buffer points and tolerances dynamically normalize to index spot price.
@@ -16,11 +17,25 @@ Key Architectural Principles:
 from __future__ import annotations
 import math
 import logging
+import os
 from collections import deque
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
 
-logger = logging.getLogger("aegis.price_action_engine")
+import numpy as np
+try:
+    from AEGIS.core.aegis_v4_core import FastMonotonicStack
+except ImportError:
+    try:
+        from core.aegis_v4_core import FastMonotonicStack
+    except ImportError:
+        FastMonotonicStack = None
+
+try:
+    from common.logger import get_logger
+    logger = get_logger("aegis_price_action")
+except Exception:
+    logger = logging.getLogger("aegis_price_action")
 
 
 @dataclass
@@ -33,6 +48,19 @@ class OHLCBar:
     close: float
     volume: float = 0.0
     tick_count: int = 0
+    # ─── 1-Minute Option Flow (Institutional Delta Footprint) ───
+    call_buy_vol: float = 0.0      # Lifted at Ask (Aggressive Call Buying)
+    call_sell_vol: float = 0.0     # Hit at Bid (Call Writing / Liquidation)
+    put_buy_vol: float = 0.0       # Lifted at Ask (Aggressive Put Buying)
+    put_sell_vol: float = 0.0      # Hit at Bid (Put Writing / Liquidation)
+    opt_delta_flow: float = 0.0    # Directional Flow: call_buy_vol - put_buy_vol
+    opt_total_vol: float = 0.0     # Total Option Traded Volume across ATM window
+    opt_pcr: float = 1.0           # Put Volume / Call Volume ratio
+
+    @property
+    def ts(self) -> float:
+        """Alias ts to ts_end for timestamp compatibility."""
+        return self.ts_end
 
 
 class PriceActionEngine:
@@ -51,10 +79,35 @@ class PriceActionEngine:
         self.max_history_bars = max_history_bars
         self.atr_period = atr_period
 
-        # ─── 1-Minute Bar Building State ───
+        # ─── 1-Minute and 5-Minute Bar Building State ───
         self._curr_1m_bar: Optional[OHLCBar] = None
         self._curr_1m_bucket: int = -1
         self.bars_1m: deque[OHLCBar] = deque(maxlen=max_history_bars)
+        self._curr_5m_bar: Optional[OHLCBar] = None
+        self.bars_5m: deque[OHLCBar] = deque(maxlen=200)
+
+
+        # ─── Real-Time 1-Minute Option Flow Accumulator (ATM ± 7 Window) ───
+        self._opt_flow_1m = {
+            "call_buy_vol": 0.0,
+            "call_sell_vol": 0.0,
+            "put_buy_vol": 0.0,
+            "put_sell_vol": 0.0,
+            "unclass_vol": 0.0,
+        }
+        self._opt_last_cum_vol: Dict[str, float] = {}
+        self._opt_last_lp: Dict[str, float] = {}
+        self._opt_last_frac: Dict[str, float] = {}
+
+        # ─── 4-Line Trapped-Buyer Pain Zone VWAP Accumulators ───
+        self._cum_cb_pv: float = 0.0
+        self._cum_cb_vol: float = 0.0
+        self._cum_cs_pv: float = 0.0
+        self._cum_cs_vol: float = 0.0
+        self._cum_pb_pv: float = 0.0
+        self._cum_pb_vol: float = 0.0
+        self._cum_ps_pv: float = 0.0
+        self._cum_ps_vol: float = 0.0
 
         # ─── Price & Tick State ───
         self.last_price: float = 0.0
@@ -84,8 +137,18 @@ class PriceActionEngine:
         self.current_vwap: float = 0.0
         self._current_vwap_day: int = -1
 
-        # ─── Break-of-Structure (BOS) State ───
-        self._pending_bos: Optional[Dict[str, Any]] = None
+        # ─── Daily Structural Levels (PDH / PDL / PDC) ───
+        self.pdh: float = 0.0
+        self.pdl: float = 0.0
+        self.pdc: float = 0.0
+        self.proximity_threshold_bps: float = float(os.getenv("AEGIS_KEY_LEVEL_PROXIMITY_BPS", "8.0"))
+        # ─── HVG Topological Engine (Pillar 4 Legacy/Shadow) ───
+        self.hvg_engine: Any = None
+        # ─── AEGIS V4.0 Topological 0-D Prominence Stack (Pillar 4 Final) ───
+        self.prominence_stack: Any = FastMonotonicStack(capacity=128) if FastMonotonicStack is not None else None
+        self._l2_depth_history: Optional[List[Tuple[float, float, float, float]]] = None
+        # ─── ML Gatekeeper Flow Recorder Reference ───
+        self.ml_gatekeeper: Any = None
 
     # ═══════════════════════════════════════════════════════════
     # 1. REAL-TIME TICK AGGREGATION & INDICATOR UPDATES
@@ -102,17 +165,14 @@ class PriceActionEngine:
         self.last_price = price
         self.last_ts = ts_sec
 
-        # 1. Intraday VWAP Accumulation
+        # 1. Intraday VWAP & Option Flow Day Reset
         day_bucket = int(ts_sec // 86400)
         if self._current_vwap_day != day_bucket:
             self._vwap_cum_vol_price = 0.0
             self._vwap_cum_vol = 0.0
+            self.current_vwap = 0.0
             self._current_vwap_day = day_bucket
-
-        self._vwap_cum_vol_price += price
-        self._vwap_cum_vol += 1.0
-        if self._vwap_cum_vol > 0:
-            self.current_vwap = self._vwap_cum_vol_price / self._vwap_cum_vol
+            self._reset_option_day_state()
 
         # 2. 1-Minute Bar Aggregation
         bucket_1m = int(ts_sec // 60)
@@ -141,9 +201,380 @@ class PriceActionEngine:
                 bar.volume += 1.0
                 bar.tick_count += 1
 
+    def _reset_option_day_state(self) -> None:
+        """Resets option flow accumulators and tracking state on session rollover."""
+        self._opt_last_cum_vol.clear()
+        self._opt_last_lp.clear()
+        self._opt_last_frac.clear()
+        self._cum_cb_pv = 0.0
+        self._cum_cb_vol = 0.0
+        self._cum_cs_pv = 0.0
+        self._cum_cs_vol = 0.0
+        self._cum_pb_pv = 0.0
+        self._cum_pb_vol = 0.0
+        self._cum_ps_pv = 0.0
+        self._cum_ps_vol = 0.0
+
+    def _classify_buy_fraction(self, sym: str, lp: float, bp1: float, sp1: float) -> Optional[float]:
+        """
+        Buyer-initiated fraction (0.0-1.0) using Touch-first classification
+        with Lee-Ready Tick Rule fallback. Returns None if unclassifiable.
+        """
+        valid_quote = bp1 > 0 and sp1 > 0 and sp1 > bp1
+
+        if valid_quote and lp >= sp1:
+            frac = 1.0                          # Lifted the ask — pure buy
+        elif valid_quote and lp <= bp1:
+            frac = 0.0                          # Hit the bid — pure sell
+        else:
+            # Inside spread OR broken/locked quote -> Tick Rule (Lee-Ready fallback)
+            prev_lp = self._opt_last_lp.get(sym)
+            if prev_lp is None or prev_lp <= 0:
+                self._opt_last_lp[sym] = lp
+                return None
+            if lp > prev_lp:
+                frac = 1.0
+            elif lp < prev_lp:
+                frac = 0.0
+            else:
+                frac = self._opt_last_frac.get(sym)   # Zero-tick: carry forward
+                if frac is None:
+                    self._opt_last_lp[sym] = lp
+                    return None
+
+        self._opt_last_lp[sym] = lp
+        self._opt_last_frac[sym] = frac
+        return frac
+
+    def get_pain_zone_vwaps(self, lot_size: float = 25.0, min_bars: Optional[int] = None) -> Dict[str, float]:
+        """
+        Returns the 4-Line Trapped-Buyer Pain Zone VWAPs and Composite Option VWAP.
+        Enforces both volume threshold (>= 200 lots) AND time threshold (>= 30 bars)
+        before lines become active (DeepSeek V4 Pro AND-gate specification).
+        """
+        min_vol = float(os.getenv("AEGIS_PAIN_ZONE_MIN_LOTS", "200")) * lot_size
+        req_bars = int(os.getenv("AEGIS_PAIN_ZONE_MIN_BARS", "0")) if min_bars is None else int(min_bars)
+        time_ok = (len(self.bars_1m) >= req_bars) if req_bars > 0 else True
+
+        def _v(pv: float, v: float) -> float:
+            return pv / v if (time_ok and v >= min_vol) else 0.0
+
+        return {
+            "vwap_call_buy": _v(self._cum_cb_pv, self._cum_cb_vol),
+            "vwap_call_sell": _v(self._cum_cs_pv, self._cum_cs_vol),
+            "vwap_put_buy": _v(self._cum_pb_pv, self._cum_pb_vol),
+            "vwap_put_sell": _v(self._cum_ps_pv, self._cum_ps_vol),
+            "vwap_composite": self.current_vwap,
+        }
+
+    def get_flow_symmetry_diagnostic(self) -> Dict[str, Any]:
+        """
+        EOD Classifier Symmetry Diagnostic per DeepSeek V4 Pro.
+        Evaluates overall buyer vs seller balance across Call and Put contracts.
+        Ratio = (CallBuy + PutBuy) / Total Volume.
+        Acceptable institutional equilibrium is 0.45 - 0.55.
+        """
+        cb = self._cum_cb_vol
+        cs = self._cum_cs_vol
+        pb = self._cum_pb_vol
+        ps = self._cum_ps_vol
+        tot = cb + cs + pb + ps
+        buyer_vol = cb + pb
+        ratio = (buyer_vol / tot) if tot > 0 else 0.50
+        is_balanced = (0.45 <= ratio <= 0.55) if tot >= 5000.0 else True
+        alarm = not is_balanced
+        return {
+            "total_option_vol": tot,
+            "call_buy_vol": cb,
+            "call_sell_vol": cs,
+            "put_buy_vol": pb,
+            "put_sell_vol": ps,
+            "buyer_ratio": round(ratio, 4),
+            "is_balanced": is_balanced,
+            "alarm": alarm,
+        }
+
+
+    def evaluate_pain_zone_confluence(
+        self,
+        pillar: int,
+        direction: str,
+        spot: Optional[float] = None,
+        atr: Optional[float] = None,
+        gamma_regime: str = "NEUTRAL",
+    ) -> Tuple[bool, float, str, Dict[str, Any]]:
+        """
+        Evaluates 4-Line Trapped-Buyer Pain Zone Confluence per DeepSeek V4 Pro Institutional Ruleset.
+        Returns: (is_allowed: bool, score_delta: float, reason: str, metrics: dict)
+        Score Delta:
+          +15: 2 fuel lines hit (opposite buyer + writer trapped)
+          +10: 1 fuel line hit
+            0: neutral (within ±0.3 ATR or warmup < 200 lots)
+          -10: 1 veto line hit (0.5 ATR) -> soft veto (requires extra confirmation)
+          Hard Block (is_allowed=False): Veto >= 1.0 ATR or explicit fade condition.
+        """
+        curr_spot = float(spot or self.last_price or 0.0)
+        curr_atr = float(atr or self.current_atr_1m or 10.0)
+        if curr_atr <= 0:
+            curr_atr = 10.0
+
+        pz = self.get_pain_zone_vwaps()
+        cb = pz.get("vwap_call_buy", 0.0)
+        cs = pz.get("vwap_call_sell", 0.0)
+        pb = pz.get("vwap_put_buy", 0.0)
+        ps = pz.get("vwap_put_sell", 0.0)
+
+        # Warmup gate check: if any key line is 0, lines are inactive (neutral 0)
+        if curr_spot <= 0 or (cb <= 0 and pb <= 0):
+            return True, 0.0, "warmup_neutral", {"pain_zone_active": False}
+
+        is_ce = direction.upper() in ("UP", "CALL")
+        is_pe = direction.upper() in ("DOWN", "PUT")
+        gamma = gamma_regime.upper()
+
+        # Dynamic buffer based on gamma regime
+        # Positive gamma (pinning): tighter boundaries. Negative gamma (dealers amplify): wider buffer
+        veto_buffer = (0.75 * curr_atr) if gamma == "NEGATIVE" else (0.50 * curr_atr)
+        if gamma == "POSITIVE" and pillar in (3, 4):
+            veto_buffer = 0.25 * curr_atr
+
+        metrics = {
+            "spot": curr_spot,
+            "atr": curr_atr,
+            "vwap_call_buy": cb,
+            "vwap_call_sell": cs,
+            "vwap_put_buy": pb,
+            "vwap_put_sell": ps,
+            "gamma_regime": gamma,
+            "pain_zone_active": True,
+        }
+
+        # ─── P1: 20 EMA Wick Rejection ───
+        if pillar == 1:
+            if is_ce:
+                # Veto Check 1: spot < CallBuy - 0.5 ATR (Call buyers trapped, will dump on bounce)
+                if cb > 0 and curr_spot < (cb - veto_buffer):
+                    if curr_spot < (cb - 1.0 * curr_atr):
+                        return False, -999.0, "hard_block_call_buyer_pain_severe", metrics
+                    return True, -10.0, "veto_call_buyer_dump_risk", metrics
+                # Veto Check 2: spot < PutSell - 0.5 ATR (Put writers broken, downside capitulation risk)
+                if ps > 0 and curr_spot < (ps - veto_buffer):
+                    return True, -10.0, "veto_put_seller_broken_risk", metrics
+                
+                # Boost conditions:
+                fuel_count = 0
+                if pb > 0 and curr_spot > pb:  # Pullback trapped Put buyers
+                    fuel_count += 1
+                if cs > 0 and curr_spot > cs:  # Call writers underwater
+                    fuel_count += 1
+                
+                if fuel_count >= 2:
+                    return True, 15.0, "p1_ce_dual_fuel_boost", metrics
+                elif fuel_count == 1:
+                    return True, 10.0, "p1_ce_single_fuel_boost", metrics
+                return True, 0.0, "p1_ce_neutral", metrics
+
+            elif is_pe:
+                # Veto Check 1: spot > PutBuy + 0.5 ATR (Put buyers trapped, will dump on dip)
+                if pb > 0 and curr_spot > (pb + veto_buffer):
+                    if curr_spot > (pb + 1.0 * curr_atr):
+                        return False, -999.0, "hard_block_put_buyer_pain_severe", metrics
+                    return True, -10.0, "veto_put_buyer_dump_risk", metrics
+                # Veto Check 2: spot > CallSell + 0.5 ATR (Call writers broken, upside short squeeze risk)
+                if cs > 0 and curr_spot > (cs + veto_buffer):
+                    return True, -10.0, "veto_call_seller_broken_risk", metrics
+
+                # Boost conditions:
+                fuel_count = 0
+                if cb > 0 and curr_spot < cb:  # Call buyers trapped
+                    fuel_count += 1
+                if ps > 0 and curr_spot < ps:  # Put writers underwater
+                    fuel_count += 1
+
+                if fuel_count >= 2:
+                    return True, 15.0, "p1_pe_dual_fuel_boost", metrics
+                elif fuel_count == 1:
+                    return True, 10.0, "p1_pe_single_fuel_boost", metrics
+                return True, 0.0, "p1_pe_neutral", metrics
+
+
+        # ─── P2: 2-Leg Pullback / 50 EMA Sweep ───
+        elif pillar == 2:
+            if is_ce:
+                if cb > 0 and curr_spot < (cb - 1.0 * curr_atr):
+                    return False, -999.0, "hard_block_p2_ce_distribution", metrics
+                if cb > 0 and curr_spot < (cb - 0.3 * curr_atr):
+                    return True, -10.0, "p2_ce_below_call_buy_soft_veto", metrics
+                score = 10.0 if (pb > 0 and curr_spot > pb) else 0.0
+                return True, score, "p2_ce_confluence", metrics
+            elif is_pe:
+                if pb > 0 and curr_spot > (pb + 1.0 * curr_atr):
+                    return False, -999.0, "hard_block_p2_pe_distribution", metrics
+                if pb > 0 and curr_spot > (pb + 0.3 * curr_atr):
+                    return True, -10.0, "p2_pe_above_put_buy_soft_veto", metrics
+                score = 10.0 if (cb > 0 and curr_spot < cb) else 0.0
+                return True, score, "p2_pe_confluence", metrics
+
+        # ─── P3: Squeeze -> Expansion Breakout ───
+        elif pillar == 3:
+            if is_ce:
+                if cb > 0 and curr_spot < cb and gamma == "POSITIVE":
+                    return False, -999.0, "fade_p3_ce_under_call_buy_pos_gamma", metrics
+                score = 15.0 if (cb > 0 and curr_spot > cb) else 0.0
+                return True, score, "p3_ce_expansion", metrics
+            elif is_pe:
+                if pb > 0 and curr_spot > pb and gamma == "POSITIVE":
+                    return False, -999.0, "fade_p3_pe_above_put_buy_pos_gamma", metrics
+                score = 15.0 if (pb > 0 and curr_spot < pb) else 0.0
+                return True, score, "p3_pe_expansion", metrics
+
+        # ─── P4: BOS (PDH/PDL/Pivot Break) ───
+        elif pillar == 4:
+            if is_ce:
+                if cs > 0 and curr_spot > (cs + 1.0 * curr_atr):
+                    return True, 5.0, "p4_ce_late_extension", metrics
+                if cs > 0 and curr_spot > cs:
+                    return True, 15.0, "p4_ce_max_fuel_writer_capitulation", metrics
+                return True, 10.0, "p4_ce_half_size", metrics
+            elif is_pe:
+                if ps > 0 and curr_spot < (ps - 1.0 * curr_atr):
+                    return True, 5.0, "p4_pe_late_extension", metrics
+                if ps > 0 and curr_spot < ps:
+                    return True, 15.0, "p4_pe_max_fuel_writer_capitulation", metrics
+                return True, 10.0, "p4_pe_half_size", metrics
+
+        return True, 0.0, "neutral", metrics
+
+    def update_option_tick(
+        self,
+        sym: str,
+        strike: float,
+        side: int,             # 0 = CE, 1 = PE
+        lp: float,
+        bp1: float,
+        sp1: float,
+        vol: float,
+        atm_strike: Optional[float] = None,
+    ) -> None:
+        """
+        Accumulates option flow (Buyer vs Seller initiated) and updates
+        4-Line Trapped-Buyer Pain Zone VWAPs + composite Option VWAP.
+        Constrained strictly to ATM ± 7 strikes.
+        Uses Hybrid Touch-First with Lee-Ready Tick Rule fallback.
+        """
+        if vol <= 0 or lp <= 0:
+            return
+
+        # 1. Day-cumulative volume differencing + session rollover guard
+        prev_vol = self._opt_last_cum_vol.get(sym)
+        if prev_vol is None:
+            self._opt_last_cum_vol[sym] = vol
+            self._opt_last_lp[sym] = lp
+            return  # Baseline seed tick
+
+        delta_vol = vol - prev_vol
+        self._opt_last_cum_vol[sym] = vol
+        if delta_vol < 0:
+            delta_vol = vol        # New session: day-cum reset to 0
+        if delta_vol <= 0:
+            return
+
+        # 2. Window Filter: ATM ± 7 strikes
+        ref_atm = atm_strike or (round(self.last_price / self.strike_step) * self.strike_step)
+        if ref_atm > 0 and abs(strike - ref_atm) > (7.0 * self.strike_step):
+            return
+
+        # 3. Hybrid Classification: Touch-first, Tick-Rule fallback
+        buy_frac = self._classify_buy_fraction(sym, lp, bp1, sp1)
+        if buy_frac is None:
+            self._opt_flow_1m["unclass_vol"] += delta_vol
+            return
+
+        buy_vol = delta_vol * buy_frac
+        sell_vol = delta_vol - buy_vol
+
+        if side == 0:  # CALL
+            self._opt_flow_1m["call_buy_vol"] += buy_vol
+            self._opt_flow_1m["call_sell_vol"] += sell_vol
+            if self.last_price > 0:
+                self._cum_cb_pv += self.last_price * buy_vol
+                self._cum_cb_vol += buy_vol
+                self._cum_cs_pv += self.last_price * sell_vol
+                self._cum_cs_vol += sell_vol
+        elif side == 1:  # PUT
+            self._opt_flow_1m["put_buy_vol"] += buy_vol
+            self._opt_flow_1m["put_sell_vol"] += sell_vol
+            if self.last_price > 0:
+                self._cum_pb_pv += self.last_price * buy_vol
+                self._cum_pb_vol += buy_vol
+                self._cum_ps_pv += self.last_price * sell_vol
+                self._cum_ps_vol += sell_vol
+
+        # 4. Composite Option-Weighted Spot VWAP Update
+        if self.last_price > 0:
+            self._vwap_cum_vol_price += self.last_price * delta_vol
+            self._vwap_cum_vol += delta_vol
+            if self._vwap_cum_vol > 0:
+                self.current_vwap = self._vwap_cum_vol_price / self._vwap_cum_vol
+
     def _on_1m_bar_close(self, bar: OHLCBar) -> None:
         """Processes a finalized 1-minute bar and updates EMAs and ATR."""
+        # Attach in-flight 1-minute Option Flow directly to the candle
+        cb = self._opt_flow_1m["call_buy_vol"]
+        cs = self._opt_flow_1m["call_sell_vol"]
+        pb = self._opt_flow_1m["put_buy_vol"]
+        ps = self._opt_flow_1m["put_sell_vol"]
+        bar.call_buy_vol = cb
+        bar.call_sell_vol = cs
+        bar.put_buy_vol = pb
+        bar.put_sell_vol = ps
+        bar.opt_delta_flow = cb - pb
+        bar.opt_total_vol = cb + cs + pb + ps
+        if bar.opt_total_vol > 0:
+            bar.volume = bar.opt_total_vol
+        bar.opt_pcr = round((pb + ps) / max(cb + cs, 1.0), 3)
+
+        # Reset accumulator for the next 1-minute bucket
+        self._opt_flow_1m = {
+            "call_buy_vol": 0.0,
+            "call_sell_vol": 0.0,
+            "put_buy_vol": 0.0,
+            "put_sell_vol": 0.0,
+            "unclass_vol": 0.0,
+        }
+
+        if bar.opt_total_vol > 0:
+            logger.info(
+                f"[1M OPTION FLOW] Close: {bar.close:.2f} | "
+                f"CallBuy={bar.call_buy_vol:.0f}, PutBuy={bar.put_buy_vol:.0f}, "
+                f"OFI={bar.opt_delta_flow:+.0f}, PCR={bar.opt_pcr:.2f}, TotalVol={bar.opt_total_vol:.0f}"
+            )
+
         self.bars_1m.append(bar)
+
+        # Update 5-minute bar
+        bucket_5m = int(bar.ts_start // 300)
+        if self._curr_5m_bar is None or int(self._curr_5m_bar.ts_start // 300) != bucket_5m:
+            if self._curr_5m_bar is not None:
+                self.bars_5m.append(self._curr_5m_bar)
+            self._curr_5m_bar = OHLCBar(
+                ts_start=float(bucket_5m * 300),
+                ts_end=float((bucket_5m + 1) * 300),
+                open=bar.open,
+                high=bar.high,
+                low=bar.low,
+                close=bar.close,
+                volume=bar.volume,
+            )
+        else:
+            b5 = self._curr_5m_bar
+            if bar.high > b5.high:
+                b5.high = bar.high
+            if bar.low < b5.low:
+                b5.low = bar.low
+            b5.close = bar.close
+            b5.volume += bar.volume
+
 
         # 1. Update 20 EMA
         k20 = 2.0 / (20.0 + 1.0)
@@ -168,6 +599,54 @@ class PriceActionEngine:
             self.ema_50_1m_prev = self.ema_50_1m
             self.ema_50_1m = (bar.close * k50) + (self.ema_50_1m * (1.0 - k50))
             self.ema_50_1m_slope = self.ema_50_1m - self.ema_50_1m_prev
+
+        # 2b. Feed 1-Minute ML Gatekeeper Flow Recorder
+        if getattr(self, "ml_gatekeeper", None) is not None:
+            try:
+                open_px = max(bar.open, 1.0)
+                ret_1m = (bar.close - bar.open) / open_px * 10000.0
+                range_bps = (bar.high - bar.low) / open_px * 10000.0
+                body_bps = (bar.close - bar.open) / open_px * 10000.0
+                upper_wick_bps = (bar.high - max(bar.open, bar.close)) / open_px * 10000.0
+                lower_wick_bps = (min(bar.open, bar.close) - bar.low) / open_px * 10000.0
+                ema20_dist = (bar.close - self.ema_20_1m) / self.ema_20_1m * 10000.0 if self.ema_20_1m > 0 else 0.0
+                ema5_dist = (bar.close - self.ema_50_1m) / self.ema_50_1m * 10000.0 if self.ema_50_1m > 0 else 0.0
+
+                recent_3 = list(self.bars_1m)[-3:] if len(self.bars_1m) >= 3 else list(self.bars_1m)
+                opt_delta_3m = sum(getattr(b, "opt_delta_flow", 0.0) for b in recent_3)
+
+                cb = bar.call_buy_vol
+                cs = bar.call_sell_vol
+                pb = bar.put_buy_vol
+                ps = bar.put_sell_vol
+
+                call_agg = (cb - cs) / max(cb + cs, 1.0)
+                put_agg = (pb - ps) / max(pb + ps, 1.0)
+                opt_ratio = (cb + 1.0) / (pb + 1.0)
+
+                ml_feats = {
+                    "put_aggression": put_agg,
+                    "call_buy_vol": cb,
+                    "call_aggression": call_agg,
+                    "avg_book_imb": 0.0,
+                    "upper_wick_bps": upper_wick_bps,
+                    "ema20_dist_bps": ema20_dist,
+                    "lower_wick_bps": lower_wick_bps,
+                    "opt_flow_ratio": opt_ratio,
+                    "range_bps": range_bps,
+                    "body_bps": body_bps,
+                    "put_buy_vol": pb,
+                    "opt_delta_3m": opt_delta_3m,
+                    "ema5_dist_bps": ema5_dist,
+                    "opt_total_vol": bar.opt_total_vol,
+                    "opt_pcr": bar.opt_pcr,
+                    "opt_delta_flow": bar.opt_delta_flow,
+                    "ret_1m_bps": ret_1m,
+                }
+                idx_name = "SENSEX" if getattr(self, "strike_step", 50) == 100 else "NIFTY"
+                self.ml_gatekeeper.record_1m_bar(bar.ts, ml_feats, index_name=idx_name)
+            except Exception as e:
+                logger.debug(f"[PriceActionEngine] ml_gatekeeper record_1m_bar failed: {e}")
 
         # 3. Update ATR(14)
         if len(self.bars_1m) >= 2:
@@ -194,6 +673,21 @@ class PriceActionEngine:
             self.current_atr_1m = sum(self.atr_history) / len(self.atr_history)
             self.baseline_atr_1m = self.current_atr_1m
             self.atr_ratio = 1.0
+
+        # 4. Feed Topological HVG Shadow Engine (Pillar 4 Shadow)
+        if getattr(self, "hvg_engine", None) is not None:
+            try:
+                self.hvg_engine.add_bar(
+                    open_price=bar.open,
+                    high_price=bar.high,
+                    low_price=bar.low,
+                    close_price=bar.close,
+                    atr=self.current_atr_1m,
+                    vwap=self.current_vwap,
+                    timestamp=bar.ts_start,
+                )
+            except Exception:
+                pass
 
     # ═══════════════════════════════════════════════════════════
     # 2. ZERO-LAG IN-FLIGHT EMA & DYNAMIC INDICATOR GETTERS
@@ -328,6 +822,57 @@ class PriceActionEngine:
         logger.info(f"[PriceActionEngine] Seeded {count} historical bars. Live 20 EMA: {self.ema_20_1m:.1f}, 50 EMA: {self.ema_50_1m:.1f}")
         return count
 
+    def seed_daily_levels(self, pdh: float, pdl: float, pdc: float = 0.0) -> None:
+        """Seeds Previous Day High (PDH), Previous Day Low (PDL), and Previous Day Close (PDC)."""
+        if pdh > 0:
+            self.pdh = float(pdh)
+        if pdl > 0:
+            self.pdl = float(pdl)
+        if pdc > 0:
+            self.pdc = float(pdc)
+        logger.info(
+            f"[PriceActionEngine] Seeded Daily Levels: PDH={self.pdh:.2f} | PDL={self.pdl:.2f} | PDC={self.pdc:.2f} "
+            f"(Proximity Threshold: {self.proximity_threshold_bps:.1f} bps)"
+        )
+
+    def check_key_level_proximity(self, direction: str, spot_price: float) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Key Level Proximity Veto:
+        Prevents buying CALL directly into overhead PDH resistance or
+        buying PUT directly into underlying PDL support.
+        Threshold is scale-invariant (e.g. 8 bps: ~20 pts on NIFTY, ~60 pts on SENSEX).
+        """
+        if spot_price <= 0:
+            return True, "spot_unavailable", {}
+
+        threshold_pts = (self.proximity_threshold_bps / 10000.0) * spot_price
+
+        if direction.upper() in ("UP", "CALL"):
+            # Check if spot is beneath PDH resistance within proximity threshold
+            if self.pdh > 0 and spot_price < self.pdh:
+                dist = self.pdh - spot_price
+                if dist <= threshold_pts:
+                    return False, "near_overhead_pdh_resistance", {
+                        "pdh": self.pdh,
+                        "spot": spot_price,
+                        "dist_pts": round(dist, 2),
+                        "threshold_pts": round(threshold_pts, 2),
+                    }
+
+        elif direction.upper() in ("DOWN", "PUT"):
+            # Check if spot is above PDL support within proximity threshold
+            if self.pdl > 0 and spot_price > self.pdl:
+                dist = spot_price - self.pdl
+                if dist <= threshold_pts:
+                    return False, "near_underlying_pdl_support", {
+                        "pdl": self.pdl,
+                        "spot": spot_price,
+                        "dist_pts": round(dist, 2),
+                        "threshold_pts": round(threshold_pts, 2),
+                    }
+
+        return True, "clear_of_key_levels", {}
+
     # ═══════════════════════════════════════════════════════════
     # 3. THE 3 EMPIRICALLY VERIFIED PRICE ACTION SCALPER PILLARS
     # ═══════════════════════════════════════════════════════════
@@ -435,6 +980,72 @@ class PriceActionEngine:
                 if valid:
                     return True
         return False
+    def _check_structural_obstacle(
+        self,
+        direction: str,
+        current_price: float,
+        lookback: int = 30,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Structural Obstacle Shield (HVG Topological Anchors + Multi-Touch Horizontal Clusters).
+        Prevents buying PUTs directly into an underlying support wall (e.g. 11:33 & 11:39 double-bottom)
+        or buying CALLs directly into an overhead resistance wall.
+        Threshold is normalized via localized volatility (0.85x ATR).
+        """
+        if self.current_atr_1m <= 0 or current_price <= 0:
+            return True, "clear", {}
+
+        hurdle_pts = 0.85 * self.current_atr_1m
+
+        # 1. 5m Macro HVG Structural Check (if hvg_engine available)
+        if getattr(self, "hvg_engine", None) is not None:
+            try:
+                ok_5m, reason_5m, det_5m = self.hvg_engine.check_5m_structural_alignment(direction, current_price)
+                if not ok_5m:
+                    return False, f"hvg_shield_veto ({reason_5m})", det_5m
+            except Exception as e:
+                logger.debug(f"[StructuralShield] 5m HVG check failed: {e}")
+
+        # 2. 1m Structural Horizontal Pivots / Multi-Touch Clusters
+        if len(self.bars_1m) >= 4:
+            bars = list(self.bars_1m)[:-1][-lookback:]
+            pivot_lows = []
+            pivot_highs = []
+            for i in range(1, len(bars) - 1):
+                p_b, c_b, n_b = bars[i - 1], bars[i], bars[i + 1]
+                if c_b.low <= p_b.low and c_b.low < n_b.low:
+                    pivot_lows.append(c_b.low)
+                if c_b.high >= p_b.high and c_b.high > n_b.high:
+                    pivot_highs.append(c_b.high)
+
+            if direction.upper() in ("DOWN", "PUT"):
+                # Find any established support level below current price or at current price
+                supports_below = [pl for pl in pivot_lows if pl <= current_price]
+                if supports_below:
+                    nearest_support = max(supports_below)
+                    dist_to_support = current_price - nearest_support
+                    if dist_to_support < hurdle_pts:
+                        return False, "trapped_near_support", {
+                            "support_level": round(nearest_support, 2),
+                            "room_pts": round(dist_to_support, 2),
+                            "threshold_pts": round(hurdle_pts, 2),
+                            "atr_1m": round(self.current_atr_1m, 2),
+                        }
+
+            elif direction.upper() in ("UP", "CALL"):
+                resistances_above = [ph for ph in pivot_highs if ph >= current_price]
+                if resistances_above:
+                    nearest_resistance = min(resistances_above)
+                    dist_to_res = nearest_resistance - current_price
+                    if dist_to_res < hurdle_pts:
+                        return False, "trapped_near_resistance", {
+                            "resistance_level": round(nearest_resistance, 2),
+                            "room_pts": round(dist_to_res, 2),
+                            "threshold_pts": round(hurdle_pts, 2),
+                            "atr_1m": round(self.current_atr_1m, 2),
+                        }
+
+        return True, "clear_of_structural_obstacles", {}
 
     def _find_recent_pivots(self, lookback: int = 20) -> Tuple[Optional[float], Optional[float]]:
         """
@@ -470,12 +1081,174 @@ class PriceActionEngine:
         nearest_ph = pivot_highs[-1] if pivot_highs else None
         return nearest_pl, nearest_ph
 
+    def check_pivot_exhaustion(
+        self,
+        direction: str,
+        lookback: int = 30,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Pillar 1 Trend Exhaustion Filter:
+        Prevents buying CALL pullbacks into a sequence of descending Lower Highs (distribution / bear flag)
+        and prevents buying PUT pullbacks into a sequence of ascending Higher Lows (accumulation / bull flag).
+
+        Scale-invariant: Thresholds are normalized via ATR and index spot price.
+        """
+        if not os.getenv("AEGIS_PIVOT_EXHAUSTION_FILTER", "true").lower() in ("true", "1", "yes"):
+            return False, "filter_disabled", {}
+
+        if len(self.bars_1m) < 6:
+            return False, "insufficient_bars", {}
+
+        bar = self.bars_1m[-1]
+        prior_bars = list(self.bars_1m)[:-1][-lookback:]
+        if len(prior_bars) < 4:
+            return False, "insufficient_bars", {}
+
+        ref_spot = self.last_price if self.last_price > 0 else bar.close
+        atr = self.current_atr_1m if self.current_atr_1m > 0 else (ref_spot * 0.001)
+        buffer_pts = max(5.0, (ref_spot / 24000.0) * 5.0)
+        exh_threshold = max(0.20 * atr, 0.50 * buffer_pts)
+        min_swing_depth = max(0.15 * atr, 0.40 * buffer_pts)
+
+        live_ema_20, live_slope_20_bps = self.get_live_20_ema_and_slope()
+
+        if direction.upper() in ("UP", "CALL"):
+            # 1. Identify distinct swing highs in lookback
+            raw_highs: List[Tuple[int, float]] = []
+            for i in range(1, len(prior_bars) - 1):
+                p_b = prior_bars[i - 1]
+                c_b = prior_bars[i]
+                n_b = prior_bars[i + 1]
+                if (c_b.high >= p_b.high and c_b.high > n_b.high) or (c_b.high > p_b.high and c_b.high >= n_b.high):
+                    raw_highs.append((i, c_b.high))
+
+            if len(raw_highs) < 2:
+                return False, "insufficient_pivots", {}
+
+            # Filter distinct swing highs that are separated by a pullback of at least min_swing_depth
+            distinct_highs: List[Tuple[int, float]] = [raw_highs[0]]
+            for idx, h in raw_highs[1:]:
+                prev_idx, prev_h = distinct_highs[-1]
+                # Check intervening low
+                intervening_low = min(b.low for b in prior_bars[prev_idx:idx + 1])
+                pullback = min(prev_h, h) - intervening_low
+                if pullback >= min_swing_depth and (idx - prev_idx) >= 3:
+                    distinct_highs.append((idx, h))
+                elif h > prev_h:
+                    distinct_highs[-1] = (idx, h)
+
+            if len(distinct_highs) < 2:
+                return False, "insufficient_pivots", {}
+
+            # Check the most recent 2 or 3 distinct pivot highs
+            recent_highs = [h for _, h in distinct_highs[-3:]]
+            h_prev = recent_highs[-2]
+            h_last = recent_highs[-1]
+
+            # If current bar has already broken above the last swing high, structure is breaking out (not exhausted)
+            if bar.close > h_last:
+                return False, "broken_above_last_pivot_high", {}
+
+            # Case A: 3 consecutive lower highs (H1 > H2 > H3)
+            is_3_lower_highs = False
+            if len(recent_highs) >= 3:
+                h_first = recent_highs[-3]
+                if (h_first - h_prev) >= (0.10 * atr) and (h_prev - h_last) >= (0.10 * atr):
+                    is_3_lower_highs = True
+
+            # Case B: Significant lower high (h_prev - h_last >= exh_threshold)
+            drop = h_prev - h_last
+            is_significant_drop = drop >= exh_threshold
+
+            # Exhaustion confirms if slope is not strongly bullish (<= 0.20 bps) and making lower highs
+            if (is_3_lower_highs or is_significant_drop) and live_slope_20_bps <= 0.20:
+                reason = "consecutive_lower_highs" if is_3_lower_highs else "descending_pivot_high_drop"
+                return True, reason, {
+                    "direction": "CALL",
+                    "h_prev": round(h_prev, 2),
+                    "h_last": round(h_last, 2),
+                    "drop_pts": round(drop, 2),
+                    "threshold_pts": round(exh_threshold, 2),
+                    "bar_close": round(bar.close, 2),
+                    "ema_20_slope_bps": round(live_slope_20_bps, 2),
+                    "all_recent_highs": [round(x, 2) for x in recent_highs],
+                }
+
+            return False, "higher_highs_or_strong_slope", {}
+
+        elif direction.upper() in ("DOWN", "PUT"):
+            # 1. Identify distinct swing lows in lookback
+            raw_lows: List[Tuple[int, float]] = []
+            for i in range(1, len(prior_bars) - 1):
+                p_b = prior_bars[i - 1]
+                c_b = prior_bars[i]
+                n_b = prior_bars[i + 1]
+                if (c_b.low <= p_b.low and c_b.low < n_b.low) or (c_b.low < p_b.low and c_b.low <= n_b.low):
+                    raw_lows.append((i, c_b.low))
+
+            if len(raw_lows) < 2:
+                return False, "insufficient_pivots", {}
+
+            # Filter distinct swing lows that are separated by a bounce of at least min_swing_depth
+            distinct_lows: List[Tuple[int, float]] = [raw_lows[0]]
+            for idx, l in raw_lows[1:]:
+                prev_idx, prev_l = distinct_lows[-1]
+                # Check intervening high
+                intervening_high = max(b.high for b in prior_bars[prev_idx:idx + 1])
+                bounce = intervening_high - max(prev_l, l)
+                if bounce >= min_swing_depth and (idx - prev_idx) >= 3:
+                    distinct_lows.append((idx, l))
+                elif l < prev_l:
+                    distinct_lows[-1] = (idx, l)
+
+            if len(distinct_lows) < 2:
+                return False, "insufficient_pivots", {}
+
+            # Check the most recent 2 or 3 distinct pivot lows
+            recent_lows = [l for _, l in distinct_lows[-3:]]
+            l_prev = recent_lows[-2]
+            l_last = recent_lows[-1]
+
+            # If current bar has already broken below the last swing low, structure is breaking down (not exhausted)
+            if bar.close < l_last:
+                return False, "broken_below_last_pivot_low", {}
+
+            # Case A: 3 consecutive higher lows (L1 < L2 < L3)
+            is_3_higher_lows = False
+            if len(recent_lows) >= 3:
+                l_first = recent_lows[-3]
+                if (l_prev - l_first) >= (0.10 * atr) and (l_last - l_prev) >= (0.10 * atr):
+                    is_3_higher_lows = True
+
+            # Case B: Significant higher low (l_last - l_prev >= exh_threshold)
+            rise = l_last - l_prev
+            is_significant_rise = rise >= exh_threshold
+
+            # Exhaustion confirms if slope is not strongly bearish (>= -0.20 bps) and making higher lows
+            if (is_3_higher_lows or is_significant_rise) and live_slope_20_bps >= -0.20:
+                reason = "consecutive_higher_lows" if is_3_higher_lows else "ascending_pivot_low_rise"
+                return True, reason, {
+                    "direction": "PUT",
+                    "l_prev": round(l_prev, 2),
+                    "l_last": round(l_last, 2),
+                    "rise_pts": round(rise, 2),
+                    "threshold_pts": round(exh_threshold, 2),
+                    "bar_close": round(bar.close, 2),
+                    "ema_20_slope_bps": round(live_slope_20_bps, 2),
+                    "all_recent_lows": [round(x, 2) for x in recent_lows],
+                }
+
+            return False, "lower_lows_or_strong_slope", {}
+
+        return False, "unknown_direction", {}
+
     def check_20_ema_rejection(
         self,
         direction: str,
         tolerance_bps: float = 1.5,
         min_wick_ratio: float = 0.33,
         current_vwap: float = 0.0,
+        current_time: float = 0.0,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
         Pillar 1: 20 EMA Pullback Wick Rejection (User's System — #1 Performer).
@@ -506,63 +1279,46 @@ class PriceActionEngine:
         if bar is None:
             return False, "no_closed_bar", {}
 
-        if direction.upper() in ("DOWN", "PUT"):
-            # ── 0. Check Pending Break-of-Structure (BOS) Breakdown ──
-            if self._pending_bos is not None and self._pending_bos.get("direction", "").upper() == "PUT":
-                pb = self._pending_bos
-                bars_elapsed = len(self.bars_1m) - pb.get("armed_bar_count", 0)
-                if bars_elapsed > 3:
-                    self._pending_bos = None
-                else:
-                    level = pb.get("level", 0.0)
-                    if bar.close > (live_ema_20 + 0.5 * tol_pts):
-                        self._pending_bos = None  # Invalidation: closed back above 20 EMA
-                    elif bar.close < level:
-                        # ── BOS Breakdown Quality Filter (2026-09-16) ──
-                        # Weak break = no momentum = discard the setup outright.
-                        # A genuine retest entry arrives later via a fresh
-                        # two-bar retest signal — never by chasing this bar.
-                        _br_range = bar.high - bar.low
-                        _br_body = abs(bar.close - bar.open)
-                        _atr_ref = self.current_atr_1m if self.current_atr_1m > 0 else (live_ema_20 * 0.001)
-                        _weak_break = (
-                            (_br_range <= 0)
-                            or (_br_range < 0.30 * _atr_ref)
-                            or (_br_body < 0.40 * _br_range)
-                            or ((bar.close - bar.low) / _br_range > 0.35)
-                            or ((level - bar.close) > max(1.0 * _atr_ref, buffer_pts))
-                        )
-                        if _weak_break:
-                            self._pending_bos = None
-                            return False, "bos_weak_breakdown_discarded", {
-                                "pending_level": round(level, 2),
-                                "bar_range": round(_br_range, 2),
-                                "bar_body": round(_br_body, 2),
-                                "close_edge_ratio": round((bar.close - bar.low) / _br_range, 3) if _br_range > 0 else 0.0,
-                                "extension_pts": round(level - bar.close, 2),
-                            }
-                        self._pending_bos = None  # Support broken! Confirmed BOS breakdown
-                        sl_price = round(max(bar.high + buffer_pts, pb.get("sl_price", 0.0)), 2)
-                        details = {
-                            "pa_setup_name": "20_ema_rejection",
-                            "pillar": 1,
-                            "ema_20": round(live_ema_20, 2),
-                            "bar_open": round(bar.open, 2),
-                            "bar_high": round(bar.high, 2),
-                            "bar_low": round(bar.low, 2),
-                            "bar_close": round(bar.close, 2),
-                            "ema_20_slope_bps": round(live_slope_20_bps, 2),
-                            "total_range": round(bar.high - bar.low, 2),
-                            "body": round(abs(bar.close - bar.open), 2),
-                            "rejection_type": "bos_breakdown_confirmation",
-                            "confirmation_path": "pending_bos_breakout",
-                            "runway_state": "bos_breakout",
-                            "sl_price": sl_price,
-                            "buffer_pts": round(buffer_pts, 2),
-                            "broken_level": level,
-                        }
-                        return True, "20_ema_put_rejection (bos_breakout)", details
+        # Upgrade 2: Bar Close Freshness Window (max 12.0s cutoff)
+        if current_time > 0 and bar.ts_end > 0:
+            both_epoch = (current_time > 1_000_000_000.0 and bar.ts_end > 1_000_000_000.0)
+            both_synthetic = (current_time < 1_000_000_000.0 and bar.ts_end < 1_000_000_000.0)
+            if both_epoch or both_synthetic:
+                time_since_close = current_time - bar.ts_end
+                if time_since_close > 12.0:
+                    return False, "stale_bar_entry_window_expired", {
+                        "time_since_close": round(time_since_close, 1),
+                        "max_allowed_s": 12.0,
+                    }
 
+        # Upgrade 3: Live Price & Forming Bar Invalidation Guard
+        if self.last_price > 0:
+            if direction.upper() in ("UP", "CALL"):
+                if self.last_price <= (live_ema_20 - 0.5 * tol_pts):
+                    return False, "live_price_piercing_below_20_ema", {
+                        "last_price": round(self.last_price, 2),
+                        "ema_20": round(live_ema_20, 2),
+                    }
+                if self._curr_1m_bar and self._curr_1m_bar.low < (live_ema_20 - 1.0 * tol_pts) and self._curr_1m_bar.close < self._curr_1m_bar.open:
+                    return False, "forming_bar_bearish_pierce", {
+                        "forming_close": round(self._curr_1m_bar.close, 2),
+                        "forming_open": round(self._curr_1m_bar.open, 2),
+                        "ema_20": round(live_ema_20, 2),
+                    }
+            elif direction.upper() in ("DOWN", "PUT"):
+                if self.last_price >= (live_ema_20 + 0.5 * tol_pts):
+                    return False, "live_price_piercing_above_20_ema", {
+                        "last_price": round(self.last_price, 2),
+                        "ema_20": round(live_ema_20, 2),
+                    }
+                if self._curr_1m_bar and self._curr_1m_bar.high > (live_ema_20 + 1.0 * tol_pts) and self._curr_1m_bar.close > self._curr_1m_bar.open:
+                    return False, "forming_bar_bullish_pierce", {
+                        "forming_close": round(self._curr_1m_bar.close, 2),
+                        "forming_open": round(self._curr_1m_bar.open, 2),
+                        "ema_20": round(live_ema_20, 2),
+                    }
+
+        if direction.upper() in ("DOWN", "PUT"):
             # Pierce/slope gates hold for BOTH paths (current close must hold).
             if bar.close >= (live_ema_20 + 0.5 * tol_pts):
                 return False, "pierced_above_20_ema", {}
@@ -608,32 +1364,17 @@ class PriceActionEngine:
                 if not self._had_prior_ema_touch("PUT", current_vwap=current_vwap):
                     return False, "single_touch_no_confirmation", {}
 
-                # ── Runway & Break-of-Structure (BOS) Gate ───────────────
-                lowest_pivot_low, _ = self._find_recent_pivots(lookback=20)
+                # ── Structural Obstacle Shield (HVG + Multi-Touch Support Floor) ───
+                ok_struct, r_struct, det_struct = self._check_structural_obstacle("PUT", bar.close)
+                if not ok_struct:
+                    return False, r_struct, det_struct
                 runway_mode = "immediate_runway"
-                if lowest_pivot_low is not None and self.current_atr_1m > 0:
-                    room_to_support = bar.close - lowest_pivot_low
-                    _rts_threshold = 0.60 * self.current_atr_1m
-                    if bar.close < lowest_pivot_low:
-                        runway_mode = "bos_breakout"
-                    elif room_to_support >= _rts_threshold:
-                        runway_mode = "immediate_runway"
-                    else:
-                        # Trapped within 0.60x ATR above structural support (< 2-3 pts spot buffer)
-                        sl_candidate = round(bar.high + buffer_pts, 2)
-                        self._pending_bos = {
-                            "direction": "PUT",
-                            "level": round(lowest_pivot_low, 2),
-                            "armed_bar_count": len(self.bars_1m),
-                            "sl_price": sl_candidate,
-                            "rejection_type": "bearish_expansion" if is_bearish_expansion else "pin_bar_rejection",
-                        }
-                        return False, "awaiting_bos_breakdown", {
-                            "pending_level": round(lowest_pivot_low, 2),
-                            "room_pts": round(room_to_support, 2),
-                            "threshold_pts": round(_rts_threshold, 2),
-                        }
                 # ─────────────────────────────────────────────────────────
+
+                # ── Trend Exhaustion Filter (Ascending Higher Lows) ──────
+                exhausted, exh_reason, exh_details = self.check_pivot_exhaustion("PUT")
+                if exhausted:
+                    return False, f"trend_exhaustion ({exh_reason})", exh_details
 
                 if signal_A:
                     sig_type = "bearish_expansion" if is_bearish_expansion else "pin_bar_rejection"
@@ -672,62 +1413,6 @@ class PriceActionEngine:
             return False, "neither_bearish_expansion_nor_pin_bar", {}
 
         elif direction.upper() in ("UP", "CALL"):
-            # ── 0. Check Pending Break-of-Structure (BOS) Breakout ──
-            if self._pending_bos is not None and self._pending_bos.get("direction", "").upper() == "CALL":
-                pb = self._pending_bos
-                bars_elapsed = len(self.bars_1m) - pb.get("armed_bar_count", 0)
-                if bars_elapsed > 3:
-                    self._pending_bos = None
-                else:
-                    level = pb.get("level", 0.0)
-                    if bar.close < (live_ema_20 - 0.5 * tol_pts):
-                        self._pending_bos = None  # Invalidation: closed back below 20 EMA
-                    elif bar.close > level:
-                        # ── BOS Breakout Quality Filter (2026-09-16) ──
-                        # Weak break = no momentum = discard the setup outright.
-                        # A genuine retest entry arrives later via a fresh
-                        # two-bar retest signal — never by chasing this bar.
-                        _br_range = bar.high - bar.low
-                        _br_body = abs(bar.close - bar.open)
-                        _atr_ref = self.current_atr_1m if self.current_atr_1m > 0 else (live_ema_20 * 0.001)
-                        _weak_break = (
-                            (_br_range <= 0)
-                            or (_br_range < 0.30 * _atr_ref)
-                            or (_br_body < 0.40 * _br_range)
-                            or ((bar.close - bar.low) / _br_range < 0.65)
-                            or ((bar.close - level) > max(1.0 * _atr_ref, buffer_pts))
-                        )
-                        if _weak_break:
-                            self._pending_bos = None
-                            return False, "bos_weak_breakout_discarded", {
-                                "pending_level": round(level, 2),
-                                "bar_range": round(_br_range, 2),
-                                "bar_body": round(_br_body, 2),
-                                "close_edge_ratio": round((bar.close - bar.low) / _br_range, 3) if _br_range > 0 else 0.0,
-                                "extension_pts": round(bar.close - level, 2),
-                            }
-                        self._pending_bos = None  # Resistance broken! Confirmed BOS breakout
-                        sl_price = round(min(bar.low - buffer_pts, pb.get("sl_price", 0.0)), 2)
-                        details = {
-                            "pa_setup_name": "20_ema_rejection",
-                            "pillar": 1,
-                            "ema_20": round(live_ema_20, 2),
-                            "bar_open": round(bar.open, 2),
-                            "bar_high": round(bar.high, 2),
-                            "bar_low": round(bar.low, 2),
-                            "bar_close": round(bar.close, 2),
-                            "ema_20_slope_bps": round(live_slope_20_bps, 2),
-                            "total_range": round(bar.high - bar.low, 2),
-                            "body": round(abs(bar.close - bar.open), 2),
-                            "rejection_type": "bos_breakout_confirmation",
-                            "confirmation_path": "pending_bos_breakout",
-                            "runway_state": "bos_breakout",
-                            "sl_price": sl_price,
-                            "buffer_pts": round(buffer_pts, 2),
-                            "broken_level": level,
-                        }
-                        return True, "20_ema_call_rejection (bos_breakout)", details
-
             # Pierce/slope gates hold for BOTH paths (current close must hold).
             if bar.close <= (live_ema_20 - 0.5 * tol_pts):
                 return False, "pierced_below_20_ema", {}
@@ -772,32 +1457,17 @@ class PriceActionEngine:
                 if not self._had_prior_ema_touch("CALL", current_vwap=current_vwap):
                     return False, "single_touch_no_confirmation", {}
 
-                # ── Runway & Break-of-Structure (BOS) Gate ───────────────
-                _, highest_pivot_high = self._find_recent_pivots(lookback=20)
+                # ── Structural Obstacle Shield (HVG + Multi-Touch Resistance Ceiling) ───
+                ok_struct, r_struct, det_struct = self._check_structural_obstacle("CALL", bar.close)
+                if not ok_struct:
+                    return False, r_struct, det_struct
                 runway_mode = "immediate_runway"
-                if highest_pivot_high is not None and self.current_atr_1m > 0:
-                    room_to_resistance = highest_pivot_high - bar.close
-                    _rtr_threshold = 0.60 * self.current_atr_1m
-                    if bar.close > highest_pivot_high:
-                        runway_mode = "bos_breakout"
-                    elif room_to_resistance >= _rtr_threshold:
-                        runway_mode = "immediate_runway"
-                    else:
-                        # Trapped within 0.60x ATR below structural resistance (< 2-3 pts spot buffer)
-                        sl_candidate = round(bar.low - buffer_pts, 2)
-                        self._pending_bos = {
-                            "direction": "CALL",
-                            "level": round(highest_pivot_high, 2),
-                            "armed_bar_count": len(self.bars_1m),
-                            "sl_price": sl_candidate,
-                            "rejection_type": "bullish_expansion" if is_bullish_expansion else "hammer_rejection",
-                        }
-                        return False, "awaiting_bos_breakout", {
-                            "pending_level": round(highest_pivot_high, 2),
-                            "room_pts": round(room_to_resistance, 2),
-                            "threshold_pts": round(_rtr_threshold, 2),
-                        }
                 # ─────────────────────────────────────────────────────────
+
+                # ── Trend Exhaustion Filter (Descending Lower Highs) ─────
+                exhausted, exh_reason, exh_details = self.check_pivot_exhaustion("CALL")
+                if exhausted:
+                    return False, f"trend_exhaustion ({exh_reason})", exh_details
 
                 if signal_A:
                     sig_type = "bullish_expansion" if is_bullish_expansion else "hammer_rejection"
@@ -1142,6 +1812,10 @@ class PriceActionEngine:
             if current_vwap > 0 and bar.close >= current_vwap:
                 return False, "above_vwap", {}
 
+            # Strict EMA Trend Alignment: Cannot short squeeze breakout when 20 EMA > 50 EMA (BULL_CLEAR)
+            if self.ema_20_1m > 0 and self.ema_50_1m > 0 and self.ema_20_1m > self.ema_50_1m:
+                return False, "bull_overlap_ema_disallowed", {}
+
             # Downside breakout
             if bar.close < box_low:
                 sl_price = round(box_high + buffer_pts, 2)
@@ -1167,6 +1841,10 @@ class PriceActionEngine:
             if current_vwap > 0 and bar.close <= current_vwap:
                 return False, "below_vwap", {}
 
+            # Strict EMA Trend Alignment: Cannot buy squeeze breakout when 20 EMA < 50 EMA (BEAR_OVERLAP)
+            if self.ema_20_1m > 0 and self.ema_50_1m > 0 and self.ema_20_1m < self.ema_50_1m:
+                return False, "bear_overlap_ema_disallowed", {}
+
             # Upside breakout
             if bar.close > box_high:
                 sl_price = round(box_low - buffer_pts, 2)
@@ -1190,54 +1868,492 @@ class PriceActionEngine:
 
         return False, "unknown_direction", {}
 
+    def check_break_of_structure(
+        self,
+        direction: str,
+        current_vwap: float = 0.0,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        [DISCARDED / RETIRED FROM LIVE TRADING] Legacy Naive 3-Bar BOS Level Breakout.
+        Superseded by Pillar 4: Topological HVG Dual-Timeframe Network Phase Shift Breakout.
+        Naive 3-bar local pivots lacked topological prominence and produced excessive noise.
+        Kept strictly as a standalone method for backward-compatibility with existing tests.
+        """
+        if len(self.bars_1m) < 4:
+            return False, "insufficient_bars", {}
+
+        bar = self.bars_1m[-1]
+        if bar is None:
+            return False, "no_closed_bar", {}
+
+        prior_bars = list(self.bars_1m)[:-1]
+        if not prior_bars:
+            return False, "insufficient_bars", {}
+
+        ref_spot = self.last_price if self.last_price > 0 else (bar.close if bar.close > 0 else 24000.0)
+        atr = self.current_atr_1m if self.current_atr_1m > 0 else (ref_spot * 0.001)
+        buffer_pts = max(5.0, (ref_spot / 24000.0) * 5.0)
+
+        live_ema_20, live_slope_20_bps = self.get_live_20_ema_and_slope()
+        live_ema_50, live_slope_50_bps = self.get_live_50_ema_and_slope()
+
+        total_range = bar.high - bar.low
+        if total_range <= 0:
+            return False, "zero_range", {}
+        if total_range < (0.30 * atr):
+            return False, "tiny_range_noise", {}
+
+        lookback = min(20, len(prior_bars))
+        lookback_bars = prior_bars[-lookback:]
+
+        if direction.upper() in ("UP", "CALL"):
+            # 1. Macro trend / VWAP alignment
+            if current_vwap > 0 and bar.close <= current_vwap:
+                return False, "below_vwap", {}
+
+            # 2. Strict EMA Trend Alignment: Cannot buy breakout when 20 EMA < 50 EMA
+            if self.ema_20_1m > 0 and self.ema_50_1m > 0 and self.ema_20_1m < self.ema_50_1m:
+                return False, "bear_overlap_ema_disallowed", {}
+            if live_slope_20_bps < -0.10:
+                return False, "20_ema_slope_bearish", {}
+
+            # 3. Candle quality: bullish impulse, solid body (>= 40%), strong close (upper 35%)
+            if bar.close <= bar.open:
+                return False, "not_bullish_candle", {}
+            body = bar.close - bar.open
+            if body < (0.40 * total_range):
+                return False, "body_too_small", {}
+            if (bar.close - bar.low) / total_range < 0.65:
+                return False, "wick_rejection_at_high", {}
+
+            # 4. Identify candidate structural resistance levels
+            candidate_levels: List[Tuple[str, float]] = []
+            if self.pdh > 0:
+                candidate_levels.append(("pdh", self.pdh))
+
+            # Pivot highs in lookback
+            if len(lookback_bars) >= 3:
+                for i in range(1, len(lookback_bars) - 1):
+                    prev_b = lookback_bars[i - 1]
+                    curr_b = lookback_bars[i]
+                    next_b = lookback_bars[i + 1]
+                    if curr_b.high >= prev_b.high and curr_b.high > next_b.high:
+                        candidate_levels.append(("pivot_high", curr_b.high))
+
+            # Prior swing high formed before immediate prior bar (at least 2 bars established)
+            if len(prior_bars) >= 3:
+                prior_swing_h = max(b.high for b in prior_bars[:-1])
+                candidate_levels.append(("prior_swing_high", prior_swing_h))
+
+            # 5. Evaluate candidate breakouts
+            broken_candidates: List[Tuple[str, float]] = []
+            threshold_pts = (self.proximity_threshold_bps / 10000.0) * ref_spot
+
+            prior_margin = max(0.10 * atr, buffer_pts * 0.25)
+            open_margin = max(0.25 * atr, buffer_pts * 0.50)
+            ext_cap = max(1.25 * atr, buffer_pts * 1.50)
+
+            for name, lvl in candidate_levels:
+                if lvl <= 0:
+                    continue
+                # Current bar must close above the level
+                if bar.close <= lvl:
+                    continue
+                # Prior closed bar must have closed at or below the level (+ small float margin)
+                if prior_bars[-1].close > (lvl + prior_margin):
+                    continue
+                # Breakout candle must have started near or below the level (not an unfillable gap)
+                if bar.open > (lvl + open_margin):
+                    continue
+                # Anti-chasing extension cap: close must not be overextended beyond level
+                if (bar.close - lvl) > ext_cap:
+                    continue
+
+                # Overhead PDH proximity check: if this broken level is NOT PDH, but PDH is directly overhead
+                if name != "pdh" and self.pdh > 0 and bar.close < self.pdh:
+                    if (self.pdh - bar.close) <= threshold_pts:
+                        continue  # Blocked: breaking intraday pivot directly into unbroken PDH resistance
+
+                broken_candidates.append((name, lvl))
+
+            if not broken_candidates:
+                return False, "no_bos_level_broken", {}
+
+            # Pick the highest broken level as the decisive structural resistance
+            best_name, broken_lvl = max(broken_candidates, key=lambda x: x[1])
+            sl_price = round(min(bar.low - buffer_pts, broken_lvl - buffer_pts), 2)
+
+            details = {
+                "pa_setup_name": "break_of_structure",
+                "pillar": 4,
+                "broken_level": round(broken_lvl, 2),
+                "broken_level_type": best_name,
+                "bar_open": round(bar.open, 2),
+                "bar_high": round(bar.high, 2),
+                "bar_low": round(bar.low, 2),
+                "bar_close": round(bar.close, 2),
+                "total_range": round(total_range, 2),
+                "body": round(body, 2),
+                "atr_14": round(atr, 2),
+                "extension_pts": round(bar.close - broken_lvl, 2),
+                "rejection_type": "bos_breakout_confirmation",
+                "sl_price": sl_price,
+                "buffer_pts": round(buffer_pts, 2),
+                "ema_20": round(live_ema_20, 2),
+                "ema_50": round(live_ema_50, 2),
+            }
+            return True, f"bos_call_breakout ({best_name})", details
+
+        elif direction.upper() in ("DOWN", "PUT"):
+            # 1. Macro trend / VWAP alignment
+            if current_vwap > 0 and bar.close >= current_vwap:
+                return False, "above_vwap", {}
+
+            # 2. Strict EMA Trend Alignment: Cannot short breakdown when 20 EMA > 50 EMA
+            if self.ema_20_1m > 0 and self.ema_50_1m > 0 and self.ema_20_1m > self.ema_50_1m:
+                return False, "bull_overlap_ema_disallowed", {}
+            if live_slope_20_bps > 0.10:
+                return False, "20_ema_slope_bullish", {}
+
+            # 3. Candle quality: bearish impulse, solid body (>= 40%), strong close (lower 35%)
+            if bar.close >= bar.open:
+                return False, "not_bearish_candle", {}
+            body = bar.open - bar.close
+            if body < (0.40 * total_range):
+                return False, "body_too_small", {}
+            if (bar.high - bar.close) / total_range < 0.65:
+                return False, "wick_rejection_at_low", {}
+
+            # 4. Identify candidate structural support levels
+            candidate_levels: List[Tuple[str, float]] = []
+            if self.pdl > 0:
+                candidate_levels.append(("pdl", self.pdl))
+
+            # Pivot lows in lookback
+            if len(lookback_bars) >= 3:
+                for i in range(1, len(lookback_bars) - 1):
+                    prev_b = lookback_bars[i - 1]
+                    curr_b = lookback_bars[i]
+                    next_b = lookback_bars[i + 1]
+                    if curr_b.low <= prev_b.low and curr_b.low < next_b.low:
+                        candidate_levels.append(("pivot_low", curr_b.low))
+
+            # Prior swing low formed before immediate prior bar (at least 2 bars established)
+            if len(prior_bars) >= 3:
+                prior_swing_l = min(b.low for b in prior_bars[:-1])
+                candidate_levels.append(("prior_swing_low", prior_swing_l))
+
+            # 5. Evaluate candidate breakdowns
+            broken_candidates: List[Tuple[str, float]] = []
+            threshold_pts = (self.proximity_threshold_bps / 10000.0) * ref_spot
+
+            prior_margin = max(0.10 * atr, buffer_pts * 0.25)
+            open_margin = max(0.25 * atr, buffer_pts * 0.50)
+            ext_cap = max(1.25 * atr, buffer_pts * 1.50)
+
+            for name, lvl in candidate_levels:
+                if lvl <= 0:
+                    continue
+                # Current bar must close below the level
+                if bar.close >= lvl:
+                    continue
+                # Prior closed bar must have closed at or above the level (- small float margin)
+                if prior_bars[-1].close < (lvl - prior_margin):
+                    continue
+                # Breakdown candle must have started near or above the level (not an unfillable gap)
+                if bar.open < (lvl - open_margin):
+                    continue
+                # Anti-chasing extension cap: close must not be overextended beyond level
+                if (lvl - bar.close) > ext_cap:
+                    continue
+
+                # Underlying PDL proximity check: if this broken level is NOT PDL, but PDL is directly below
+                if name != "pdl" and self.pdl > 0 and bar.close > self.pdl:
+                    if (bar.close - self.pdl) <= threshold_pts:
+                        continue  # Blocked: breaking intraday pivot directly into unbroken PDL support
+
+                broken_candidates.append((name, lvl))
+
+            if not broken_candidates:
+                return False, "no_bos_level_broken", {}
+
+            # Pick the lowest broken level as the decisive structural support
+            best_name, broken_lvl = min(broken_candidates, key=lambda x: x[1])
+            sl_price = round(max(bar.high + buffer_pts, broken_lvl + buffer_pts), 2)
+
+            details = {
+                "pa_setup_name": "break_of_structure",
+                "pillar": 4,
+                "broken_level": round(broken_lvl, 2),
+                "broken_level_type": best_name,
+                "bar_open": round(bar.open, 2),
+                "bar_high": round(bar.high, 2),
+                "bar_low": round(bar.low, 2),
+                "bar_close": round(bar.close, 2),
+                "total_range": round(total_range, 2),
+                "body": round(body, 2),
+                "atr_14": round(atr, 2),
+                "extension_pts": round(broken_lvl - bar.close, 2),
+                "rejection_type": "bos_breakdown_confirmation",
+                "sl_price": sl_price,
+                "buffer_pts": round(buffer_pts, 2),
+                "ema_20": round(live_ema_20, 2),
+                "ema_50": round(live_ema_50, 2),
+            }
+            return True, f"bos_put_breakdown ({best_name})", details
+
+        return False, "unknown_direction", {}
+
+    def check_topological_prominence_breakout(
+        self,
+        direction: str,
+        current_vwap: float = 0.0,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Pillar 4 (V4 Final): 0-D Prominence Hub Structural Breakout.
+        Evaluates 0-D Prominence (\\hat{\\pi} >= 1.75) via FastMonotonicStack,
+        5m structural alignment, and Volume Ratio Gate (VR_t >= 1.4 vs 60m median).
+        """
+        if len(self.bars_1m) < 5 or self.current_atr_1m <= 1e-6:
+            return False, "insufficient_bars", {}
+
+        bar = self.bars_1m[-1]
+        if bar is None:
+            return False, "no_closed_bar", {}
+
+        prices_window = np.array([b.close for b in list(self.bars_1m)[-60:]], dtype=np.float64)
+        if len(prices_window) < 5:
+            return False, "insufficient_window", {}
+
+        hub_idx = len(prices_window) - 2
+        if not hasattr(self, "prominence_stack") or self.prominence_stack is None:
+            if FastMonotonicStack is not None:
+                self.prominence_stack = FastMonotonicStack(capacity=128)
+
+        if self.prominence_stack is None:
+            return False, "no_prominence_stack", {}
+
+        pi_hat = self.prominence_stack.compute_prominence(prices_window, hub_idx, self.current_atr_1m)
+        if pi_hat < 1.75:
+            return False, f"insufficient_prominence_{pi_hat:.2f}", {}
+
+        # Volume Gate: Volume Ratio VR_t >= 1.4 vs 60m median volume
+        vols_60 = [float(getattr(b, "volume", 0.0) or 0.0) for b in list(self.bars_1m)[-60:]]
+        med_vol = float(np.median(vols_60)) if vols_60 else 1.0
+        curr_vol = float(getattr(bar, "volume", 0.0) or 0.0)
+        vr_t = curr_vol / med_vol if med_vol > 0 else 1.0
+        if vr_t < 1.4:
+            return False, f"volume_ratio_gate_failed_{vr_t:.2f}", {}
+
+        # 5m Structural Alignment Gate
+        trend_5m_bullish = True
+        trend_5m_bearish = True
+        if self.bars_5m:
+            bar_5m = self.bars_5m[-1]
+            trend_5m_bullish = bar_5m.close >= bar_5m.open
+            trend_5m_bearish = bar_5m.close <= bar_5m.open
+
+        hub_price = float(prices_window[hub_idx])
+        is_bullish = direction.upper() in ("UP", "CALL")
+        is_bearish = direction.upper() in ("DOWN", "PUT")
+
+        if is_bullish and bar.close > hub_price and trend_5m_bullish:
+            if current_vwap > 0 and bar.close < current_vwap:
+                return False, "counter_to_vwap", {}
+            return True, "prominence_hub_breakout_up", {
+                "pillar": 4,
+                "hub_price": hub_price,
+                "pi_hat": pi_hat,
+                "vr_t": vr_t,
+                "breakout_direction": "UP",
+                "sl_price": hub_price - (0.45 * self.current_atr_1m),
+            }
+
+        if is_bearish and bar.close < hub_price and trend_5m_bearish:
+            if current_vwap > 0 and bar.close > current_vwap:
+                return False, "counter_to_vwap", {}
+            return True, "prominence_hub_breakout_down", {
+                "pillar": 4,
+                "hub_price": hub_price,
+                "pi_hat": pi_hat,
+                "vr_t": vr_t,
+                "breakout_direction": "DOWN",
+                "sl_price": hub_price + (0.45 * self.current_atr_1m),
+            }
+
+        return False, "no_breakout_against_hub", {}
+
     # ═══════════════════════════════════════════════════════════
     # 4. MASTER SIGNAL DISPATCHER
     # ═══════════════════════════════════════════════════════════
+
+    def get_volume_sma(self, lookback: int = 10) -> float:
+        """Computes simple moving average of 1m bar volume over lookback periods."""
+        if not self.bars_1m:
+            return 0.0
+        n = min(len(self.bars_1m), max(1, lookback))
+        vols = [float(getattr(b, "volume", 0.0) or 0.0) for b in list(self.bars_1m)[-n:]]
+        return (sum(vols) / float(n)) if n > 0 else 0.0
+
+    def get_relative_bar_metrics(self, bar: Optional[OHLCBar] = None) -> Dict[str, Any]:
+        """Calculates scale-invariant bar geometry, body %, wick %, and volume ratio."""
+        b = bar or self._curr_1m_bar or (self.bars_1m[-1] if self.bars_1m else None)
+        if not b:
+            return {}
+        rng = max(b.high - b.low, 0.1)
+        body = abs(b.close - b.open)
+        body_pct = body / rng
+        upper_wick = (b.high - max(b.open, b.close)) / rng
+        lower_wick = (min(b.open, b.close) - b.low) / rng
+        close_pos = (b.close - b.low) / rng
+        atr = max(self.current_atr_1m, 1.0)
+        range_atr = rng / atr
+        vol_sma = self.get_volume_sma(10)
+        b_vol = float(getattr(b, "volume", 1.0) or 1.0)
+        vol_ratio = (b_vol / vol_sma) if vol_sma > 0 else 1.0
+        return {
+            "bar_open": round(b.open, 2),
+            "bar_high": round(b.high, 2),
+            "bar_low": round(b.low, 2),
+            "bar_close": round(b.close, 2),
+            "bar_volume": round(b_vol, 2),
+            "bar_range": round(rng, 2),
+            "body_pct": round(body_pct, 3),
+            "upper_wick_pct": round(upper_wick, 3),
+            "lower_wick_pct": round(lower_wick, 3),
+            "close_pos": round(close_pos, 3),
+            "range_atr": round(range_atr, 2),
+            "vol_sma10": round(vol_sma, 2),
+            "vol_ratio": round(vol_ratio, 2),
+        }
+
+    def _enrich_details(self, details: Dict[str, Any]) -> Dict[str, Any]:
+        """Enriches setup details dict with relative bar metrics and volume SMA."""
+        bar_m = self.get_relative_bar_metrics()
+        for k, v in bar_m.items():
+            if k not in details:
+                details[k] = v
+        return details
 
     def evaluate_setup(
         self,
         direction: str,
         external_vwap: float = 0.0,
+        current_time: float = 0.0,
+        gamma_regime: str = "NEUTRAL",
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
-        Master Multi-Pillar Price Action Evaluator.
-        Evaluates the 3 empirically verified Price Action Scalper Engines:
+        Master Multi-Pillar Price Action Evaluator (V4.0: strict P1 -> P2 -> P3 -> P4
+        single-admission ladder, first hit wins — never an AND cascade).
+        Evaluates the 4 empirically verified Price Action Scalper Engines:
           Pillar 1: 20 EMA + Wick Rejection (Double-Touch Confluence)
           Pillar 2: Micro-Sweep & Reclaim (Turtle Soup / 5-Bar Liquidity Grab)
           Pillar 3: Volatility Squeeze to Expansion Breakout (3-Bar Tight Box Expansion)
+          Pillar 4: 0-D Prominence Hub Breakout (pi-hat >= 1.75, VR >= 1.4, 5m align)
+                      + Dual-Timeframe HVG Phase Shift (gated by shadow_only flag)
         Returns:
             (is_triggered, setup_name, details_dict)
         """
         eff_vwap = external_vwap if external_vwap > 0 else self.current_vwap
 
         # Pillar 1: 20 EMA Pullback Rejection (Double-Touch)
-        ok_20, reason_20, details_20 = self.check_20_ema_rejection(direction, current_vwap=eff_vwap)
+        ok_20, reason_20, details_20 = self.check_20_ema_rejection(direction, current_vwap=eff_vwap, current_time=current_time)
         if ok_20:
             bar = self._curr_1m_bar or (self.bars_1m[-1] if self.bars_1m else None)
-            if bar and eff_vwap > 0:
-                if direction.upper() in ("UP", "CALL") and bar.close <= eff_vwap:
-                    pass  # Reject counter to VWAP
-                elif direction.upper() in ("DOWN", "PUT") and bar.close >= eff_vwap:
-                    pass  # Reject counter to VWAP
-                else:
-                    return True, "20_ema_rejection", details_20
+            curr_spot = bar.close if bar else self.last_price
+            pz_ok, pz_score, pz_reason, pz_metrics = self.evaluate_pain_zone_confluence(
+                pillar=1, direction=direction, spot=curr_spot, atr=self.current_atr_1m, gamma_regime=gamma_regime
+            )
+            if not pz_ok:
+                logger.info(f"[PAIN ZONE VETO]: P1 {direction} blocked ({pz_reason})")
             else:
-                return True, "20_ema_rejection", details_20
+                details_20["pain_zone_score"] = pz_score
+                details_20["pain_zone_reason"] = pz_reason
+                details_20["pain_zone_metrics"] = pz_metrics
+                return True, "20_ema_rejection", self._enrich_details(details_20)
 
-        # Pillar 2: Micro-Sweep & Reclaim (5-Bar Liquidity Grab / Turtle Soup)
+        # Pillar 2: Micro-Sweep & Reclaim (Parallel Shadow A/B Tracking)
+        if getattr(self, "hvg_engine", None) is not None:
+            try:
+                self.hvg_engine.check_topological_sweep_reclaim(direction, eff_vwap)
+            except Exception as e:
+                logger.debug(f"[PriceActionEngine] HVG shadow sweep check failed: {e}")
+
         ok_sw, reason_sw, details_sw = self.check_micro_sweep_reclaim(direction, eff_vwap)
         if ok_sw:
-            return True, "micro_sweep_reclaim", details_sw
+            bar = self._curr_1m_bar or (self.bars_1m[-1] if self.bars_1m else None)
+            curr_spot = bar.close if bar else self.last_price
+            pz_ok, pz_score, pz_reason, pz_metrics = self.evaluate_pain_zone_confluence(
+                pillar=2, direction=direction, spot=curr_spot, atr=self.current_atr_1m, gamma_regime=gamma_regime
+            )
+            if not pz_ok:
+                logger.info(f"[PAIN ZONE VETO]: P2 {direction} blocked ({pz_reason})")
+            else:
+                details_sw["pain_zone_score"] = pz_score
+                details_sw["pain_zone_reason"] = pz_reason
+                details_sw["pain_zone_metrics"] = pz_metrics
+                details_sw["strategy_variant"] = "LEGACY_P2"
+                bar_ts = self.bars_1m[-1].ts_start if self.bars_1m else self.last_ts
+                details_sw["event_id"] = f"LEGACY_P2_{int(bar_ts)}_{direction.upper()}"
+                return True, "micro_sweep_reclaim", self._enrich_details(details_sw)
 
-        # Pillar 2 (Fallback / Backward Compatibility): Al Brooks 2-Legged Pullback
-        ok_ab, reason_ab, details_ab = self.check_albrooks_2legged_pullback(direction, eff_vwap)
-        if ok_ab:
-            return True, "albrooks_2legged_pullback", details_ab
+        # V4.0 (2026-09-21): Al Brooks 2-Legged Pullback retired from the live
+        # ladder — P1 -> P2 -> P3 -> P4 only. Method kept for offline reference.
 
         # Pillar 3: Volatility Squeeze Breakout (3-Bar Tight Box Expansion)
         ok_sq, reason_sq, details_sq = self.check_volatility_squeeze_breakout(direction, eff_vwap)
         if ok_sq:
-            return True, "volatility_squeeze_breakout", details_sq
+            bar = self._curr_1m_bar or (self.bars_1m[-1] if self.bars_1m else None)
+            curr_spot = bar.close if bar else self.last_price
+            pz_ok, pz_score, pz_reason, pz_metrics = self.evaluate_pain_zone_confluence(
+                pillar=3, direction=direction, spot=curr_spot, atr=self.current_atr_1m, gamma_regime=gamma_regime
+            )
+            if not pz_ok:
+                logger.info(f"[PAIN ZONE VETO]: P3 {direction} blocked ({pz_reason})")
+            else:
+                details_sq["pain_zone_score"] = pz_score
+                details_sq["pain_zone_reason"] = pz_reason
+                details_sq["pain_zone_metrics"] = pz_metrics
+                return True, "volatility_squeeze_breakout", self._enrich_details(details_sq)
+
+        # Pillar 4 (V4 Final): 0-D Prominence Hub Structural Breakout (\hat{\pi} >= 1.75, VR_t >= 1.4, 5m Alignment)
+        ok_prom, reason_prom, details_prom = self.check_topological_prominence_breakout(direction, eff_vwap)
+        if ok_prom:
+            bar = self._curr_1m_bar or (self.bars_1m[-1] if self.bars_1m else None)
+            curr_spot = bar.close if bar else self.last_price
+            pz_ok, pz_score, pz_reason, pz_metrics = self.evaluate_pain_zone_confluence(
+                pillar=4, direction=direction, spot=curr_spot, atr=self.current_atr_1m, gamma_regime=gamma_regime
+            )
+            if not pz_ok:
+                logger.info(f"[PAIN ZONE VETO]: P4 {direction} blocked ({pz_reason})")
+
+            else:
+                details_prom["pain_zone_score"] = pz_score
+                details_prom["pain_zone_reason"] = pz_reason
+                details_prom["pain_zone_metrics"] = pz_metrics
+                bar_ts = self.bars_1m[-1].ts_start if self.bars_1m else self.last_ts
+                details_prom["timestamp"] = bar_ts
+                details_prom["event_id"] = f"P4_PROM_{int(bar_ts)}_{direction.upper()}"
+                return True, "topological_prominence_breakout", self._enrich_details(details_prom)
+
+        # Pillar 4 Fallback: Topological HVG Phase Shift Breakout (Dual-Timeframe 1m + 5m)
+        if getattr(self, "hvg_engine", None) is not None:
+            try:
+                l2_depth = getattr(self, "_l2_depth_history", None)
+                ok_hvg, reason_hvg, details_hvg = self.hvg_engine.evaluate_phase_shift(
+                    direction=direction,
+                    ema_20=self.ema_20_1m,
+                    ema_50=self.ema_50_1m,
+                    current_vwap=eff_vwap,
+                    l2_depth_history=l2_depth,
+                )
+                if ok_hvg and not getattr(self.hvg_engine, "shadow_only", True):
+                    return True, "hvg_network_phase_shift", self._enrich_details(details_hvg)
+            except Exception:
+                pass
+
+        # V4.0 (2026-09-21): standalone Break of Structure retired from the live
+        # ladder — superseded by P4 topological phase shift. Method kept offline.
 
         return False, "no_price_action_setup", {}
 

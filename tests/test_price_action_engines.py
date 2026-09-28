@@ -166,14 +166,12 @@ class TestPillar1_20_EMA_Rejection:
         is_rejection, reason, details = engine.check_20_ema_rejection("UP")
         assert is_rejection is False
 
-    def test_20_ema_put_trapped_near_support_arms_bos_and_triggers_on_breakdown(self):
+    def test_20_ema_put_trapped_near_support_rejected(self):
         """
-        Verifies the Trade 2 protection:
-        1. When a 20-EMA rejection forms within 0.60x ATR of a prior swing low,
-           the trade is NOT taken prematurely into the support wall.
-           Instead, it arms pending BOS ('awaiting_bos_breakdown').
-        2. When a subsequent bar closes firmly BELOW that support level,
-           the Break-of-Structure (BOS) confirms and triggers the trade.
+        Verifies support trap protection:
+        When a 20-EMA rejection forms within 0.60x ATR of a prior swing low,
+        the trade is rejected with reason 'trapped_near_support' rather than taking
+        a bad entry directly into structural support.
         """
         engine = PriceActionEngine()
         # Seed 25 bars in downtrend
@@ -217,83 +215,18 @@ class TestPillar1_20_EMA_Rejection:
         engine._on_1m_bar_close(rejection_bar)
         engine.last_price = rejection_bar.close
 
-        # Step 1: Must NOT enter immediately. Must arm BOS!
+        # Must reject cleanly without arming pending BOS
         ok, reason, details = engine.check_20_ema_rejection("DOWN")
         assert ok is False
-        assert reason == "awaiting_bos_breakdown"
-        assert engine._pending_bos is not None
-        assert engine._pending_bos["direction"] == "PUT"
-        assert engine._pending_bos["level"] == round(pivot_low_level, 2)
+        assert reason == "trapped_near_support"
+        assert details["support_level"] == round(pivot_low_level, 2)
+        assert details["room_pts"] == round(rejection_bar.close - pivot_low_level, 2)
 
-        # Step 2: Next bar (T+1) breaks down and closes firmly below the pivot low!
-        breakdown_bar = OHLCBar(
-            ts_start=1920.0, ts_end=1980.0,
-            open=live_ema_20 - 3.0,
-            high=live_ema_20 - 2.5,
-            low=pivot_low_level - 3.0,
-            close=pivot_low_level - 1.5,  # Closed below support level!
-        )
-        engine._on_1m_bar_close(breakdown_bar)
-        engine.last_price = breakdown_bar.close
-
-        # Step 3: Pending BOS resolves and fires the trade!
-        ok_bos, reason_bos, details_bos = engine.check_20_ema_rejection("DOWN")
-        assert ok_bos is True
-        assert details_bos["rejection_type"] == "bos_breakdown_confirmation"
-        assert details_bos["confirmation_path"] == "pending_bos_breakout"
-        assert details_bos["runway_state"] == "bos_breakout"
-        assert details_bos["broken_level"] == round(pivot_low_level, 2)
-        # Pending BOS state cleared after trigger
-        assert engine._pending_bos is None
-
-    def test_20_ema_put_bos_invalidation_above_20_ema(self):
-        """Verifies that if price surges back above 20 EMA, pending BOS is cleanly canceled."""
-        engine = PriceActionEngine()
-        for i in range(25):
-            engine._on_1m_bar_close(OHLCBar(
-                i * 60, (i + 1) * 60,
-                24000.0 - i * 1.0, 24002.0 - i * 1.0, 23998.0 - i * 1.0, 24000.0 - i * 1.0
-            ))
-
-        live_ema_20, _ = engine.get_live_20_ema_and_slope()
-        engine._on_1m_bar_close(OHLCBar(1500.0, 1560.0, live_ema_20 - 1.5, live_ema_20 + 0.1, live_ema_20 - 2.0, live_ema_20 - 1.0))
-        live_ema_20, _ = engine.get_live_20_ema_and_slope()
-
-        # Create pivot low
-        engine._on_1m_bar_close(OHLCBar(1560.0, 1620.0, live_ema_20 - 1.5, live_ema_20 - 1.0, live_ema_20 - 3.0, live_ema_20 - 2.5))
-        pivot_low = live_ema_20 - 5.0
-        engine._on_1m_bar_close(OHLCBar(1620.0, 1680.0, live_ema_20 - 2.5, live_ema_20 - 2.0, pivot_low, live_ema_20 - 4.0))
-        engine._on_1m_bar_close(OHLCBar(1680.0, 1740.0, live_ema_20 - 4.0, live_ema_20 - 1.5, live_ema_20 - 3.5, live_ema_20 - 2.0))
-        # Retest bars fulfilling two-touch spacing
-        engine._on_1m_bar_close(OHLCBar(1740.0, 1800.0, live_ema_20 - 2.0, live_ema_20 - 0.5, live_ema_20 - 2.5, live_ema_20 - 1.0))
-        engine._on_1m_bar_close(OHLCBar(1800.0, 1860.0, live_ema_20 - 1.0, live_ema_20 + 0.2, live_ema_20 - 2.0, live_ema_20 - 1.0))
-
-        live_ema_20, _ = engine.get_live_20_ema_and_slope()
-
-        # Rejection bar near support
-        rejection_bar = OHLCBar(1860.0, 1920.0, live_ema_20 - 1.5, live_ema_20 + 0.2, live_ema_20 - 3.2, live_ema_20 - 3.0)
-        engine._on_1m_bar_close(rejection_bar)
-        engine.last_price = rejection_bar.close
-
-        ok, _, _ = engine.check_20_ema_rejection("DOWN")
-        assert ok is False
-        assert engine._pending_bos is not None
-
-        # Next bar blows off HIGHER, closing above 20-EMA
-        invalid_bar = OHLCBar(1920.0, 1980.0, live_ema_20 - 2.0, live_ema_20 + 10.0, live_ema_20 - 2.5, live_ema_20 + 8.0)
-        engine._on_1m_bar_close(invalid_bar)
-        engine.last_price = invalid_bar.close
-
-        ok_inv, reason_inv, _ = engine.check_20_ema_rejection("DOWN")
-        assert ok_inv is False
-        # Cleanly invalidated and canceled!
-        assert engine._pending_bos is None
-
-    def test_20_ema_call_trapped_near_resistance_arms_bos_and_triggers_on_breakout(self):
+    def test_20_ema_call_trapped_near_resistance_rejected(self):
         """
-        Verifies CALL direction BOS protection:
-        1. 20-EMA rejection forming within 0.60x ATR below prior swing high arms BOS.
-        2. Candle closing above the swing high confirms BOS and triggers CALL.
+        Verifies CALL direction resistance trap protection:
+        When a 20-EMA bounce forms within 0.60x ATR below prior swing high,
+        the trade is rejected with reason 'trapped_near_resistance'.
         """
         engine = PriceActionEngine()
         for i in range(25):
@@ -330,144 +263,44 @@ class TestPillar1_20_EMA_Rejection:
         engine._on_1m_bar_close(rejection_bar)
         engine.last_price = rejection_bar.close
 
-        # Must arm pending BOS
+        # Must reject cleanly without arming pending BOS
         ok, reason, details = engine.check_20_ema_rejection("UP")
         assert ok is False
-        assert reason == "awaiting_bos_breakout"
-        assert engine._pending_bos is not None
-        assert engine._pending_bos["direction"] == "CALL"
+        assert reason == "trapped_near_resistance"
+        assert details["resistance_level"] == round(pivot_high_level, 2)
+        assert details["room_pts"] == round(pivot_high_level - rejection_bar.close, 2)
 
-        # Next bar breaks out above resistance
-        breakout_bar = OHLCBar(
-            ts_start=1920.0, ts_end=1980.0,
-            open=live_ema_20 + 3.0,
-            high=pivot_high_level + 3.0,
-            low=live_ema_20 + 2.5,
-            close=pivot_high_level + 1.5,
-        )
-        engine._on_1m_bar_close(breakout_bar)
-        engine.last_price = breakout_bar.close
-
-        ok_bos, reason_bos, details_bos = engine.check_20_ema_rejection("UP")
-        assert ok_bos is True
-        assert details_bos["rejection_type"] == "bos_breakout_confirmation"
-        assert details_bos["confirmation_path"] == "pending_bos_breakout"
-        assert details_bos["runway_state"] == "bos_breakout"
-        assert engine._pending_bos is None
-
-    def test_20_ema_call_weak_breakout_discarded_no_momentum(self):
-        """
-        Weak break = no momentum = discard (2026-09-16):
-        Breakout bar closes above resistance but with a tiny body and a
-        mid-range close (wicky chop like the 12:43 SENSEX bar). The pending
-        BOS must be cleared WITHOUT firing so a genuine retest can arrive
-        later via a fresh signal.
-        """
+    def test_20_ema_stale_bar_entry_window_expired(self):
+        """Verifies Upgrade 2: Bars closed > 12s ago are rejected to prevent late chase entries."""
         engine = PriceActionEngine()
         for i in range(25):
-            engine._on_1m_bar_close(OHLCBar(
-                i * 60, (i + 1) * 60,
-                24000.0 + i * 1.0, 24002.0 + i * 1.0, 23998.0 + i * 1.0, 24000.0 + i * 1.0
-            ))
-
+            engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 24000.0 + i * 1.0, 24002.0 + i * 1.0, 23998.0 + i * 1.0, 24000.0 + i * 1.0))
         live_ema_20, _ = engine.get_live_20_ema_and_slope()
-        engine._on_1m_bar_close(OHLCBar(1500.0, 1560.0, live_ema_20 + 1.5, live_ema_20 + 2.0, live_ema_20 - 0.1, live_ema_20 + 1.0))
-        live_ema_20, _ = engine.get_live_20_ema_and_slope()
+        bar = OHLCBar(1500.0, 1560.0, live_ema_20 + 0.5, live_ema_20 + 2.0, live_ema_20 - 0.1, live_ema_20 + 1.5)
+        engine._on_1m_bar_close(bar)
+        engine.last_price = bar.close
 
-        engine._on_1m_bar_close(OHLCBar(1560.0, 1620.0, live_ema_20 + 1.5, live_ema_20 + 3.0, live_ema_20 + 1.0, live_ema_20 + 2.5))
-        pivot_high_level = live_ema_20 + 5.0
-        engine._on_1m_bar_close(OHLCBar(1620.0, 1680.0, live_ema_20 + 2.5, pivot_high_level, live_ema_20 + 2.0, live_ema_20 + 4.0))
-        engine._on_1m_bar_close(OHLCBar(1680.0, 1740.0, live_ema_20 + 4.0, live_ema_20 + 3.5, live_ema_20 + 1.5, live_ema_20 + 2.0))
-        engine._on_1m_bar_close(OHLCBar(1740.0, 1800.0, live_ema_20 + 2.0, live_ema_20 + 2.5, live_ema_20 + 0.5, live_ema_20 + 1.0))
-        engine._on_1m_bar_close(OHLCBar(1800.0, 1860.0, live_ema_20 + 1.0, live_ema_20 + 2.0, live_ema_20 - 0.2, live_ema_20 + 1.0))
-
-        live_ema_20, _ = engine.get_live_20_ema_and_slope()
-        rejection_bar = OHLCBar(
-            ts_start=1860.0, ts_end=1920.0,
-            open=live_ema_20 + 1.5,
-            high=live_ema_20 + 3.2,
-            low=live_ema_20 - 0.2,
-            close=live_ema_20 + 3.0,
-        )
-        engine._on_1m_bar_close(rejection_bar)
-        engine.last_price = rejection_bar.close
-
-        ok, reason, _ = engine.check_20_ema_rejection("UP")
+        # Call with current_time = 1560.0 + 31.0s (31s late, like 12:11 trade)
+        ok, reason, details = engine.check_20_ema_rejection("UP", current_time=1591.0)
         assert ok is False
-        assert reason == "awaiting_bos_breakout"
-        assert engine._pending_bos is not None
+        assert reason == "stale_bar_entry_window_expired"
+        assert details["time_since_close"] == 31.0
 
-        # Weak breakout: closes a hair above resistance but body is tiny
-        # and close sits mid-range (long upper wick, no momentum).
-        weak_breakout_bar = OHLCBar(
-            ts_start=1920.0, ts_end=1980.0,
-            open=pivot_high_level - 1.5,
-            high=pivot_high_level + 2.5,
-            low=pivot_high_level - 2.0,
-            close=pivot_high_level + 0.3,
-        )
-        engine._on_1m_bar_close(weak_breakout_bar)
-        engine.last_price = weak_breakout_bar.close
-
-        ok_weak, reason_weak, _ = engine.check_20_ema_rejection("UP")
-        assert ok_weak is False
-        assert reason_weak == "bos_weak_breakout_discarded"
-        assert engine._pending_bos is None
-
-    def test_20_ema_put_weak_breakdown_discarded_no_momentum(self):
-        """
-        PUT mirror of the weak-break discard rule: breakdown bar closes
-        below support but with a tiny body and mid-range close.
-        """
+    def test_20_ema_live_price_pierce_guard(self):
+        """Verifies Upgrade 3: If live price is piercing against 20 EMA, setup is immediately invalidated."""
         engine = PriceActionEngine()
         for i in range(25):
-            engine._on_1m_bar_close(OHLCBar(
-                i * 60, (i + 1) * 60,
-                24000.0 - i * 1.0, 24002.0 - i * 1.0, 23998.0 - i * 1.0, 24000.0 - i * 1.0
-            ))
-
+            engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 24000.0 + i * 1.0, 24002.0 + i * 1.0, 23998.0 + i * 1.0, 24000.0 + i * 1.0))
         live_ema_20, _ = engine.get_live_20_ema_and_slope()
-        engine._on_1m_bar_close(OHLCBar(1500.0, 1560.0, live_ema_20 - 1.5, live_ema_20 + 0.1, live_ema_20 - 2.0, live_ema_20 - 1.0))
-        live_ema_20, _ = engine.get_live_20_ema_and_slope()
+        bar = OHLCBar(1500.0, 1560.0, live_ema_20 + 0.5, live_ema_20 + 2.0, live_ema_20 - 0.1, live_ema_20 + 1.5)
+        engine._on_1m_bar_close(bar)
 
-        engine._on_1m_bar_close(OHLCBar(1560.0, 1620.0, live_ema_20 - 1.5, live_ema_20 - 1.0, live_ema_20 - 3.0, live_ema_20 - 2.5))
-        pivot_low_level = live_ema_20 - 5.0
-        engine._on_1m_bar_close(OHLCBar(1620.0, 1680.0, live_ema_20 - 2.5, live_ema_20 - 2.0, pivot_low_level, live_ema_20 - 4.0))
-        engine._on_1m_bar_close(OHLCBar(1680.0, 1740.0, live_ema_20 - 4.0, live_ema_20 - 1.5, live_ema_20 - 3.5, live_ema_20 - 2.0))
-        engine._on_1m_bar_close(OHLCBar(1740.0, 1800.0, live_ema_20 - 2.0, live_ema_20 - 0.5, live_ema_20 - 2.5, live_ema_20 - 1.0))
-        engine._on_1m_bar_close(OHLCBar(1800.0, 1860.0, live_ema_20 - 1.0, live_ema_20 + 0.2, live_ema_20 - 2.0, live_ema_20 - 1.0))
-
-        live_ema_20, _ = engine.get_live_20_ema_and_slope()
-        rejection_bar = OHLCBar(
-            ts_start=1860.0, ts_end=1920.0,
-            open=live_ema_20 - 1.5,
-            high=live_ema_20 + 0.2,
-            low=live_ema_20 - 3.2,
-            close=live_ema_20 - 3.0,
-        )
-        engine._on_1m_bar_close(rejection_bar)
-        engine.last_price = rejection_bar.close
-
-        ok, reason, _ = engine.check_20_ema_rejection("DOWN")
+        # Live tick has plunged below 20 EMA (forming candle is falling red)
+        engine.last_price = live_ema_20 - 5.0
+        ok, reason, details = engine.check_20_ema_rejection("UP")
         assert ok is False
-        assert reason == "awaiting_bos_breakdown"
-        assert engine._pending_bos is not None
-
-        # Weak breakdown: closes a hair below support, tiny body, mid-range.
-        weak_breakdown_bar = OHLCBar(
-            ts_start=1920.0, ts_end=1980.0,
-            open=pivot_low_level + 1.5,
-            high=pivot_low_level + 2.0,
-            low=pivot_low_level - 2.5,
-            close=pivot_low_level - 0.3,
-        )
-        engine._on_1m_bar_close(weak_breakdown_bar)
-        engine.last_price = weak_breakdown_bar.close
-
-        ok_weak, reason_weak, _ = engine.check_20_ema_rejection("DOWN")
-        assert ok_weak is False
-        assert reason_weak == "bos_weak_breakdown_discarded"
-        assert engine._pending_bos is None
+        assert reason == "live_price_piercing_below_20_ema"
+        assert details["last_price"] == round(live_ema_20 - 5.0, 2)
 
 
 
@@ -888,4 +721,232 @@ class TestRefinedPriceActionFilters:
         ok, reason, details = engine.check_20_ema_rejection("UP")
         assert ok is True
         assert details.get("pillar") == 1
+
+    def test_1m_option_flow_accumulation(self):
+        """
+        Verifies that PriceActionEngine:
+        1. Accumulates option volume by trade initiation (Lee-Ready mid-quote rule).
+        2. Filters out strikes outside ATM ± 7 strikes.
+        3. Attaches Call/Put buy/sell volume and OFI directly to the closed OHLCBar.
+        4. Resets the accumulator for the subsequent minute.
+        """
+        engine = PriceActionEngine(strike_step=100.0)
+        engine.last_price = 75000.0  # ATM is 75000
+
+        # Initial baseline seed tick (cumulative day volume)
+        engine.update_option_tick("75000CE", 75000.0, 0, lp=100.0, bp1=99.8, sp1=100.2, vol=10000.0, atm_strike=75000.0)
+        engine.update_option_tick("75000PE", 75000.0, 1, lp=120.0, bp1=119.8, sp1=120.2, vol=8000.0, atm_strike=75000.0)
+
+        # 1. Aggressive Call Buying at Ask (lp=100.2 >= mid=100.0, delta_vol=500)
+        engine.update_option_tick("75000CE", 75000.0, 0, lp=100.2, bp1=99.8, sp1=100.2, vol=10500.0, atm_strike=75000.0)
+        # 2. Passive Call Selling at Bid (lp=99.8 < mid=100.0, delta_vol=200)
+        engine.update_option_tick("75000CE", 75000.0, 0, lp=99.8, bp1=99.8, sp1=100.2, vol=10700.0, atm_strike=75000.0)
+        # 3. Aggressive Put Buying at Ask (lp=120.2 >= mid=120.0, delta_vol=150)
+        engine.update_option_tick("75000PE", 75000.0, 1, lp=120.2, bp1=119.8, sp1=120.2, vol=8150.0, atm_strike=75000.0)
+
+        # 4. Out-of-window strike: ATM ± 10 strikes (76000 is 10 strikes away from 75000 > 7 threshold)
+        engine.update_option_tick("76000CE", 76000.0, 0, lp=10.0, bp1=9.8, sp1=10.2, vol=5000.0, atm_strike=75000.0)
+        engine.update_option_tick("76000CE", 76000.0, 0, lp=10.2, bp1=9.8, sp1=10.2, vol=6000.0, atm_strike=75000.0)
+
+        # Close the 1-minute bar
+        bar = OHLCBar(0, 60, 75000.0, 75020.0, 74990.0, 75015.0)
+        engine._on_1m_bar_close(bar)
+
+        # Verify bar attributes
+        assert bar.call_buy_vol == 500.0
+        assert bar.call_sell_vol == 200.0
+        assert bar.put_buy_vol == 150.0
+        assert bar.put_sell_vol == 0.0
+        assert bar.opt_delta_flow == 350.0  # 500 - 150
+        assert bar.opt_total_vol == 850.0   # 500 + 200 + 150 + 0 (76000 was filtered out!)
+        assert bar.opt_pcr == round(150.0 / 700.0, 3)
+
+        # Verify that accumulator was reset for the next candle
+        bar2 = OHLCBar(60, 120, 75015.0, 75025.0, 75010.0, 75020.0)
+        engine._on_1m_bar_close(bar2)
+        assert bar2.call_buy_vol == 0.0
+        assert bar2.opt_total_vol == 0.0
+
+
+def test_hybrid_option_flow_and_pain_zone_vwaps():
+    """
+    Tests the 4-Line Pain Zone VWAP and Hybrid trade classification:
+    1. Touch rule: lp >= sp1 -> buy, lp <= bp1 -> sell
+    2. Inside spread: Tick Rule fallback (lp > prev_lp -> buy, lp < prev_lp -> sell)
+    3. Inside spread zero-tick: carry forward prior sign
+    4. Broken/zero quote: unclassified drop without buy bias
+    5. Day rollover reset
+    6. Pain Zone VWAP calculation and warmup gate
+    """
+    engine = PriceActionEngine(strike_step=50.0)
+    engine.last_price = 22850.0
+
+    # 1. Seed tick
+    engine.update_option_tick("NIFTY_CE", 22850.0, 0, lp=100.0, bp1=99.0, sp1=101.0, vol=1000.0)
+    assert engine._opt_flow_1m["call_buy_vol"] == 0.0
+
+    # 2. Touch rule pure buy (lp >= sp1) -> delta_vol=500 -> 100% buy
+    engine.update_option_tick("NIFTY_CE", 22850.0, 0, lp=101.5, bp1=100.0, sp1=101.0, vol=1500.0)
+    assert engine._opt_flow_1m["call_buy_vol"] == 500.0
+    assert engine._opt_flow_1m["call_sell_vol"] == 0.0
+
+    # 3. Touch rule pure sell (lp <= bp1) -> delta_vol=300 -> 100% sell
+    engine.update_option_tick("NIFTY_CE", 22850.0, 0, lp=99.5, bp1=100.0, sp1=101.0, vol=1800.0)
+    assert engine._opt_flow_1m["call_sell_vol"] == 300.0
+
+    # 4. Inside spread with Tick Rule fallback:
+    # bp1=99.0, sp1=102.0, lp=100.5. Previous lp was 99.5.
+    # lp > prev_lp (100.5 > 99.5) -> Tick rule says BUY!
+    engine.update_option_tick("NIFTY_CE", 22850.0, 0, lp=100.5, bp1=99.0, sp1=102.0, vol=2000.0)
+    assert engine._opt_flow_1m["call_buy_vol"] == 500.0 + 200.0  # +200
+
+    # 5. Inside spread zero-tick carry forward:
+    # lp=100.5 again, prev was 100.5. Carry forward prior buy frac (1.0).
+    engine.update_option_tick("NIFTY_CE", 22850.0, 0, lp=100.5, bp1=99.0, sp1=102.0, vol=2100.0)
+    assert engine._opt_flow_1m["call_buy_vol"] == 700.0 + 100.0  # +100
+
+    # 6. Inside spread with downtick:
+    # lp=100.0 < 100.5 -> Tick rule says SELL!
+    engine.update_option_tick("NIFTY_CE", 22850.0, 0, lp=100.0, bp1=99.0, sp1=102.0, vol=2250.0)
+    assert engine._opt_flow_1m["call_sell_vol"] == 300.0 + 150.0  # +150
+
+    # 7. Broken/zero quote guard:
+    # bp1=0, sp1=0 -> no quotes! Unclassified drop!
+    engine.update_option_tick("NIFTY_FAR_OTM", 22850.0, 0, lp=5.0, bp1=0.0, sp1=0.0, vol=100.0)  # seed
+    engine.update_option_tick("NIFTY_FAR_OTM", 22850.0, 0, lp=5.0, bp1=0.0, sp1=0.0, vol=200.0)  # no prev_lp inside quote
+    assert engine._opt_flow_1m["unclass_vol"] == 100.0
+
+    # 8. Put flow testing:
+    engine.update_option_tick("NIFTY_PE", 22850.0, 1, lp=80.0, bp1=79.0, sp1=81.0, vol=1000.0)  # seed
+    # Put Buy at ask:
+    engine.update_option_tick("NIFTY_PE", 22850.0, 1, lp=81.5, bp1=79.0, sp1=81.0, vol=1400.0)  # +400 buy
+    # Put Sell at bid:
+    engine.update_option_tick("NIFTY_PE", 22850.0, 1, lp=79.0, bp1=79.0, sp1=81.0, vol=1600.0)  # +200 sell
+    assert engine._opt_flow_1m["put_buy_vol"] == 400.0
+    assert engine._opt_flow_1m["put_sell_vol"] == 200.0
+
+    # 9. Verify Pain Zone VWAPs:
+    # Spot is 22850.0. All trades happened at Spot 22850.0.
+    vwaps = engine.get_pain_zone_vwaps(lot_size=1.0)
+    # Warmup threshold is 200 lots * 1.0 = 200 vol.
+    # Call buy vol = 800 >= 200 -> VWAP active!
+    assert round(vwaps["vwap_call_buy"], 1) == 22850.0
+    # Call sell vol = 450 >= 200 -> VWAP active!
+    assert round(vwaps["vwap_call_sell"], 1) == 22850.0
+    # Put buy vol = 400 >= 200 -> VWAP active!
+    assert round(vwaps["vwap_put_buy"], 1) == 22850.0
+    # Put sell vol = 200 >= 200 -> VWAP active!
+    assert round(vwaps["vwap_put_sell"], 1) == 22850.0
+    # Composite VWAP is also active:
+    assert round(vwaps["vwap_composite"], 1) == 22850.0
+
+    # 10. Day Rollover reset test:
+    engine._reset_option_day_state()
+    assert engine._cum_cb_vol == 0.0
+    assert engine._cum_pb_vol == 0.0
+    vwaps_reset = engine.get_pain_zone_vwaps(lot_size=1.0)
+    assert vwaps_reset["vwap_call_buy"] == 0.0
+
+
+def test_pain_zone_confluence_scorecard():
+    """
+    Tests DeepSeek V4 Pro 4 Setups x 4 Lines Ruleset:
+    - P1: 20 EMA Wick Rejection (Boost, Veto, Hard Block)
+    - P3: Squeeze Expansion (Positive gamma fade vs expansion boost)
+    - P4: BOS (Max fuel vs late extension)
+    """
+    engine = PriceActionEngine(strike_step=50.0)
+    engine.current_atr_1m = 10.0
+
+    # Setup simulated lines (> 5000.0 warmup threshold):
+    # CallBuy = 22850.0 (vol=6000), PutBuy = 22820.0 (vol=6000)
+    # CallSell = 22860.0 (vol=6000), PutSell = 22810.0 (vol=6000)
+    engine._cum_cb_pv = 22850.0 * 6000.0; engine._cum_cb_vol = 6000.0
+    engine._cum_pb_pv = 22820.0 * 6000.0; engine._cum_pb_vol = 6000.0
+    engine._cum_cs_pv = 22860.0 * 6000.0; engine._cum_cs_vol = 6000.0
+    engine._cum_ps_pv = 22810.0 * 6000.0; engine._cum_ps_vol = 6000.0
+
+    # Test 1: P1 PE setup with Spot at 22805 (Below CallBuy 22850 AND Below PutSell 22810)
+    # Call buyers trapped (< 22850) AND Put writers underwater (< 22810) -> DUAL FUEL BOOST!
+    ok, score, reason, _ = engine.evaluate_pain_zone_confluence(pillar=1, direction="PUT", spot=22805.0)
+    assert ok is True
+    assert score == 15.0
+    assert reason == "p1_pe_dual_fuel_boost"
+
+    # Test 2: P1 PE setup with Spot at 22828 (Above PutBuy 22820 by 8 pts > 0.5 ATR = 5 pts)
+    # Put buyers trapped, dumping risk -> Veto -10 pts
+    ok, score, reason, _ = engine.evaluate_pain_zone_confluence(pillar=1, direction="PUT", spot=22828.0)
+    assert ok is True
+    assert score == -10.0
+    assert reason == "veto_put_buyer_dump_risk"
+
+    # Test 3: P1 PE setup with Spot at 22835 (Above PutBuy 22820 by 15 pts >= 1.0 ATR = 10 pts)
+    # Severe put buyer pain -> HARD BLOCK!
+    ok, score, reason, _ = engine.evaluate_pain_zone_confluence(pillar=1, direction="PUT", spot=22835.0)
+    assert ok is False
+    assert score == -999.0
+    assert reason == "hard_block_put_buyer_pain_severe"
+
+    # Test 4: P1 CE setup with Spot at 22865 (Above PutBuy 22820 AND Above CallSell 22860)
+    # Put buyers trapped (> 22820) AND Call writers underwater (> 22860) -> DUAL FUEL BOOST!
+    ok, score, reason, _ = engine.evaluate_pain_zone_confluence(pillar=1, direction="CALL", spot=22865.0)
+    assert ok is True
+    assert score == 15.0
+    assert reason == "p1_ce_dual_fuel_boost"
+
+    # Test 5: P3 Squeeze Expansion with Spot at 22840 (Below CallBuy 22850) under POSITIVE gamma
+    # Positive gamma pinning fade -> Hard Block!
+    ok, score, reason, _ = engine.evaluate_pain_zone_confluence(pillar=3, direction="CALL", spot=22840.0, gamma_regime="POSITIVE")
+    assert ok is False
+    assert score == -999.0
+    assert reason == "fade_p3_ce_under_call_buy_pos_gamma"
+
+    # Test 6: P4 BOS PE with Spot at 22800 (Below PutSell 22810)
+    # Put writers capitulation -> Max Fuel!
+    ok, score, reason, _ = engine.evaluate_pain_zone_confluence(pillar=4, direction="PUT", spot=22800.0)
+    assert ok is True
+    assert score == 15.0
+    assert reason == "p4_pe_max_fuel_writer_capitulation"
+
+    # Test 7: P1 PE setup with PutBuy neutral, but Spot at 22866 (Above CallSell 22860 + 0.5 ATR = 22865)
+    # Veto Check 2: Call writers broken / short squeeze risk -> Soft Veto (-10)
+    engine._cum_pb_pv = 0.0; engine._cum_pb_vol = 0.0
+    ok, score, reason, _ = engine.evaluate_pain_zone_confluence(pillar=1, direction="PUT", spot=22866.0)
+    assert ok is True
+    assert score == -10.0
+    assert reason == "veto_call_seller_broken_risk"
+
+
+
+def test_flow_symmetry_diagnostic_and_and_gate_warmup():
+    """Verifies EOD Flow Symmetry Diagnostic ratio & AND-gate time + volume warmup."""
+    engine = PriceActionEngine()
+    engine._cum_cb_vol = 5000.0
+    engine._cum_cs_vol = 5000.0
+    engine._cum_pb_vol = 5000.0
+    engine._cum_ps_vol = 5000.0
+    diag = engine.get_flow_symmetry_diagnostic()
+    assert diag["is_balanced"] is True
+    assert diag["buyer_ratio"] == 0.50
+    assert diag["alarm"] is False
+
+    # Skewed volume (> 55% buyers) -> Alarm fires!
+    engine._cum_cb_vol = 12000.0
+    diag_skew = engine.get_flow_symmetry_diagnostic()
+    assert diag_skew["buyer_ratio"] > 0.55
+    assert diag_skew["alarm"] is True
+
+    # AND-Gate Warmup: Even with 200 lots volume, if min_bars=30 and len(bars) < 30 -> Inactive!
+    engine._cum_cb_pv = 12000.0 * 22800.0
+    pz_inactive = engine.get_pain_zone_vwaps(lot_size=25.0, min_bars=30)
+    assert pz_inactive["vwap_call_buy"] == 0.0  # Blocked by time gate!
+
+    # Once 30 bars are present -> Active!
+    for i in range(30):
+        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 22800.0, 22805.0, 22795.0, 22800.0))
+    pz_active = engine.get_pain_zone_vwaps(lot_size=25.0, min_bars=30)
+    assert pz_active["vwap_call_buy"] == 22800.0
+
+
+
 

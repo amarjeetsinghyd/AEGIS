@@ -1,0 +1,25 @@
+{
+    "model_version": "v3.9_flow_gatekeeper",
+    "features": [
+        "put_aggression",
+        "call_buy_vol",
+        "call_aggression",
+        "avg_book_imb",
+        "upper_wick_bps",
+        "ema20_dist_bps",
+        "lower_wick_bps",
+        "opt_flow_ratio",
+        "range_bps",
+        "body_bps",
+        "put_buy_vol",
+        "opt_delta_3m",
+        "ema5_dist_bps",
+        "opt_total_vol",
+        "opt_pcr",
+        "opt_delta_flow",
+        "ret_1m_bps"
+    ],
+    "optimal_threshold": 0.4,
+    "rolling_window_minutes": 5,
+    "description": "Dual-Track 1-minute Option Order Flow + Microstructure Confluence Brain"
+}

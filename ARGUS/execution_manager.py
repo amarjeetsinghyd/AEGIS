@@ -49,7 +49,7 @@ HISTORY_PATH = os.path.join(TRADES_DIR, "trade_history.json")
 
 PAPER_MODE = True                # ARGUS running in shadow/paper mode per user directive
 MAX_OPEN_POSITIONS = 1
-MAX_TRADES_PER_DAY = 5           # Hard safety limit for testing: max 5 trades per day
+MAX_TRADES_PER_DAY = 3           # FIX 2026-09-01: 5 allowed 30 fills on 2026-08-20 (blow-up) → cap 3/day
 LEVERAGE = 5.0
 MARGIN_SAFETY = 1.0          # Set to 100% per user request
 TP_ATR_MULT = 1.5            # Calibrated for 0.4% - 0.6% micro-trend capture
@@ -70,7 +70,7 @@ MKT_SLACK_PCT = 0.010
 TICK_SIZE = 0.10
 EOD_FLATTEN_TIME = time(14, 55)
 MAX_EXIT_ATTEMPTS = 3
-CONSEC_SL_LIMIT = 3
+CONSEC_SL_LIMIT = 2  # FIX 2026-09-01: 3→2 faster circuit breaker after -209 day
 
 # ═══════════════════════════════════════════════════════════════════
 # DYNAMIC EXIT ENGINE — Microstructure Decay Detection (EMBEDDED)
@@ -78,27 +78,27 @@ CONSEC_SL_LIMIT = 3
 
 EXIT_CFG = {
     # MPAR Deceleration
-    "mpar_accel_flip_mult": 2.0,          # Require 2x adverse acceleration flip
+    "mpar_accel_flip_mult": 2.5,          # FIX 2026-09-01: 2.0→2.5 less sensitive (was 67% MPAR_DECEL exits)
     "mpar_accel_collapse_pct": 0.50,      
-    "mpar_min_hold_seconds": 60,          # Give position at least 60s to develop
+    "mpar_min_hold_seconds": 90,          # FIX: 60→90s give position time (median was 31s whipsaw)
     # DKLA Asymmetry Flip
     "dkla_flip_threshold": 0.0,
-    "dkla_flip_confirm_bps": 10.0,        # Require stronger confirmation
-    "dkla_min_hold_seconds": 60,          
+    "dkla_flip_confirm_bps": 15.0,        # FIX: 10→15 require stronger flip
+    "dkla_min_hold_seconds": 90,          
     # Vacuum Exhaustion/Reversal
-    "vac_reversal_bps": 30.0,             
-    "vac_exhaustion_z": 3.0,              
-    "vac_min_hold_seconds": 60,           
+    "vac_reversal_bps": 40.0,             # FIX: 30→40 less sensitive
+    "vac_exhaustion_z": 3.5,              # FIX: 3.0→3.5
+    "vac_min_hold_seconds": 90,           
     # LRA Velocity Reversal
     "lra_vel_flip_threshold": 0.0,
-    "lra_vel_magnitude_min": 0.25,        
-    "lra_min_hold_seconds": 60,           
+    "lra_vel_magnitude_min": 0.35,        # FIX: 0.25→0.35
+    "lra_min_hold_seconds": 90,           
     # Confirmation Layer (require >= 2 of 3, with hold timer)
-    "min_hold_seconds": 60,               # Minimum hold before confirmation layer exit
-    "cooldown_seconds": 180,              # 3-minute per-symbol cooldown after exit
-    "tox_spike_pct": 95,
-    "whale_exit_z": -1.5,                 # More negative - require stronger whale exit
-    "branching_collapse": 0.10,           # Lowered from 0.15 - more sensitive to collapse
+    "min_hold_seconds": 90,               # FIX: 60→90 Minimum hold before confirmation layer exit
+    "cooldown_seconds": 240,              # FIX: 180→240 4-min per-symbol cooldown after exit
+    "tox_spike_pct": 98,                  # FIX: 95→98 less sensitive (was 8/33 TOX exits)
+    "whale_exit_z": -2.0,                 # FIX: -1.5→-2.0 require stronger whale exit
+    "branching_collapse": 0.05,           # FIX: 0.10→0.05 less sensitive to collapse
     # Hard Guards
     "max_hold_minutes": MAX_HOLD_MINUTES,
     "breakeven_atr_frac": BREAKEVEN_ATR_FRACTION,
@@ -812,11 +812,19 @@ class StockExecutionManager:
                    kelly_fraction, kelly_notional, qty)
             )
         atr = float(metrics.get("atr", 0.0)) if metrics else 0.0
+        # FIX 2026-09-01: 34/34 trades had atr=0 → MFE/MAE 0, no risk. Fallback to 0.5% of price if missing
+        if atr <= 0:
+            # Try adv_metrics as secondary source, then fallback to 0.5% price proxy
+            adv_tmp = self.adv_metrics_dict.get(symbol, {})
+            atr = float(adv_tmp.get("atr", 0.0) or 0.0)
+            if atr <= 0:
+                atr = spot_price * 0.005  # 0.5% fallback (matches FALLBACK_TP_PCT)
+                logger.warning(f"[ATR_FIX] atr missing for {symbol} — using fallback atr={atr:.2f} (0.5% of {spot_price:.2f})")
         if atr > 0:
             logger.info(f"ATR15 exits: TP={atr*TP_ATR_MULT:.2f}, InitSL={atr*SL_ATR_MULT:.2f}, Chandelier={atr*CHANDELIER_ATR_MULT:.2f}")
         else:
             logger.warning("ATR not available — using fixed % fallback exits")
-        tp_dist = atr * TP_ATR_MULT if atr > 0 else 0.0
+        tp_dist = atr * TP_ATR_MULT if atr > 0 else spot_price * FALLBACK_TP_PCT
         if metrics:
             d_opp = float(metrics.get("dist_supply_above", 0.0)) if signal == "BUY" else float(metrics.get("dist_demand_below", 0.0))
             if d_opp > 0:
@@ -829,6 +837,14 @@ class StockExecutionManager:
         entry_adv = self.adv_metrics_dict.get(symbol, {})
         lam_buy = entry_adv.get("lam_buy", 0.0)
         lam_sell = entry_adv.get("lam_sell", 0.0)
+        # FIX 2026-09-01: 34/34 trades had lam=9999 sentinel (not enough depth for 1Cr) → block or fallback
+        if lam_buy >= 9999 or lam_sell >= 9999:
+            # Check if _walk_book_impact_fast failed due to shallow book — fallback to 5 bps conservative
+            if lam_buy >= 9999:
+                lam_buy = 5.0
+            if lam_sell >= 9999:
+                lam_sell = 5.0
+            logger.warning(f"[DKLA_FIX] {symbol} sentinel 9999 → fallback 5.0 bps (shallow book for 1Cr notional)")
         mid_price = entry_adv.get("mp_val", spot_price)  # Microprice if available, else spot
         
         # P1 FIX: Get queue decay and spread for queue risk adjustment
@@ -1007,6 +1023,14 @@ class StockExecutionManager:
             entry = float(trade["entry_price"])
             atr = float(trade.get("atr", 0.0))
             side = trade["type"]
+            # FIX 2026-09-01: 34/34 had MFE/MAE 0 because highest/lowest never updated outside legacy block
+            # Update peak trackers every tick for correct attribution
+            if side == "BUY":
+                trade["highest"] = max(float(trade.get("highest", entry)), current_price)
+                trade["lowest"] = min(float(trade.get("lowest", entry)), current_price)
+            else:
+                trade["lowest"] = min(float(trade.get("lowest", entry)), current_price)
+                trade["highest"] = max(float(trade.get("highest", entry)), current_price)
             
             # ─── GET MICROSTRUCTURE METRICS ───
             adv = self.adv_metrics_dict.get(symbol, {})

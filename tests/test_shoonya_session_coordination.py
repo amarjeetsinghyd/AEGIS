@@ -104,6 +104,7 @@ def test_peer_lock_wait_and_adopt(session_env, monkeypatch):
         "ts": time.time(),
         "host": "test",
     }
+    monkeypatch.setattr(sa.ShoonyaSessionProvider, "_login_lock_is_stale", lambda self: False)
     with open(sa.SESSION_LOCK_FILE, "w") as f:
         json.dump(lock, f)
 

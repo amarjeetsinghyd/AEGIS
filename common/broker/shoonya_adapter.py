@@ -291,6 +291,7 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
         self._api = api
         self._live_quotes = {}
         self._subscribed_tokens = set()
+        self._subscribed_pairs = set()
         self._ws_started = False
         self._constituent_tokens = set()
         self._accumulated_synthetic_vol = 0
@@ -298,13 +299,13 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
         from common.broker.footprint_compiler import FootprintCompiler
         self.footprint_compiler_manager = FootprintCompiler()
         self._index_token = ""
+        self._index_exchange = ""
         self._option_ce_tokens = set()
         self._option_pe_tokens = set()
         self._option_oi_start = {}
         self._option_oi_latest = {}
         self._tick_listeners = []  # extra consumers (e.g. Stock Order Flow) — do not start a 2nd WS
         self._close_listeners = []  # WS close consumers (e.g. TickCompiler reconnect) — do not start a 2nd WS
-        self._last_subscribe_exchange = "NSE"  # remembered for reconnect re-issue
 
     def get_quotes(self, instrument_ids: list) -> dict:
         res = {}
@@ -339,15 +340,29 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
     def start_live_feed(self, on_tick_callback, on_open_callback=None, on_error_callback=None) -> None:
         if not hasattr(self, "_last_ws_tick_time"):
             self._last_ws_tick_time = time.time()
+            self._last_opt_tick_time = time.time()
             import threading
             from datetime import datetime, time as dt_time
             def _ws_watchdog_loop():
                 while True:
-                    time.sleep(15)
+                    time.sleep(10)
                     now_time = datetime.now().time()
                     if dt_time(9, 15) <= now_time <= dt_time(15, 30):
-                        if time.time() - self._last_ws_tick_time > 35:
-                            logger.critical("Shoonya WebSocket frozen for >35s! Forcing hard restart to recover feed.")
+                        now_sec = time.time()
+                        # 1. Global tick freeze (no ticks at all)
+                        if now_sec - self._last_ws_tick_time > 35:
+                            logger.critical("Shoonya WebSocket frozen (0 ticks total for >35s)! Forcing hard restart to recover feed.")
+                            os._exit(1)
+                        # 2. Option stream freeze (Spot is ticking, but option stream silently dropped)
+                        opt_tokens = (
+                            getattr(self, "_option_ce_tokens", set()) |
+                            getattr(self, "_option_pe_tokens", set()) |
+                            {t for t in getattr(self, "_subscribed_tokens", set()) if t not in ("26000", "1", "68407", "844615", "99926000", "99919000")}
+                        )
+                        if len(opt_tokens) >= 5 and (now_sec - getattr(self, "_last_opt_tick_time", now_sec) > 30):
+                            logger.critical(
+                                f"Shoonya WebSocket OPTION stream frozen for >30s (Spot is ticking, but 0 option ticks across {len(opt_tokens)} contracts)! Forcing hard restart to recover feed."
+                            )
                             os._exit(1)
             threading.Thread(target=_ws_watchdog_loop, daemon=True).start()
 
@@ -357,6 +372,16 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                 token = message.get("tk")
                 if not token:
                     return
+                s_token = str(token)
+                # Check if this tick is an option tick
+                is_opt = (
+                    s_token in getattr(self, "_option_ce_tokens", set()) or
+                    s_token in getattr(self, "_option_pe_tokens", set()) or
+                    (s_token not in ("26000", "1", "68407", "844615", "99926000", "99919000") and
+                     s_token in getattr(self, "_subscribed_tokens", set()))
+                )
+                if is_opt:
+                    self._last_opt_tick_time = time.time()
                 try:
                     v_total = int(float(message.get("v", 0) or 0))
                 except (ValueError, TypeError):
@@ -386,13 +411,6 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                         getattr(self, "_option_ce_tokens", set()),
                         getattr(self, "_option_pe_tokens", set())
                     )
-                if hasattr(self, "footprint_compiler"):
-                    self.footprint_compiler.process_tick(
-                        message,
-                        getattr(self, "_index_token", ""),
-                        getattr(self, "_option_ce_tokens", set()),
-                        getattr(self, "_option_pe_tokens", set())
-                    )
 
                 s_token = str(token)
                 oi_val = message.get("oi") or message.get("poi") or message.get("oiv")
@@ -401,7 +419,7 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
 
                 std_msg = {
                     "token": str(token),
-                    "exchange": message.get("e", "NSE"),
+                    "exchange": str(message.get("e") or "").upper(),
                     "last_traded_price": float(message.get("lp", 0) or 0),
                     "last_traded_quantity": int(ltq),
                     "volume_trade_for_the_day": int(v_total),
@@ -450,12 +468,27 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
             if self._close_debounce_timer is not None:
                 self._close_debounce_timer.cancel()
                 self._close_debounce_timer = None
+            # Auto re-subscribe all registered tokens on connect / reconnect
+            if hasattr(self, "_subscribed_pairs") and self._subscribed_pairs:
+                by_exch = {}
+                for exch, tk in self._subscribed_pairs:
+                    by_exch.setdefault(exch, []).append(tk)
+                for exch, tks in by_exch.items():
+                    try:
+                        shoonya_toks = [f"{exch}|{t}" for t in tks]
+                        self._api.subscribe(shoonya_toks, feed_type="t")
+                        self._api.subscribe(shoonya_toks, feed_type="d")
+                        logger.info(f"Shoonya WebSocket auto re-subscribed {len(shoonya_toks)} {exch} tokens on connect/reconnect (t+d).")
+                    except Exception as e:
+                        logger.warning(f"Shoonya WebSocket auto re-subscribe on connect failed: {e}")
             if on_open_callback:
                 on_open_callback()
 
         def error_callback(err):
+            logger.error(f"Shoonya WebSocket error callback: {err}")
             if on_error_callback:
                 on_error_callback(err)
+
 
         def close_callback():
             # WS dropped (mid-session). Debounce to prevent storm from NorenApi's
@@ -611,11 +644,23 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
         if not tokens:
             return
         self._ensure_ws_started()
+        exch = str(exchange or "").upper()
         for t in tokens:
             st = str(t)
-            if st in ["26000", "1", "99926000", "99919000"]:
+            # Exchange-aware index lock: NSE|26000 and BSE|1 never overwrite each other.
+            if st == "26000" and exch == "NSE":
                 self._index_token = st
+                self._index_exchange = exch
+            elif st == "1" and exch == "BSE":
+                self._index_token = st
+                self._index_exchange = exch
+            elif st in ("99926000", "99919000") and not self._index_token:
+                self._index_token = st
+                self._index_exchange = exch
             self._subscribed_tokens.add(st)
+            if not hasattr(self, "_subscribed_pairs"):
+                self._subscribed_pairs = set()
+            self._subscribed_pairs.add((exch, st))
         clean_tokens = [str(t).strip() for t in tokens if str(t).strip()]
         if not clean_tokens:
             logger.warning(f"Skipped Shoonya subscribe: no valid tokens for exchange {exchange}")
@@ -732,7 +777,11 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
     def get_quote(self, exchange: str, token: str) -> dict:
         self._ensure_ws_started()
         token = str(token)
-        if token not in self._subscribed_tokens:
+        exch = str(exchange or "").upper()
+        if not hasattr(self, "_subscribed_pairs"):
+            self._subscribed_pairs = set()
+        pair = (exch, token)
+        if pair not in self._subscribed_pairs:
             self._subscribed_tokens.add(token)
             try:
                 self.subscribe([token], exchange, feed_type="t")
