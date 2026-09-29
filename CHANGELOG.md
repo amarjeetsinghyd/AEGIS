@@ -12,6 +12,10 @@
 ### Tests
 - Full suite `python -m pytest tests/ -q`: 236 passed, 0 failed.
 
+### Fixed (V4.1b, same day)
+- **Single-side universe blindness (`AEGIS/aegis_main.py`, `AEGIS/execution/data_fetcher.py`)**: CE/PE split used `str.contains(r'CE|CALL')` which silently drops single-letter `C` series (NIFTY29SEP26C22700); a partial searchscrip fetch could then blind half the flow with zero log noise. Split now uses format-robust `is_call_symbol` + `split_option_sides`; loop never adopts a single-sided universe (keeps last good); boot retries until both sides present.
+- **Band veto hair-trigger (`AEGIS/core/price_action_engine.py`, `AEGIS/aegis_gamma_engine.py`)**: raw-edge gating vetoed ~90% of ticks and whole minutes single-sided on 1-2 pt margins. New `band_veto_blocks()` adds a 0.3x ATR buffer (UP blocked only below top-buf, DOWN only above bottom+buf) plus per-minute BAND DIAG observability. Veto rate now ~10-25% with both sides flowing every minute.
+
 ## [Unreleased] - 2026-09-21 (AEGIS V4.0 Live Wiring: Premium SL, Confirm15, Single-Target)
 
 ### Added
