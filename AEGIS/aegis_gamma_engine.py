@@ -521,13 +521,40 @@ class AegisGammaEngine:
                 except Exception:
                     _pz_top = 0.0
                     _pz_bottom = 0.0
-            if _pz_top > 0 and _pz_bottom > 0 and self.last_spot > 0:
-                if _early_direction == "UP" and self.last_spot < _pz_top:
+            # V4.1b band observability: per-minute pass/block counters per direction
+            # (O(1) counters; single log line per minute — diagnoses single-side flow).
+            try:
+                _dg = self.__dict__.setdefault("_band_diag", {"m": -1, "up_p": 0, "up_b": 0, "dn_p": 0, "dn_b": 0})
+                _now_m = int(now_sec // 60)
+                if _dg["m"] != _now_m:
+                    if _dg["m"] > 0:
+                        logger.info(
+                            f"[BAND DIAG] spot={self.last_spot:.1f} top={_pz_top:.1f} bot={_pz_bottom:.1f} "
+                            f"UP pass={_dg['up_p']} block={_dg['up_b']} DOWN pass={_dg['dn_p']} block={_dg['dn_b']}"
+                        )
+                    _dg.update({"m": _now_m, "up_p": 0, "up_b": 0, "dn_p": 0, "dn_b": 0})
+                _vetoed = False
+                if _pz_top > 0 and _pz_bottom > 0 and self.last_spot > 0:
+                    if _early_direction == "UP" and self.last_spot < _pz_top:
+                        _vetoed = True
+                    if _early_direction == "DOWN" and self.last_spot > _pz_bottom:
+                        _vetoed = True
+                    if _pz_bottom <= self.last_spot <= _pz_top:
+                        _vetoed = True
+                if _early_direction == "UP":
+                    _dg["up_p" if not _vetoed else "up_b"] += 1
+                else:
+                    _dg["dn_p" if not _vetoed else "dn_b"] += 1
+                if _vetoed:
                     return None
-                if _early_direction == "DOWN" and self.last_spot > _pz_bottom:
-                    return None
-                if _pz_bottom <= self.last_spot <= _pz_top:
-                    return None
+            except Exception:
+                if _pz_top > 0 and _pz_bottom > 0 and self.last_spot > 0:
+                    if _early_direction == "UP" and self.last_spot < _pz_top:
+                        return None
+                    if _early_direction == "DOWN" and self.last_spot > _pz_bottom:
+                        return None
+                    if _pz_bottom <= self.last_spot <= _pz_top:
+                        return None
 
             # [NEW] O(1) Rolling 30.0s Time-Window Tick Rate & L1 History
             if sym not in self.tick_ring:
