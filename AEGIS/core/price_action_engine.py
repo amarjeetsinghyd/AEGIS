@@ -292,6 +292,36 @@ class PriceActionEngine:
             "zone_mid": zone_mid,
         }
 
+    # ATR buffer multiple for the absolute band veto (V4.1b). The raw zone is
+    # razor-thin (~0.2-7 pts on NIFTY): gating on raw edges vetoes ~90% of ticks
+    # and whole minutes single-sided on 1-2 pt margins. The buffer keeps the
+    # intent (deep trapped zones still veto) while passing buffer-range noise.
+    BAND_VETO_ATR_BUFFER_MULT = 0.3
+
+    def band_veto_blocks(self, direction: str, spot: Optional[float] = None) -> Tuple[bool, float, float, float]:
+        """Absolute Pain Zone band decision with ATR buffer.
+
+        Returns (blocked, zone_top, zone_bottom, buffer). Warmup (lines at 0)
+        or missing spot/ATR never blocks. UP blocked only when spot is
+        decisively below the band (spot < top - buf); DOWN only when spot is
+        decisively above it (spot > bottom + buf). Inside band+buffer both pass.
+        """
+        curr_spot = float(spot or self.last_price or 0.0)
+        try:
+            pz = self.get_pain_zone_vwaps()
+        except Exception:
+            return False, 0.0, 0.0, 0.0
+        top = float(pz.get("zone_top", 0.0) or 0.0)
+        bottom = float(pz.get("zone_bottom", 0.0) or 0.0)
+        atr = float(getattr(self, "current_atr_1m", 0.0) or 0.0)
+        if top <= 0 or bottom <= 0 or curr_spot <= 0 or atr <= 0:
+            return False, top, bottom, 0.0
+        buf = self.BAND_VETO_ATR_BUFFER_MULT * atr
+        is_up = str(direction).upper() in ("UP", "CALL", "CE", "C")
+        if is_up:
+            return (curr_spot < top - buf), top, bottom, buf
+        return (curr_spot > bottom + buf), top, bottom, buf
+
     def get_flow_symmetry_diagnostic(self) -> Dict[str, Any]:
         """
         EOD Classifier Symmetry Diagnostic per DeepSeek V4 Pro.

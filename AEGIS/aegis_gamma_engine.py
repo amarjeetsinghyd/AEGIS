@@ -507,20 +507,21 @@ class AegisGammaEngine:
             side = info["side"]          # 0=CE, 1=PE
             strike = float(info["strike"])
 
-            # ─── Phase 1 (V4.1): Absolute Pain Zone Band Veto — TRUE EARLY RETURN ───
-            # Single source: Pain Zone band only. Above zone_top -> only CALLs,
-            # below zone_bottom -> only PUTs, inside -> chop discard.
+            # ─── Phase 1 (V4.1b): Absolute Pain Zone Band Veto — TRUE EARLY RETURN ───
+            # Single source with ATR buffer (0.3x ATR): UP blocked only when spot
+            # is decisively below the band, DOWN only when decisively above it.
+            # Inside band+buffer both pass (chop handled downstream by pillars).
             _early_direction = "UP" if side == 0 else "DOWN"  # 0=CE/CALL, 1=PE/PUT
             _pz_top = 0.0
             _pz_bottom = 0.0
+            _vetoed = False
             if self.price_action_engine is not None:
                 try:
-                    _pz = self.price_action_engine.get_pain_zone_vwaps()
-                    _pz_top = float(_pz.get("zone_top", 0.0) or 0.0)
-                    _pz_bottom = float(_pz.get("zone_bottom", 0.0) or 0.0)
+                    _vetoed, _pz_top, _pz_bottom, _pz_buf = self.price_action_engine.band_veto_blocks(
+                        _early_direction, spot=self.last_spot
+                    )
                 except Exception:
-                    _pz_top = 0.0
-                    _pz_bottom = 0.0
+                    _vetoed, _pz_top, _pz_bottom = False, 0.0, 0.0
             # V4.1b band observability: per-minute pass/block counters per direction
             # (O(1) counters; single log line per minute — diagnoses single-side flow).
             try:
@@ -533,18 +534,13 @@ class AegisGammaEngine:
                             f"UP pass={_dg['up_p']} block={_dg['up_b']} DOWN pass={_dg['dn_p']} block={_dg['dn_b']}"
                         )
                     _dg.update({"m": _now_m, "up_p": 0, "up_b": 0, "dn_p": 0, "dn_b": 0})
-                _vetoed = False
-                if _pz_top > 0 and _pz_bottom > 0 and self.last_spot > 0:
-                    if _early_direction == "UP" and self.last_spot < _pz_top:
-                        _vetoed = True
-                    if _early_direction == "DOWN" and self.last_spot > _pz_bottom:
-                        _vetoed = True
-                    if _pz_bottom <= self.last_spot <= _pz_top:
-                        _vetoed = True
                 if _early_direction == "UP":
                     _dg["up_p" if not _vetoed else "up_b"] += 1
                 else:
                     _dg["dn_p" if not _vetoed else "dn_b"] += 1
+                if _vetoed:
+                    return None
+            except Exception:
                 if _vetoed:
                     return None
             except Exception:
