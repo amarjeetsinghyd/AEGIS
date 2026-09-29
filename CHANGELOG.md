@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased] - 2026-09-28 (AEGIS V4.1 Pain Zone Band Only: Single-Source Veto)
+
+### Added
+- **Pain Zone band single source (`AEGIS/core/price_action_engine.py`)**: `get_pain_zone_vwaps()` now also returns `zone_top` (max of 4 lines), `zone_bottom` (min of 4 lines) and `zone_mid` (derived composite = total PV / total Vol). No separate composite counter — composite is derived from the same four buckets.
+- **Absolute Pain Zone Band Veto V4.1 (`AEGIS/aegis_gamma_engine.py`)**: Tick-top early return replaces the old composite-VWAP veto. Spot above `zone_top` → only CALLs pass; spot below `zone_bottom` → only PUTs pass; spot inside the band → chop discard. Warmup (< 200 lots) keeps the veto inactive.
+
+### Changed
+- **Second-place Pain Zone confluence removed (`AEGIS/core/price_action_engine.py`)**: `evaluate_setup()` no longer calls `evaluate_pain_zone_confluence()` inside P1–P4. Pillars trigger on pure price action; the band veto at tick top is the single gate. Rationale: 21 Sep audit showed all 4 lines + composite clustered in a ~3.9 pt mean band, so double filtering added complexity without edge.
+
+### Tests
+- Full suite `python -m pytest tests/ -q`: 236 passed, 0 failed.
+
 ## [Unreleased] - 2026-09-21 (AEGIS V4.0 Live Wiring: Premium SL, Confirm15, Single-Target)
 
 ### Added

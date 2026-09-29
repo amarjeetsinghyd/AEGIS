@@ -283,5 +283,10 @@
   - **ऑर्डर फ्लो डेल्टा ($OFI = -9,126,260$)**: पुट साइड पर 91 लाख से अधिक शेयर्स का नेट बाइंग फ्लो था, जिससे साबित हुआ कि बड़े खिलाड़ी पुट खरीद रहे थे।
 * **निष्कर्ष**: प्राइस ब्रेकडाउन (Pillar 3) + Wyckoff Volume Harmony + OFI का यह त्रिकोण ही आज की 45-सेकंड की जीत का असली कारण था। यह सिस्टम का सबसे संतुलित और परिपक्व रूप है।
 
+#### 4. शाम का बड़ा सरलीकरण: "Pain Zone Band Only" (28 Sep शाम, कोई नया ट्रेड नहीं)
+* 21 Sep के **348 minutes** के audit में साबित हुआ कि चारों Pain Zone lines और composite आपस में चिपके हुए हैं — औसत चौड़ाई सिर्फ **3.9 points** और composite बनाम Call Buy का फर्क सिर्फ **1 point** है। अलग-अलग नाम रखने से decision complicated होता है, फायदा नहीं मिलता।
+* **कोड में बदलाव (V4.1, commit cab80b2)**: सबसे ऊपर एक ही **Absolute Pain Zone Band Veto** चलेगा — spot पट्टी के ऊपर है तो सिर्फ **CALL**, नीचे है तो सिर्फ **PUT**, अंदर है तो discard। Pillars के अंदर दूसरी बार चलने वाला confluence check हटा दिया गया। Composite अब अलग counter नहीं है, चारों buckets से derived है।
+* **Full test suite**: **236 passed, 0 failed**। दोनों files का **MD5 VPS पर match** और **aegis-bot ONLINE**।
+
 ---
 *Maintained by Quant Trading Desk | AEGIS V4.1 Production Ledger*

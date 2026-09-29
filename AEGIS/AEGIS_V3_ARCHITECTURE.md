@@ -68,8 +68,10 @@ flowchart TD
     end
 
     subgraph Primary_Trigger ["3. Macro Price Action Primary Trigger (PriceActionEngine)"]
-        AGE -->|Option Tick| PA_CHECK{"Price Action Setup?<br/>(evaluate_setup)"}
-        PA_CHECK -->|No Setup| DROP["Instant Discard & Purge<br/>(return None)"]
+        AGE -->|Option Tick| BAND{"Absolute Pain Zone Band Veto V4.1 (Tick-Top)<br/>(Above zone_top=CALL only, Below zone_bottom=PUT only, Inside=discard)"}
+        BAND -->|Blocked| DROP["Instant Discard & Purge<br/>(return None)"]
+        BAND -->|Passed| PA_CHECK{"Price Action Setup?<br/>(evaluate_setup)"}
+        PA_CHECK -->|No Setup| DROP
         PA_CHECK -->|Pillar 1| P1["Pillar 1: 20 EMA Pullback & Momentum Rejection<br/>• 20 EMA Wick Rejection<br/>• Two-Touch Confirmation<br/>• Same-Side Pause Discipline"]
         PA_CHECK -->|Pillar 2| P2["Pillar 2: Liquidity Sweep & Reclaim<br/>• 5-Bar Turtle Soup Stop-Hunt Reclaim<br/>• Lower/Upper Wick ≥ 35% Absorption"]
         PA_CHECK -->|Pillar 3| P3["Pillar 3: Volatility Squeeze Breakout<br/>• 3-4 Bar Box Compression (≤1.25x ATR)<br/>• Full Bar Close Outside Box"]
@@ -87,9 +89,9 @@ flowchart TD
     subgraph Defensive_Gating ["5. Defensive Gating & Conviction Ladder"]
         W_PASS --> G_KEY{"Key Level Veto<br/>(PDH / PDL Proximity)"}
         G_KEY -->|Inside Trap Zone| DROP
-        G_KEY -->|Passed| V_VWAP{"Absolute VWAP Alignment<br/>(Spot vs VWAP side)"}
-        V_VWAP -->|Misaligned| DROP
-        V_VWAP -->|Passed| ANCHOR["Event-Bound Anchor T<br/>(Strict [T-60, T] and [T-30, T] Slices)"]
+        G_KEY -->|Passed| V_VWAP{"Pain Zone Band Veto V4.1<br/>(Spot vs zone_top / zone_bottom — single source)"}
+        V_VWAP -->|Inside band or wrong side| DROP
+        V_VWAP -->|Above band=UP only, Below band=DOWN only| ANCHOR["Event-Bound Anchor T<br/>(Strict [T-60, T] and [T-30, T] Slices)"]
         
         ANCHOR --> V_MICRO{"Adaptive Order Flow Energy (OFEE)<br/>(Score ≥ 60/100, Strict BOS ≥ 70)"}
         V_MICRO -->|Energy Stalled| DROP
@@ -170,7 +172,7 @@ All active non-archive modules within `AEGIS/` mapped with exact lines, responsi
 | `AEGIS/aegis_main.py` | Process orchestrator, PM2 entry, 09:14 AM seeding, 1-min ATM shift, IPC state | `main()`, `build_minute_digest()`, `attach_aegis_archiver()` |
 | `AEGIS/aegis_gamma_engine.py` | Central brain, tick router, rolling L2 depth deque, Wyckoff parallel gate, conviction wiring, shadow ML router | `AegisGammaEngine`, `create_aegis_engine()`, `on_tick_parsed()` |
 | `AEGIS/aegis_execution_manager.py` | Execution daemon, order routing, strict 1-lot maker TP (+4.0%), pre-trade rollback, 15:08 CAS flatten | `AegisExecutionManager`, `_manage_open_trade()`, `_rollback_slot()`, `_chase_exit_thread()` |
-| `AEGIS/core/price_action_engine.py` | **Primary Macro Trigger**: 1m OHLC bars, 20/50 EMA, ATR(14), VWAP, 4 active pillars (P1 20 EMA, P2 Liquidity Sweep, P3 Vol Squeeze, P4 0-D Prominence Hub Breakout) | `PriceActionEngine`, `evaluate_setup()`, `check_20_ema_rejection()`, `check_micro_sweep_reclaim()`, `check_topological_prominence_breakout()` |
+| `AEGIS/core/price_action_engine.py` | **Primary Macro Trigger**: 1m OHLC bars, 20/50 EMA, ATR(14), Pain Zone band V4.1 single source (`get_pain_zone_vwaps()` → zone_top / zone_bottom / zone_mid; second-place pillar confluence removed), 4 active pillars (P1 20 EMA, P2 Liquidity Sweep, P3 Vol Squeeze, P4 0-D Prominence Hub Breakout) | `PriceActionEngine`, `evaluate_setup()`, `get_pain_zone_vwaps()`, `check_20_ema_rejection()`, `check_micro_sweep_reclaim()`, `check_topological_prominence_breakout()` |
 | `AEGIS/core/wyckoff_volume_engine.py` | **Wyckoff Volume & Delta Gate**: Effort vs Result, Volume Dry-Up Ratio (VDR), Absorption pin wick, Delta Harmony (Call Buy vs Put Buy) | `WyckoffVolumeEngine`, `evaluate()` |
 | `AEGIS/core/volume_profile_engine.py` | **Auction Market Volume Profile (Shadow)**: Spot POC, 70% Value Area (VAH/VAL dual pointer), LVN liquidity vacuums, Strike-wise Call/Put POC magnets | `VolumeProfileEngine`, `get_profile_metrics()`, `record_spot_tick()`, `record_option_tick()` |
 | `AEGIS/core/composite_conviction_engine.py` | **Continuous 0–100 Evaluator**: 4 orthogonal domains, dynamic conviction ladder ($\ge 80.0 \to 1\text{ Lot}, +4.0\%\text{ TP}$) | `CompositeConvictionEngine`, `ConvictionResult`, `compute_conviction_score()` |
