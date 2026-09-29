@@ -22,22 +22,13 @@ from common.logger import get_logger
 from common.broker import ShoonyaAdapter
 from common.config import get_data_dir
 from common.ipc import update_aegis_live_state, SHARED_TICK_FILE
-from AEGIS.execution.data_fetcher import DataFetcher
+from AEGIS.execution.data_fetcher import DataFetcher, is_call_symbol, split_option_sides, universe_has_both_sides
 from AEGIS.aegis_execution_manager import AegisExecutionManager
 from AEGIS.aegis_gamma_engine import AegisGammaEngine, create_aegis_engine
 from AEGIS.l2_options_archiver import attach_aegis_archiver
 from ARGUS.tick_compiler import TickCompiler
 
 logger = get_logger("aegis_main")
-
-def is_call_symbol(sym: str) -> bool:
-    s = str(sym).upper().strip()
-    if 'CE' in s or 'CALL' in s:
-        return True
-    if 'PE' in s or 'PUT' in s:
-        return False
-    stripped = s.rstrip('0123456789')
-    return stripped.endswith('C')
 
 
 # ─── Pre-market Setup ───
@@ -309,8 +300,18 @@ def main():
             token_map[fut_token] = {'side': 0, 'strike': 0.0, 'is_futures': True}
             logger.info(f"[AegisMain] Subscribed Active Futures: {fut_sym} (Token: {fut_token})")
 
-        # 2. Build token maps for AEGIS options
+        # 2. Build token maps for AEGIS options. Retry until BOTH sides are present:
+        # a single-side universe (partial searchscrip failure) blinds half the
+        # option flow (CallBuy=0 / PutBuy=0) with zero log noise.
         weekly_opts = fetcher.get_weekly_option_tokens()
+        for _u_attempt in range(2):
+            if universe_has_both_sides(weekly_opts):
+                break
+            logger.warning(f"[AegisMain] option universe single-sided ({len(weekly_opts)} rows) — refetching (attempt {_u_attempt + 2}/3)")
+            time.sleep(2)
+            weekly_opts = fetcher.get_weekly_option_tokens()
+        if not universe_has_both_sides(weekly_opts):
+            logger.critical(f"[AegisMain] option universe still single-sided after retries ({len(weekly_opts)} rows) — flow will be half-blind until next rebuild")
         for _, row in weekly_opts.iterrows():
             tkn = str(row['token'])
             sym = str(row.get('symbol', ''))
@@ -650,15 +651,19 @@ def main():
                 # Ensure token map is current (expiry changes, etc.)
                 weekly_opts = fetcher.get_weekly_option_tokens()
                 if not weekly_opts.empty:
-                    # Dynamic subscription for ATM ±10 (21 strikes × 2 types = 42 tokens)
-                    ce_df = weekly_opts[weekly_opts['symbol'].str.contains(r'CE|CALL')]
-                    pe_df = weekly_opts[weekly_opts['symbol'].str.contains(r'PE|PUT')]
+                    # Robust side split (single-letter C/P and CE/PE formats).
+                    # NEVER adopt a single-sided universe: a partial fetch would
+                    # blind half the flow (CallBuy=0 / PutBuy=0). Keep last good.
+                    ce_df, pe_df = split_option_sides(weekly_opts)
+                    if len(ce_df) == 0 or len(pe_df) == 0:
+                        logger.warning(f"[AegisMain] single-sided universe ({len(ce_df)} CE / {len(pe_df)} PE rows) — keeping last good maps")
+                        all_opt_tokens = set(last_subscribed_opts)
+                    else:
+                        # Subscribe to all weeklies (covers ATM ±10 automatically)
+                        all_opt_tokens = set(ce_df['token'].tolist() + pe_df['token'].tolist())
+                        all_opt_tokens = {str(t) for t in all_opt_tokens}
                     
-                    # Subscribe to all weeklies (covers ATM ±10 automatically)
-                    all_opt_tokens = set(ce_df['token'].tolist() + pe_df['token'].tolist())
-                    all_opt_tokens = {str(t) for t in all_opt_tokens}
-                    
-                    if hasattr(broker, "market_data_provider"):
+                    if hasattr(broker, "market_data_provider") and len(ce_df) > 0 and len(pe_df) > 0:
                         mdp = broker.market_data_provider
                         mdp._option_ce_tokens = {str(t) for t in ce_df['token'].tolist()}
                         mdp._option_pe_tokens = {str(t) for t in pe_df['token'].tolist()}

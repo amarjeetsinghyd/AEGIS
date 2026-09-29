@@ -13,6 +13,37 @@ from common.logger import get_logger
 logger = get_logger("data_fetcher")
 
 
+def is_call_symbol(sym: str) -> bool:
+    """True for CALL symbols across Shoonya formats: CE/CALL words, single-letter
+    C suffix (NIFTY29SEP26C22700) or trailing-C stems. Unknown defaults to PUT."""
+    s = str(sym).upper().strip()
+    if 'CE' in s or 'CALL' in s:
+        return True
+    if 'PE' in s or 'PUT' in s:
+        return False
+    stripped = s.rstrip('0123456789')
+    return stripped.endswith('C')
+
+
+def split_option_sides(df):
+    """Split an option-universe frame into (ce_df, pe_df) robust to single-letter
+    (C/P) and CE/PE symbol formats. Never raises on empty/missing input."""
+    if df is None or len(df) == 0 or 'symbol' not in getattr(df, 'columns', []):
+        empty = df.iloc[0:0] if df is not None and hasattr(df, 'iloc') else df
+        return empty, empty
+    mask = df['symbol'].astype(str).apply(is_call_symbol)
+    return df[mask].copy(), df[~mask].copy()
+
+
+def universe_has_both_sides(df) -> bool:
+    """True only when the universe carries at least one CE and one PE row."""
+    try:
+        ce_df, pe_df = split_option_sides(df)
+        return len(ce_df) > 0 and len(pe_df) > 0
+    except Exception:
+        return False
+
+
 
 # Cash Index tokens
 NIFTY_CASH_TOKEN = "26000"
@@ -178,8 +209,15 @@ class DataFetcher:
         rows = self.repo.get_weekly_option_tokens(ACTIVE_BROKER, name, exch_seg)
         df = pd.DataFrame(rows) if rows else pd.DataFrame()
         
-        # If DB lookup returns empty or incomplete option chain, fetch dynamic chain via searchscrip
-        if df.empty or len(df) < 5:
+        # If DB lookup returns empty or incomplete option chain, fetch dynamic chain via searchscrip.
+        # Retry once when the chain comes back single-sided (partial searchscrip
+        # failure): adopting a CE-only or PE-only universe blinds half the flow.
+        for _attempt in (1, 2):
+            if not (df.empty or len(df) < 5 or not universe_has_both_sides(df)):
+                break
+            if _attempt == 2 and not df.empty:
+                logger.warning("[DataFetcher] dynamic chain still single-sided after retry — keeping last good universe upstream")
+                break
             try:
                 index_price = self.get_index_ltp()
                 
