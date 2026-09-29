@@ -507,16 +507,26 @@ class AegisGammaEngine:
             side = info["side"]          # 0=CE, 1=PE
             strike = float(info["strike"])
 
-            # ─── Phase 1 (V3.0): Absolute VWAP Directional Veto — TRUE EARLY RETURN ───
-            # Placed at the absolute top, before scorer.update_tick and before any
-            # OTM coherence or book mathematics. Vetoed ticks abort immediately
-            # with return None and are never buffered, scored, or queued.
+            # ─── Phase 1 (V4.1): Absolute Pain Zone Band Veto — TRUE EARLY RETURN ───
+            # Single source: Pain Zone band only. Above zone_top -> only CALLs,
+            # below zone_bottom -> only PUTs, inside -> chop discard.
             _early_direction = "UP" if side == 0 else "DOWN"  # 0=CE/CALL, 1=PE/PUT
-            _vwap_val = (getattr(self.price_action_engine, "current_vwap", 0.0) if self.price_action_engine else 0.0) or (self.vwap_engine.current_vwap if self.vwap_engine else 0.0)
-            if _vwap_val > 0 and self.last_spot > 0:
-                if _early_direction == "UP" and self.last_spot < _vwap_val:
+            _pz_top = 0.0
+            _pz_bottom = 0.0
+            if self.price_action_engine is not None:
+                try:
+                    _pz = self.price_action_engine.get_pain_zone_vwaps()
+                    _pz_top = float(_pz.get("zone_top", 0.0) or 0.0)
+                    _pz_bottom = float(_pz.get("zone_bottom", 0.0) or 0.0)
+                except Exception:
+                    _pz_top = 0.0
+                    _pz_bottom = 0.0
+            if _pz_top > 0 and _pz_bottom > 0 and self.last_spot > 0:
+                if _early_direction == "UP" and self.last_spot < _pz_top:
                     return None
-                if _early_direction == "DOWN" and self.last_spot > _vwap_val:
+                if _early_direction == "DOWN" and self.last_spot > _pz_bottom:
+                    return None
+                if _pz_bottom <= self.last_spot <= _pz_top:
                     return None
 
             # [NEW] O(1) Rolling 30.0s Time-Window Tick Rate & L1 History

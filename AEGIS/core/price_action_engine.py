@@ -257,9 +257,10 @@ class PriceActionEngine:
 
     def get_pain_zone_vwaps(self, lot_size: Optional[float] = None, min_bars: Optional[int] = None) -> Dict[str, float]:
         """
-        Returns the 4-Line Trapped-Buyer Pain Zone VWAPs and Composite Option VWAP.
-        Enforces both volume threshold (>= 200 lots) AND time threshold (>= 30 bars)
-        before lines become active (DeepSeek V4 Pro AND-gate specification).
+        Returns the 4-Line Trapped-Buyer Pain Zone VWAPs and single Pain Zone band.
+        Single source of truth — no separate composite counter. The band is:
+          zone_top = max(4 lines), zone_bottom = min(4 lines), zone_mid = composite.
+        Above zone_top -> only CALLs, below zone_bottom -> only PUTs, inside -> chop.
         """
         eff_lot = float(lot_size) if lot_size is not None else getattr(self, "lot_size", 65.0)
         min_vol = float(os.getenv("AEGIS_PAIN_ZONE_MIN_LOTS", "200")) * eff_lot
@@ -269,12 +270,26 @@ class PriceActionEngine:
         def _v(pv: float, v: float) -> float:
             return pv / v if (time_ok and v >= min_vol) else 0.0
 
+        cb = _v(self._cum_cb_pv, self._cum_cb_vol)
+        cs = _v(self._cum_cs_pv, self._cum_cs_vol)
+        pb = _v(self._cum_pb_pv, self._cum_pb_vol)
+        ps = _v(self._cum_ps_pv, self._cum_ps_vol)
+        lines = [x for x in (cb, cs, pb, ps) if x > 0]
+        zone_top = max(lines) if lines else 0.0
+        zone_bottom = min(lines) if lines else 0.0
+        tot_pv = self._cum_cb_pv + self._cum_cs_pv + self._cum_pb_pv + self._cum_ps_pv
+        tot_v = self._cum_cb_vol + self._cum_cs_vol + self._cum_pb_vol + self._cum_ps_vol
+        zone_mid = tot_pv / tot_v if (time_ok and tot_v >= min_vol) else 0.0
+
         return {
-            "vwap_call_buy": _v(self._cum_cb_pv, self._cum_cb_vol),
-            "vwap_call_sell": _v(self._cum_cs_pv, self._cum_cs_vol),
-            "vwap_put_buy": _v(self._cum_pb_pv, self._cum_pb_vol),
-            "vwap_put_sell": _v(self._cum_ps_pv, self._cum_ps_vol),
-            "vwap_composite": self.current_vwap,
+            "vwap_call_buy": cb,
+            "vwap_call_sell": cs,
+            "vwap_put_buy": pb,
+            "vwap_put_sell": ps,
+            "vwap_composite": zone_mid,
+            "zone_top": zone_top,
+            "zone_bottom": zone_bottom,
+            "zone_mid": zone_mid,
         }
 
     def get_flow_symmetry_diagnostic(self) -> Dict[str, Any]:
@@ -2267,20 +2282,12 @@ class PriceActionEngine:
         eff_vwap = external_vwap if external_vwap > 0 else self.current_vwap
 
         # Pillar 1: 20 EMA Pullback Rejection (Double-Touch)
+        # V4.1: second-place Pain Zone removed — absolute band veto at tick top is single source.
         ok_20, reason_20, details_20 = self.check_20_ema_rejection(direction, current_vwap=eff_vwap, current_time=current_time)
         if ok_20:
-            bar = self._curr_1m_bar or (self.bars_1m[-1] if self.bars_1m else None)
-            curr_spot = bar.close if bar else self.last_price
-            pz_ok, pz_score, pz_reason, pz_metrics = self.evaluate_pain_zone_confluence(
-                pillar=1, direction=direction, spot=curr_spot, atr=self.current_atr_1m, gamma_regime=gamma_regime
-            )
-            if not pz_ok:
-                logger.info(f"[PAIN ZONE VETO]: P1 {direction} blocked ({pz_reason})")
-            else:
-                details_20["pain_zone_score"] = pz_score
-                details_20["pain_zone_reason"] = pz_reason
-                details_20["pain_zone_metrics"] = pz_metrics
-                return True, "20_ema_rejection", self._enrich_details(details_20)
+            details_20["pain_zone_score"] = 0.0
+            details_20["pain_zone_reason"] = "band_veto_top_only"
+            return True, "20_ema_rejection", self._enrich_details(details_20)
 
         # Pillar 2: Micro-Sweep & Reclaim (Parallel Shadow A/B Tracking)
         if getattr(self, "hvg_engine", None) is not None:
@@ -2291,59 +2298,35 @@ class PriceActionEngine:
 
         ok_sw, reason_sw, details_sw = self.check_micro_sweep_reclaim(direction, eff_vwap)
         if ok_sw:
-            bar = self._curr_1m_bar or (self.bars_1m[-1] if self.bars_1m else None)
-            curr_spot = bar.close if bar else self.last_price
-            pz_ok, pz_score, pz_reason, pz_metrics = self.evaluate_pain_zone_confluence(
-                pillar=2, direction=direction, spot=curr_spot, atr=self.current_atr_1m, gamma_regime=gamma_regime
-            )
-            if not pz_ok:
-                logger.info(f"[PAIN ZONE VETO]: P2 {direction} blocked ({pz_reason})")
-            else:
-                details_sw["pain_zone_score"] = pz_score
-                details_sw["pain_zone_reason"] = pz_reason
-                details_sw["pain_zone_metrics"] = pz_metrics
-                details_sw["strategy_variant"] = "LEGACY_P2"
-                bar_ts = self.bars_1m[-1].ts_start if self.bars_1m else self.last_ts
-                details_sw["event_id"] = f"LEGACY_P2_{int(bar_ts)}_{direction.upper()}"
-                return True, "micro_sweep_reclaim", self._enrich_details(details_sw)
+            # V4.1: second-place Pain Zone removed — absolute band veto at tick top is single source.
+            details_sw["pain_zone_score"] = 0.0
+            details_sw["pain_zone_reason"] = "band_veto_top_only"
+            details_sw["strategy_variant"] = "LEGACY_P2"
+            bar_ts = self.bars_1m[-1].ts_start if self.bars_1m else self.last_ts
+            details_sw["event_id"] = f"LEGACY_P2_{int(bar_ts)}_{direction.upper()}"
+            return True, "micro_sweep_reclaim", self._enrich_details(details_sw)
 
         # V4.0 (2026-09-21): Al Brooks 2-Legged Pullback retired from the live
         # ladder — P1 -> P2 -> P3 -> P4 only. Method kept for offline reference.
 
         # Pillar 3: Volatility Squeeze Breakout (3-Bar Tight Box Expansion)
+        # V4.1: second-place Pain Zone removed — absolute band veto at tick top is single source.
         ok_sq, reason_sq, details_sq = self.check_volatility_squeeze_breakout(direction, eff_vwap)
         if ok_sq:
-            bar = self._curr_1m_bar or (self.bars_1m[-1] if self.bars_1m else None)
-            curr_spot = bar.close if bar else self.last_price
-            pz_ok, pz_score, pz_reason, pz_metrics = self.evaluate_pain_zone_confluence(
-                pillar=3, direction=direction, spot=curr_spot, atr=self.current_atr_1m, gamma_regime=gamma_regime
-            )
-            if not pz_ok:
-                logger.info(f"[PAIN ZONE VETO]: P3 {direction} blocked ({pz_reason})")
-            else:
-                details_sq["pain_zone_score"] = pz_score
-                details_sq["pain_zone_reason"] = pz_reason
-                details_sq["pain_zone_metrics"] = pz_metrics
-                return True, "volatility_squeeze_breakout", self._enrich_details(details_sq)
+            details_sq["pain_zone_score"] = 0.0
+            details_sq["pain_zone_reason"] = "band_veto_top_only"
+            return True, "volatility_squeeze_breakout", self._enrich_details(details_sq)
 
         # Pillar 4 (V4 Final): 0-D Prominence Hub Structural Breakout (\hat{\pi} >= 1.75, VR_t >= 1.4, 5m Alignment)
+        # V4.1: second-place Pain Zone removed — absolute band veto at tick top is single source.
         ok_prom, reason_prom, details_prom = self.check_topological_prominence_breakout(direction, eff_vwap)
         if ok_prom:
-            bar = self._curr_1m_bar or (self.bars_1m[-1] if self.bars_1m else None)
-            curr_spot = bar.close if bar else self.last_price
-            pz_ok, pz_score, pz_reason, pz_metrics = self.evaluate_pain_zone_confluence(
-                pillar=4, direction=direction, spot=curr_spot, atr=self.current_atr_1m, gamma_regime=gamma_regime
-            )
-            if not pz_ok:
-                logger.info(f"[PAIN ZONE VETO]: P4 {direction} blocked ({pz_reason})")
-            else:
-                details_prom["pain_zone_score"] = pz_score
-                details_prom["pain_zone_reason"] = pz_reason
-                details_prom["pain_zone_metrics"] = pz_metrics
-                bar_ts = self.bars_1m[-1].ts_start if self.bars_1m else self.last_ts
-                details_prom["timestamp"] = bar_ts
-                details_prom["event_id"] = f"P4_PROM_{int(bar_ts)}_{direction.upper()}"
-                return True, "topological_prominence_breakout", self._enrich_details(details_prom)
+            details_prom["pain_zone_score"] = 0.0
+            details_prom["pain_zone_reason"] = "band_veto_top_only"
+            bar_ts = self.bars_1m[-1].ts_start if self.bars_1m else self.last_ts
+            details_prom["timestamp"] = bar_ts
+            details_prom["event_id"] = f"P4_PROM_{int(bar_ts)}_{direction.upper()}"
+            return True, "topological_prominence_breakout", self._enrich_details(details_prom)
 
         # Pillar 4 Fallback: Topological HVG Phase Shift Breakout (Dual-Timeframe 1m + 5m)
         if getattr(self, "hvg_engine", None) is not None:
