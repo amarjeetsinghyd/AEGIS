@@ -8,6 +8,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -74,29 +75,23 @@ def _active_trade_aegis(data_dir: str):
     return None
 
 
-def _tail_log(path: str, n: int = 40) -> list[str]:
-    if not path or not os.path.exists(path):
-        return []
-    try:
-        with open(path, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            buffer = bytearray()
-            pointer = f.tell()
-            lines_found = 0
-            while pointer > 0 and lines_found <= n:
-                pointer -= 1
-                f.seek(pointer)
-                char = f.read(1)
-                if char == b"\n":
-                    lines_found += 1
-                buffer.extend(char)
-            lines = buffer[::-1].decode("utf-8", errors="replace").splitlines()
-            return [ln for ln in lines if ln][-n:]
-    except Exception:
-        return []
+ANSI_REGEX = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
 
 
-def _get_aegis_logs(n: int = 80) -> list[str]:
+def _clean_log_line(line: str) -> str:
+    """Strips raw ANSI color escape codes and returns clean text."""
+    if not line:
+        return ""
+    return ANSI_REGEX.sub("", line).strip()
+
+
+def _get_aegis_logs(n: int = 200) -> list[str]:
+    """
+    Returns the latest enriched, de-noised operational telemetry log lines.
+    Reads chunked binary from tail for sub-millisecond performance, strips raw
+    ANSI codes, and filters out spam so high-conviction signals and executions
+    are always crystal clear.
+    """
     candidate_paths = [
         "/home/opc/.pm2/logs/aegis-bot-out.log",
         os.path.join(AEGIS_LOGS, "aegis_bot.log"),
@@ -105,9 +100,30 @@ def _get_aegis_logs(n: int = 80) -> list[str]:
     ]
     for p in candidate_paths:
         if os.path.exists(p) and os.path.getsize(p) > 0:
-            lines = _tail_log(p, n)
-            if lines:
-                return lines
+            try:
+                # Fast chunked binary tail read (up to 384 KB)
+                with open(p, "rb") as f:
+                    f.seek(0, os.SEEK_END)
+                    size = f.tell()
+                    chunk = min(size, 384 * 1024)
+                    f.seek(size - chunk, os.SEEK_SET)
+                    raw_bytes = f.read(chunk)
+
+                raw_lines = raw_bytes.decode("utf-8", errors="replace").splitlines()
+                cleaned = []
+                for ln in raw_lines:
+                    c = _clean_log_line(ln)
+                    if not c:
+                        continue
+                    # Filter out spam poller noise so real telemetry is never displaced
+                    if "[OIQuotesPoller]" in c:
+                        continue
+                    cleaned.append(c)
+
+                if cleaned:
+                    return cleaned[-n:]
+            except Exception:
+                pass
     return []
 
 
@@ -181,7 +197,7 @@ def live_state():
     aegis["available_funds"] = _capital(AEGIS_DATA, force_paper=True)
     aegis["active_trade"] = _active_trade_aegis(AEGIS_DATA)
 
-    aegis_logs = _get_aegis_logs(80)
+    aegis_logs = _get_aegis_logs(200)
     aegis_hist = _trade_history_aegis(limit=10)
 
     # Dynamic IST date computation for today's scorecard

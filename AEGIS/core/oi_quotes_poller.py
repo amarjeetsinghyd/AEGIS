@@ -34,12 +34,14 @@ class OIQuotesPoller:
         poll_interval_sec: float = 30.0,
         strikes_each_side: int = 5,
         universe_provider: Optional[Callable[[], Dict[str, Any]]] = None,
+        enabled: bool = False,
     ):
         self.oi_gate = oi_gate
         self.broker_api = broker_api
         self.poll_interval_sec = float(poll_interval_sec or 30.0)
         self.strikes_each_side = int(strikes_each_side or 5)
         self.universe_provider = universe_provider
+        self.enabled = bool(enabled)
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
@@ -55,6 +57,9 @@ class OIQuotesPoller:
 
     def start_background(self) -> bool:
         """Starts the daemon poll thread. Returns True when running."""
+        if not self.enabled:
+            logger.info("[OIQuotesPoller] start skipped (permanently disabled per operator directive)")
+            return False
         try:
             if self._running and self._thread is not None and self._thread.is_alive():
                 return True
@@ -77,7 +82,15 @@ class OIQuotesPoller:
         self._running = False
 
     def _poll_loop(self) -> None:
-        while self._running:
+        try:
+            from common.market.market_calendar import is_market_open
+        except Exception:
+            is_market_open = lambda: True
+
+        while self._running and self.enabled:
+            if not is_market_open():
+                time.sleep(min(60.0, self.poll_interval_sec))
+                continue
             try:
                 self.poll_once()
             except Exception as e:

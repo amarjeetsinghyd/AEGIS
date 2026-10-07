@@ -422,7 +422,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 14px;
-  height: 320px;
+  height: 380px;
   overflow-y: auto;
   font-family: var(--font-mono);
   font-size: 11.5px;
@@ -433,12 +433,18 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
   margin-bottom: 3px;
+  padding: 1px 4px;
+  border-radius: 3px;
 }
-.log-tag-wyckoff { color: #3fb950; font-weight: 600; }
+.log-tag-wyckoff { color: #3fb950; font-weight: 600; background: rgba(63, 185, 80, 0.08); }
+.log-tag-flow { color: #2dd4bf; font-weight: 600; }
 .log-tag-band { color: #388bfd; }
+.log-tag-pillar { color: #a371f7; font-weight: 600; }
 .log-tag-catboost { color: #d29922; }
-.log-tag-em { color: #a371f7; font-weight: 600; }
+.log-tag-em { color: #f0883e; font-weight: 700; background: rgba(240, 136, 62, 0.1); }
 .log-tag-veto { color: #f85149; }
+.log-tag-digest { color: #e6edf3; font-weight: 500; }
+.log-tag-system { color: #8b949e; font-style: italic; }
 
 </style>
 </head>
@@ -845,11 +851,15 @@ function renderLiveState(data) {
 
   terminal.innerHTML = logLines.map(line => {
     let cls = "";
-    if (line.includes("WYCKOFF")) cls = "log-tag-wyckoff";
-    else if (line.includes("BAND DIAG")) cls = "log-tag-band";
+    if (line.includes("WYCKOFF") || line.includes("Wyckoff")) cls = "log-tag-wyckoff";
+    else if (line.includes("OPTION FLOW") || line.includes("OFI=") || line.includes("Delta")) cls = "log-tag-flow";
+    else if (line.includes("BAND DIAG") || line.includes("VWAP")) cls = "log-tag-band";
+    else if (line.includes("Pillar") || line.includes("hvg_network") || line.includes("20_ema") || line.includes("micro_sweep") || line.includes("volatility_squeeze")) cls = "log-tag-pillar";
     else if (line.includes("CATBOOST") || line.includes("PAPER")) cls = "log-tag-catboost";
-    else if (line.includes("AegisEM") || line.includes("CLOSED") || line.includes("Take-Profit")) cls = "log-tag-em";
-    else if (line.includes("VETO") || line.includes("block")) cls = "log-tag-veto";
+    else if (line.includes("Take-Profit") || line.includes("FILLED") || line.includes("AegisEM") || line.includes("ORDER") || line.includes("WINNER") || line.includes("SCRATCH") || line.includes("Stepped Safety") || line.includes("CLOSED")) cls = "log-tag-em";
+    else if (line.includes("VETO") || line.includes("DROP") || line.includes("block") || line.includes("FAILED") || line.includes("discard")) cls = "log-tag-veto";
+    else if (line.includes("Spot:") && line.includes("ATM:")) cls = "log-tag-digest";
+    else if (line.includes("deep sleep") || line.includes("Deep sleeping") || line.includes("Pre-market") || line.includes("STARTING AEGIS") || line.includes("stopped")) cls = "log-tag-system";
     return `<div class="log-line ${cls}">${line}</div>`;
   }).join("");
 

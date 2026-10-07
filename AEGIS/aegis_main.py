@@ -474,45 +474,12 @@ def main():
         except Exception as e_vwap:
             logger.warning(f"[AegisMain] VWAP poller start warning (non-fatal): {e_vwap}")
 
-        # ─── OI Quotes Poller (ATM±5 OI enrichment → OIBuiltupGate) ───
-        # Touchline ticks carry OI on ~1.6% of option ticks, so kinematics
-        # history builds slowly. This 30s REST poller tops up OI telemetry
-        # only — gate thresholds are NEVER touched.
+        # ─── OI Quotes Poller (DISABLED per operator directive) ───
+        # Operator policy: OI polling provides zero trading edge, pollutes logs,
+        # and exhausts broker REST API limits. Permanently disabled.
         oi_universe = {"spot": 0.0, "strike_step": strike_step, "rows": []}
         oi_poller = None
-        try:
-            from AEGIS.core.oi_quotes_poller import OIQuotesPoller
-            oi_universe["rows"] = _build_oi_universe_rows(token_map, token_to_symbol)
-
-            def _oi_universe_snapshot():
-                """Live universe for the OI poller (spot falls back to engine ticks)."""
-                try:
-                    spot = float(oi_universe.get("spot", 0.0) or 0.0)
-                    if spot <= 0:
-                        spot = float(getattr(aegis_engine, "last_spot", 0.0) or 0.0)
-                    return {
-                        "spot": spot,
-                        "strike_step": float(oi_universe.get("strike_step", strike_step) or strike_step),
-                        "rows": oi_universe.get("rows", []) or [],
-                    }
-                except Exception:
-                    return {}
-
-            oi_poller = OIQuotesPoller(
-                oi_gate=getattr(aegis_engine, "oi_gate", None),
-                broker_api=getattr(broker, "_api", None) or broker,
-                poll_interval_sec=30.0,
-                strikes_each_side=5,
-                universe_provider=_oi_universe_snapshot,
-            )
-            oi_poller.start_background()
-            logger.info(
-                f"[AegisMain] OI quotes poller started (30s cadence, "
-                f"ATM±5, {len(oi_universe.get('rows', []))} contracts tracked)"
-            )
-        except Exception as e_oi:
-            logger.warning(f"[AegisMain] OI poller start warning (non-fatal): {e_oi}")
-            oi_poller = None
+        logger.info("[AegisMain] OI quotes poller permanently DISABLED (clean CPU & zero REST quote load)")
         
         # ─── Execution Manager ───
         trader = AegisExecutionManager(
@@ -611,7 +578,20 @@ def main():
             
             # ─── Session Management ───
             if not is_bot_active_hours(now):
-                logger.info("Bot active hours closed. Entering deep sleep...")
+                logger.info("Bot active hours closed. Stopping background workers...")
+                try:
+                    vwap_eng = getattr(aegis_engine, "vwap_engine", None)
+                    if vwap_eng is not None:
+                        vwap_eng.stop_background_poller()
+                        logger.info("[AegisMain] VWAP poller stopped for deep sleep")
+                except Exception:
+                    pass
+                if oi_poller is not None:
+                    try:
+                        oi_poller.stop()
+                    except Exception:
+                        pass
+                logger.info("Entering deep sleep until next pre-market (08:55 AM IST)...")
                 sleep_until_next_premarket()
                 logger.info("[AegisMain] Next pre-market reached. Exiting cleanly for fresh daily instrument boot (PM2 autorestart)...")
                 sys.exit(0)
