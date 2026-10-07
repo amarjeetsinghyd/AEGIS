@@ -511,14 +511,19 @@ body {
       <div class="kpi-sub" id="kpiWinLoss">-- Wins / -- Losses</div>
     </div>
     <div class="kpi-card pnl">
-      <div class="kpi-label">Cumulative P&amp;L</div>
-      <div class="kpi-val" id="kpiTotalPnl">₹--</div>
-      <div class="kpi-sub">1-Lot Scalper Discipline</div>
+      <div class="kpi-label">Total Gross P&amp;L</div>
+      <div class="kpi-val" id="kpiGrossPnl">₹--</div>
+      <div class="kpi-sub" id="kpiChargesSub">Charges: ₹--</div>
+    </div>
+    <div class="kpi-card pnl">
+      <div class="kpi-label">Total Net Profit (Pocket)</div>
+      <div class="kpi-val" id="kpiNetPnl" style="color:var(--aegis-bright);">₹--</div>
+      <div class="kpi-sub">Net After Brokerage &amp; Taxes</div>
     </div>
     <div class="kpi-card factor">
       <div class="kpi-label">Profit Factor</div>
       <div class="kpi-val" id="kpiProfitFactor">--</div>
-      <div class="kpi-sub" id="kpiGross">Gross: ₹-- / ₹--</div>
+      <div class="kpi-sub" id="kpiGross">Win/Loss: ₹-- / ₹--</div>
     </div>
     <div class="kpi-card">
       <div class="kpi-label">Avg Hold Duration</div>
@@ -638,8 +643,10 @@ body {
             <th>Entry ₹</th>
             <th>Exit ₹</th>
             <th>Dur</th>
-            <th>Opt %</th>
-            <th>Net P&amp;L (₹)</th>
+            <th>Gain %</th>
+            <th>Gross PnL (₹)</th>
+            <th>Charges (₹)</th>
+            <th>Net PnL (₹)</th>
             <th>Pillar</th>
             <th>Result</th>
             <th>Forensics</th>
@@ -690,9 +697,31 @@ async function loadData() {
 function renderKPIs(kpis) {
   document.getElementById("kpiWinRate").innerText = kpis.win_rate_pct + "%";
   document.getElementById("kpiWinLoss").innerText = `${kpis.win_count} Wins / ${kpis.loss_count} Losses`;
-  document.getElementById("kpiTotalPnl").innerText = (kpis.total_pnl_rs >= 0 ? "+₹" : "₹") + kpis.total_pnl_rs.toFixed(2);
+  
+  const grossTotal = kpis.total_gross_pnl_rs !== undefined ? kpis.total_gross_pnl_rs : (kpis.total_pnl_rs || 0.0);
+  const chgTotal = kpis.total_charges_rs !== undefined ? kpis.total_charges_rs : 0.0;
+  const netTotal = kpis.total_net_pnl_rs !== undefined ? kpis.total_net_pnl_rs : (grossTotal - chgTotal);
+
+  const grossPrefix = grossTotal >= 0 ? "+₹" : "₹";
+  const netPrefix = netTotal >= 0 ? "+₹" : "₹";
+
+  const grossEl = document.getElementById("kpiGrossPnl");
+  if (grossEl) {
+    grossEl.innerText = `${grossPrefix}${grossTotal.toFixed(2)}`;
+    grossEl.style.color = grossTotal >= 0 ? "var(--aegis-bright)" : "var(--danger-bright)";
+  }
+  const chgEl = document.getElementById("kpiChargesSub");
+  if (chgEl) {
+    chgEl.innerText = `Total Charges: ₹${chgTotal.toFixed(2)}`;
+  }
+  const netEl = document.getElementById("kpiNetPnl");
+  if (netEl) {
+    netEl.innerText = `${netPrefix}${netTotal.toFixed(2)}`;
+    netEl.style.color = netTotal >= 0 ? "var(--aegis-bright)" : "var(--danger-bright)";
+  }
+
   document.getElementById("kpiProfitFactor").innerText = kpis.profit_factor >= 99 ? "∞ (No Losses)" : kpis.profit_factor.toFixed(2);
-  document.getElementById("kpiGross").innerText = `Gross: +₹${kpis.gross_profit_rs} / -₹${kpis.gross_loss_rs}`;
+  document.getElementById("kpiGross").innerText = `Wins: +₹${kpis.gross_profit_rs} / Losses: -₹${kpis.gross_loss_rs}`;
   document.getElementById("kpiAvgDur").innerText = kpis.avg_duration_sec + "s";
   document.getElementById("tradeCountBadge").innerText = kpis.total_trades + " trades";
 }
@@ -879,8 +908,13 @@ function renderTable(trades) {
     else if (t.result.includes("BE")) resClass = "be";
     else if (t.result.includes("LOSS")) resClass = "loss";
 
-    const pnlClass = t.pnl_rs >= 0 ? "pnl-pos" : "pnl-neg";
-    const pnlPrefix = t.pnl_rs >= 0 ? "+₹" : "₹";
+    const gross = t.gross_pnl_rs !== undefined ? t.gross_pnl_rs : t.pnl_rs;
+    const chg = t.charges_rs !== undefined ? t.charges_rs : 0.0;
+    const net = t.net_pnl_rs !== undefined ? t.net_pnl_rs : (gross - chg);
+    const grossClass = gross >= 0 ? "pnl-pos" : "pnl-neg";
+    const netClass = net >= 0 ? "pnl-pos" : "pnl-neg";
+    const grossPrefix = gross >= 0 ? "+₹" : "₹";
+    const netPrefix = net >= 0 ? "+₹" : "₹";
 
     tr.innerHTML = `
       <td class="mono bold" style="color:var(--text-muted);">#${t.id}</td>
@@ -890,8 +924,10 @@ function renderTable(trades) {
       <td class="mono">₹${t.entry_price.toFixed(2)}</td>
       <td class="mono">₹${t.exit_price.toFixed(2)}</td>
       <td class="mono">${t.duration_str}</td>
-      <td class="mono bold ${pnlClass}">${t.opt_pct >= 0 ? '+' : ''}${t.opt_pct.toFixed(2)}%</td>
-      <td class="mono bold ${pnlClass}">${pnlPrefix}${t.pnl_rs.toFixed(2)}</td>
+      <td class="mono bold ${grossClass}">${t.opt_pct >= 0 ? '+' : ''}${t.opt_pct.toFixed(2)}%</td>
+      <td class="mono bold ${grossClass}">${grossPrefix}${gross.toFixed(2)}</td>
+      <td class="mono" style="color:var(--text-muted); font-size:11px;">₹${chg.toFixed(2)}</td>
+      <td class="mono bold ${netClass}" style="font-weight:700;">${netPrefix}${net.toFixed(2)}</td>
       <td><span class="badge pillar">${t.pillar}</span></td>
       <td><span class="badge ${resClass}">${t.result}</span></td>
       <td><button class="btn-inspect" onclick="event.stopPropagation(); openForensicModal(${t.id})">🔍 Inspect</button></td>
@@ -930,6 +966,14 @@ function openForensicModal(tradeId) {
   const f = trade.forensics || {};
   const cScores = f.conviction_sub_scores || {};
   const wy = f.wyckoff || {};
+
+  const mGross = trade.gross_pnl_rs !== undefined ? trade.gross_pnl_rs : trade.pnl_rs;
+  const mChg = trade.charges_rs !== undefined ? trade.charges_rs : 0.0;
+  const mNet = trade.net_pnl_rs !== undefined ? trade.net_pnl_rs : (mGross - mChg);
+  const mGrossClass = mGross >= 0 ? "pnl-pos" : "pnl-neg";
+  const mNetClass = mNet >= 0 ? "pnl-pos" : "pnl-neg";
+  const mGrossPrefix = mGross >= 0 ? "+₹" : "₹";
+  const mNetPrefix = mNet >= 0 ? "+₹" : "₹";
 
   document.getElementById("modalTitle").innerHTML = `
     <span>#${trade.id} · ${trade.index} ${trade.strike} ${trade.type} <span style="font-size:13px; color:#58a6ff; font-weight:normal; margin-left:6px;">[${trade.otm_display || ''}]</span></span>
@@ -978,11 +1022,14 @@ function openForensicModal(tradeId) {
 
       <!-- 4. EXECUTION ATTRIBUTION -->
       <div class="forensic-card">
-        <div class="forensic-card-title">⏱️ Execution &amp; Adaptive Exit</div>
+        <div class="forensic-card-title">⏱️ Execution &amp; Accounting</div>
         <div class="forensic-row"><span class="forensic-label">Fill Latency:</span><span class="forensic-val">${(f.latency_ms || 2500).toFixed(0)} ms</span></div>
         <div class="forensic-row"><span class="forensic-label">Hold Duration:</span><span class="forensic-val">${trade.duration_str}</span></div>
-        <div class="forensic-row"><span class="forensic-label">Max Drawdown (MAE):</span><span class="forensic-val" style="color:var(--danger-bright);">${f.peak_mae_pct || -0.9}%</span></div>
-        <div class="forensic-row"><span class="forensic-label">Peak In-Flight MFE:</span><span class="forensic-val" style="color:var(--success-bright);">+${f.peak_mfe_pct || trade.opt_pct}%</span></div>
+        <div class="forensic-row"><span class="forensic-label">Gross P&amp;L:</span><span class="forensic-val ${mGrossClass}" style="font-weight:700;">${mGrossPrefix}${mGross.toFixed(2)}</span></div>
+        <div class="forensic-row"><span class="forensic-label">Brokerage:</span><span class="forensic-val" style="color:var(--text-muted);">₹${(trade.brokerage_rs || 10).toFixed(2)}</span></div>
+        <div class="forensic-row"><span class="forensic-label">Statutory Taxes:</span><span class="forensic-val" style="color:var(--text-muted);">₹${(trade.taxes_rs || Math.max(0, mChg - 10)).toFixed(2)}</span></div>
+        <div class="forensic-row"><span class="forensic-label">Total Charges:</span><span class="forensic-val" style="color:var(--text-muted);">₹${mChg.toFixed(2)}</span></div>
+        <div class="forensic-row"><span class="forensic-label">Net Profit (Pocket):</span><span class="forensic-val ${mNetClass}" style="font-weight:800; font-size:13px;">${mNetPrefix}${mNet.toFixed(2)}</span></div>
         <div class="forensic-row"><span class="forensic-label">Exit Rule:</span><span class="forensic-val">${trade.exit_reason}</span></div>
       </div>
     </div>

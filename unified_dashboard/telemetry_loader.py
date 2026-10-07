@@ -14,6 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from common.execution.realistic_paper_broker import calculate_nse_option_charges
+
 BASE_DIR = Path(__file__).resolve().parents[1]
 CSV_PATH = BASE_DIR / "docs" / "AEGIS_TRADE_JOURNAL.csv"
 XLSX_PATH = BASE_DIR / "docs" / "AEGIS_TRADE_JOURNAL.xlsx"
@@ -485,6 +487,9 @@ def get_journal_data(force_reload: bool = False) -> Dict[str, Any]:
 
     trades: List[Dict[str, Any]] = []
     cum_pnl = 0.0
+    cum_gross_pnl = 0.0
+    cum_charges = 0.0
+    cum_net_pnl = 0.0
 
     gross_profit = 0.0
     gross_loss = 0.0
@@ -704,6 +709,30 @@ def get_journal_data(force_reload: bool = False) -> Dict[str, Any]:
             "is_win": is_win,
         })
 
+        lot_mult = 20 if "SENSEX" in index_name.upper() else 65
+        if matched_telem and "gross_pnl" in matched_telem:
+            trade_gross = float(matched_telem.get("gross_pnl", pnl))
+            trade_charges = float(matched_telem.get("total_charges", matched_telem.get("charges", 0.0)))
+            trade_brokerage = float(matched_telem.get("brokerage", 10.0))
+            trade_taxes = float(matched_telem.get("taxes", round(trade_charges - trade_brokerage, 2)))
+            trade_net = float(matched_telem.get("net_pnl", matched_telem.get("net_pl", round(trade_gross - trade_charges, 2))))
+        else:
+            trade_gross = pnl
+            if entry_prc > 0 and exit_prc > 0:
+                chg_obj = calculate_nse_option_charges(entry_prc * lot_mult, exit_prc * lot_mult, 5.0)
+                trade_brokerage = chg_obj.brokerage
+                trade_charges = chg_obj.total_charges
+                trade_taxes = round(trade_charges - trade_brokerage, 2)
+            else:
+                trade_brokerage = 0.0
+                trade_charges = 0.0
+                trade_taxes = 0.0
+            trade_net = round(trade_gross - trade_charges, 2)
+
+        cum_gross_pnl += trade_gross
+        cum_charges += trade_charges
+        cum_net_pnl += trade_net
+
         trade_item = {
             "id": t_id,
             "date": d_str,
@@ -729,7 +758,14 @@ def get_journal_data(force_reload: bool = False) -> Dict[str, Any]:
             "index_exit": idx_exit,
             "index_pts": idx_pts,
             "pnl_rs": pnl,
-            "cumulative_pnl_rs": round(cum_pnl, 2),
+            "gross_pnl_rs": round(trade_gross, 2),
+            "brokerage_rs": round(trade_brokerage, 2),
+            "taxes_rs": round(trade_taxes, 2),
+            "charges_rs": round(trade_charges, 2),
+            "net_pnl_rs": round(trade_net, 2),
+            "cumulative_pnl_rs": round(cum_gross_pnl, 2),
+            "cumulative_gross_pnl_rs": round(cum_gross_pnl, 2),
+            "cumulative_net_pnl_rs": round(cum_net_pnl, 2),
             "result": res_str,
             "is_win": is_win,
             "is_loss": is_loss,
@@ -770,7 +806,10 @@ def get_journal_data(force_reload: bool = False) -> Dict[str, Any]:
             "win_count": win_count,
             "loss_count": total_trades - win_count,
             "win_rate_pct": round(win_rate, 1),
-            "total_pnl_rs": round(cum_pnl, 2),
+            "total_pnl_rs": round(cum_gross_pnl, 2),
+            "total_gross_pnl_rs": round(cum_gross_pnl, 2),
+            "total_charges_rs": round(cum_charges, 2),
+            "total_net_pnl_rs": round(cum_net_pnl, 2),
             "profit_factor": round(profit_factor, 2),
             "gross_profit_rs": round(gross_profit, 2),
             "gross_loss_rs": round(gross_loss, 2),

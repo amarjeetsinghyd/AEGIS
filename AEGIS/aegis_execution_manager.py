@@ -35,6 +35,7 @@ from common.execution.order_lifecycle import (
 )
 from common.execution.strike_selector import StrikeSelector
 from common.execution.trade_context import TradeContext, TradeLeg
+from common.execution.realistic_paper_broker import calculate_nse_option_charges, OptionCharges
 from common.market.market_calendar import is_trading_day
 from common.ipc.premarket_bridge import read_premarket_state
 
@@ -167,6 +168,9 @@ class AegisExecutionManager:
         
         # PnL tracking
         self.daily_pnl = 0.0
+        self.daily_gross_pnl = 0.0
+        self.daily_net_pnl = 0.0
+        self.daily_charges = 0.0
         
         # Persistence
         trades_dir = os.path.join(self.data_dir, "trades")
@@ -219,6 +223,9 @@ class AegisExecutionManager:
 
     def _load_daily_pnl(self):
         self.daily_pnl = 0.0
+        self.daily_gross_pnl = 0.0
+        self.daily_charges = 0.0
+        self.daily_net_pnl = 0.0
         if not os.path.exists(self.history_file):
             return
         try:
@@ -227,8 +234,17 @@ class AegisExecutionManager:
             today_str = datetime.now().strftime("%d %b %Y")
             for trade in hist:
                 if trade.get("entry_time", "").startswith(today_str):
-                    self.daily_pnl += trade.get("pnl", 0.0)
-            logger.info(f"[AegisEM] Restored daily PnL: ₹{self.daily_pnl:.2f}")
+                    gross = float(trade.get("gross_pnl", trade.get("pnl", 0.0)))
+                    net = float(trade.get("net_pnl", trade.get("net_pl", trade.get("pnl", 0.0))))
+                    chgs = float(trade.get("total_charges", trade.get("charges", 0.0)))
+                    self.daily_gross_pnl += gross
+                    self.daily_charges += chgs
+                    self.daily_net_pnl += net
+            self.daily_pnl = round(self.daily_net_pnl, 2)
+            logger.info(
+                f"[AegisEM] Restored daily PnL: Gross ₹{self.daily_gross_pnl:.2f} | "
+                f"Charges ₹{self.daily_charges:.2f} | Net ₹{self.daily_net_pnl:.2f}"
+            )
         except Exception as e:
             logger.error(f"[AegisEM] Load daily PnL failed: {e}")
 
@@ -238,6 +254,9 @@ class AegisExecutionManager:
             "trades_today": int(getattr(self, "trades_today", 0)),
             "max_trades_per_day": MAX_TRADES_PER_DAY,
             "daily_pnl": round(float(getattr(self, "daily_pnl", 0.0)), 2),
+            "daily_gross_pnl": round(float(getattr(self, "daily_gross_pnl", 0.0)), 2),
+            "daily_charges": round(float(getattr(self, "daily_charges", 0.0)), 2),
+            "daily_net_pnl": round(float(getattr(self, "daily_net_pnl", 0.0)), 2),
             "consec_losses": int(getattr(self, "_consec_losses", 0)),
             "consec_loss_stop": int(getattr(self, "consec_loss_stop", 2)),
             "daily_loss_cap_rs": float(getattr(self, "daily_loss_cap_rs", 2000.0)),
@@ -313,6 +332,9 @@ class AegisExecutionManager:
                 if self.last_trade_date != today_d:
                     self.trades_today = 0
                     self.daily_pnl = 0.0
+                    self.daily_gross_pnl = 0.0
+                    self.daily_charges = 0.0
+                    self.daily_net_pnl = 0.0
                     self.last_trade_date = today_d
 
                 # 1. Process AEGIS signals (blocking with timeout)
@@ -380,6 +402,9 @@ class AegisExecutionManager:
         if getattr(self, "last_trade_date", None) != now.date():
             self.trades_today = 0
             self.daily_pnl = 0.0
+            self.daily_gross_pnl = 0.0
+            self.daily_charges = 0.0
+            self.daily_net_pnl = 0.0
             self.last_trade_date = now.date()
             self._consec_losses = 0
         # Daily trade limit (Strict 3 trades max per day)
@@ -1533,11 +1558,29 @@ class AegisExecutionManager:
                 leg.status = "CLOSED"
                 leg.exit_time = datetime.now()
                 leg.exit_price = fill_price
-                leg.pnl = (fill_price - leg.entry_price) * leg.quantity * params["lot_size"]
+                leg_units = leg.quantity * params["lot_size"]
+                leg.pnl = (fill_price - leg.entry_price) * leg_units
                 total_pnl += leg.pnl
-                self.capital_engine.add_funds(fill_price * leg.quantity * params["lot_size"])
+                self.capital_engine.add_funds(fill_price * leg_units)
                 self.strike_cooldowns[leg.symbol] = datetime.now() + timedelta(minutes=3)
-                logger.info(f"[AegisEM] CLOSED {leg.symbol}: {leg.entry_price:.2f} → {fill_price:.2f} | PnL {leg.pnl:.2f} | {reason}")
+
+                # Compute SEBI & brokerage charges
+                buy_turnover = leg.entry_price * leg_units
+                sell_turnover = fill_price * leg_units
+                leg_charges = calculate_nse_option_charges(buy_turnover, sell_turnover, brokerage_per_order=5.0)
+                leg_brokerage = round(leg_charges.brokerage, 2)
+                leg_total_charges = round(leg_charges.total_charges, 2)
+                leg_taxes = round(leg_total_charges - leg_brokerage, 2)
+                leg_gross_pnl = round(leg.pnl, 2)
+                leg_net_pnl = round(leg_gross_pnl - leg_total_charges, 2)
+                leg_pnl_pct = round(((fill_price - leg.entry_price) / leg.entry_price * 100.0), 2) if leg.entry_price > 0 else 0.0
+
+                logger.info(
+                    f"[TRADE CLOSED] {leg.symbol}: {leg.entry_price:.2f} → {fill_price:.2f} | "
+                    f"Gross PnL: ₹{leg_gross_pnl:+.2f} ({leg_pnl_pct:+.2f}%) | "
+                    f"Brokerage: ₹{leg_brokerage:.2f} | Taxes: ₹{leg_taxes:.2f} | "
+                    f"Total Charges: ₹{leg_total_charges:.2f} | Net PnL: ₹{leg_net_pnl:+.2f} | {reason}"
+                )
 
         with self.trade_lock:
             context.status = "CLOSED"
@@ -1580,14 +1623,35 @@ class AegisExecutionManager:
                 )
                 return
 
-        self.daily_pnl += total_pnl
+        entry_px = float(leg0.entry_price) if leg0 else 0.0
+        exit_px = float(leg0.exit_price) if (leg0 and leg0.exit_price is not None) else 0.0
+        pnl_pct = round(((exit_px - entry_px) / entry_px * 100.0), 2) if entry_px > 0 else 0.0
+
+        sym_str = leg0.symbol if leg0 else ""
+        lot_sz = 20 if "SENSEX" in sym_str else 65
+        tot_units = (leg0.quantity if leg0 else 1) * lot_sz
+        buy_turnover = (entry_px * tot_units) if entry_px > 0 else 0.0
+        sell_turnover = (exit_px * tot_units) if exit_px > 0 else 0.0
+        charges_obj = calculate_nse_option_charges(buy_turnover, sell_turnover, brokerage_per_order=5.0)
+
+        brokerage = round(charges_obj.brokerage, 2)
+        total_charges = round(charges_obj.total_charges, 2)
+        taxes = round(total_charges - brokerage, 2)
+        gross_pnl = round(total_pnl, 2)
+        net_pnl = round(gross_pnl - total_charges, 2)
+
+        self.daily_gross_pnl = round(getattr(self, "daily_gross_pnl", 0.0) + gross_pnl, 2)
+        self.daily_charges = round(getattr(self, "daily_charges", 0.0) + total_charges, 2)
+        self.daily_net_pnl = round(getattr(self, "daily_net_pnl", 0.0) + net_pnl, 2)
+        self.daily_pnl = self.daily_net_pnl
+
         now_epoch = time.time()
         cooldown_interval = int(now_epoch - self.last_trade_exit_time) if self.last_trade_exit_time > 0 else 0
         self.last_trade_exit_time = now_epoch
-        self.last_trade_loss = (total_pnl < 0)
+        self.last_trade_loss = (gross_pnl < 0)
 
         # Quality Stack: consecutive-loss tracking + engine cross-wire
-        if total_pnl < 0:
+        if gross_pnl < 0:
             self._consec_losses = int(getattr(self, "_consec_losses", 0)) + 1
         else:
             self._consec_losses = 0
@@ -1606,9 +1670,9 @@ class AegisExecutionManager:
         post_loss_sec = getattr(self, "post_loss_cooloff_sec", 120.0)
         inter_trade_sec = getattr(self, "inter_trade_cooldown_sec", 60.0)
         if self.last_trade_loss:
-            logger.info(f"[AegisEM] Trade closed in loss (₹{total_pnl:.2f}) -> Post-loss cooloff active for {int(post_loss_sec)}s")
+            logger.info(f"[AegisEM] Trade closed in loss (Gross ₹{gross_pnl:+.2f} | Net ₹{net_pnl:+.2f}) -> Post-loss cooloff active for {int(post_loss_sec)}s")
         else:
-            logger.info(f"[AegisEM] Trade closed in profit (₹{total_pnl:.2f}) -> Inter-trade cooldown active for {int(inter_trade_sec)}s")
+            logger.info(f"[AegisEM] Trade closed in profit (Gross ₹{gross_pnl:+.2f} | Net ₹{net_pnl:+.2f}) -> Inter-trade cooldown active for {int(inter_trade_sec)}s")
         
         # ─── Post-Trade Quantitative Feature Attribution ───
         duration_sec = int((context.exit_time - context.entry_time).total_seconds()) if (context and context.entry_time and context.exit_time) else int((now - context.entry_time).total_seconds()) if (context and context.entry_time) else 0
@@ -1687,7 +1751,8 @@ class AegisExecutionManager:
         sym_str = leg0.symbol if leg0 else "OPTION"
         diag_summary = (
             f"{outcome} {sig_type} on {sym_str} ({duration_sec}s) | "
-            f"PnL: ₹{total_pnl:+.2f} ({pnl_pct:+.1f}%) | Exit: {reason} | "
+            f"Gross: ₹{gross_pnl:+.2f} ({pnl_pct:+.1f}%) | Brokerage: ₹{brokerage:.2f} | Taxes: ₹{taxes:.2f} | Total Charges: ₹{total_charges:.2f} | Net: ₹{net_pnl:+.2f} | "
+            f"Exit: {reason} | "
             f"MFE: {peak_mfe_pct:+.1f}% (+₹{peak_mfe_rs:.2f} @ {time_to_peak_mfe_sec}s), MAE: {peak_mae_pct:.1f}% | "
             f"Spot Δ: {spot_delta_pts:+.1f}pts ({spot_delta_bps:+.1f}bps), Fut Δ: {fut_delta_pts:+.1f}pts (Basis: {basis_pts_entry:+.1f}pts | {fut_corr}) | "
             f"Lat: {entry_latency_ms:.0f}ms, VolBurstAge: {vol_burst_age_sec}s, EQS: {eqs_score:.1f}"
@@ -1696,7 +1761,12 @@ class AegisExecutionManager:
         post_trade_attribution = {
             "outcome": outcome,
             "classification": classification,
-            "pnl_rs": round(total_pnl, 2),
+            "gross_pnl_rs": gross_pnl,
+            "brokerage_rs": brokerage,
+            "taxes_rs": taxes,
+            "charges_rs": total_charges,
+            "net_pnl_rs": net_pnl,
+            "pnl_rs": gross_pnl,
             "pnl_pct": pnl_pct,
             "trade_duration_sec": duration_sec,
             "exit_reason": reason,
@@ -1748,11 +1818,21 @@ class AegisExecutionManager:
             "signal_type": context.signal_type if context else "",
             "symbol": leg0.symbol if leg0 else "",
             "quantity": leg0.quantity if leg0 else 1,
+            "lot_size": lot_sz,
             "entry_price": entry_px,
             "exit_price": exit_px,
-            "pnl": total_pnl,
-            "net_pl": total_pnl,
-            "daily_total_pnl": self.daily_pnl,
+            "pnl": gross_pnl,
+            "gross_pnl": gross_pnl,
+            "brokerage": brokerage,
+            "taxes": taxes,
+            "charges": total_charges,
+            "total_charges": total_charges,
+            "net_pl": net_pnl,
+            "net_pnl": net_pnl,
+            "daily_total_pnl": round(self.daily_pnl, 2),
+            "daily_gross_pnl": round(self.daily_gross_pnl, 2),
+            "daily_charges": round(self.daily_charges, 2),
+            "daily_net_pnl": round(self.daily_net_pnl, 2),
             "exit_reason": reason,
             "reason": reason,
             "feature_vector": dp,
