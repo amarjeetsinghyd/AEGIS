@@ -349,3 +349,93 @@ def calculate_v2_strike_and_lots(account_capital: float, chain: dict, lot_size: 
 | **₹1,500 – ₹2,000**| **Triple Lot on Deep OTM** | **13–15 OTM (₹18–₹24)** | **3 Lots** (60 qty) | **₹1,080 – ₹1,440** | **+₹43.20 – ₹57.60** | 3 lots execute cleanly; zero slippage on 14–15 OTM. |
 | **₹2,500 – ₹4,000**| 5 Lots Allocation | 12–14 OTM (₹20–₹30) | **5 Lots** (100 qty) | ₹2,000 – ₹3,000 | **+₹80.00 – ₹120.00**| Zero slippage verified in Trade #23 audit. |
 | **₹5,000 – ₹10,000**| 10 Lots Full Scalper | 12–15 OTM (₹20–₹35) | **10 Lots** (200 qty) | ₹4,000 – ₹7,000 | **+₹160.00 – ₹280.00**| Maximum safe ceiling; slippage $\le 2.5$ paise. |
+
+---
+
+## 🧾 Evidence Docket #5: Brokerage & Regulatory Charges Architecture (Shoonya Zero-Brokerage vs. Traditional Brokers)
+
+### 1. The ₹16 Fee Misconception Debunked
+In Indian retail markets, many traders assume a flat ₹16–₹20 charge is deducted per trade:
+* **The ₹15.93 / ₹16 Myth (DP Charges)**: Depository Participant (DP) charges (₹13.50 + 18% GST = ₹15.93) apply **ONLY to delivery selling of equity shares from a DEMAT account** (e.g. selling TCS, Reliance delivery shares via CDSL/NSDL).
+* **F&O / Options Reality**: Derivatives contracts are cash-settled contracts and are **never delivered to Demat**. Therefore, **DP CHARGES ON OPTIONS ARE EXACTLY ₹0.00**.
+* **Finvasia (Shoonya) Zero-Brokerage Seam**: While discount brokers like Zerodha, Groww, and Angel One levy flat ₹20/order (₹40 round-trip + GST = ~₹47 per trade), **Shoonya levies ₹0.00 BROKERAGE across all segments** (Intraday, Equity, and F&O).
+
+---
+
+### 2. Exact Statutory & Regulatory Taxes on Option Scalping (1 Lot @ ~₹25 SENSEX)
+
+When trading 1 Lot (20 shares) of SENSEX Options on BSE (BFO):
+* Entry @ ₹25.00 $\implies$ Buy Turnover = **₹500.00**
+* Exit @ ₹26.00 $\implies$ Sell Turnover = **₹520.00**
+* Total Combined Turnover = **₹1,020.00**
+
+| Tax / Statutory Levy | Rate / Formula | Trade Amount (₹) | Deducted By / Payable To |
+| :--- | :--- | :--- | :--- |
+| **Brokerage** | **₹0.00 (Shoonya)** | **₹0.00** | Broker (Finvasia) |
+| **STT (Securities Transaction Tax)** | 0.10% on SELL turnover (effective Oct 1, 2024) | **₹0.52** | Central Government |
+| **BSE Exchange Txn Charge** | 0.0375% of premium turnover | **₹0.38** | BSE Exchange |
+| **GST (Goods & Services Tax)** | 18% on (Exchange Charge + SEBI Fee) | **₹0.07** | Government (Central + State) |
+| **Stamp Duty** | 0.003% on BUY turnover | **₹0.015** | State Government |
+| **SEBI Turnover Fee** | ₹10 per crore (0.0001% of turnover) | **₹0.001** | SEBI Regulator |
+| **DP Charges** | **₹0.00 (No Demat transfer in F&O)** | **₹0.00** | CDSL / NSDL |
+| **TOTAL CHARGES PER ROUND-TRIP TRADE** | — | **≈ ₹0.98 – ₹1.00** | **मात्र ~₹1.00 प्रति ट्रेड!** |
+
+### 3. Forensic Post-Charges Audit of Today's 3 Live Trades (07 Oct 2026)
+
+| Trade # | Contract & Qty | Gross PnL (₹) | Exact Total Regulatory Charges (₹) | Net In-Pocket Profit (₹) | Retention % |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Trade #21** | `73800 CE` (20 qty) | ₹0.00 (Scratch) | **₹1.11** | **-₹1.11** | — |
+| **Trade #22** | `71300 PE` (20 qty) | **+₹19.00** (+3.91%) | **₹0.96** | **+₹18.04** | **94.95%** |
+| **Trade #23** | `71400 PE` (20 qty) | **+₹20.00** (+3.99%) | **₹0.99** | **+₹19.01** | **95.05%** |
+| **DAILY TOTAL** | **3 Trades** | **+₹39.00 Gross** | **₹3.06 Total Taxes** | **+₹35.94 Net In-Pocket** | **92.15% Retained** |
+
+> **Key Takeaway**:
+> On Shoonya, our net operational drag is **only ~₹1 per trade**! From today's ₹39.00 gain, **₹35.94 (92.15%) remains pure net cash in the account**.
+> Furthermore, trading **2 lots in a single order** (Qty = 40) only increases turnover charges to **~₹1.90 total** (no double fixed brokerage exists), preserving over **95% of gross profits**.
+
+---
+
+## 🏔️ The Stepped Ceiling Scaling Model: The 10-OTM Hard Cap & Lot Multiplier Reset
+
+### The Founder's Strategic Architecture:
+1. **Vertical Climb Within Safe Zone**:
+   * When account capital grows incrementally (e.g. from ₹600 to ₹750, ₹850, ₹950), climb the OTM ladder from 12 OTM up to 10 OTM (buying 1 lot of ~₹30 to ~₹45).
+2. **The Hard Invalidation Boundary (10 OTM / 9 OTM Ceiling)**:
+   * **Never climb above 9 OTM or 10 OTM!**
+   * *Empirical Proof*: In Trade #22, 10 OTM reached +3.96%, while 9 OTM reached +3.72%, and 8 OTM dropped to +2.80%. In normal 20–40s gamma bursts, any strike closer than 9 OTM requires too large an underlying index move (15 to 25 points), causing the +4.0% TP to stall and fail!
+3. **Horizontal Lot Multiplier Reset**:
+   * Once the account reaches the 10-OTM ceiling and accumulates enough capital for **2 Lots** (₹1,100–₹1,200), **STOP climbing!**
+   * **Reset the ladder back down to 13–15 OTM (₹18–₹25)** and deploy **2 Lots**!
+   * Scale 2 lots from 14 OTM to 10 OTM as capital grows from ₹1,200 to ₹1,800.
+   * At ₹1,800–₹2,000, **reset back to 13–15 OTM and deploy 3 Lots**!
+   * At ₹3,000, **reset and deploy 5 Lots**!
+
+### 📊 Visual Representation of the Stepped Scaling Cycle:
+
+```
+OTM Depth
+   ▲
+10 ┼─────────(HARD CEILING - NEVER CROSS ABOVE 9/10 OTM)─────────
+   │          /                      /                      /
+11 │         /                      /                      /
+   │        /  (Climb)             /  (Climb)             /  (Climb)
+12 │       /                      /                      /
+   │      /                      /                      /
+13 │     /                      /                      /
+   │    /                      /                      /
+14 │   /                      /                      /
+   │  /                      /                      /
+15 ┼─[1 Lot Cycle] ──RESET──►[2 Lots Cycle] ──RESET──►[3 Lots Cycle] ──► ...
+   └───────────────────────────────────────────────────────────────► Capital Growth
+     ₹500 - ₹950            ₹1,100 - ₹1,800        ₹1,800 - ₹2,500
+```
+
+---
+
+## 🖥️ Future V2 Dashboard Feature: "Net PnL (After Regulatory Taxes)"
+
+In Version 2.0, the `unified_dashboard` analytics engine (`telemetry_loader.py` and `cockpit_html.py`) will incorporate:
+1. `Gross P&L (₹)`: Raw option price difference $\times$ quantity.
+2. `Estimated Taxes & Charges (₹)`: Real-time calculation based on Shoonya zero-brokerage + official STT (0.10%) + BSE/NSE transaction fees + GST.
+3. `Net P&L In-Pocket (₹)`: Post-charges cash accretion.
+4. `Net Retention Ratio (%)`: `(Net P&L / Gross P&L) * 100`.
