@@ -631,26 +631,26 @@ Across the two-week consistency testing period (21 September – 05 October 2026
 
 | Metric | Empirical Value | Institutional Benchmark | Evaluation |
 |---|---|---|---|
-| **Total Trades** | **22** | $\ge 15$ for statistical sample | Validated sample size across NIFTY & SENSEX |
-| **Winning Trades** | **18** | — | High-conviction consistency |
+| **Total Trades** | **23** | $\ge 15$ for statistical sample | Validated sample size across NIFTY & SENSEX |
+| **Winning Trades** | **19** | — | High-conviction consistency |
 | **Breakeven / Scratch** | **1** | — | Capital protected with zero loss |
 | **Losing Trades** | **3** | — | Losses severed rapidly ($\le 28$s average) |
-| **Win / Neutral Rate** | **86.36%** | $> 70.0\%$ | Exceptional outperformance on retail options |
-| **Gross Profit** | **+₹317.90** | — | Systematic edge accumulation |
+| **Win / Neutral Rate** | **86.96%** | $> 70.0\%$ | Exceptional outperformance on retail options |
+| **Gross Profit** | **+₹337.90** | — | Systematic edge accumulation |
 | **Gross Loss** | **-₹67.75** | — | Strict tail-risk containment |
-| **Profit Factor** | **4.69** | $> 2.00$ | World-class risk-adjusted return ratio |
-| **Net Realized PnL** | **+₹250.15** | — | Real account capital growth |
-| **Net Capital Growth** | **+42.52%** | $> +10.0\%$ | Scaled on micro-capital (~₹588 base) |
-| **Average Hold Duration** | **50.0 seconds** | $\le 180$ seconds | High-speed gamma scalping (Median: 25s, Min: 5s) |
-| **Average Winning Trade** | **+3.43%** | $\approx +4.0\%$ | High fill accuracy with zero slippage |
+| **Profit Factor** | **4.99** | $> 2.00$ | World-class risk-adjusted return ratio |
+| **Net Realized PnL** | **+₹270.15** | — | Real account capital growth |
+| **Net Capital Growth** | **+45.92%** | $> +10.0\%$ | Scaled on micro-capital (~₹588 base) |
+| **Average Hold Duration** | **48.6 seconds** | $\le 180$ seconds | High-speed gamma scalping (Median: 22s, Min: 5s) |
+| **Average Winning Trade** | **+3.46%** | $\approx +4.0\%$ | High fill accuracy with zero slippage |
 | **Average Losing Trade** | **-4.96%** | $\le -12.0\%$ | Cut cleanly before adverse theta decay |
-| **Max Drawdown (MAE)** | **-1.7% average** | $\le -12.0\%$ | Negligible pain across winning entries |
+| **Max Drawdown (MAE)** | **-1.6% average** | $\le -12.0\%$ | Negligible pain across winning entries |
 
 #### 3. Pillar Hit-Rate Distribution
 - **Pillar 1 (`20_ema_rejection`)**: 8 trades | 6 Wins, 2 Losses | **75.0% Win Rate**
 - **Pillar 2 (`micro_sweep_reclaim`)**: 3 trades | 2 Wins, 1 Scratch | **100.0% Win/BE Rate**
 - **Pillar 3 (`volatility_squeeze_breakout`)**: 4 trades | 4 Wins, 0 Losses | **100.0% Win Rate**
-- **Pillar 4 (`hvg_network_phase_shift`)**: 7 trades | 6 Wins, 1 Loss | **85.7% Win Rate**
+- **Pillar 4 (`hvg_network_phase_shift`)**: 8 trades | 7 Wins, 1 Loss | **87.5% Win Rate**
 
 ---
 
@@ -672,6 +672,22 @@ On **07 October 2026 (Wednesday — SENSEX 1 DTE)**, Trade #21 provided critical
 3. **Verification & Deployment**:
    - Added unit tests `test_pillar1_entry_candle_invalidation_and_no_9ema_choke`, `test_pillar2_entry_candle_invalidation_and_no_9ema_choke`, and `test_pillar3_entry_candle_invalidation_and_no_9ema_choke` (31/31 adaptive exit tests green, 266/266 full repository suite green).
    - Synced to Oracle VPS (`137.23.41.38`) and verified live PM2 execution.
+
+---
+
+### 7.26 Empirical Confirmation: Consecutive Live Wins via Pillar 1 & Pillar 4 (07 October 2026)
+
+Immediately following the deployment of the Universal Structural Invalidation fix, two consecutive live trades executed on SENSEX 1 DTE options, delivering a textbook demonstration of institutional edge:
+1. **Trade #22 (13:20:06 IST — Pillar 1 Live Win)**:
+   - Setup: Pillar 1 (`20_ema_rejection`) on PUT (`SENSEX26O0871300PE` @ ₹24.30).
+   - Mechanics: Without the 9-EMA choke, the trade absorbed 1m micro-wobbles for 38 seconds. At 13:20:38, peak reached +3.1%, arming the stepped safety net to -3.0% (₹23.55). At 13:20:43, the resting Maker Limit TP filled passively at **₹25.25 (+3.91% / +₹19.00 net profit)**.
+   - Post-Exit Confirmation: The very next 13:21 candle gapped down and crashed to 72,561, confirming the setup's thesis while the bot had already exited passively at the opening crest.
+2. **Trade #23 (13:53:58 IST — Pillar 4 Lightning Live Win)**:
+   - Setup: Pillar 4 (`hvg_network_phase_shift`) Prominence Hub breakdown below 72,598.46 on PUT (`SENSEX26O0871400PE` @ ₹25.05).
+   - Order Flow Confirmation: Monster Wyckoff volume harmony with **$VDR = 29.01$** and **-26.98M option net delta** (+27.56M institutional put buy flow).
+   - Execution: Resting Maker Limit TP placed at +4.0% filled passively at **₹26.05 (+3.99% / +₹20.00 net profit) in just 17 seconds**!
+   - Daily Milestone: Reached the 3-trades-per-day safety cap (`trades_today: 3`). Daily performance: **3 trades, 2 Wins, 1 BE Scratch, 0 Losses (100% Win/Neutral rate, Day PnL +₹39.00)**.
+
 
 ---
 
