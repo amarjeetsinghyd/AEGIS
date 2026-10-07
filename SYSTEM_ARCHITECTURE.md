@@ -31,15 +31,32 @@ engine's own authoritative harness document.
 
 | # | Engine | PM2 process | Entry | State | Harness document (authoritative) |
 |---|---|---|---|---|---|
-| 1 | **ARGUS** — **A**lgorithmic **R**eal-time **G**ranular **U**ltra-microstructure **S**calper (Nifty 100 cash) | `argus` | `ARGUS/main.py` | active | [`ARGUS/AGENTIC HARNESS DOCUMENT v3.5.md`](ARGUS/AGENTIC%20HARNESS%20DOCUMENT%20v3.5.md) |
-| 2 | **AEGIS** — **A**utonomous **E**xecution & **G**amma **I**mbalance **S**ystem (Nifty/Sensex 0DTE Options) | `aegis-bot` | `AEGIS/aegis_main.py` | active | [`AEGIS/AEGIS_V3_ARCHITECTURE.md`](AEGIS/AEGIS_V3_ARCHITECTURE.md) |
+| 1 | **AEGIS** — **A**utonomous **E**xecution & **G**amma **I**mbalance **S**ystem (Nifty/Sensex 0DTE Options) | `aegis-bot` | `AEGIS/aegis_main.py` | **PRIMARY ACTIVE** (Core Focus) | [`AEGIS/AEGIS_V3_ARCHITECTURE.md`](AEGIS/AEGIS_V3_ARCHITECTURE.md) |
+| 2 | **ARGUS** — **A**lgorithmic **R**eal-time **G**ranular **U**ltra-microstructure **S**calper (Nifty 100 cash) | `argus` | `ARGUS/main.py` | Secondary / Deprioritized | [`ARGUS/AGENTIC HARNESS DOCUMENT v3.5.md`](ARGUS/AGENTIC%20HARNESS%20DOCUMENT%20v3.5.md) |
 | ~~3~~ | ~~Kronos Bot~~ | — | — | **DECOMMISSIONED** — see §5 | (historical only — do not revive) |
 
 Each engine owns its detailed spec; this root file only maps them and the
 shared plumbing. **When an engine's behaviour is in question, read that
 engine's harness document — it overrides everything here for that engine.**
 
-### 2.1 Engine 1 — ARGUS (Algorithmic Real-Time Granular Ultra-Microstructure Scalper v4.0)
+### 2.1 Engine 1 (Primary) — AEGIS (Autonomous Execution & Gamma Imbalance System) — Production Version 1.0 (v1.0 Locked) LIVE
+**Current Production Configuration (Calibrated, Audited & Verified):**
+- **Macro Price Action Primary Trigger (`PriceActionEngine`):** Pure price action is the primary trigger across 4 scalper pillars (P1 20 EMA Pullback, P2 Liquidity Sweep & Reclaim, P3 Volatility Squeeze Breakout, P4 0-D Prominence Hub Breakout).
+- **Absolute Pain Zone VWAP Band (v1.0 Production Early Veto):** Spot above Upper Band $\implies$ CALL only; Spot below Lower Band $\implies$ PUT only; inside Band $\implies$ Discarded.
+- **Wyckoff Volume & Order Flow Delta Engine (`wyckoff_volume_engine.py`):** Effort vs Result, Volume Dry-Up Ratio (VDR $\ge 1.0$), Absorption pin wick, and Delta Harmony (Call Buy vs Put Buy with $\ge 2.0\times$ ratio).
+- **Weekly Trading Calendar & DTE Schedule:**
+  - **Monday**: NIFTY (**1 DTE**) [NFO, step 50, lot 65]
+  - **Tuesday**: NIFTY (**0 DTE** Expiry Day) [NFO, step 50, lot 65]
+  - **Wednesday**: SENSEX (**1 DTE**) [BFO, step 100, lot 20]
+  - **Thursday**: SENSEX (**0 DTE** Expiry Day) [BFO, step 100, lot 20]
+  - **Friday**: NIFTY (**4 DTE**) [NFO, step 50, lot 65]
+  - *(Saturday / Sunday: Market Closed, no bot trading)*
+- **Standalone CatBoost Paper Trader & 100% Shadow ML:** Real-time ML flow evaluation in risk-free virtual execution loop.
+- **Volume Profile & Auction Market Theory Engine:** Real-time Spot POC, 70% Value Area (VAH/VAL), and Low-Volume Node (LVN) frictionless air pockets.
+- **Adaptive Stepped Exits & Permanent Target Discipline:** -12% disaster floor $\to$ Step 1 (-3% SL @ +3.0% peak) $\to$ Step 2 (0.0% cost-shield @ +3.5% peak) $\to$ Step 3 (0.8% near-target lock) $\to$ Strict +4.0% Maker TP (₹0.05 tick rounded; never greed 5%–6%) $\to$ 15:08:00 CAS force-flatten.
+- **Full Architecture Authority:** [`AEGIS/AEGIS_V3_ARCHITECTURE.md`](AEGIS/AEGIS_V3_ARCHITECTURE.md) (Production Version 1.0 Locked).
+
+### 2.2 Engine 2 (Secondary / Deprioritized) — ARGUS (Algorithmic Real-Time Granular Ultra-Microstructure Scalper v4.0)
 Zero-copy `ParsedTick` (`__slots__`), per-symbol object pool, unified
 composite impulse engine ($S_{\text{flow}}$) with **continuous multi-horizon momentum alignment ($M_{\text{align}}$ across 10s, 1m, 5m, 15m)**,
 **dynamic regime & TOD threshold calibration ($\theta_{\text{dynamic}} \in [0.35, 0.60]$)**,
@@ -49,28 +66,6 @@ and **4-pillar microstructure-decay exits with Adaptive SVI & Peak-Lock**
 (`MPAR_DECEL`/`DKLA_FLIP`/`VAC_REVERSAL`/`LRA_VEL_FLIP` + confirmation
 `TOX_SPIKE`/`WHALE_EXIT`/`BRANCHING_COLLAPSE`, plus `TIME_STOP`/
 `EOD_FLATTEN`/`BREAKEVEN_LOCK`/`CHANDELIER_ATR`). Full spec → [`ARGUS/ARGUS_SYSTEM_ARCHITECTURE.md`](ARGUS/ARGUS_SYSTEM_ARCHITECTURE.md).
-
-### 2.2 Engine 2 — AEGIS (Autonomous Execution & Gamma Imbalance System) — V3.9 LIVE
-**Current Production Configuration (2026-09-20 Calibrated, Audited & Verified):**
-- **Macro Price Action Primary Trigger (`PriceActionEngine`):** Pure price action is the primary trigger across 4 scalper pillars:
-  1. **Pillar 1 (20 EMA Wick Rejection):** Dual-path (Single-Bar vs Two-Bar retest expansion), 40-bar lookback, minimum 5 pause bars, strict same-side close discipline, 20 EMA leading 50 EMA, and session VWAP alignment.
-  2. **Pillar 2 (Dual-Mode Liquidity Sweep & Reclaim):** Live 5-bar turtle soup reclaim + parallel shadow topological structural sweep (`TOPO_P2` on $T-1$ frozen causal graph, local extremum constraints, $T-1$ seeded unbroken anchor tracking, signed $D_{VWAP}$).
-  3. **Pillar 3 (Volatility Squeeze Breakout):** 4-bar box compression ($\le 1.25 \times \text{ATR}$) followed by full-bar breakout close; metric scale preservation.
-  4. **Pillar 4 (Dual-Timeframe Topological Phase Shift Breakout):** Dual-timeframe 1m+5m strict HVG monotonic stack $O(N)$, prominent anchor visibility ($\ge 1.75$), 5m macro structural alignment & proximity shield, and continuous 400ms Anti-Spoofing L2 Wall Shield.
-- **Composite Conviction Continuous Scoring (`CompositeConvictionEngine`):** 0–100 multi-domain scoring (Structure, Impulse, Flow, Feasibility). Sizing tiers: $\ge 85.0$ $\to$ FULL_SIZE (2 lots, +5.0% TP), $75.0 - 84.9$ $\to$ STANDARD_SIZE (1 lot, +4.0% TP), $< 75.0$ $\to$ BLOCKED.
-- **LightGBM ML Gatekeeper (`MLGatekeeper`):** Sub-millisecond C-API inference on 4 microstructure alpha features (`kyle_lambda_30s`, `momentum_accel_10s`, `option_ret_30s`, `spread_pct`).
-- **Institutional Quality Stack (`QualitySlotPolicy`):** Max 3 trades/day, 3rd slot reserved for afternoon ($\ge 14:45\text{ IST}$), dynamic score hurdle (beat prior best), consecutive loss stop (2 losses), daily loss cap (₹2,000).
-- **Secondary Microstructure Shield (Validator):** Validates liquidity and orderbook safety:
-  - 60s Directional Persistence ($D_p \ge 0.70$, opposite $\le 2$).
-  - Adaptive Order Flow Energy (OFEE $\ge 60.0$, strict BOS $\ge 70.0$).
-  - Real-Time OI Built-Up & Wall Gate (`OIBuiltupGate`) and Index VWAP Extension Gate.
-- **Execution & Adaptive Quantitative Exits (`AegisExecutionManager`):**
-  - Single open position, `MAX_TRADES_PER_DAY = 3`.
-  - **Strict Non-Consecutive Setup Lockout:** Same route blocked for 180s until an alternate route fires.
-  - **Resting Maker Limit TP:** Exchange limit order at **`+4.0%`** / **`+5.0%`** (zero slippage maker fill).
-  - **Claude's 4-Pillar Adaptive Quantitative Exits:** 30s Squeeze Momentum Timeout ($< +1.5\%$ hurdle), Two-Key Breakeven Guard ($\ge 2.5\times$ noise floor + 60s/3.5 bps confirmation), Dynamic Runner Trailing ($\ge 3.0\times$ floor / $+15\%$, 20% trail), Spot Invalidation SL (6.5 bps + 1.0x ATR, realized delta derived, 35% emergency cap), Candle Wick Invalidation SL ($\pm 5$ pts buffer), Trend Reversal Invalidation, Adaptive 5m $\to$ 6m Time Ceiling, and 3-step limit chase thread.
-- **Zero Cold-Start Warmup:** 09:14 AM historical 1-minute bar pre-seeding via Shoonya REST API (rolls through 5m clock aggregator).
-- Full authority → [`AEGIS/AEGIS_V3_ARCHITECTURE.md`](AEGIS/AEGIS_V3_ARCHITECTURE.md).
 
 ### 2.3 L2 Archivers — Raw Data Loggers (Passive)
 

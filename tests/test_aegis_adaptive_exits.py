@@ -235,8 +235,8 @@ def test_breakeven_guard_arms_on_genuine_impulse():
     """Verify that Cost-Shield / Breakeven arms once peak gain reaches >= +3.0%."""
     em, context, leg = create_test_manager(entry_price=13.00, spot_entry=23700.0, signal_type="PUT")
     
-    # Gain reaches +3.2% (13.42, armed cost-shield / breakeven)
-    em.broker.market_data_provider._quote = {"ltp": 13.42, "bp1": 13.42, "sp1": 13.45}
+    # Gain reaches +3.7% (13.48 >= 3.5% STEP2_TRIGGER_PCT, arms cost-shield / breakeven)
+    em.broker.market_data_provider._quote = {"ltp": 13.48, "bp1": 13.48, "sp1": 13.50}
     # Simulate 65s elapsed
     context.entry_time = datetime.now() - timedelta(seconds=65)
     
@@ -250,7 +250,7 @@ def test_breakeven_guard_arms_on_genuine_impulse():
     em._manage_open_trade()
     
     assert len(em.exit_reasons) == 1
-    assert "Cost-Shield Scratch Exit" in em.exit_reasons[0] or "Breakeven Guard" in em.exit_reasons[0]
+    assert any(term in em.exit_reasons[0] for term in ("Cost-Shield Scratch Exit", "Breakeven Guard", "Near-Target Profit Lock"))
 
 
 def test_dynamic_runner_trailing_and_ema_slope_exit():
@@ -750,13 +750,19 @@ def test_tp_maker_fill_preserves_profit_when_tp_id_cleared():
                 pass
 
 
-def test_point4_gate1_breakeven_lock_at_two_percent():
-    """Verify V4.1 Stepped Risk Compression: +2.0% peak arms -3.0% safety net, does NOT choke pullback."""
+def test_point4_gate1_breakeven_lock_at_three_percent():
+    """Verify V4.1 Stepped Risk Compression: +3.0% peak arms -3.0% safety net, does NOT choke pullback at +2.0%."""
     em, ctx, leg = create_test_manager(entry_price=100.0, spot_entry=24000.0, signal_type="CALL")
     ctx.entry_time = datetime.now() - timedelta(seconds=40)
     
-    # Tick 1: Peak gain reaches +2.2% (102.20) -> Stepped Safety Net (-3.0% SL) arms
+    # Tick 1: Peak gain reaches +2.2% (102.20) -> Stepped Safety Net is NOT armed yet (breathing room preserved)
     em.broker.market_data_provider._quote = {"ltp": 102.20, "bp1": 102.20, "sp1": 102.30, "sq1": 500, "bq1": 500}
+    em._manage_open_trade()
+    assert getattr(leg, "step1_sl_armed", False) is False
+    assert len(em.exit_reasons) == 0
+
+    # Tick 1b: Peak gain reaches +3.2% (103.20) -> Stepped Safety Net (-3.0% SL) arms
+    em.broker.market_data_provider._quote = {"ltp": 103.20, "bp1": 103.20, "sp1": 103.30, "sq1": 500, "bq1": 500}
     em._manage_open_trade()
     assert getattr(leg, "step1_sl_armed", False) is True
     assert len(em.exit_reasons) == 0
@@ -773,6 +779,46 @@ def test_point4_gate1_breakeven_lock_at_two_percent():
     assert "Stepped Safety Net SL" in em.exit_reasons[0]
 
 
+def test_pillar4_entry_candle_low_high_sl():
+    """Verify Pillar 4 Pure Price Action Entry Candle Low (CALL) / High (PUT) Invalidation."""
+    # Case A: CALL trade
+    em, ctx, leg = create_test_manager(entry_price=22.25, spot_entry=72443.0, signal_type="CALL")
+    ctx.entry_time = datetime.now() - timedelta(seconds=20)
+    ctx.pa_setup_name = "hvg_network_phase_shift"
+    ctx.candle_low = 72392.5
+    ctx.candle_high = 72431.0
+
+    # Spot is above candle low (72450 > 72392.5) -> trade stays open even if option wiggles
+    em.data_fetcher._spot = 72450.0
+    em.broker.market_data_provider._quote = {"ltp": 21.25, "bp1": 21.25, "sp1": 21.35}  # -4.5% option dip
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 0
+
+    # Spot breaks below candle low (72390 <= 72392.5) -> structural exit triggers
+    em.data_fetcher._spot = 72390.0
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 1
+    assert "Pillar 4 Entry Candle Low Broken SL" in em.exit_reasons[0]
+
+    # Case B: PUT trade
+    em2, ctx2, leg2 = create_test_manager(entry_price=25.0, spot_entry=72400.0, signal_type="PUT")
+    ctx2.entry_time = datetime.now() - timedelta(seconds=20)
+    ctx2.pa_setup_name = "hvg_network_phase_shift"
+    ctx2.candle_low = 72380.0
+    ctx2.candle_high = 72420.0
+
+    # Spot is below candle high (72395 < 72420.0) -> trade stays open
+    em2.data_fetcher._spot = 72395.0
+    em2._manage_open_trade()
+    assert len(em2.exit_reasons) == 0
+
+    # Spot breaks above candle high (72422 >= 72420.0) -> structural exit triggers
+    em2.data_fetcher._spot = 72422.0
+    em2._manage_open_trade()
+    assert len(em2.exit_reasons) == 1
+    assert "Pillar 4 Entry Candle High Broken SL" in em2.exit_reasons[0]
+
+
 def test_v41_near_target_profit_lock():
     """Verify that when peak reaches >= +3.5%, a 0.5% pullback locks profit."""
     em, ctx, leg = create_test_manager(entry_price=100.0, spot_entry=24000.0, signal_type="CALL")
@@ -783,8 +829,8 @@ def test_v41_near_target_profit_lock():
     em._manage_open_trade()
     assert len(em.exit_reasons) == 0
 
-    # Pullback by 0.55% from peak (drops to 103.25 = +3.25% gain, drop is 0.55% >= 0.5%)
-    em.broker.market_data_provider._quote = {"ltp": 103.25, "bp1": 103.25, "sp1": 103.35}
+    # Pullback by 0.90% from peak (drops to 102.90 = +2.90% gain, drop is 0.90% >= 0.8% tolerance)
+    em.broker.market_data_provider._quote = {"ltp": 102.90, "bp1": 102.90, "sp1": 103.00}
     em._manage_open_trade()
     assert len(em.exit_reasons) == 1
     assert "Near-Target Profit Lock" in em.exit_reasons[0]
@@ -863,12 +909,17 @@ def test_pillar3_12pct_disaster_sl_allows_small_noise():
     assert "disaster floor" in em.exit_reasons[0]
 
 
-def test_pillar2_9ema_structural_exit():
-    """Verify that when completed 1m bar closes below 9-EMA for CALL, structural exit triggers."""
+def test_pillar2_entry_candle_invalidation_and_no_9ema_choke():
+    """Verify that Pillar 2 (Micro-Sweep & Reclaim) is NOT choked by 9-EMA bar close,
+    and exits ONLY when spot breaks the Entry Candle Low (CALL) / High (PUT)."""
     from AEGIS.core.time_bar_engine import OHLCBar
     em, ctx, leg = create_test_manager(entry_price=25.20, spot_entry=74884.0, signal_type="CALL")
     t0 = datetime.now() - timedelta(seconds=70)
     ctx.entry_time = t0
+    ctx.pa_setup_name = "micro_sweep_reclaim"
+    ctx.pillar = 2
+    ctx.candle_low = 74865.0
+    ctx.candle_high = 74885.0
     
     # Mock TimeBarEngine with completed 1m bar closing below 9-EMA
     class MockTBEngineWith9EMA:
@@ -893,12 +944,114 @@ def test_pillar2_9ema_structural_exit():
             return (74850.0, 0.0)
 
     em.aegis_engine.time_bar_engine = MockTBEngineWith9EMA()
-    em.data_fetcher._spot = 74870.0
+    em.data_fetcher._spot = 74870.0  # Above candle low (74870.0 > 74865.0)
     em.broker.market_data_provider._quote = {"ltp": 24.80, "bp1": 24.80, "sp1": 24.90, "sq1": 500, "bq1": 500}
 
+    # Step 1: Manage open trade. Even though 1m bar closed below 9-EMA, P2 MUST NOT exit!
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 0, "Pillar 2 was prematurely choked by 9-EMA!"
+
+    # Step 2: Spot breaks below Entry Candle Low (74864.0 <= 74865.0) -> Pure PA SL triggers!
+    em.data_fetcher._spot = 74864.0
     em._manage_open_trade()
     assert len(em.exit_reasons) == 1
-    assert "Closed Below 9-EMA" in em.exit_reasons[0]
+    assert "Pillar 2 Entry Candle Low Broken SL" in em.exit_reasons[0]
+
+
+def test_pillar1_entry_candle_invalidation_and_no_9ema_choke():
+    """Verify that Pillar 1 (20 EMA Pullback) is NOT choked by 9-EMA bar close,
+    and exits ONLY when spot breaks the Entry Candle Low (CALL) / High (PUT)."""
+    from AEGIS.core.time_bar_engine import OHLCBar
+    em, ctx, leg = create_test_manager(entry_price=25.20, spot_entry=74884.0, signal_type="CALL")
+    t0 = datetime.now() - timedelta(seconds=70)
+    ctx.entry_time = t0
+    ctx.pa_setup_name = "20_ema_rejection"
+    ctx.pillar = 1
+    ctx.candle_low = 74865.0
+    ctx.candle_high = 74885.0
+    
+    class MockTBEngineWith9EMA:
+        def __init__(self):
+            self.ema_1m = 74875.0
+            self.bars_1m = [
+                OHLCBar(
+                    ts_start=t0.timestamp(),
+                    ts_end=t0.timestamp() + 5.0,
+                    open=74880.0,
+                    high=74882.0,
+                    low=74868.0,
+                    close=74870.0,
+                    volume=1000
+                )
+            ]
+        def get_market_structure(self, sig):
+            return "NEUTRAL"
+        def get_live_ema_and_slope(self):
+            return (74875.0, 0.0, 74870.0, 0.0)
+        def get_live_50_ema_and_slope(self):
+            return (74850.0, 0.0)
+
+    em.aegis_engine.time_bar_engine = MockTBEngineWith9EMA()
+    em.data_fetcher._spot = 74870.0  # Above candle low (74870.0 > 74865.0)
+    em.broker.market_data_provider._quote = {"ltp": 24.80, "bp1": 24.80, "sp1": 24.90, "sq1": 500, "bq1": 500}
+
+    # Step 1: Manage open trade. Bar closed below 9-EMA, but P1 MUST NOT exit!
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 0, "Pillar 1 was prematurely choked by 9-EMA!"
+
+    # Step 2: Spot breaks below Entry Candle Low (74864.0 <= 74865.0) -> Pure PA SL triggers!
+    em.data_fetcher._spot = 74864.0
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 1
+    assert "Pillar 1 Entry Candle Low Broken SL" in em.exit_reasons[0]
+
+
+def test_pillar3_entry_candle_invalidation_and_no_9ema_choke():
+    """Verify that Pillar 3 (Volatility Squeeze Breakout) is NOT choked by 9-EMA bar close,
+    and exits ONLY when spot breaks the Entry Candle Low (CALL) / High (PUT)."""
+    from AEGIS.core.time_bar_engine import OHLCBar
+    em, ctx, leg = create_test_manager(entry_price=25.20, spot_entry=74884.0, signal_type="CALL")
+    t0 = datetime.now() - timedelta(seconds=70)
+    ctx.entry_time = t0
+    ctx.pa_setup_name = "volatility_squeeze_breakout"
+    ctx.pillar = 3
+    ctx.candle_low = 74865.0
+    ctx.candle_high = 74885.0
+    
+    class MockTBEngineWith9EMA:
+        def __init__(self):
+            self.ema_1m = 74875.0
+            self.bars_1m = [
+                OHLCBar(
+                    ts_start=t0.timestamp(),
+                    ts_end=t0.timestamp() + 5.0,
+                    open=74880.0,
+                    high=74882.0,
+                    low=74868.0,
+                    close=74870.0,
+                    volume=1000
+                )
+            ]
+        def get_market_structure(self, sig):
+            return "NEUTRAL"
+        def get_live_ema_and_slope(self):
+            return (74875.0, 0.0, 74870.0, 0.0)
+        def get_live_50_ema_and_slope(self):
+            return (74850.0, 0.0)
+
+    em.aegis_engine.time_bar_engine = MockTBEngineWith9EMA()
+    em.data_fetcher._spot = 74870.0  # Above candle low (74870.0 > 74865.0)
+    em.broker.market_data_provider._quote = {"ltp": 24.80, "bp1": 24.80, "sp1": 24.90, "sq1": 500, "bq1": 500}
+
+    # Step 1: Manage open trade. Bar closed below 9-EMA, but P3 MUST NOT exit!
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 0, "Pillar 3 was prematurely choked by 9-EMA!"
+
+    # Step 2: Spot breaks below Entry Candle Low (74864.0 <= 74865.0) -> Pure PA SL triggers!
+    em.data_fetcher._spot = 74864.0
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 1
+    assert "Pillar 3 Entry Candle Low Broken SL" in em.exit_reasons[0]
 
 
 def test_atomic_modify_in_place_on_exit():
@@ -908,8 +1061,8 @@ def test_atomic_modify_in_place_on_exit():
     em.tp_order_id = "240925000999"
     leg.highest_bid = 103.60  # +3.6% reached
     
-    # Tick: pullback to 103.00 (pullback 0.6% >= 0.5% tolerance) -> Near-Target Profit Lock
-    em.broker.market_data_provider._quote = {"ltp": 103.00, "bp1": 103.00, "sp1": 103.10, "sq1": 500, "bq1": 500}
+    # Tick: pullback to 102.70 (pullback 0.9% >= 0.8% tolerance) -> Near-Target Profit Lock
+    em.broker.market_data_provider._quote = {"ltp": 102.70, "bp1": 102.70, "sp1": 102.80, "sq1": 500, "bq1": 500}
     
     em._manage_open_trade()
     assert len(em.exit_reasons) == 1
@@ -937,7 +1090,7 @@ def test_atomic_modify_in_place_on_exit():
             return {"stat": "Ok", "norenordno": "NEW_SELL_123"}
         def single_order_history(self, orderno):
             if self.modified:
-                return [{"status": "COMPLETE", "flprc": "103.00"}]
+                return [{"status": "COMPLETE", "flprc": "102.70"}]
             return [{"status": "OPEN", "flprc": "0.00"}]
 
     em.broker._api = MockShoonyaAPI()
@@ -964,7 +1117,7 @@ def test_atomic_modify_fallback_on_error():
     em.tp_order_id = "240925000888"
     leg.highest_bid = 103.60
     
-    em.broker.market_data_provider._quote = {"ltp": 103.00, "bp1": 103.00, "sp1": 103.10, "sq1": 500, "bq1": 500}
+    em.broker.market_data_provider._quote = {"ltp": 102.70, "bp1": 102.70, "sp1": 102.80, "sq1": 500, "bq1": 500}
     em._manage_open_trade()
     
     modified_orders = []

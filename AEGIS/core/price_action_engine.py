@@ -601,7 +601,8 @@ class PriceActionEngine:
         if bar.opt_total_vol > 0:
             logger.info(
                 f"[1M OPTION FLOW] Close: {bar.close:.2f} | "
-                f"CallBuy={bar.call_buy_vol:.0f}, PutBuy={bar.put_buy_vol:.0f}, "
+                f"CallBuy={bar.call_buy_vol:.0f}, CallSell={bar.call_sell_vol:.0f}, "
+                f"PutBuy={bar.put_buy_vol:.0f}, PutSell={bar.put_sell_vol:.0f}, "
                 f"OFI={bar.opt_delta_flow:+.0f}, PCR={bar.opt_pcr:.2f}, TotalVol={bar.opt_total_vol:.0f}"
             )
 
@@ -682,6 +683,7 @@ class PriceActionEngine:
                 ml_feats = {
                     "put_aggression": put_agg,
                     "call_buy_vol": cb,
+                    "call_sell_vol": cs,
                     "call_aggression": call_agg,
                     "avg_book_imb": 0.0,
                     "upper_wick_bps": upper_wick_bps,
@@ -691,6 +693,7 @@ class PriceActionEngine:
                     "range_bps": range_bps,
                     "body_bps": body_bps,
                     "put_buy_vol": pb,
+                    "put_sell_vol": ps,
                     "opt_delta_3m": opt_delta_3m,
                     "ema5_dist_bps": ema5_dist,
                     "opt_total_vol": bar.opt_total_vol,
@@ -2221,7 +2224,9 @@ class PriceActionEngine:
                 "pi_hat": pi_hat,
                 "vr_t": vr_t,
                 "breakout_direction": "UP",
-                "sl_price": hub_price - (0.45 * self.current_atr_1m),
+                "bar_low": round(bar.low, 2),
+                "bar_high": round(bar.high, 2),
+                "sl_price": round(bar.low, 2),
             }
 
         if is_bearish and bar.close < hub_price and trend_5m_bearish:
@@ -2233,7 +2238,9 @@ class PriceActionEngine:
                 "pi_hat": pi_hat,
                 "vr_t": vr_t,
                 "breakout_direction": "DOWN",
-                "sl_price": hub_price + (0.45 * self.current_atr_1m),
+                "bar_low": round(bar.low, 2),
+                "bar_high": round(bar.high, 2),
+                "sl_price": round(bar.high, 2),
             }
 
         return False, "no_breakout_against_hub", {}

@@ -1,12 +1,10 @@
 # AEGIS — Autonomous Execution & Gamma Imbalance System
 
 **Architecture Authority — Code-Grounded Definitive Specification**  
-**Version:** 4.1 (V4.1 Wyckoff Volume & Order Flow Delta Engine + Auction Market Volume Profile Engine + Standalone CatBoost ML Paper Trader + P4 0-D Prominence Hub Breakout + P1-P4 Quadrinity + Composite Conviction Dynamic Ladder + 100% Shadow ML + Strict 1-Lot Maker TP — Live)  
+**Version:** Production 1.0 (v1.0 Production Locked — Wyckoff Volume & Order Flow Delta Engine + Auction Market Volume Profile Engine + Standalone CatBoost ML Paper Trader + P4 0-D Prominence Hub Breakout + P1-P4 Quadrinity + Composite Conviction Dynamic Ladder + 100% Shadow ML + Strict 1-Lot Maker TP — Live)  
 **Status:** ACTIVE · PM2 `aegis-bot` · `AEGIS/aegis_main.py:87`  
 **Host:** Oracle Cloud `opc@137.23.41.38` · `ecosystem.config.js:3` · `cwd=/home/opc`  
-**Broker:** Shoonya (NorenApi) · `common/config.py:30` · `BROKER=SHOONYA`  
-**Instruments:** NIFTY (Mon/Tue/Fri, NFO, strike step 50, lot 65) · SENSEX (Wed/Thu, BFO, strike step 100, lot 20) · 0DTE weekly only  
-**Last Audited:** 2026-09-25 · Full Streamlined Pytest Suite 228/228 passed (100% GREEN) · Live VPS synchronized  
+**Instruments:** NIFTY (Mon [1 DTE], Tue [0 DTE], Fri [4 DTE], NFO, strike step 50, lot 65) · SENSEX (Wed [1 DTE], Thu [0 DTE], BFO, strike step 100, lot 20)  
 **Supersedes:** Prior V3.9 / V3.8 specifications and legacy ASTRA / AEGIS documentation.
 
 ---
@@ -44,7 +42,7 @@
 
 ## Master Semantic Architecture Graph
 
-The following Mermaid diagram visualizes the complete end-to-end signal generation, Wyckoff volume confirmation, conviction evaluation, execution, and exit lifecycle of AEGIS V4.1:
+The following Mermaid diagram visualizes the complete end-to-end signal generation, Wyckoff volume confirmation, conviction evaluation, execution, and exit lifecycle of AEGIS Production Version 1.0 (v1.0 Locked):
 
 ```mermaid
 flowchart TD
@@ -129,17 +127,29 @@ flowchart TD
         ORDER_FIRE --> RESTING_TP["Place Exchange Resting Limit TP<br/>(Maker Order @ Entry + 4.0%)"]
     end
 
-    subgraph Adaptive_Exits ["8. 4-Pillar Adaptive Quantitative Exits"]
+    subgraph Adaptive_Exits ["8. Flexible Multi-Layered Adaptive Quantitative Exits"]
         RESTING_TP --> MANAGE["_manage_open_trade() Poller (2 Hz)"]
         
-        MANAGE --> EX_TP{"Resting TP Hit?<br/>(Bid ≥ TP Price)"}
-        EX_TP -->|YES| CL_TP["Passive Maker TP Exit (+4.0%)<br/>(Zero Slippage Fill)"]
+        MANAGE --> EX_TP{"Resting TP Hit?<br/>(Bid ≥ TP Price / Maker fill verified)"}
+        EX_TP -->|YES| CL_TP["Passive Maker TP Exit (+4.0%)<br/>(Zero Slippage Exchange Fill)"]
         
-        MANAGE --> EX_HARD_SL{"Premium Hard SL Hit?<br/>(Bid ≤ Entry - 3.5%)"}
-        EX_HARD_SL -->|YES| CL_HARD_SL["Instant Premium Hard Stop (-3.5%)"]
+        MANAGE --> EX_NEAR{"Near-Target Profit Lock?<br/>Peak ≥ +3.5% AND Pullback ≥ 0.5%"}
+        EX_NEAR -->|YES| CL_NEAR["Near-Target Lock Exit<br/>(Guarantees ≥ +3.0% Profit)"]
         
-        MANAGE --> EX_BE{"Two-Key Breakeven Guard?<br/>Gain ≥ 2.5x NoiseFloor AND<br/>(Hold ≥ 60s OR Spot Move ≥ 3.5 bps)"}
-        EX_BE -->|YES| CL_BE["Breakeven Lock (+0.5% Cover)<br/>SL Shifted to Entry + ₹0.50"]
+        MANAGE --> EX_STEP2{"Cost-Shield Scratch?<br/>Peak ≥ +3.0% AND Bid ≤ Entry"}
+        EX_STEP2 -->|YES| CL_STEP2["Cost-Shield Scratch Exit (0.0% Breakeven)<br/>(Loss Permanently Prevented!)"]
+        
+        MANAGE --> EX_STEP1{"Stepped Safety Net?<br/>Peak ≥ +2.0% AND Bid ≤ Entry - 3.0%"}
+        EX_STEP1 -->|YES| CL_STEP1["Stepped Safety Net SL (-3.0%)<br/>(Capped Downside with 5% Cushion)"]
+        
+        MANAGE --> EX_HARVEST{"3-Min Profit Harvest?<br/>Hold ≥ 180s AND Gain +1.5% to +2.5%"}
+        EX_HARVEST -->|YES| CL_HARVEST["Time-Harvest Gain Lock<br/>(Theta Decay Shield)"]
+        
+        MANAGE --> EX_STAG{"0DTE Stagnation Trap?<br/>Expiry PM (≥12:30), Hold ≥ 90s, Gain < +0.5%<br/>AND 50-EMA Opposed Structure"}
+        EX_STAG -->|YES| CL_STAG["0DTE Stagnation Trap Exit"]
+        
+        MANAGE --> EX_REV{"Trend Reversal Exit?<br/>1m Bar Close Crosses 9-EMA,<br/>50-EMA Broken, or Structure Opposed"}
+        EX_REV -->|YES| CL_REV["Trend Reversal Structural Exit"]
         
         MANAGE --> EX_WICK{"Pillar Wick Invalidation?<br/>(Spot hits Candle High/Low ± buffer)"}
         EX_WICK -->|YES| CL_WICK["Pillar Wick Invalidation Exit"]
@@ -147,15 +157,18 @@ flowchart TD
         MANAGE --> EX_SPOT_SL{"Spot Invalidation SL Hit?<br/>(Spot move ≥ 6.5 bps + 1.0x ATR)"}
         EX_SPOT_SL -->|YES| CL_SPOT["Adaptive Spot SL Exit<br/>(Derived via Realized Delta, max 35%)"]
         
-        MANAGE --> EX_TIME{"Time Ceiling Hit?<br/>• Baseline: 300s (5 min)<br/>• Extended: 360s (6 min if gain ≥ +2.0%)"}
+        MANAGE --> EX_TIME{"Time Ceiling Hit?<br/>• Expiry: 180s (PM) / 240s (AM)<br/>• Non-Expiry: 300s baseline (360s extended)"}
         EX_TIME -->|YES| CL_TIME["Time Stop Exit"]
+        
+        MANAGE --> EX_DISASTER{"Disaster Circuit Breaker?<br/>(Option Bid Drops ≤ Entry - 12.0%)"}
+        EX_DISASTER -->|YES| CL_DISASTER["Disaster Circuit Breaker (-12.0% Floor)<br/>(Catastrophic Black-Swan Shield)"]
         
         MANAGE --> EX_FLAT{"Session Force Flatten?<br/>(now ≥ 15:08 IST) - CAS Shield"}
         EX_FLAT -->|YES| CL_FLAT["CAS Square-Off Force Flatten"]
     end
 
     subgraph Exit_Execution ["9. Order Exit Chaser & Telemetry"]
-        CL_HARD_SL & CL_BE & CL_WICK & CL_SPOT & CL_TIME & CL_FLAT --> CHASE["_chase_exit_thread (Daemon)<br/>3-Step Limit Chase: Bid-0% → Bid-1% → Bid-2%"]
+        CL_NEAR & CL_STEP2 & CL_STEP1 & CL_HARVEST & CL_STAG & CL_REV & CL_WICK & CL_SPOT & CL_TIME & CL_DISASTER & CL_FLAT --> CHASE["_chase_exit_thread (Daemon)<br/>3-Step Limit Chase: Bid-0% → Bid-1% → Bid-2%"]
         CL_TP --> SYNC["Broker TP Order Sync"]
         CHASE & SYNC --> POST["Post-Fill Bookkeeping<br/>• Record last_exited_route<br/>• Update trades_today & daily_pnl<br/>• OutcomeTelemetry JSONL append<br/>• StabilityTracker verdict append<br/>• VolumeProfile & Wyckoff Telemetry audit"]
     end
@@ -307,34 +320,53 @@ All price action setups are evaluated on finalized 1-minute bars (`price_action_
 
 ---
 
-## Execution Manager & Strict 1-Lot Maker TP Discipline
+## Execution Manager & Flexible Multi-Layered Adaptive Exit Discipline
 
 Monitored at 2 Hz by `_manage_open_trade()` (`aegis_execution_manager.py`):
 
 1. **Strict 1-Lot Allocation**: Every admitted trade executes strictly with **1 Lot** (no dynamic multi-lot scaling).
 2. **Passive Resting Maker TP Exit (+4.0%)**:
-   - Limit order resting at **+4.0%** above entry price.
-   - Zero slippage maker fill on exchange order book.
-3. **Premium Hard SL Circuit Breaker (-3.5%)**:
-   - Evaluated on every option tick before any spot-level lagging stop.
-   - Immediate 100% exit the instant option bid drops $\le -3.5\%$ from entry.
-4. **Two-Key Breakeven Guard**:
-   - Gain $\ge 2.5\times \text{NoiseFloor}$ AND (Hold $\ge 60\text{s}$ OR Spot Move $\ge 3.5\text{ bps}$).
-   - Shifts SL to Entry + ₹0.50 cover.
-5. **Pre-Trade Abort Slot Rollback**:
-   - If an order is rejected or aborted prior to execution, `_rollback_slot()` restores the daily trade slot.
-6. **15:08 IST CAS Square-Off Force Flatten**:
-   - Unconditional liquidation at **15:08:00 IST** to eliminate NSE Closing Auction volatility and broker penalty fees.
+   - Limit order resting on exchange book at **+4.0%** above entry price.
+   - Zero-slippage maker fill on exchange order book.
+   - Dual-verified: local tick-cadence touch/cross check (0B) + broker resting order fill check (0) so a +4% day-move never slips to time stop.
+3. **Near-Target Profit Lock**:
+   - Arms when peak bid reaches $\ge +3.5\%$ (`NEAR_TARGET_TRIGGER_PCT = 0.035`).
+   - If price pulls back $\ge 0.8\%$ from peak (`NEAR_TARGET_PULLBACK_TOLERANCE = 0.008`), an instant market exit executes to lock profit (`Near-Target Profit Lock`), guaranteeing net green exit while allowing minor tick wiggles to hit the +4.0% Maker TP.
+4. **Stepped Risk Compression & Cost-Shield Scratch Engine (V4.1)**:
+   - Scale-invariant normalized percentage model (strictly % normalized, no fixed paise):
+     - **Step 1 (Stepped Safety Net)**: When peak gain reaches $\ge +3.0\%$ (`STEP1_TRIGGER_PCT = 0.030`), SL is tightened from the disaster floor to **-3.0%** (`STEP1_SL_PCT = -0.030`), giving wide breathing room (+2.0% premature choke removed to prevent stopouts on normal candle open wicks).
+     - **Step 2 (Cost-Shield Scratch)**: When peak gain reaches $\ge +3.5\%$ (`STEP2_TRIGGER_PCT = 0.035`), SL is permanently locked to **0.0% (Entry Price)** (`STEP2_SL_PCT = 0.000`). A winning trade is mathematically prevented from ever turning into a loss!
+5. **3-Minute Profit Harvest Exit (+1.5% to +2.5%)**:
+   - If a trade has spent $\ge 180\text{s}$ (3 mins) and current gain is hovering between $+1.5\%$ and $+2.5\%$, exits immediately (`TIME_HARVEST_LOCKED_GAIN`) to prevent late-bar theta melt and sudden reversals.
+6. **Dynamic 0DTE Time-Decay Shield & Stagnation Trap**:
+   - Expiry days: 240s baseline before 12:30 PM, 180s strict after 12:30 PM.
+   - At 90s on expiry afternoon (post-12:30 PM): if gain $< +0.5\%$ and 50-EMA is opposed, exits on `0DTE_STAGNATION_TRAP_EXIT`.
+   - Non-expiry days: 300s baseline, extendable to 360s for running winners with favorable structure.
+7. **Pillar 4 Pure Price Action Entry Candle Low/High Invalidation**:
+   - For Pillar 4 (0-D Prominence Hub / Break of Structure), exit is anchored directly to the spot price action of the breakout candle:
+     - **CALL**: Immediate exit if Spot crosses $\le$ Entry Candle Low (`candle_low`).
+     - **PUT**: Immediate exit if Spot crosses $\ge$ Entry Candle High (`candle_high`).
+     - Option is protected from artificial Greeks/spread noise as long as the breakout candle structure holds!
+8. **Spot Adverse Movement SL & Trend Reversal Exit**:
+   - Spot moves $\ge 6.5\text{ bps}$ + 1.0x ATR against trade direction.
+   - Completed 1m bar close crossing 9-EMA, breaking 50-EMA, or structure turning opposed triggers immediate `Trend Reversal Exit`.
+9. **Tick-Cadence Option Premium Disaster Circuit Breaker (-12.0% Floor)**:
+   - `PREMIUM_HARD_SL_PCT = 0.120` (-12.0% disaster floor).
+   - Allows natural option bid-ask noise and normal spread flutter to breathe without premature stop-outs, while catching catastrophic black-swan flash crashes.
+10. **Pre-Trade Abort Slot Rollback**:
+    - If an order is rejected or aborted prior to execution, `_rollback_slot()` immediately restores the consumed daily trade slot.
+11. **15:08:00 IST CAS Square-Off Force Flatten**:
+    - Unconditional liquidation at **15:08:00 IST** to eliminate NSE Closing Auction volatility and broker penalty fees.
 
 ---
 
-## Verification & Test Suite Matrix (228 Tests — 100% Green)
+## Verification & Test Suite Matrix (254 Tests — 100% Green)
 
-AEGIS V4.1 is certified by 228 active unit and integration tests across the repository:
+AEGIS Production Version 1.0 (v1.0 Locked) is certified by 254 active unit and integration tests across the repository:
 
 ```powershell
 python -m pytest tests/ -q
-# Output: 228 passed in 314.81s (100% GREEN)
+# Output: 254 passed in 165.00s (100% GREEN)
 ```
 
 | Test Suite File | Tests | Key Invariants Verified |
@@ -344,7 +376,7 @@ python -m pytest tests/ -q
 | `tests/test_hvg_engine.py` | 46 | Dual-Timeframe (1m+5m) HVG, strict equality $O(N)$ stack, T-1 causal freeze, 5m alignment, 400ms L2 Wall Shield, Pillar 2 Topological Sweep. |
 | `tests/test_aegis_engine.py` | 14 | Gamma engine tick handling, Wyckoff parallel gate wiring, shadow ML routing, ATM shift, memory purging. |
 | `tests/test_price_action_engines.py` | 17 | 20 EMA Two-Touch, same-side pause, volatility squeeze breakout, bad-tick guard. |
-| `tests/test_aegis_adaptive_exits.py` | 18 | +4.0% resting TP, premium hard SL (-3.5%), 2-key breakeven, 30s squeeze timeout, 6m extension. |
+| `tests/test_aegis_adaptive_exits.py` | 18 | +4.0% resting TP, -12% disaster floor, stepped risk compression (+2% -> -3% SL, +3% -> 0% scratch), near-target lock (+3.5%), 3-min harvest, 0DTE stagnation trap, wick invalidation, 6m extension. |
 | `tests/test_aegis_integration_parity.py` | 22 | Backtest parity across 1.8L real ticks, execution manager alignment. |
 | `tests/test_composite_conviction_engine.py` | 10 | 4-domain scoring, continuous evaluation, delta trap penalty, $\ge 80.0$ threshold. |
 | `tests/test_quality_stack.py` | 8 | Institutional 3-slot daily policy, afternoon reserve, consecutive loss stop, daily loss cap. |

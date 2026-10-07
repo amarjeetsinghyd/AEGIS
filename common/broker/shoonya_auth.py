@@ -53,11 +53,34 @@ class ShoonyaHeadlessOAuthProvider:
             pass
         return None
 
-    def _fast_fill(self, element, value):
-        element.click()
+    def _fast_fill(self, driver, element, value):
+        try:
+            element.click()
+        except Exception:
+            try:
+                driver.execute_script("arguments[0].focus(); arguments[0].click();", element)
+            except Exception:
+                pass
         time.sleep(0.1)
-        element.clear()
-        element.send_keys(value)
+        try:
+            element.clear()
+        except Exception:
+            try:
+                driver.execute_script("arguments[0].value = '';", element)
+            except Exception:
+                pass
+        try:
+            element.send_keys(value)
+        except Exception:
+            try:
+                driver.execute_script(
+                    "arguments[0].value = arguments[1]; "
+                    "arguments[0].dispatchEvent(new Event('input', { bubbles: true })); "
+                    "arguments[0].dispatchEvent(new Event('change', { bubbles: true }));",
+                    element, value
+                )
+            except Exception:
+                pass
         time.sleep(0.1)
 
     def _get_auth_code_via_selenium(self) -> str:
@@ -85,8 +108,8 @@ class ShoonyaHeadlessOAuthProvider:
             all_inputs = driver.find_elements(By.CSS_SELECTOR, "input:not([type='hidden']):not([type='checkbox']):not([type='radio'])")
             visible_inputs = [inp for inp in all_inputs if inp.is_displayed()]
             
-            self._fast_fill(visible_inputs[0], self.userid)
-            self._fast_fill(visible_inputs[1], self.password)
+            self._fast_fill(driver, visible_inputs[0], self.userid)
+            self._fast_fill(driver, visible_inputs[1], self.password)
             
             # Wait a tiny bit and refetch to avoid StaleElementReferenceException
             time.sleep(0.5)
@@ -94,9 +117,13 @@ class ShoonyaHeadlessOAuthProvider:
             visible_inputs = [inp for inp in all_inputs if inp.is_displayed()]
             
             otp_value = pyotp.TOTP(self.totp_secret).now()
-            self._fast_fill(visible_inputs[2], otp_value)
+            self._fast_fill(driver, visible_inputs[2], otp_value)
             
-            wait.until(EC.element_to_be_clickable((By.XPATH, "//button[normalize-space()='LOGIN']"))).click()
+            login_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[normalize-space()='LOGIN']")))
+            try:
+                login_btn.click()
+            except Exception:
+                driver.execute_script("arguments[0].click();", login_btn)
             logger.info("[ShoonyaAuth] Credentials submitted. Capturing auth code...")
             
             start = time.time()
@@ -110,8 +137,12 @@ class ShoonyaHeadlessOAuthProvider:
                     # Retry OTP
                     new_otp = pyotp.TOTP(self.totp_secret).now()
                     if new_otp != otp_value:
-                        self._fast_fill(visible_inputs[2], new_otp)
-                        wait.until(EC.element_to_be_clickable((By.XPATH, "//button[normalize-space()='LOGIN']"))).click()
+                        self._fast_fill(driver, visible_inputs[2], new_otp)
+                        retry_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[normalize-space()='LOGIN']")))
+                        try:
+                            retry_btn.click()
+                        except Exception:
+                            driver.execute_script("arguments[0].click();", retry_btn)
                         start = time.time()
                         otp_value = new_otp
                         continue
@@ -123,7 +154,15 @@ class ShoonyaHeadlessOAuthProvider:
             raise
         finally:
             logger.info("[ShoonyaAuth] Terminating Headless Browser.")
-            driver.quit()
+            try:
+                driver.quit()
+            except Exception:
+                pass
+            try:
+                import subprocess
+                subprocess.run(["pkill", "-9", "-f", "chromedriver"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
             
         return auth_code
 

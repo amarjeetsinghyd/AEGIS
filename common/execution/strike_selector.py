@@ -11,7 +11,7 @@ logger = logging.getLogger("strike_selector")
 TESTING_BAND_LO = float(os.getenv("AEGIS_TESTING_BAND_LO", "8.0"))
 TESTING_BAND_HI = float(os.getenv("AEGIS_TESTING_BAND_HI", "14.5"))
 TESTING_TINY_FUNDS = float(os.getenv("AEGIS_TESTING_TINY_FUNDS", "5000.0"))
-TESTING_DEEP_DEPTH = int(os.getenv("AEGIS_TESTING_DEEP_DEPTH", "11"))
+TESTING_DEEP_DEPTH = int(os.getenv("AEGIS_TESTING_DEEP_DEPTH", "16"))
 # Dead-zone safety buffer: effective floor stops this far below the per-lot
 # budget ceiling so floor can never exceed what the account can afford.
 PREMIUM_SAFETY_BUFFER = float(os.getenv("AEGIS_PREMIUM_SAFETY_BUFFER", "0.50"))
@@ -122,20 +122,20 @@ class StrikeSelector:
             pass
 
         # 0DTE Guard: Limit search depth to max 5 OTM strikes on expiry day for production accounts.
-        # For testing / tiny funds, scan up to OTM 10 (depth 11) so affordable strikes can be selected.
+        # For testing / tiny funds, scan up to OTM 15 (depth 16) so affordable strikes can be selected.
         max_0dte_depth = int(os.getenv("AEGIS_MAX_0DTE_OTM_DEPTH", "5"))
         if is_zero_dte:
             _depth = min(max_0dte_depth, 5)
             try:
                 if float(available_funds or 0) < TESTING_TINY_FUNDS:
-                    _depth = max(11, TESTING_DEEP_DEPTH)
+                    _depth = max(16, TESTING_DEEP_DEPTH)
             except Exception:
                 pass
         else:
             _depth = 6
             try:
                 if float(available_funds or 0) < TESTING_TINY_FUNDS:
-                    _depth = max(11, TESTING_DEEP_DEPTH)
+                    _depth = max(16, TESTING_DEEP_DEPTH)
             except Exception:
                 pass
 
@@ -188,7 +188,7 @@ class StrikeSelector:
                     valid_opts.append((opt_row, ltp, cost_for_one_lot))
 
         if not valid_opts:
-            dte_msg = " [0DTE Max 5-OTM Guard Active]" if is_zero_dte else ""
+            dte_msg = " [0DTE Max 5-OTM Guard Active]" if is_zero_dte and float(available_funds or 0) >= TESTING_TINY_FUNDS else ""
             logger.warning(
                 f"[StrikeSelector] Funds (₹{available_funds}) too low for 1 lot of size {lot_size} "
                 f"among top-{len(otm_strikes)} OTM + ATM{dte_msg}."

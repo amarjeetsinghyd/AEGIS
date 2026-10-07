@@ -318,6 +318,22 @@ class TradingSystem:
         token_to_symbol = {meta["token"]: sym for sym, meta in self.universe.items()}
         master_token_map = get_master_token_map(self.universe, self.archiver_symbols)
         tsym_map = build_tsym_map(self.universe)
+
+        # Ensure Top 15 NSE Equities are mapped with Angel One / NSE tokens
+        ANGEL_TOP_15_TOKENS = {
+            "RELIANCE": "2885", "TATASTEEL": "3499", "HDFCBANK": "1333", "INFY": "1594",
+            "ICICIBANK": "4963", "SBIN": "3045", "LT": "11483", "BHARTIARTL": "10604",
+            "TCS": "11536", "AXISBANK": "5900", "KOTAKBANK": "1922", "TITAN": "3506",
+            "BAJFINANCE": "317", "MARUTI": "10999", "SUNPHARMA": "3351"
+        }
+        for s, tok in ANGEL_TOP_15_TOKENS.items():
+            master_token_map[tok] = s
+            token_to_symbol[tok] = s
+            if s not in tsym_map:
+                tsym_map[s] = f"{s}-EQ"
+            if s not in self.universe:
+                self.universe[s] = {"token": tok, "search": [f"{s}-EQ"], "macro_tag": "TWO_WAY", "conviction": 0.0}
+
         self.master_token_map = master_token_map  # Kept for wake-up re-subscribe
         
         logger.info(f"Universe Symbols: {len(self.universe)} | Master Subscription Tokens: {len(master_token_map)}")
@@ -372,7 +388,14 @@ class TradingSystem:
         # Pass engine reference to executor for trade lock release
         self.executor._cascade_engine = self.engine
 
-        # 11. Subscribe WebSocket (Union of all tokens)
+        # 11. Attach StockUniverseManager (Top 15 Equities - AEGIS-Inspired Architecture)
+        from ARGUS.core.stock_universe_manager import StockUniverseManager, DEFAULT_TOP_15_STOCKS
+        top_15 = list(DEFAULT_TOP_15_STOCKS[:15])
+        self.universe_manager = StockUniverseManager(symbols=top_15)
+        self.compiler.set_universe_manager(self.universe_manager)
+        logger.info(f"[OK] StockUniverseManager Attached to Compiler (Top {len(top_15)} Equities: {', '.join(top_15[:6])}...)")
+
+        # 12. Subscribe WebSocket (Union of all tokens)
         subscribe_tokens = list(master_token_map.keys())
         self.compiler.subscribe(subscribe_tokens)
         logger.info(f"[OK] WebSocket Subscribed: {len(subscribe_tokens)} Tokens")
@@ -632,11 +655,19 @@ class TradingSystem:
                         logger.info("[GATE] Entry Cutoff (14:45) Passed. Ignoring Signal.")
                         continue
 
-                    best_sym = signal_data["sym"]
+                    best_sym = signal_data.get("sym") or signal_data.get("symbol")
                     signal = signal_data["signal"]
-                    reason = signal_data["reason"]
-                    lp = signal_data["lp"]
-                    metrics = signal_data.get("metrics", {})
+                    reason = signal_data.get("reason") or signal_data.get("setup_name", "AEGIS_Pillar")
+                    lp = float(signal_data.get("lp") or signal_data.get("price", 0.0))
+                    metrics = dict(signal_data.get("metrics", {}))
+                    if "entry_candle_low" in signal_data:
+                        metrics["entry_candle_low"] = signal_data["entry_candle_low"]
+                    if "entry_candle_high" in signal_data:
+                        metrics["entry_candle_high"] = signal_data["entry_candle_high"]
+                    if "pillar_id" in signal_data:
+                        metrics["pillar_id"] = signal_data["pillar_id"]
+                    if "conviction" in signal_data:
+                        metrics["conviction"] = signal_data["conviction"]
                     macro_tag = self.universe.get(best_sym, {}).get("macro_tag", "TWO_WAY")
                     
                     logger.info(f"🚀 SIGNAL: {best_sym} [{macro_tag}] -> {signal} | {reason} @ {lp:.2f} | Conv: {signal_data.get('conviction', 0):.1f}")

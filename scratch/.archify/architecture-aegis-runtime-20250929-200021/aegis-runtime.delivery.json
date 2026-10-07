@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "1a775a45-953b-4ce5-a2a1-278ee1b571c4",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "C:\\Users\\Amarjeet Singh\\quant-bot\\scratch\\.archify\\architecture-aegis-runtime-20250929-200021\\candidate.json",
+  "output": "C:\\Users\\Amarjeet Singh\\quant-bot\\scratch\\.archify\\architecture-aegis-runtime-20250929-200021\\aegis-runtime.html",
+  "specification": {
+    "sha256": "09cedae0c4dab6598eca76e66ab1e4504ce588f1bbf7e5b6f778be3218da91c5",
+    "bytes": 4865
+  },
+  "artifact": {
+    "sha256": "c7f607dcf69511ff0292a61f258a7536f1ff5d2794b9828507723a475ab66bc8",
+    "bytes": 768353
+  }
+}

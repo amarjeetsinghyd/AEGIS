@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "7942bd8b-b6ea-40c5-a21a-2f34b2ef6e7b",
+  "status": "current",
+  "command": "deliver",
+  "type": "workflow",
+  "input": "C:\\Users\\Amarjeet Singh\\quant-bot\\scratch\\.archify\\workflow-aegis-gates-20250929-201627\\candidate.json",
+  "output": "C:\\Users\\Amarjeet Singh\\quant-bot\\scratch\\.archify\\workflow-aegis-gates-20250929-201627\\aegis-gates.html",
+  "specification": {
+    "sha256": "aa82d3499fe45805e3eea415cc071185ad92890f2854ab072ac25aa0a6fbff0a",
+    "bytes": 6630
+  },
+  "artifact": {
+    "sha256": "cedc1c038de0cc1a351875e845cc20e821d5ea6b453361756827d9956aceacbf",
+    "bytes": 774560
+  }
+}

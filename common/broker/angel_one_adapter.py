@@ -50,97 +50,175 @@ class AngelSessionProvider(ISessionProvider):
         return self._session_data
 
 class AngelMarketDataProvider(IMarketDataProvider):
-    def __init__(self, api) -> None:
+    def __init__(self, api, session_data=None) -> None:
         self._api = api
+        self._session_data = session_data or {}
+        self._tick_listeners = []
+        self._close_listeners = []
+        self._pending_tokens = []
+        self.ws = None
+        self._is_connected = False
 
-    def start_live_feed(self, on_tick_callback, on_open_callback=None, on_error_callback=None) -> None:
+    def add_tick_listener(self, listener) -> None:
+        if listener not in self._tick_listeners:
+            self._tick_listeners.append(listener)
+
+    def remove_tick_listener(self, listener) -> None:
+        if listener in self._tick_listeners:
+            self._tick_listeners.remove(listener)
+
+    def add_close_listener(self, listener) -> None:
+        if listener not in self._close_listeners:
+            self._close_listeners.append(listener)
+
+    def start_live_feed(self, on_tick_callback=None, on_open_callback=None, on_error_callback=None) -> None:
+        import threading
+        from common.logger import get_logger
+        logger = get_logger("angel_adapter")
+
+        if self.ws is not None and self._is_connected:
+            return
+        from common.broker import angel_connection
+
         client_id = os.getenv("ANGEL_CLIENT_ID")
         api_key = os.getenv("ANGEL_API_KEY")
-        # To get session data without circular dependencies, we rely on the global session manager
-        from common.broker.session_manager import LifecycleManager
-        sm = LifecycleManager()
-        session_data = sm.get_session_data()
-        feed_token = session_data.get("feedToken")
-        jwt_token = session_data.get("jwtToken")
+        jwt_token = self._session_data.get("jwtToken")
+        feed_token = self._session_data.get("feedToken")
+
+        if not (jwt_token and feed_token):
+            try:
+                _, s_data = angel_connection.get_angel_connection()
+                self._session_data = s_data
+                jwt_token = s_data.get("jwtToken")
+                feed_token = s_data.get("feedToken")
+            except Exception as e_login:
+                logger.error(f"[ANGEL_WS] Session refresh failed in start_live_feed: {e_login}")
+                return
 
         self.ws = angel_connection.get_websocket_connection(
             jwt_token, api_key, client_id, feed_token
         )
-        
-        # Wrap on_data: Normalize Angel SmartWebSocketV2 tick to Shoonya-like dict (tok, lp, bp1/bq1 etc)
+
         def _normalize_angel_tick(msg):
             if not isinstance(msg, dict):
                 return msg
-            # Angel V2 tick keys: token, last_traded_price, best_5_buy_data, best_5_sell_data, exchange_timestamp
-            # Map to Shoonya-like keys expected by TickCompiler/value_engine
             if "last_traded_price" in msg or "token" in msg:
                 tok = str(msg.get("token", msg.get("tk", "")))
-                # Best 5 buy/sell are lists of dicts: [{"price":..., "quantity":...}, ...]
                 buys = msg.get("best_5_buy_data", [])
                 sells = msg.get("best_5_sell_data", [])
+                raw_lp = float(msg.get("last_traded_price", msg.get("lp", 0)) or 0)
+                # Angel SmartWebSocketV2 prices are integers in paise -> scale to Rupees
                 norm = {
-                    "tk": tok, "token": tok,
-                    "lp": float(msg.get("last_traded_price", msg.get("lp", 0)) or 0),
+                    "tk": tok,
+                    "token": tok,
+                    "lp": raw_lp / 100.0 if raw_lp > 0 else 0.0,
                     "v": float(msg.get("volume_trade_for_the_day", msg.get("vol", 0)) or 0),
-                    "e": msg.get("exchange_type", "NSE"),
+                    "e": "NSE" if msg.get("exchange_type") == 1 else "BSE",
                 }
                 for i in range(5):
                     if i < len(buys) and isinstance(buys[i], dict):
-                        norm[f"bp{i+1}"] = float(buys[i].get("price", 0) or 0)
+                        norm[f"bp{i+1}"] = float(buys[i].get("price", 0) or 0) / 100.0
                         norm[f"bq{i+1}"] = int(buys[i].get("quantity", 0) or 0)
                     if i < len(sells) and isinstance(sells[i], dict):
-                        norm[f"sp{i+1}"] = float(sells[i].get("price", 0) or 0)
+                        norm[f"sp{i+1}"] = float(sells[i].get("price", 0) or 0) / 100.0
                         norm[f"sq{i+1}"] = int(sells[i].get("quantity", 0) or 0)
-                # Fallback single L1 if best_5 missing
                 if "bp1" not in norm:
-                    norm["bp1"] = float(msg.get("best_bid_price", 0) or 0)
+                    raw_bp1 = float(msg.get("best_bid_price", 0) or 0)
+                    raw_sp1 = float(msg.get("best_ask_price", 0) or 0)
+                    norm["bp1"] = raw_bp1 / 100.0 if raw_bp1 > 0 else 0.0
                     norm["bq1"] = int(msg.get("best_bid_quantity", 0) or 0)
-                    norm["sp1"] = float(msg.get("best_ask_price", 0) or 0)
+                    norm["sp1"] = raw_sp1 / 100.0 if raw_sp1 > 0 else 0.0
                     norm["sq1"] = int(msg.get("best_ask_quantity", 0) or 0)
                 return norm
             return msg
 
         def wrapped_on_data(wsapp, message):
-            on_tick_callback(_normalize_angel_tick(message))
+            norm_tick = _normalize_angel_tick(message)
+            if on_tick_callback:
+                try:
+                    on_tick_callback(norm_tick)
+                except Exception:
+                    pass
+            for listener in list(self._tick_listeners):
+                try:
+                    listener(norm_tick)
+                except Exception as e_lst:
+                    logger.debug(f"[ANGEL_WS] Tick listener error: {e_lst}")
 
         def wrapped_on_open(wsapp):
-            if on_open_callback: on_open_callback()
+            self._is_connected = True
+            logger.info("[ANGEL_WS] Connected successfully to SmartWebSocketV2.")
+            if on_open_callback:
+                try:
+                    on_open_callback()
+                except Exception:
+                    pass
+            if self._pending_tokens:
+                pending = list(set(self._pending_tokens))
+                self._pending_tokens.clear()
+                self._raw_subscribe(pending, 1)
 
         def wrapped_on_error(wsapp, error):
-            if on_error_callback: on_error_callback(error)
+            logger.error(f"[ANGEL_WS] SmartWebSocketV2 error: {error}")
+            if on_error_callback:
+                try:
+                    on_error_callback(error)
+                except Exception:
+                    pass
+
+        def wrapped_on_close(wsapp):
+            self._is_connected = False
+            logger.warning("[ANGEL_WS] SmartWebSocketV2 disconnected.")
+            for listener in list(self._close_listeners):
+                try:
+                    listener()
+                except Exception:
+                    pass
 
         self.ws.on_open = wrapped_on_open
         self.ws.on_data = wrapped_on_data
         self.ws.on_error = wrapped_on_error
-        
-        self.ws.connect()
+        self.ws.on_close = wrapped_on_close
 
-    def subscribe(self, tokens: list, exchange: str, feed_type: str = "t", **kwargs) -> None:
-        exch_type = 1 if exchange == "NSE" else (2 if exchange == "NFO" else 3)
-        # Lazy start if WS not yet connected
-        if not hasattr(self, "ws") or self.ws is None:
-            if not hasattr(self, "_pending_tokens"):
-                self._pending_tokens = []
-            self._pending_tokens.extend(tokens)
+        def _run():
             try:
-                self.start_live_feed(lambda x: None)
-            except Exception:
-                pass
+                self.ws.connect()
+            except Exception as e_ws:
+                logger.error(f"[ANGEL_WS] Background connect loop terminated: {e_ws}")
+
+        t = threading.Thread(target=_run, name="angel-ws-runner", daemon=True)
+        t.start()
+
+    def _raw_subscribe(self, tokens: list, exch_type: int) -> None:
+        if not self.ws or not self._is_connected:
+            self._pending_tokens.extend(tokens)
             return
-        try:
-            self.ws.subscribe("mega_sub", 3, [{"exchangeType": exch_type, "tokens": tokens}])
-        except TypeError:
-            self.ws.subscribe("mega_sub", 3, [{"exchangeType": exch_type, "tokens": tokens}], **kwargs)
-        except AttributeError:
-            pass
-        
+        from common.logger import get_logger
+        logger = get_logger("angel_adapter")
+        # Chunk subscriptions into batches of 30 to comply with Angel rate limits
+        batch_size = 30
+        for i in range(0, len(tokens), batch_size):
+            chunk = [str(t) for t in tokens[i:i + batch_size]]
+            try:
+                self.ws.subscribe("argus_sub", 3, [{"exchangeType": exch_type, "tokens": chunk}])
+                logger.info(f"[BROKER] Angel One subscribed {len(chunk)} tokens (Batch {i//batch_size + 1}) in SNAP_QUOTE mode.")
+            except Exception as e_sub:
+                logger.error(f"[BROKER] Angel One subscribe error: {e_sub}")
+
+    def subscribe(self, tokens: list, exchange: str = "NSE", feed_type: str = "t", **kwargs) -> None:
+        exch_type = 1 if str(exchange).upper() == "NSE" else (2 if str(exchange).upper() == "NFO" else 3)
+        if not self.ws or not self._is_connected:
+            self._pending_tokens.extend(tokens)
+            self.start_live_feed()
+            return
+        self._raw_subscribe(tokens, exch_type)
+
     def unsubscribe(self, tokens: list, exchange: str) -> None:
-        pass # Angel One does not have a clean unsubscribe list method via SmartWebSocketV2 without mode switch
+        pass
 
     def get_quote(self, exchange: str, token: str) -> dict:
-        """Fetch the latest snapshot quote for a given token."""
         try:
-            res = self._api.ltpData(exchange, "dummy", token) # Angel LTP API
+            res = self._api.ltpData(exchange, "dummy", token)
             if res and res.get('status'):
                 return {"ltp": float(res['data']['ltp'])}
         except Exception:
@@ -234,7 +312,7 @@ class AngelOneAdapter(IBrokerGateway):
         # Initialise the underlying Angel connection once and reuse it.
         self._api, self._session_data = angel_connection.get_angel_connection()
         self._session_provider = AngelSessionProvider(self._session_data)
-        self._market_data_provider = AngelMarketDataProvider(self._api)
+        self._market_data_provider = AngelMarketDataProvider(self._api, session_data=self._session_data)
         self._execution_provider = AngelExecutionProvider(self._api)
         self._historical_provider = AngelHistoricalProvider(self._api)
         self._portfolio_provider = AngelPortfolioProvider(self._api)
@@ -355,3 +433,15 @@ class AngelOneAdapter(IBrokerGateway):
         the broker's immutable capability description.
         """
         return self._manifest
+
+    def add_tick_listener(self, listener) -> None:
+        self._market_data_provider.add_tick_listener(listener)
+
+    def remove_tick_listener(self, listener) -> None:
+        self._market_data_provider.remove_tick_listener(listener)
+
+    def add_close_listener(self, listener) -> None:
+        self._market_data_provider.add_close_listener(listener)
+
+    def subscribe(self, tokens: list, exchange: str = "NSE", **kwargs) -> None:
+        self._market_data_provider.subscribe(tokens, exchange, **kwargs)

@@ -165,3 +165,51 @@ def test_strike_selector_selects_otm8_when_closer_unaffordable():
     assert ltp == 24.95
     assert ltp * 20 <= 605.83
 
+
+def test_strike_selector_selects_otm12_for_tiny_funds_sensex():
+    """Verify that with tiny funds (e.g. Rs 588.36, ceiling Rs 29.418 on lot 20),
+    StrikeSelector scans up to 15 OTM strikes and selects 73900 CE (OTM 12) @ 24.50
+    when OTM 1 to 11 (72800 to 73800) are all unaffordable (> Rs 30.00).
+    """
+    # ATM 72700, CALL strikes: 72800 (OTM 1) up to 74200 (OTM 15)
+    opts = []
+    cache = {}
+    # ATM
+    opts.append({"symbol": "SENSEX26O0172700CE", "token": "72700", "strike": 72700.0})
+    cache["72700"] = 350.0
+
+    # OTM 1 to 11 (72800 to 73800): all unaffordable for Rs 588.36 / lot 20 (> Rs 29.418)
+    for i in range(1, 12):
+        stk = 72700.0 + (i * 100)
+        tok = str(int(stk))
+        opts.append({"symbol": f"SENSEX26O01{tok}CE", "token": tok, "strike": stk})
+        cache[tok] = 180.0 - (i * 12.0)  # e.g. 73800 = 48.0 > 29.418
+
+    # OTM 12 (73900 CE): Rs 24.50 (1 lot = Rs 490.00 <= Rs 588.36 -> Affordable!)
+    opts.append({"symbol": "SENSEX26O0173900CE", "token": "73900", "strike": 73900.0})
+    cache["73900"] = 24.50
+
+    # OTM 13 (74000 CE): Rs 14.20 (Affordable, but lower delta than 73900)
+    opts.append({"symbol": "SENSEX26O0174000CE", "token": "74000", "strike": 74000.0})
+    cache["74000"] = 14.20
+
+    weekly_opts = pd.DataFrame(opts)
+
+    alloc = StrikeSelector.select_strikes(
+        signal_type="CALL",
+        index_price=72690.0,
+        index_name="SENSEX",
+        weekly_opts=weekly_opts,
+        option_cache=cache,
+        available_funds=588.36,
+        lot_size=20,
+        is_zero_dte=True,
+    )
+    assert len(alloc) == 1
+    chosen_row, qty, ltp = alloc[0]
+    assert chosen_row["symbol"] == "SENSEX26O0173900CE"
+    assert chosen_row["strike"] == 73900.0
+    assert ltp == 24.50
+    assert ltp * 20 <= 588.36
+
+

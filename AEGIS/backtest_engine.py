@@ -298,10 +298,10 @@ class SimulatedPositionManager:
             self._close_position(lp, trade.target_pct, f"TARGET_HIT (+{trade.target_pct:.1f}%)", current_ts_sec)
             return
 
-        # 1A. Premium Hard SL (-3.5% floor, V4 live parity 2026-09-21: overrides
+        # 1A. Premium Hard SL (-12.0% disaster floor, V4 live parity: overrides
         # all lagging spot-level checks, evaluated every tick).
-        if pnl_pct <= -3.5:
-            self._close_position(lp, pnl_pct, f"PREMIUM_HARD_SL (-3.5% floor: {pnl_pct:.1f}%)", current_ts_sec)
+        if pnl_pct <= -12.0:
+            self._close_position(lp, pnl_pct, f"PREMIUM_HARD_SL (-12.0% disaster floor: {pnl_pct:.1f}%)", current_ts_sec)
             return
 
         # 1B. Point 4 Gate 2: 3-Minute Profit Harvest (+1.5% to +2.5%)

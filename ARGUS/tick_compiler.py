@@ -92,6 +92,10 @@ class TickCompiler:
         """Set the engine for zero-copy tick dispatch."""
         self.engine = engine
 
+    def set_universe_manager(self, universe_manager):
+        """Set the StockUniverseManager for Top 15 equities coordination."""
+        self.universe_manager = universe_manager
+
     def _as_float(self, message: dict, *keys, default=0.0):
         for k in keys:
             v = message.get(k, None)
@@ -223,6 +227,28 @@ class TickCompiler:
                     tick.sq[i] = int(self._as_float(message, f"sq{i+1}", default=0.0))
                 # Non-blocking dispatch - engine processes in same thread
                 self.engine.on_tick_parsed(tick)
+
+            # ── DISPATCH TO STOCK UNIVERSE MANAGER (TOP 15 STOCKS) ──
+            if hasattr(self, "universe_manager") and self.universe_manager:
+                try:
+                    bp1_val = self._as_float(message, "bp1", default=0.0)
+                    sp1_val = self._as_float(message, "sp1", default=0.0)
+                    bq1_val = int(self._as_float(message, "bq1", default=100))
+                    sq1_val = int(self._as_float(message, "sq1", default=100))
+                    sig = self.universe_manager.on_tick(
+                        symbol=key,
+                        price=lp,
+                        volume=new_vol,
+                        bp1=bp1_val,
+                        sp1=sp1_val,
+                        bq1=bq1_val,
+                        sq1=sq1_val,
+                        ts_sec=time.time(),
+                    )
+                    if sig and self.engine and hasattr(self.engine, "signal_queue"):
+                        self.engine.signal_queue.put(sig)
+                except Exception as e_sig:
+                    logger.debug(f"universe_manager tick dispatch error: {e_sig}")
         except Exception as e:
             logger.debug(f"on_message error: {e}")
 

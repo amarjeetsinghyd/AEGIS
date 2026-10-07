@@ -650,9 +650,9 @@ class StockExecutionManager:
                 return net
         return None
 
-    def _confirm_fill(self, ordno: str, fallback_price: float):
+    def _confirm_fill(self, ordno: str, fallback_price: float, expected_qty: int = 10):
         if str(ordno).startswith("SIM_"):
-            return True, fallback_price, 10
+            return True, fallback_price, expected_qty
         self._last_rej = ""
         avg_prc = fallback_price
         last_row = None
@@ -747,6 +747,16 @@ class StockExecutionManager:
         if not keep_open:
             self.open_trades.pop(symbol, None)
         self._save_open()
+
+        # ─── AUTOMATIC TRADE JOURNAL & EXCEL COMPILATION ───
+        try:
+            from ARGUS.core.stock_trade_journal import record_completed_trade
+            duration_s = int((datetime.now() - datetime.fromisoformat(trade["entry_time"])).total_seconds()) if "entry_time" in trade else 0
+            trade_record = dict(trade)
+            trade_record["duration_s"] = duration_s
+            record_completed_trade(trade_record)
+        except Exception as e_journal:
+            logger.warning(f"[StockExecution] Trade journal write failed ({e_journal})")
         
         # ─── RELEASE GLOBAL TRADE LOCK ───
         # Notify CascadeValueEngine that trade is closed so it can accept new signals
@@ -932,11 +942,29 @@ class StockExecutionManager:
                         exit_state.breakeven_locked = False
                         exit_state.confirmed_decay_count = 0
                         
+                        # Calculate resting Maker TP (+0.50% target move)
+                        tp_pct = FALLBACK_TP_PCT  # 0.0050 (+0.50%)
+                        tick_step = 0.05 if avg_prc < 1000.0 else 0.10
+                        if signal == "BUY":
+                            maker_tp = round((avg_prc * (1.0 + tp_pct)) / tick_step) * tick_step
+                        else:
+                            maker_tp = round((avg_prc * (1.0 - tp_pct)) / tick_step) * tick_step
+
+                        candle_low = float(metrics.get("entry_candle_low", avg_prc - atr)) if metrics else avg_prc - atr
+                        candle_high = float(metrics.get("entry_candle_high", avg_prc + atr)) if metrics else avg_prc + atr
+                        pillar = str(metrics.get("pillar_id", metrics.get("setup_name", reason)))
+                        conviction = float(metrics.get("conviction", 80.0))
+
                         trade = {
                             "entry_time": datetime.now().isoformat(), "symbol": symbol, "tsym": tsym,
                             "type": signal, "entry_price": avg_prc, "qty": fillqty, "margin": round(margin, 2),
                             "leverage": self.leverage, "reason": reason, "broker_order_id": ordno,
                             "atr": round(atr, 4), "tp_dist": round(tp_dist, 4),
+                            "maker_tp": maker_tp,
+                            "entry_candle_low": candle_low,
+                            "entry_candle_high": candle_high,
+                            "pillar": pillar,
+                            "conviction": conviction,
                             "highest": avg_prc, "lowest": avg_prc,
                             "entry_latency_s": round(t1 - t0, 2),
                             "entry_slip_bps": self._slip_bps(avg_prc, spot_price, signal),
@@ -1045,89 +1073,86 @@ class StockExecutionManager:
                 trade["exit_state"] = ExitState()
             exit_state = trade["exit_state"]
             
-            # ─── EVALUATE DYNAMIC EXIT ───
-            should_exit, reason = evaluate_exit(
-                position_direction=side,
-                entry_price=entry,
-                current_lp=current_price,
-                adv_metrics=adv,
-                bucket_aggregates=bucket_aggs,
-                trade_state=exit_state,
-                atr=atr,
-                current_time=pytime.time(),
-            )
-            
-            # ─── LEGACY ATR/CHANDELIER/BREAKEVEN LOGIC (FALLBACK ONLY) ───
-            legacy_exit = None
-            if not should_exit and not is_eod_flatten:
-                try:
-                    minutes_held = (datetime.now() - datetime.fromisoformat(trade["entry_time"])).total_seconds() / 60.0
-                except Exception:
-                    minutes_held = 0.0
-                tp_dist = float(trade.get("tp_dist", 0.0))
-                if tp_dist <= 0:
-                    tp_dist = atr * TP_ATR_MULT if atr > 0 else 0.0
-                
-                if tp_dist > 0:
-                    if side == "BUY" and current_price >= entry + tp_dist:
-                        legacy_exit = "TAKE_PROFIT"
-                    elif side == "SELL" and current_price <= entry - tp_dist:
-                        legacy_exit = "TAKE_PROFIT"
-                elif atr <= 0:
-                    pnl_pct = (current_price - entry) / entry if side == "BUY" else (entry - current_price) / entry
-                    if pnl_pct >= FALLBACK_TP_PCT:
-                        legacy_exit = "TAKE_PROFIT"
-                
-                if legacy_exit is None and atr > 0:
-                    if side == "BUY":
-                        prev_highest = float(trade.get("highest", entry))
-                        trade["highest"] = max(prev_highest, current_price)
-                        chan_stop = float(trade["highest"]) - atr * CHANDELIER_ATR_MULT
-                        init_stop = entry - atr * SL_ATR_MULT
-                        stop_price = max(init_stop, chan_stop)
-                        be_lock = False
-                        # MN-6 gap detection: a single-tick move > GAP_ATR_MULT*ATR past
-                        # the prior high is a discontinuous gap, not a trend advance. Locking
-                        # the stop at breakeven on a gap-open would invert it exactly at entry
-                        # as price gaps through it, so skip the floor on gap ticks.
-                        gap_open = (current_price - prev_highest) > GAP_ATR_MULT * atr
-                        if float(trade["highest"]) >= entry + BREAKEVEN_ATR_FRACTION * atr and not gap_open:
-                            if entry > stop_price:
-                                stop_price = entry
-                                be_lock = True
-                        elif gap_open and float(trade["highest"]) >= entry + BREAKEVEN_ATR_FRACTION * atr:
-                            logger.info(f"[MN-6] Gap-open detected ({current_price - prev_highest:.2f} > {GAP_ATR_MULT*atr:.2f}) — breakeven floor lock skipped for {symbol}.")
-                        if current_price <= stop_price:
-                            legacy_exit = "BREAKEVEN_EXIT" if be_lock else ("CHANDELIER_EXIT" if chan_stop > init_stop else "STOP_LOSS")
-                    else:
-                        prev_lowest = float(trade.get("lowest", entry))
-                        trade["lowest"] = min(prev_lowest, current_price)
-                        chan_stop = float(trade["lowest"]) + atr * CHANDELIER_ATR_MULT
-                        init_stop = entry + atr * SL_ATR_MULT
-                        stop_price = min(init_stop, chan_stop)
-                        be_lock = False
-                        gap_open = (prev_lowest - current_price) > GAP_ATR_MULT * atr
-                        if float(trade["lowest"]) <= entry - BREAKEVEN_ATR_FRACTION * atr and not gap_open:
-                            # For a SHORT the stop sits ABOVE the trade; breakeven tightens any
-                            # loss-allowing stop (stop above entry) down to entry.
-                            if entry < stop_price:
-                                stop_price = entry
-                                be_lock = True
-                        elif gap_open and float(trade["lowest"]) <= entry - BREAKEVEN_ATR_FRACTION * atr:
-                            logger.info(f"[MN-6] Gap-down detected ({prev_lowest - current_price:.2f} > {GAP_ATR_MULT*atr:.2f}) — breakeven floor lock skipped for {symbol}.")
-                        if current_price >= stop_price:
-                            legacy_exit = "BREAKEVEN_EXIT" if be_lock else ("CHANDELIER_EXIT" if chan_stop < init_stop else "STOP_LOSS")
-                elif legacy_exit is None and atr <= 0:
-                    pnl_pct = (current_price - entry) / entry if side == "BUY" else (entry - current_price) / entry
-                    if pnl_pct <= -FALLBACK_SL_PCT:
-                        legacy_exit = "STOP_LOSS"
-                
-                if legacy_exit is None and minutes_held >= MAX_HOLD_MINUTES:
-                    legacy_exit = "TIME_STOP"
-            
-            exit_reason = reason if should_exit else legacy_exit
+            # ─── AEGIS-INSPIRED STOCK ADAPTIVE EXITS (v5.0) ───
+            exit_reason = None
+
+            # Calculate current PnL & peak gains
+            if side == "BUY":
+                pnl_pct = (current_price - entry) / entry
+                peak_gain_pct = (float(trade["highest"]) - entry) / entry
+            else:
+                pnl_pct = (entry - current_price) / entry
+                peak_gain_pct = (entry - float(trade["lowest"])) / entry
+
+            try:
+                minutes_held = (datetime.now() - datetime.fromisoformat(trade["entry_time"])).total_seconds() / 60.0
+            except Exception:
+                minutes_held = 0.0
+
+            # 1. Strict Resting Maker Limit TP (+0.50% Target)
+            maker_tp = float(trade.get("maker_tp", 0.0))
+            if maker_tp > 0:
+                if side == "BUY" and current_price >= maker_tp:
+                    exit_reason = "MAKER_LIMIT_TP"
+                elif side == "SELL" and current_price <= maker_tp:
+                    exit_reason = "MAKER_LIMIT_TP"
+
+            # 2. Near-Target Profit Lock: Peak >= +0.35% with >= 0.10% pullback
+            if exit_reason is None and peak_gain_pct >= 0.0035:
+                if (peak_gain_pct - pnl_pct) >= 0.0010:
+                    exit_reason = "NEAR_TARGET_PROFIT_LOCK"
+
+            # 3. Step 2 (Cost Shield / Breakeven): Peak >= +0.30%
+            if exit_reason is None and peak_gain_pct >= 0.0030:
+                if pnl_pct <= 0.0:
+                    exit_reason = "BREAKEVEN_EXIT"
+
+            # 4. Step 1 (Safety Net): Peak >= +0.25% (halfway to TP) -> compresses SL to -0.12%
+            if exit_reason is None and peak_gain_pct >= 0.0025:
+                if pnl_pct <= -0.0012:
+                    exit_reason = "SAFETY_NET_STOP"
+
+            # 5. Structural Candle Invalidation
+            if exit_reason is None:
+                candle_low = float(trade.get("entry_candle_low", entry - atr))
+                candle_high = float(trade.get("entry_candle_high", entry + atr))
+                if side == "BUY" and current_price < candle_low:
+                    exit_reason = "CANDLE_INVALIDATION"
+                elif side == "SELL" and current_price > candle_high:
+                    exit_reason = "CANDLE_INVALIDATION"
+
+            # 6. 3-Minute Time Harvest (Stagnation > 180s with floating gains +0.15% to +0.30%)
+            if exit_reason is None and minutes_held >= 3.0:
+                if 0.0015 <= pnl_pct <= 0.0030:
+                    exit_reason = "TIME_HARVEST"
+
+            # 7. Hard Disaster Stop Loss (-0.25% or -0.8x ATR)
+            if exit_reason is None:
+                if pnl_pct <= -FALLBACK_SL_PCT:
+                    exit_reason = "STOP_LOSS"
+
+            # 8. Time Ceiling (35 mins)
+            if exit_reason is None and minutes_held >= MAX_HOLD_MINUTES:
+                exit_reason = "TIME_STOP"
+
+            # 9. EOD Force Flatten
             if exit_reason is None and is_eod_flatten:
                 exit_reason = "EOD_FLATTEN"
+
+            # 10. Secondary Microstructure Decay Check
+            if exit_reason is None:
+                should_exit, micro_reason = evaluate_exit(
+                    position_direction=side,
+                    entry_price=entry,
+                    current_lp=current_price,
+                    adv_metrics=adv,
+                    bucket_aggregates=bucket_aggs,
+                    trade_state=exit_state,
+                    atr=atr,
+                    current_time=pytime.time(),
+                )
+                if should_exit and micro_reason not in ("NONE", "BREAKEVEN_LOCK"):
+                    exit_reason = micro_reason
             
             if exit_reason:
                 self._close_trade(symbol, current_price, exit_reason)

@@ -86,12 +86,12 @@ STOP_LOSS_PCT = 0.050
 # Scale-Invariant Normalized Percentage Model (strictly %, no fixed paise)
 PREMIUM_HARD_SL_PCT = float(os.environ.get("AEGIS_PREMIUM_HARD_SL_PCT", "0.120"))   # Tick-cadence option premium disaster circuit breaker (-12.0%)
 V4_SINGLE_TARGET_MODE = True  # Runner trailing disabled; 100% qty TP/SL/time exits
-STEP1_TRIGGER_PCT = float(os.environ.get("AEGIS_STEP1_TRIGGER_PCT", "0.020"))         # +2.0% peak gain arms stepped safety net
+STEP1_TRIGGER_PCT = float(os.environ.get("AEGIS_STEP1_TRIGGER_PCT", "0.030"))         # +3.0% peak gain arms stepped safety net (wide breathing room; +2% choke removed)
 STEP1_SL_PCT = float(os.environ.get("AEGIS_STEP1_SL_PCT", "-0.030"))                  # Tightens disaster floor from -12% to -3.0%
-STEP2_TRIGGER_PCT = float(os.environ.get("AEGIS_STEP2_TRIGGER_PCT", "0.030"))         # +3.0% peak gain arms cost-shield scratch
+STEP2_TRIGGER_PCT = float(os.environ.get("AEGIS_STEP2_TRIGGER_PCT", "0.035"))         # +3.5% peak gain arms cost-shield scratch
 STEP2_SL_PCT = float(os.environ.get("AEGIS_STEP2_SL_PCT", "0.000"))                   # Tightens SL to 0.0% (Entry Price / Scratch)
 NEAR_TARGET_TRIGGER_PCT = float(os.environ.get("AEGIS_NEAR_TARGET_TRIGGER_PCT", "0.035")) # +3.5% peak gain arms near-target lock
-NEAR_TARGET_PULLBACK_TOLERANCE = float(os.environ.get("AEGIS_NEAR_TARGET_TOLERANCE", "0.005")) # 0.5% pullback from peak triggers market exit
+NEAR_TARGET_PULLBACK_TOLERANCE = float(os.environ.get("AEGIS_NEAR_TARGET_TOLERANCE", "0.008")) # 0.8% pullback from peak triggers market exit
 BREAKEVEN_TRIGGER_PCT = 0.030
 BREAKEVEN_LOCK_PCT = 0.005
 RUNNER_TRIGGER_PCT = 0.070
@@ -509,7 +509,7 @@ class AegisExecutionManager:
                 self._rollback_slot()
                 return
 
-            # Spread & liquidity check
+            # Live ask quote resolution (Major Indian index options are highly liquid — no artificial spread gating)
             live_ask = 0.0
             if hasattr(self.broker, "market_data_provider"):
                 try:
@@ -517,24 +517,10 @@ class AegisExecutionManager:
                     q = self.broker.market_data_provider.get_quote(exch_seg, token_str)
                     if q:
                         ask = float(q.get("sp1") or 0)
-                        bid = float(q.get("bp1") or 0)
-                        live_ask = ask
-                        if ask > 0 and bid > 0:
-                            mid = (ask + bid) / 2
-                            spread = (ask - bid) / mid
-                            if spread > 0.02:
-                                logger.warning(f"[AegisEM] Spread too high: {spread*100:.1f}%")
-                                self._rollback_slot()
-                                return
-                            sq1 = int(float(q.get("sq1") or 0))
-                            if sq1 < 3:
-                                logger.warning(f"[AegisEM] Ask size too thin: sq1={sq1}")
-                                self._rollback_slot()
-                                return
+                        if ask > 0:
+                            live_ask = ask
                 except Exception as e:
-                    logger.error(f"[AegisEM] Pre-trade check failed: {e}")
-                    self._rollback_slot()
-                    return
+                    logger.debug(f"[AegisEM] Live quote fetch for ask price: {e}")
 
             # Execute entry
             signal_ts = float(signal.get("timestamp") or metrics.get("impulse_timestamp") or time.time())
@@ -603,6 +589,7 @@ class AegisExecutionManager:
                         "basis_z_score": float(metrics.get("basis_z_score", 0.0)),
                         "is_50ema_pullback": bool(metrics.get("is_50ema_pullback", False)),
                         "is_price_action_setup": bool(metrics.get("is_price_action_setup", False)),
+                        "pillar": int(metrics.get("pillar", 0) or 0),
                         "pa_setup_name": str(metrics.get("pa_setup_name", "")),
                         "rejection_type": metrics.get("rejection_type", "none"),
                         "spot_sl_price": float(metrics.get("sl_price", 0.0) or 0.0),
@@ -623,6 +610,7 @@ class AegisExecutionManager:
                     self.trade_context.is_50ema_pullback = dp["is_50ema_pullback"]
                     self.trade_context.is_price_action_setup = dp["is_price_action_setup"]
                     self.trade_context.pa_setup_name = dp["pa_setup_name"]
+                    self.trade_context.pillar = dp["pillar"]
                     self.trade_context.add_leg(leg)
 
                     logger.info(
@@ -795,9 +783,9 @@ class AegisExecutionManager:
     def _is_active_instrument_expiry(self, now: Optional[datetime] = None, leg: Optional[TradeLeg] = None) -> bool:
         """
         Determines if today is Expiry Day for the active instrument or contract.
-        Matches symbol date (e.g. 16SEP26), or standard weekday schedule:
-        - SENSEX: Wednesday (weekday 2)
-        - NIFTY: Thursday (weekday 3)
+        Matches symbol date (e.g. 01OCT26), or standard weekday schedule:
+        - SENSEX: Thursday (weekday 3) -> 0 DTE Expiry Day (Wednesday is 1 DTE)
+        - NIFTY: Tuesday (weekday 1) -> 0 DTE Expiry Day (Monday is 1 DTE, Friday is 4 DTE)
         """
         if now is None:
             now = datetime.now()
@@ -811,12 +799,16 @@ class AegisExecutionManager:
                 return True
 
         # Method 2: Check active instrument standard weekday
+        # Calendar Schedule:
+        # Mon: NIFTY (1 DTE), Tue: NIFTY (0 DTE Expiry)
+        # Wed: SENSEX (1 DTE), Thu: SENSEX (0 DTE Expiry)
+        # Fri: NIFTY (4 DTE)
         params = self.get_instrument_params()
         idx_name = str(params.get("index_name", "NIFTY")).upper()
         weekday = now.weekday()
-        if "SENSEX" in idx_name and weekday == 2:  # Wednesday
+        if "SENSEX" in idx_name and weekday == 3:  # Thursday (0 DTE Expiry)
             return True
-        elif "NIFTY" in idx_name and weekday == 3:  # Thursday
+        elif "NIFTY" in idx_name and weekday == 1:  # Tuesday (0 DTE Expiry)
             return True
 
         return False
@@ -1031,18 +1023,65 @@ class AegisExecutionManager:
         base_spot_sl_pts = ref_spot * (DEFAULT_SPOT_SL_BPS / 10000.0)
         spot_sl_pts = max(base_spot_sl_pts, SPOT_SL_ATR_MULT * atr_1m) if atr_1m > 0 else base_spot_sl_pts
 
-        # 3A. Precise Price Action Wick Invalidation Stop-Loss (User Rule: Candle High/Low +/- 5 pts buffer)
+        # 3A. Universal Price Action Entry Candle Invalidation Stop-Loss (All 4 Pillars: P1, P2, P3, P4)
+        c_low = float(getattr(context, "candle_low", 0.0) or 0.0)
+        c_high = float(getattr(context, "candle_high", 0.0) or 0.0)
+        pa_name = getattr(context, "pa_setup_name", "") or ""
+        pillar_num = int(getattr(context, "pillar", 0) or 0)
+        is_pa = bool(getattr(context, "is_price_action_setup", False)) or bool(getattr(context, "is_50ema_pullback", False))
+
+        # Detect pillar identity across P1, P2, P3, P4
+        is_p1 = (pillar_num == 1 or "20_ema" in pa_name.lower() or "pullback" in pa_name.lower() or "rejection" in pa_name.lower())
+        is_p2 = (pillar_num == 2 or "sweep" in pa_name.lower())
+        is_p3 = (pillar_num == 3 or "squeeze" in pa_name.lower())
+        is_p4 = (pillar_num == 4 or "prominence" in pa_name.lower() or "phase_shift" in pa_name.lower() or "hvg" in pa_name.lower())
+
+        is_pillar_trade = is_p1 or is_p2 or is_p3 or is_p4 or is_pa or bool(pa_name) or (pillar_num > 0)
+
+        if is_p1:
+            pillar_label = "Pillar 1"
+        elif is_p2:
+            pillar_label = "Pillar 2"
+        elif is_p3:
+            pillar_label = "Pillar 3"
+        elif is_p4:
+            pillar_label = "Pillar 4"
+        elif pa_name:
+            pillar_label = pa_name
+        else:
+            pillar_label = "Price Action"
+
+        # Resilient fallback: populate candle low/high from bars_1m if not set on context
+        if is_pillar_trade and (c_low <= 0 or c_high <= 0) and tb_engine and getattr(tb_engine, "bars_1m", None):
+            last_bar = tb_engine.bars_1m[-1]
+            if c_low <= 0:
+                c_low = float(last_bar.low)
+                context.candle_low = c_low
+            if c_high <= 0:
+                c_high = float(last_bar.high)
+                context.candle_high = c_high
+
+        # Universal Rule: ALL 4 Pillars exit ONLY on Entry Candle Low/High Invalidation
+        if is_pillar_trade and curr_spot > 0:
+            if context.signal_type == "CALL" and c_low > 0 and curr_spot <= c_low:
+                self._close_all_legs(
+                    f"{pillar_label} Entry Candle Low Broken SL (Spot {curr_spot:.1f} <= Candle Low {c_low:.1f})"
+                )
+                return
+            elif context.signal_type == "PUT" and c_high > 0 and curr_spot >= c_high:
+                self._close_all_legs(
+                    f"{pillar_label} Entry Candle High Broken SL (Spot {curr_spot:.1f} >= Candle High {c_high:.1f})"
+                )
+                return
+
         spot_wick_sl = float(getattr(context, "spot_sl_price", 0.0) or 0.0)
-        if spot_wick_sl > 0 and curr_spot > 0:
-            pa_name = getattr(context, "pa_setup_name", "") or "50 EMA Pullback"
+        if spot_wick_sl > 0 and curr_spot > 0 and not is_pillar_trade:
             if context.signal_type == "PUT" and curr_spot >= spot_wick_sl:
-                c_high = getattr(context, "candle_high", 0.0)
                 self._close_all_legs(
                     f"{pa_name} Wick SL Hit (Spot {curr_spot:.1f} >= SL {spot_wick_sl:.1f} [Candle High {c_high:.1f} + buffer])"
                 )
                 return
             elif context.signal_type == "CALL" and curr_spot <= spot_wick_sl:
-                c_low = getattr(context, "candle_low", 0.0)
                 self._close_all_legs(
                     f"{pa_name} Wick SL Hit (Spot {curr_spot:.1f} <= SL {spot_wick_sl:.1f} [Candle Low {c_low:.1f} - buffer])"
                 )
@@ -1057,9 +1096,10 @@ class AegisExecutionManager:
                 self._close_all_legs(f"Spot Adverse Rally SL ({curr_spot:.1f} vs entry {context.index_entry:.1f}, +{spot_sl_pts:.1f}pts [{(spot_sl_pts/ref_spot)*10000:.1f}bps])")
                 return
 
-        # 3C. Unconditional Spot Adverse Trend Invalidation Exit
-        # Cuts trades immediately upon trend reversal or counter-trend swing violation
-        if tb_engine and curr_spot > 0:
+        # 3C. Spot Adverse Trend Invalidation Exit
+        # Cuts trades immediately upon trend reversal or counter-trend swing violation.
+        # Bypassed for ALL 4 Pillars (P1, P2, P3, P4) — structural invalidation is STRICTLY Entry Candle Low/High.
+        if tb_engine and curr_spot > 0 and not is_pillar_trade:
             if hasattr(tb_engine, "get_live_ema_and_slope"):
                 live_ema_1m, live_slope_1m_bps, _, _ = tb_engine.get_live_ema_and_slope()
             else:
@@ -1070,7 +1110,7 @@ class AegisExecutionManager:
             trend_flipped = False
             flip_reason = ""
 
-            # Completed 1m Candle Invalidation Exit (Pillar 2: 9 EMA Structural Exit)
+            # Completed 1m Candle Invalidation Exit (General 9 EMA Structural Exit)
             bars_1m = getattr(tb_engine, "bars_1m", None)
             if bars_1m and context.entry_time:
                 last_bar = bars_1m[-1]
@@ -1728,13 +1768,19 @@ class AegisExecutionManager:
         except Exception as e:
             logger.error(f"[AegisEM] History write failed: {e}")
 
-        # Append to daily research telemetry JSONL
+        # Append to daily research telemetry JSONL (production only, skip in unit test runs)
         try:
-            telem_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "telemetry")
-            os.makedirs(telem_dir, exist_ok=True)
-            telem_file = os.path.join(telem_dir, f"aegis_trade_telemetry_{now.strftime('%Y-%m-%d')}.jsonl")
-            with open(telem_file, "a", encoding="utf-8") as tf:
-                tf.write(json.dumps(trade_record, default=str) + "\n")
+            import sys
+            if "pytest" not in sys.modules and not os.environ.get("PYTEST_CURRENT_TEST"):
+                telem_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "telemetry")
+                os.makedirs(telem_dir, exist_ok=True)
+                telem_file = os.path.join(telem_dir, f"aegis_trade_telemetry_{now.strftime('%Y-%m-%d')}.jsonl")
+                with open(telem_file, "a", encoding="utf-8") as tf:
+                    tf.write(json.dumps(trade_record, default=str) + "\n")
+
+                # Automatic production trade journal update & Excel sync
+                from unified_dashboard.telemetry_loader import reconcile_and_auto_journal
+                reconcile_and_auto_journal()
         except Exception as e_telem:
             logger.warning(f"[AegisEM] Telemetry write warning: {e_telem}")
 

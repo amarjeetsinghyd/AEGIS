@@ -46,16 +46,76 @@ the `common/` shared branches alone and ask. Never add new kronos code.**
 
 ---
 
-## ACTIVE ENGINES (the only ones you should build on)
+## ACTIVE ENGINES (Priority Order)
 
-1. **`ARGUS/`** — **ARGUS** (**A**lgorithmic **R**eal-time **G**ranular **U**ltra-microstructure **S**calper) — HFT microstructure equities engine (primary active system).
-   Architecture authority: `ARGUS/ARGUS_SYSTEM_ARCHITECTURE.md` (v3.7).
-   Conform all Python edits to that document (init order, conviction trigger, adverse selection shield,
-   Kyle's lambda limit engine, Kelly sizing, 4-pillar exits, zero-copy tick path, no heavy imports in tick handlers).
-2. **`AEGIS/`** (and `astra_bot/`) — **AEGIS** (**A**utonomous **E**xecution & **G**amma **I**mbalance **S**ystem) — options strategy bot (active).
-3. **`unified_dashboard/`** — monitoring UI, dual-brands: Quant Console — ARGUS × AEGIS.
+1. **`AEGIS/`** (and `astra_bot/`) — **PRIMARY ACTIVE ENGINE (Core Focus)** — **AEGIS** (**A**utonomous **E**xecution & **G**amma **I**mbalance **S**ystem) — options strategy bot (Production Version 1.0 / v1.0 Locked).
+   Architecture authority: `AEGIS/AEGIS_V3_ARCHITECTURE.md` (Production Version 1.0 Locked).
+   - **Primary Focus**: All current development, telemetry review, and trading logic verification center on AEGIS.
+   - **Architecture & Rules**: Conform all edits to `AEGIS/AEGIS_V3_ARCHITECTURE.md` (Macro Price Action Primary Trigger across 4 Pillars [P1 20 EMA Pullback, P2 Liquidity Sweep & Reclaim, P3 Volatility Squeeze Breakout, P4 0-D Prominence Hub Breakout], Parallel Wyckoff Volume & Order Flow Delta Gate, Continuous Composite Conviction Scoring with >=80.0 threshold, Strict 1-Lot Maker TP at +4.0%, 100% Shadow ML & Standalone CatBoost Paper Trader, Volume Profile & Auction Market Theory Engine, Pain Zone Band (v1.0 Production), Pre-Trade Abort Slot Rollback, and 15:08:00 IST CAS Force Flatten).
+   - **Testing / Consistency Phase**: Currently in consistency testing / validation mode. We are validating pipeline health, signal consistency, Wyckoff delta harmony, and telemetry without topping up paper/live funds.
+2. **`ARGUS/`** — **ARGUS** (**A**lgorithmic **R**eal-time **G**ranular **U**ltra-microstructure **S**calper) — HFT microstructure equities engine.
+   - **Status**: **SECONDARY / DEPRIORITIZED (Ignore for now)**. We are NOT focusing on ARGUS at this stage. Treat as secondary/dormant unless explicitly directed.
+3. **`unified_dashboard/`** — monitoring UI, dual-brands: Quant Console — AEGIS × ARGUS.
 
 Shared library: `common/` (broker / execution / market / ipc / runtime / config / symbols).
+
+---
+
+## AEGIS CANONICAL ARCHITECTURE & PERMANENT OPERATIONAL RULES (MANDATORY IN EVERY CHAT)
+
+> **Every AI agent starting a new conversation MUST honor these exact production rules:**
+
+### 1. Macro Price Action 4 Pillars (Primary Triggers)
+* **Pillar 1 (`20_ema_rejection`)**: Trend continuation bounce off the 20 EMA with open runway.
+* **Pillar 2 (`micro_sweep_reclaim`)**: Liquidity sweep and spring reclaim beyond key levels.
+* **Pillar 3 (`volatility_squeeze_breakout`)**: Bollinger / Keltner volatility compression expansion box breakout.
+* **Pillar 4 (`hvg_network_phase_shift`)**: Topological Prominence Hub / High Volatility Gap network phase shift.
+
+### 2. Absolute Pain Zone VWAP Band (v1.0 Production Early Veto)
+* Single unified veto before pillars:
+  * Spot **ABOVE** Upper Band $\implies$ **ONLY CALL** trades allowed.
+  * Spot **BELOW** Lower Band $\implies$ **ONLY PUT** trades allowed.
+  * Spot **INSIDE** Band $\implies$ Discarded / Neutral zone.
+
+### 3. Parallel Wyckoff Volume & OFI Delta Gate
+* Volume-to-Dispersion Ratio ($VDR \ge 1.0$) and positive order-flow intensity (OFI) delta harmony required to confirm institutional participation.
+
+### 4. Strike Selection & Subscription Universe (15 OTM Depth)
+* **Subscription Universe**: ATM $\pm 15$ strikes (31 strikes total, 62 tokens CE+PE) tracked on WebSocket ($t+d$).
+* **Low-Capital Testing Mode (`funds < 5000`)**: `StrikeSelector` scans all 15 OTM strikes (`TESTING_DEEP_DEPTH = 16`). Automatically selects the closest affordable OTM strike for 1 lot (e.g. ₹15–₹28).
+* **Index Option Liquidity**: Major Indian index options (NIFTY/SENSEX) have massive liquidity (millions of shares). **NEVER** apply artificial 2% spread blocks or thin-ask blocks.
+
+### 5. Adaptive Exits & Near-Target Profit Lock (v1.0 Production Locked)
+* **Hard Disaster Floor**: `-12.0%` option premium circuit breaker.
+* **Step 1 (Safety Net)**: Peak $\ge +3.0\% \implies$ SL compressed from -12% to `-3.0%` (wide breathing room; premature +2.0% choke permanently removed).
+* **Step 2 (Cost-Shield / Breakeven)**: Peak $\ge +3.5\% \implies$ SL compressed to `0.0%` (Entry Price scratch).
+* **Pillar 4 Spot Invalidation**: CALL exits if Spot $\le$ Entry Candle Low; PUT exits if Spot $\ge$ Entry Candle High (immunizes trade from option spread/wick noise).
+* **Near-Target Profit Lock (`NEAR_TARGET_TRIGGER_PCT = 0.035`, `NEAR_TARGET_PULLBACK_TOLERANCE = 0.008`)**:
+  * Peak Bid $\ge +3.5\% \implies$ **Exits immediately on $\ge 0.8\%$ pullback from peak bid**!
+* **Strict 1-Lot Maker TP**: Resting Limit Order at **`+4.0%`** (100% quantity).
+  * **Target Discipline Mandate (Never Expand to +5%–6%)**: +4.0% is the mathematically optimal safe harbor that fills passively within 10–40s across choppy regimes. Option momentum beyond +4% frequently faces sharp institutional dumps (e.g. crashing back below entry immediately after reaching +8%). Never greed for 5%–6% as holding for bigger targets destroys the 84%+ win-rate.
+  * **Exchange Tick-Size Rounding**: Option target prices are rounded to the nearest ₹0.05 tick (e.g. ₹8.10 entry rounds 8.424 to ₹8.40 = +3.70%), ensuring instant passive fill on the opening crest.
+* **3-Minute Time Harvest**: Stagnation $> 180$s with $+1.5\%$ to $+2.5\%$ locks profit.
+* **EOD CAS Flush**: 15:08:00 IST force flattens all open inventory.
+
+### 6. Component Operational State (Live vs Shadow)
+* **LIVE**: 4 Price Action Pillars, Absolute Pain Zone Band, Wyckoff Volume & OFI Gate, Composite Conviction Engine ($\ge 80$), Adaptive Exits, StrikeSelector.
+* **SHADOW**: Volume Profile Engine (VAH/VAL/POC), CatBoost ML Gatekeeper, Standalone CatBoost Paper Trader, ShadowQuantTracker.
+* **DECOMMISSIONED**: Gemini 3.8 / `ai_shadow_reviewer.py` is DELETED. Kronos is SHUT DOWN.
+
+### 7. Trading Calendar & Weekly Engine Schedule
+* **Monday**: **NIFTY** (**1 DTE**) [NFO, strike step 50, lot 65]
+* **Tuesday**: **NIFTY** (**0 DTE** — Expiry Day) [NFO, strike step 50, lot 65]
+* **Wednesday**: **SENSEX** (**1 DTE**) [BFO, strike step 100, lot 20]
+* **Thursday**: **SENSEX** (**0 DTE** — Expiry Day) [BFO, strike step 100, lot 20]
+* **Friday**: **NIFTY** (**4 DTE**) [NFO, strike step 50, lot 65]
+* **Saturday & Sunday**: Market Closed (Shoonya WebSocket disconnect is normal, no bot trading).
+* **Summary**: SENSEX trades **Wed (1 DTE) & Thu (0 DTE)**. NIFTY trades **Mon (1 DTE), Tue (0 DTE), & Fri (4 DTE)**. Today is Wednesday $\implies$ **1 DTE for SENSEX**.
+
+### 8. Testing Phase Discipline
+* Currently testing consistency and pipeline stability with current available funds (~₹588.36).
+* **Do NOT top up live or paper funds.**
+* **Scale-Invariance Mandatory**: Spot distances and thresholds must be normalized via Basis Points (bps) or percentage of spot. Never hardcode fixed points.
 
 ---
 

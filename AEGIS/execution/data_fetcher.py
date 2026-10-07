@@ -55,6 +55,9 @@ class DataFetcher:
         from AEGIS.core.instrument_repository import InstrumentRepository
         self.repo = InstrumentRepository()
         self.candle_window = collections.deque(maxlen=512)
+        self._cached_weekly_opts = None
+        self._last_chain_fetch_ts = 0.0
+        self._last_atm_cached = 0.0
 
     def bootstrap_candle_window(self):
         """
@@ -224,8 +227,20 @@ class DataFetcher:
                 if index_price > 0:
                     step = 100 if name == "SENSEX" else 50
                     atm_strike = round(index_price / step) * step
-                    # Expand to 10 strikes ITM and OTM to support deeper OTM trading
-                    strike_list = [atm_strike + (i * step) for i in range(-10, 11)]
+
+                    # Short-term cache check: return cached chain if ATM is unchanged and within 45s
+                    now_ts = time.time()
+                    if (
+                        self._cached_weekly_opts is not None
+                        and not self._cached_weekly_opts.empty
+                        and (now_ts - self._last_chain_fetch_ts < 45.0)
+                        and abs(atm_strike - self._last_atm_cached) < step
+                    ):
+                        return self._cached_weekly_opts
+
+                    # Expand to 15 strikes ITM and OTM (total 31 strikes) to support deeper affordable OTM trading
+                    depth = int(os.getenv("AEGIS_OPTION_CHAIN_DEPTH", "15"))
+                    strike_list = [atm_strike + (i * step) for i in range(-depth, depth + 1)]
                     
                     import re
                     dynamic_opts = []
@@ -263,6 +278,9 @@ class DataFetcher:
                         if valid_dts:
                             nearest_exp = min(valid_dts)
                             df = dyn_df[dyn_df['expiry_dt'] == nearest_exp].drop_duplicates(subset=['token']).reset_index(drop=True)
+                            self._cached_weekly_opts = df
+                            self._last_chain_fetch_ts = now_ts
+                            self._last_atm_cached = atm_strike
             except Exception as e:
                 logger.error(f"Error fetching dynamic option chain via searchscrip: {e}")
                 

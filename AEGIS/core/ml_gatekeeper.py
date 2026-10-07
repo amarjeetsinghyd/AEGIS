@@ -212,10 +212,14 @@ class MLGatekeeper:
         day_median = self.get_day_median_score()
         status = "HOT 🔥" if score >= self.confluence_threshold else "WARM" if score >= day_median else "COLD"
         
+        cb_val = float(features.get('call_buy_vol', 0) or 0)
+        cs_val = float(features.get('call_sell_vol', 0) or 0)
+        pb_val = float(features.get('put_buy_vol', 0) or 0)
+        ps_val = float(features.get('put_sell_vol', 0) or 0)
         logger.info(
             f"[CATBOOST 1M FLOW] {index_name} | Score: {score:.1%} | Max 5m: {max_5m:.1%} | "
-            f"Day Median: {day_median:.1%} | CallBuy: {features.get('call_buy_vol', 0):,.0f} | "
-            f"PutBuy: {features.get('put_buy_vol', 0):,.0f} | {status}"
+            f"Day Median: {day_median:.1%} | Call: {cb_val:,.0f}B/{cs_val:,.0f}S | "
+            f"Put: {pb_val:,.0f}B/{ps_val:,.0f}S | {status}"
         )
 
         # Standalone Autonomous CatBoost Paper Trader Evaluation
