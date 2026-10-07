@@ -228,6 +228,32 @@ body {
 .tile-val.pos { color: var(--aegis-bright); }
 .tile-val.neg { color: var(--danger-bright); }
 
+.pnl-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.pnl-strip-item {
+  display: flex;
+  flex-direction: column;
+}
+.pnl-strip-lbl {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+}
+.pnl-strip-val {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 12px;
+}
+
 /* HERO ACTIVE EXECUTION COCKPIT */
 .execution-hero {
   background: var(--surface);
@@ -528,11 +554,35 @@ body {
     </div>
 
     <!-- Today's Scorecard -->
-    <div class="metric-tile">
-      <div class="tile-lbl">Today's Executed Trades</div>
-      <div class="tile-val" id="todayPnlVal">₹0.00</div>
-      <div class="tile-sub" id="todayWinsSub"><strong id="todayWinsVal">0 Wins</strong> / 0 Losses (0 Trades Today)</div>
-      <div class="tile-sub" id="todayGrossSub" style="margin-top:3px; font-size:11px; color:var(--text-muted);">Gross: ₹0.00 | Charges: ₹0.00</div>
+    <div class="metric-tile" style="min-width: 250px;">
+      <div class="tile-lbl" style="display:flex; justify-content:space-between; align-items:center;">
+        <span>Today's Scorecard</span>
+        <span id="todayWinsSub" style="font-size:11px; color:var(--text-muted);"><strong id="todayWinsVal" style="color:var(--success-bright);">0 Wins</strong> / 0 Losses</span>
+      </div>
+      <div style="display:flex; align-items:baseline; justify-content:space-between; margin-top:2px; margin-bottom:4px;">
+        <div>
+          <span style="font-size:10px; color:var(--text-muted); text-transform:uppercase; font-weight:600; display:block;">Net PnL (Pocket)</span>
+          <div class="tile-val" id="todayPnlVal" style="margin-bottom:0;">₹0.00</div>
+        </div>
+        <div style="text-align:right;">
+          <span style="font-size:10px; color:var(--text-muted); text-transform:uppercase; font-weight:600; display:block;">Avg Gain</span>
+          <div class="tile-val" id="todayAvgGainVal" style="font-size:18px; margin-bottom:0; color:var(--text-muted);">0.0%</div>
+        </div>
+      </div>
+      <div class="pnl-strip" id="todayPnlStrip">
+        <div class="pnl-strip-item">
+          <span class="pnl-strip-lbl">Gross PnL</span>
+          <span class="pnl-strip-val" id="todayGrossVal" style="color:var(--aegis-bright);">+₹0.00</span>
+        </div>
+        <div class="pnl-strip-item" style="text-align:center;">
+          <span class="pnl-strip-lbl">Total Charges</span>
+          <span class="pnl-strip-val" id="todayChargesVal" style="color:var(--text-muted);">₹0.00</span>
+        </div>
+        <div class="pnl-strip-item" style="text-align:right;">
+          <span class="pnl-strip-lbl">Net PnL</span>
+          <span class="pnl-strip-val" id="todayNetMiniVal" style="color:var(--aegis-bright);">+₹0.00</span>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -654,6 +704,7 @@ body {
                 <th>Side</th>
                 <th>Fill</th>
                 <th>Exit</th>
+                <th>Gain %</th>
                 <th>Gross PnL</th>
                 <th>Charges</th>
                 <th>Net PnL</th>
@@ -663,6 +714,9 @@ body {
             <tbody id="todayTradesBody">
               <!-- Injected by JS -->
             </tbody>
+            <tfoot id="todayTradesFoot">
+              <!-- Summary row injected by JS -->
+            </tfoot>
           </table>
         </div>
       </div>
@@ -767,8 +821,11 @@ function renderLiveState(data) {
   // 4. Today's Scorecard & Executed Trades
   const todayStats = data.today_stats || {};
   const todayPnlEl = document.getElementById("todayPnlVal");
+  const todayAvgGainEl = document.getElementById("todayAvgGainVal");
   const todayWinsSub = document.getElementById("todayWinsSub");
-  const todayGrossSub = document.getElementById("todayGrossSub");
+  const todayGrossVal = document.getElementById("todayGrossVal");
+  const todayChargesVal = document.getElementById("todayChargesVal");
+  const todayNetMiniVal = document.getElementById("todayNetMiniVal");
 
   const count = todayStats.trades_count || 0;
   const pnlRs = todayStats.pnl_rs !== undefined ? todayStats.pnl_rs : 0.0;
@@ -779,30 +836,64 @@ function renderLiveState(data) {
   const losses = todayStats.losses || 0;
   const wr = todayStats.win_rate_pct !== undefined ? todayStats.win_rate_pct : 0.0;
 
-  if (todayPnlEl && todayWinsSub) {
+  const todayTrades = todayStats.today_trades || [];
+  let sumGainPct = 0.0;
+  todayTrades.forEach(t => {
+    const gPct = t.opt_pct !== undefined ? parseFloat(t.opt_pct) : (((parseFloat(t.exit_price || 0) - parseFloat(t.entry_price || 1)) / parseFloat(t.entry_price || 1)) * 100);
+    sumGainPct += gPct;
+  });
+  const avgGainPct = todayTrades.length > 0 ? (sumGainPct / todayTrades.length) : 0.0;
+
+  if (todayPnlEl) {
     if (count > 0) {
       const netPrefix = netRs >= 0 ? "+₹" : "₹";
       const grossPrefix = grossRs >= 0 ? "+₹" : "₹";
+      const avgGainPrefix = avgGainPct >= 0 ? "+" : "";
+
       todayPnlEl.innerText = `${netPrefix}${netRs.toFixed(2)}`;
       todayPnlEl.className = `tile-val ${netRs >= 0 ? 'pos' : 'neg'}`;
-      todayWinsSub.innerHTML = `<strong id="todayWinsVal" style="color:var(--success-bright);">${wins} Wins</strong> / ${losses} Losses (${wr}% Win Rate)`;
-      if (todayGrossSub) {
-        todayGrossSub.innerHTML = `Gross: <strong style="color:${grossRs >= 0 ? 'var(--aegis-bright)' : 'var(--danger-bright)'}">${grossPrefix}${grossRs.toFixed(2)}</strong> | Charges: <strong style="color:var(--text-muted)">₹${chgRs.toFixed(2)}</strong>`;
+
+      if (todayAvgGainEl) {
+        todayAvgGainEl.innerText = `${avgGainPrefix}${avgGainPct.toFixed(2)}%`;
+        todayAvgGainEl.style.color = avgGainPct >= 0 ? "var(--aegis-bright)" : "var(--danger-bright)";
+      }
+      if (todayWinsSub) {
+        todayWinsSub.innerHTML = `<strong id="todayWinsVal" style="color:var(--success-bright);">${wins} Wins</strong> / ${losses} Losses (${wr}% WR)`;
+      }
+      if (todayGrossVal) {
+        todayGrossVal.innerText = `${grossPrefix}${grossRs.toFixed(2)}`;
+        todayGrossVal.style.color = grossRs >= 0 ? "var(--aegis-bright)" : "var(--danger-bright)";
+      }
+      if (todayChargesVal) {
+        todayChargesVal.innerText = `₹${chgRs.toFixed(2)}`;
+      }
+      if (todayNetMiniVal) {
+        todayNetMiniVal.innerText = `${netPrefix}${netRs.toFixed(2)}`;
+        todayNetMiniVal.style.color = netRs >= 0 ? "var(--aegis-bright)" : "var(--danger-bright)";
       }
     } else {
       todayPnlEl.innerText = "₹0.00";
       todayPnlEl.className = "tile-val";
-      todayWinsSub.innerHTML = `<strong id="todayWinsVal">0 Wins</strong> / 0 Losses (0 Trades Today)`;
-      if (todayGrossSub) todayGrossSub.innerText = "Gross: ₹0.00 | Charges: ₹0.00";
+      if (todayAvgGainEl) {
+        todayAvgGainEl.innerText = "0.0%";
+        todayAvgGainEl.style.color = "var(--text-muted)";
+      }
+      if (todayWinsSub) {
+        todayWinsSub.innerHTML = `<strong id="todayWinsVal">0 Wins</strong> / 0 Losses (0 Trades Today)`;
+      }
+      if (todayGrossVal) todayGrossVal.innerText = "+₹0.00";
+      if (todayChargesVal) todayChargesVal.innerText = "₹0.00";
+      if (todayNetMiniVal) todayNetMiniVal.innerText = "+₹0.00";
     }
   }
 
   // 4b. Table rows
   const tradesBody = document.getElementById("todayTradesBody");
+  const tradesFoot = document.getElementById("todayTradesFoot");
   tradesBody.innerHTML = "";
+  if (tradesFoot) tradesFoot.innerHTML = "";
 
   const hist = data.aegis_trade_history || [];
-  const todayTrades = todayStats.today_trades || [];
 
   if (todayTrades.length > 0) {
     todayTrades.forEach(t => {
@@ -810,10 +901,13 @@ function renderLiveState(data) {
       const gross = t.gross_pl !== undefined ? parseFloat(t.gross_pl) : (t.pnl_rs !== undefined ? parseFloat(t.pnl_rs) : 0.0);
       const chg = t.charges !== undefined ? parseFloat(t.charges) : 0.0;
       const net = t.net_pl !== undefined ? parseFloat(t.net_pl) : (gross - chg);
+      const gainPct = t.opt_pct !== undefined ? parseFloat(t.opt_pct) : (((parseFloat(t.exit_price || 0) - parseFloat(t.entry_price || 1)) / parseFloat(t.entry_price || 1)) * 100);
       const grossClass = gross >= 0 ? "pnl-pos" : "pnl-neg";
       const netClass = net >= 0 ? "pnl-pos" : "pnl-neg";
+      const gainClass = gainPct >= 0 ? "pnl-pos" : "pnl-neg";
       const grossPrefix = gross >= 0 ? "+₹" : "₹";
       const netPrefix = net >= 0 ? "+₹" : "₹";
+      const gainPrefix = gainPct >= 0 ? "+" : "";
       const sideClass = (t.signal || "").includes("CALL") ? "call" : "put";
 
       tr.innerHTML = `
@@ -822,6 +916,7 @@ function renderLiveState(data) {
         <td><span class="badge ${sideClass}">${t.signal || '—'}</span></td>
         <td class="mono">₹${t.entry_price ? parseFloat(t.entry_price).toFixed(2) : '—'}</td>
         <td class="mono">₹${t.exit_price ? parseFloat(t.exit_price).toFixed(2) : '—'}</td>
+        <td class="mono bold ${gainClass}" style="font-weight:600;">${gainPrefix}${gainPct.toFixed(2)}%</td>
         <td class="mono ${grossClass}">${grossPrefix}${gross.toFixed(2)}</td>
         <td class="mono" style="color:var(--text-muted); font-size:11px;">₹${chg.toFixed(2)}</td>
         <td class="mono ${netClass}" style="font-weight:700;">${netPrefix}${net.toFixed(2)}</td>
@@ -829,16 +924,34 @@ function renderLiveState(data) {
       `;
       tradesBody.appendChild(tr);
     });
+
+    if (tradesFoot) {
+      const netPrefix = netRs >= 0 ? "+₹" : "₹";
+      const grossPrefix = grossRs >= 0 ? "+₹" : "₹";
+      const avgGainPrefix = avgGainPct >= 0 ? "+" : "";
+      tradesFoot.innerHTML = `
+        <tr style="background:rgba(255,255,255,0.04); border-top:2px solid var(--border); font-weight:700;">
+          <td colspan="5" style="color:#fff; text-transform:uppercase; font-size:11px; letter-spacing:0.04em;">
+            <strong>TODAY TOTAL (${todayTrades.length} TRADES)</strong>
+          </td>
+          <td class="mono ${avgGainPct >= 0 ? 'pnl-pos' : 'pnl-neg'}" style="font-weight:700;">${avgGainPrefix}${avgGainPct.toFixed(2)}%</td>
+          <td class="mono ${grossRs >= 0 ? 'pnl-pos' : 'pnl-neg'}" style="font-weight:700;">${grossPrefix}${grossRs.toFixed(2)}</td>
+          <td class="mono" style="color:var(--text-muted); font-size:11px;">₹${chgRs.toFixed(2)}</td>
+          <td class="mono ${netRs >= 0 ? 'pnl-pos' : 'pnl-neg'}" style="font-weight:800; font-size:13px;">${netPrefix}${netRs.toFixed(2)}</td>
+          <td style="color:var(--success-bright); font-size:11px; font-weight:600;">${wr}% Win Rate</td>
+        </tr>
+      `;
+    }
   } else {
     // Show clean banner + recent completed trades with historical date
     const bannerRow = document.createElement("tr");
-    bannerRow.innerHTML = `<td colspan="9" style="text-align:center; padding:10px; color:var(--text-muted); font-size:12px; background:rgba(255,255,205,0.02); border-bottom:1px solid var(--border);">No trades executed today yet (${todayStats.date_ist || 'Live'}). Showing recent completed trades below:</td>`;
+    bannerRow.innerHTML = `<td colspan="10" style="text-align:center; padding:10px; color:var(--text-muted); font-size:12px; background:rgba(255,255,205,0.02); border-bottom:1px solid var(--border);">No trades executed today yet (${todayStats.date_ist || 'Live'}). Showing recent completed trades below:</td>`;
     tradesBody.appendChild(bannerRow);
 
     const recentTrades = hist.slice(0, 5);
     if (recentTrades.length === 0) {
       const emptyRow = document.createElement("tr");
-      emptyRow.innerHTML = `<td colspan="9" style="text-align:center; padding:18px; color:var(--text-muted);">No recorded trades yet.</td>`;
+      emptyRow.innerHTML = `<td colspan="10" style="text-align:center; padding:18px; color:var(--text-muted);">No recorded trades yet.</td>`;
       tradesBody.appendChild(emptyRow);
     } else {
       recentTrades.forEach(t => {
@@ -846,10 +959,13 @@ function renderLiveState(data) {
         const gross = t.gross_pl !== undefined ? parseFloat(t.gross_pl) : (t.pnl_rs !== undefined ? parseFloat(t.pnl_rs) : 0.0);
         const chg = t.charges !== undefined ? parseFloat(t.charges) : 0.0;
         const net = t.net_pl !== undefined ? parseFloat(t.net_pl) : (gross - chg);
+        const gainPct = t.opt_pct !== undefined ? parseFloat(t.opt_pct) : (((parseFloat(t.exit_price || 0) - parseFloat(t.entry_price || 1)) / parseFloat(t.entry_price || 1)) * 100);
         const grossClass = gross >= 0 ? "pnl-pos" : "pnl-neg";
         const netClass = net >= 0 ? "pnl-pos" : "pnl-neg";
+        const gainClass = gainPct >= 0 ? "pnl-pos" : "pnl-neg";
         const grossPrefix = gross >= 0 ? "+₹" : "₹";
         const netPrefix = net >= 0 ? "+₹" : "₹";
+        const gainPrefix = gainPct >= 0 ? "+" : "";
         const sideClass = (t.signal || "").includes("CALL") ? "call" : "put";
 
         tr.innerHTML = `
@@ -858,6 +974,7 @@ function renderLiveState(data) {
           <td><span class="badge ${sideClass}">${t.signal || '—'}</span></td>
           <td class="mono">₹${t.entry_price ? parseFloat(t.entry_price).toFixed(2) : '—'}</td>
           <td class="mono">₹${t.exit_price ? parseFloat(t.exit_price).toFixed(2) : '—'}</td>
+          <td class="mono bold ${gainClass}" style="font-weight:600;">${gainPrefix}${gainPct.toFixed(2)}%</td>
           <td class="mono ${grossClass}">${grossPrefix}${gross.toFixed(2)}</td>
           <td class="mono" style="color:var(--text-muted); font-size:11px;">₹${chg.toFixed(2)}</td>
           <td class="mono ${netClass}" style="font-weight:700;">${netPrefix}${net.toFixed(2)}</td>

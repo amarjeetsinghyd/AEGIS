@@ -655,6 +655,9 @@ body {
         <tbody id="journalTableBody">
           <!-- Populated by JS -->
         </tbody>
+        <tfoot id="journalTableFoot">
+          <!-- Populated by JS -->
+        </tfoot>
       </table>
     </div>
   </div>
@@ -934,6 +937,44 @@ function renderTable(trades) {
     `;
     tbody.appendChild(tr);
   });
+
+  const tfoot = document.getElementById("journalTableFoot");
+  if (tfoot) {
+    if (trades.length > 0) {
+      let totGross = 0.0, totCharges = 0.0, totNet = 0.0, sumGain = 0.0;
+      trades.forEach(t => {
+        const g = t.gross_pnl_rs !== undefined ? parseFloat(t.gross_pnl_rs) : parseFloat(t.pnl_rs || 0.0);
+        const c = t.charges_rs !== undefined ? parseFloat(t.charges_rs) : 0.0;
+        const n = t.net_pnl_rs !== undefined ? parseFloat(t.net_pnl_rs) : (g - c);
+        totGross += g;
+        totCharges += c;
+        totNet += n;
+        sumGain += parseFloat(t.opt_pct || 0.0);
+      });
+      const avgGain = sumGain / trades.length;
+      const grossClass = totGross >= 0 ? "pnl-pos" : "pnl-neg";
+      const netClass = totNet >= 0 ? "pnl-pos" : "pnl-neg";
+      const gainClass = avgGain >= 0 ? "pnl-pos" : "pnl-neg";
+      const grossPrefix = totGross >= 0 ? "+₹" : "₹";
+      const netPrefix = totNet >= 0 ? "+₹" : "₹";
+      const gainPrefix = avgGain >= 0 ? "+" : "";
+
+      tfoot.innerHTML = `
+        <tr style="background:rgba(255,255,255,0.04); border-top:2px solid var(--border); font-weight:700;">
+          <td colspan="7" style="color:#fff; text-transform:uppercase; font-size:11px; letter-spacing:0.04em;">
+            <strong>TOTAL ACCUMULATED (${trades.length} TRADES)</strong>
+          </td>
+          <td class="mono bold ${gainClass}">${gainPrefix}${avgGain.toFixed(2)}%</td>
+          <td class="mono bold ${grossClass}">${grossPrefix}${totGross.toFixed(2)}</td>
+          <td class="mono" style="color:var(--text-muted); font-size:11px;">₹${totCharges.toFixed(2)}</td>
+          <td class="mono bold ${netClass}" style="font-weight:800; font-size:13px;">${netPrefix}${totNet.toFixed(2)}</td>
+          <td colspan="3" style="color:var(--text-muted); font-size:11px;">SEBI &amp; Brokerage Reconciled</td>
+        </tr>
+      `;
+    } else {
+      tfoot.innerHTML = "";
+    }
+  }
 }
 
 function applyFilters() {
