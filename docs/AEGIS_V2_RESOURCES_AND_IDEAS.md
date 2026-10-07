@@ -513,8 +513,10 @@ Option premiums for the same OTM rank fluctuate wildly based on market trend and
 
 ### 4. Canonical Consensus & Operational Discipline
 
-* **Final Quantitative Architecture Decision (Locked for Future V2)**:
-  Under equal capital allocation (e.g. ₹1,000), **allocating across 2 Lots of Cheap Far OTM (~₹25 premium)** strictly dominates **1 Lot of Expensive Near OTM (~₹50 premium)**. While both deliver identical net profit (**+₹23.50 net in pocket** post-charges), the cheap 2-lot contract requires **35% less spot movement (6.6 index points vs. 10.0 points)** and features **$10\times$ deeper order book liquidity**, ensuring rapid passive limit fills and protecting the 86.96% win-rate.
+* **The 9-OTM Single-Lot Runway Principle**:
+  * Because empirical evidence (Trade #23) proves that **9 OTM reliably hits the +4.0% TP within our strict 15–20s execution window**, there is no need to prematurely force multi-lot splitting while growing from 15 OTM up to 9 OTM.
+  * **The 1-Lot Operating Band**: We comfortably ride **1 Lot from 15 OTM all the way up to 9 OTM** as capital grows. This naturally expands trade size from ₹300 to ₹1,000, increasing gross gains to ₹40 and neutralizing the ₹16.50 flat charge.
+  * **The Lot Scaling Trigger**: Only when capital exceeds 1 lot of 9 OTM—where climbing further would force us into the dangerous 8, 7, 6 OTM or ATM zone—do we **FREEZE the climb** and trigger multi-lot deployment on Far OTM (e.g. 2 lots @ ₹25)!
 * **Testing Phase Production Discipline (Current ~₹600 Capital)**:
   * **Zero Code Changes in Production Hot-Path**: Current AEGIS Version 1.0 is locked and untouched.
-  * In current testing mode with ~₹600 capital, the locked `StrikeSelector` automatically selects the highest affordable strike within the budget band (typically 9 to 13 OTM @ ₹24–₹29 per lot), perfectly preserving consistency without code alterations.
+  * In current testing mode with ~₹600 capital, the locked `StrikeSelector` automatically selects the highest affordable strike within our budget band (typically 9 to 13 OTM @ ₹24–₹29 per lot), perfectly following this 1-lot runway without any manual interference or code alterations.
