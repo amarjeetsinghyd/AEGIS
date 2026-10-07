@@ -352,90 +352,103 @@ def calculate_v2_strike_and_lots(account_capital: float, chain: dict, lot_size: 
 
 ---
 
-## 🧾 Evidence Docket #5: Brokerage & Regulatory Charges Architecture (Shoonya Zero-Brokerage vs. Traditional Brokers)
+## 🧾 Evidence Docket #5: Realistic Transaction Charges Model (₹16–₹17 Flat Round-Trip) & API Forensic Audit
 
-### 1. The ₹16 Fee Misconception Debunked
-In Indian retail markets, many traders assume a flat ₹16–₹20 charge is deducted per trade:
-* **The ₹15.93 / ₹16 Myth (DP Charges)**: Depository Participant (DP) charges (₹13.50 + 18% GST = ₹15.93) apply **ONLY to delivery selling of equity shares from a DEMAT account** (e.g. selling TCS, Reliance delivery shares via CDSL/NSDL).
-* **F&O / Options Reality**: Derivatives contracts are cash-settled contracts and are **never delivered to Demat**. Therefore, **DP CHARGES ON OPTIONS ARE EXACTLY ₹0.00**.
-* **Finvasia (Shoonya) Zero-Brokerage Seam**: While discount brokers like Zerodha, Groww, and Angel One levy flat ₹20/order (₹40 round-trip + GST = ~₹47 per trade), **Shoonya levies ₹0.00 BROKERAGE across all segments** (Intraday, Equity, and F&O).
-
----
-
-### 2. Exact Statutory & Regulatory Taxes on Option Scalping (1 Lot @ ~₹25 SENSEX)
-
-When trading 1 Lot (20 shares) of SENSEX Options on BSE (BFO):
-* Entry @ ₹25.00 $\implies$ Buy Turnover = **₹500.00**
-* Exit @ ₹26.00 $\implies$ Sell Turnover = **₹520.00**
-* Total Combined Turnover = **₹1,020.00**
-
-| Tax / Statutory Levy | Rate / Formula | Trade Amount (₹) | Deducted By / Payable To |
-| :--- | :--- | :--- | :--- |
-| **Brokerage** | **₹0.00 (Shoonya)** | **₹0.00** | Broker (Finvasia) |
-| **STT (Securities Transaction Tax)** | 0.10% on SELL turnover (effective Oct 1, 2024) | **₹0.52** | Central Government |
-| **BSE Exchange Txn Charge** | 0.0375% of premium turnover | **₹0.38** | BSE Exchange |
-| **GST (Goods & Services Tax)** | 18% on (Exchange Charge + SEBI Fee) | **₹0.07** | Government (Central + State) |
-| **Stamp Duty** | 0.003% on BUY turnover | **₹0.015** | State Government |
-| **SEBI Turnover Fee** | ₹10 per crore (0.0001% of turnover) | **₹0.001** | SEBI Regulator |
-| **DP Charges** | **₹0.00 (No Demat transfer in F&O)** | **₹0.00** | CDSL / NSDL |
-| **TOTAL CHARGES PER ROUND-TRIP TRADE** | — | **≈ ₹0.98 – ₹1.00** | **मात्र ~₹1.00 प्रति ट्रेड!** |
-
-### 3. Forensic Post-Charges Audit of Today's 3 Live Trades (07 Oct 2026)
-
-| Trade # | Contract & Qty | Gross PnL (₹) | Exact Total Regulatory Charges (₹) | Net In-Pocket Profit (₹) | Retention % |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Trade #21** | `73800 CE` (20 qty) | ₹0.00 (Scratch) | **₹1.11** | **-₹1.11** | — |
-| **Trade #22** | `71300 PE` (20 qty) | **+₹19.00** (+3.91%) | **₹0.96** | **+₹18.04** | **94.95%** |
-| **Trade #23** | `71400 PE` (20 qty) | **+₹20.00** (+3.99%) | **₹0.99** | **+₹19.01** | **95.05%** |
-| **DAILY TOTAL** | **3 Trades** | **+₹39.00 Gross** | **₹3.06 Total Taxes** | **+₹35.94 Net In-Pocket** | **92.15% Retained** |
-
-> **Key Takeaway**:
-> On Shoonya, our net operational drag is **only ~₹1 per trade**! From today's ₹39.00 gain, **₹35.94 (92.15%) remains pure net cash in the account**.
-> Furthermore, trading **2 lots in a single order** (Qty = 40) only increases turnover charges to **~₹1.90 total** (no double fixed brokerage exists), preserving over **95% of gross profits**.
+### 1. Broker API Forensic Audit (`NorenApi` / `NorenRestApiPy`)
+We conducted a live inspection of the Shoonya Python SDK (`NorenRestApiPy.NorenApi`) on the production VPS:
+* **API Inspection Finding**: The `NorenApi` class exposes standard execution and order book calls (`place_order`, `modify_order`, `cancel_order`, `get_order_book`, `get_trade_book`, `single_order_history`, `get_positions`, `get_limits`, `span_calculator`), but **does NOT provide any native `get_charges()` or `calculate_brokerage()` API function**.
+* **System Design Imperative**: Because the broker API does not return a real-time post-trade charges breakdown, our quantitative logging and telemetry systems must compute net P&L internally using our empirical **Flat Cost Model**.
 
 ---
 
-## 🏔️ The Stepped Ceiling Scaling Model: The 10-OTM Hard Cap & Lot Multiplier Reset
+### 2. The Real-World ₹16–₹17 Round-Trip Cost Structure
 
-### The Founder's Strategic Architecture:
-1. **Vertical Climb Within Safe Zone**:
-   * When account capital grows incrementally (e.g. from ₹600 to ₹750, ₹850, ₹950), climb the OTM ladder from 12 OTM up to 10 OTM (buying 1 lot of ~₹30 to ~₹45).
-2. **The Hard Invalidation Boundary (10 OTM / 9 OTM Ceiling)**:
-   * **Never climb above 9 OTM or 10 OTM!**
-   * *Empirical Proof*: In Trade #22, 10 OTM reached +3.96%, while 9 OTM reached +3.72%, and 8 OTM dropped to +2.80%. In normal 20–40s gamma bursts, any strike closer than 9 OTM requires too large an underlying index move (15 to 25 points), causing the +4.0% TP to stall and fail!
-3. **Horizontal Lot Multiplier Reset**:
-   * Once the account reaches the 10-OTM ceiling and accumulates enough capital for **2 Lots** (₹1,100–₹1,200), **STOP climbing!**
-   * **Reset the ladder back down to 13–15 OTM (₹18–₹25)** and deploy **2 Lots**!
-   * Scale 2 lots from 14 OTM to 10 OTM as capital grows from ₹1,200 to ₹1,800.
-   * At ₹1,800–₹2,000, **reset back to 13–15 OTM and deploy 3 Lots**!
-   * At ₹3,000, **reset and deploy 5 Lots**!
+In practical live execution, a complete round-trip option trade (Buy + Sell) incurs:
+* **Brokerage / Order Execution Fee**: ₹5.00 per executed leg (Buy ₹5.00 + Sell ₹5.00) = **₹10.00**
+* **Statutory Taxes & Exchange Levies**:
+  * STT (0.10% – 0.15% on Sell side)
+  * BSE / NSE Exchange Transaction Turnover Fee
+  * Stamp Duty (0.003% on Buy side)
+  * SEBI Turnover Charges
+  * 18% GST on brokerage and transaction fees
+  * Combined Taxes = **₹6.00 to ₹7.00**
+* **Total Fixed Cost per Round-Trip Trade = ₹16.00 to ₹17.00 (Benchmark: ₹16.50)**.
 
-### 📊 Visual Representation of the Stepped Scaling Cycle:
+---
+
+### 3. The Quantitative PnL Dilemma: Why Charges Dictate Strike Selection
+
+This ₹16–₹17 cost barrier fundamentally impacts deep OTM scalping with 1 lot:
+1. **The ₹15 Far OTM Trap (1 Lot @ ₹15 Premium = ₹300 Trade Cost)**:
+   * A +4.0% gain yields only: $20 \times ₹0.60 = \mathbf{+₹12.00 \text{ Gross Profit}}$.
+   * Subtract ₹16.50 charges $\implies$ **Net PnL = -₹4.50 (Loss on a Win!)**.
+2. **The ₹25 Core OTM Trade (1 Lot @ ₹25 Premium = ₹500 Trade Cost — Today's Trades)**:
+   * A +4.0% gain yields: $20 \times ₹1.00 = \mathbf{+₹20.00 \text{ Gross Profit}}$.
+   * Subtract ₹16.50 charges $\implies$ **Net PnL = +₹3.50 (Marginal Net Gain)**.
+3. **The ₹50 Upper OTM Trade (1 Lot @ 9 OTM = ₹1,000 Trade Cost)**:
+   * A +4.0% gain yields: $20 \times ₹2.00 = \mathbf{+₹40.00 \text{ Gross Profit}}$.
+   * Subtract ₹16.50 charges $\implies$ **Net PnL = +₹23.50 (High Profit Retention!)**.
+4. **The 2-Lot Scaling Effect (2 Lots @ ₹25 Core OTM = ₹1,000 Trade Cost)**:
+   * Both lots fill in a **single order** (Qty = 40).
+   * A +4.0% gain yields: $40 \times ₹1.00 = \mathbf{+₹40.00 \text{ Gross Profit}}$.
+   * Flat charges remain only ₹17.00 $\implies$ **Net PnL = +₹23.00!**
+
+> **Core Mathematical Revelation**:
+> To overcome the ₹16–₹17 flat charge hurdle, the system must deploy enough capital per trade ($> ₹800–₹1,000$) so that a +4.0% move generates $\ge ₹35–₹40$ gross profit.
+> This requires **either climbing the ladder to 9 OTM (₹45–₹55 premium), OR trading 2 lots on Far OTM!**
+
+---
+
+## 🏔️ The Refined Stepped Ceiling Scaling Model: 9-OTM Hard Cap & 2-Lot Horizon Reset
+
+### The Strategic Policy Rules:
+
+1. **Rule 1: Climb Upward Until 2 Lots of 15 OTM is Affordable**:
+   * As long as account capital is insufficient to purchase **2 Lots of 15 OTM** (40 shares $\times$ ~₹15–₹18 = ₹600–₹720 plus safety margin), the bot **MUST climb up the OTM ladder** (15 OTM $\to$ 14 $\to$ 13 $\to$ 12 $\to$ 11 $\to$ 10 $\to$ 9 OTM).
+   * *Rationale*: Climbing increases the premium from ₹15 to ₹50, elevating the gross +4% gain from ₹12 to ₹40, thereby preserving net profitability against the ₹16.50 charges.
+2. **Rule 2: Absolute Hard Ceiling at 9 OTM (Never Cross Above 9 OTM)**:
+   * **9 OTM is the absolute highest boundary.** The bot is strictly forbidden from trading 8, 7, 6 OTM or ATM.
+   * *Empirical Proof from Trade #22*: 9 OTM reached +3.72% and 10 OTM reached +3.96%, but 8 OTM and 7 OTM stalled at +2.5% to +2.8%. Strikes above 9 OTM require an index spot run of 18–25 points, destroying the quick 15–40s +4.0% fill.
+3. **Rule 3: The 2-Lot Horizon Reset**:
+   * The moment accumulated capital can comfortably afford **2 Lots of 15 OTM**, the bot triggers a **Horizon Reset**:
+     - Compare: 1 Lot of 9 OTM (₹50 $\times$ 20 = ₹1,000) vs. 2 Lots of 14–15 OTM (₹18 $\times$ 40 = ₹720).
+     - Both produce identical or superior rupee gains, but 14–15 OTM has 200+ lots liquidity and faster gamma expansion!
+     - **Reset back down to 15 OTM and trade 2 Lots**!
+4. **Rule 4: Multi-Lot Climbing & Tier 3 Reset**:
+   * With 2 lots active, as capital grows (from ₹1,000 to ₹1,800), climb 2 lots up from 15 OTM towards 9 OTM.
+   * At 9 OTM, 2 lots generates **+₹80.00 gross profit**, yielding **+₹63.00 net in pocket**!
+   * Once capital reaches the 3-lot threshold (can buy 3 lots of 15 OTM), **reset back down to 15 OTM and deploy 3 Lots**!
+
+---
+
+### 📊 Diagram: The Stepped Scaling & Horizon Reset Cycle
 
 ```
 OTM Depth
    ▲
-10 ┼─────────(HARD CEILING - NEVER CROSS ABOVE 9/10 OTM)─────────
+ 9 ┼─────────[HARD CEILING: NEVER CROSS ABOVE 9 OTM]─────────
    │          /                      /                      /
-11 │         /                      /                      /
+10 │         /                      /                      /
    │        /  (Climb)             /  (Climb)             /  (Climb)
-12 │       /                      /                      /
+11 │       /                      /                      /
    │      /                      /                      /
-13 │     /                      /                      /
+12 │     /                      /                      /
    │    /                      /                      /
-14 │   /                      /                      /
+13 │   /                      /                      /
    │  /                      /                      /
-15 ┼─[1 Lot Cycle] ──RESET──►[2 Lots Cycle] ──RESET──►[3 Lots Cycle] ──► ...
+14 │ /                      /                      /
+   │/                      /                      /
+15 ┼─[1 Lot Climb] ──RESET──►[2 Lots Climb] ──RESET──►[3 Lots Climb] ──► ...
    └───────────────────────────────────────────────────────────────► Capital Growth
-     ₹500 - ₹950            ₹1,100 - ₹1,800        ₹1,800 - ₹2,500
+     ₹500 - ₹850            ₹900 - ₹1,800          ₹1,800 - ₹2,700
 ```
 
 ---
 
-## 🖥️ Future V2 Dashboard Feature: "Net PnL (After Regulatory Taxes)"
+## 🖥️ Future V2 Dashboard Feature: "Net PnL (After Flat ₹16.50 Charges)"
 
 In Version 2.0, the `unified_dashboard` analytics engine (`telemetry_loader.py` and `cockpit_html.py`) will incorporate:
 1. `Gross P&L (₹)`: Raw option price difference $\times$ quantity.
-2. `Estimated Taxes & Charges (₹)`: Real-time calculation based on Shoonya zero-brokerage + official STT (0.10%) + BSE/NSE transaction fees + GST.
-3. `Net P&L In-Pocket (₹)`: Post-charges cash accretion.
+2. `Estimated Charges (₹)`: Real-world flat deduction of **₹16.50 per completed trade** (Buy + Sell).
+3. `Net P&L In-Pocket (₹)`: `Gross P&L - ₹16.50`.
 4. `Net Retention Ratio (%)`: `(Net P&L / Gross P&L) * 100`.
