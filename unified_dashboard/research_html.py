@@ -885,7 +885,7 @@ function renderTable(trades) {
     tr.innerHTML = `
       <td class="mono bold" style="color:var(--text-muted);">#${t.id}</td>
       <td class="mono">${t.date} <span style="color:var(--text-muted); font-size:11px;">${t.entry_time}</span></td>
-      <td class="mono bold">${t.index} ${t.strike}</td>
+      <td class="mono bold">${t.index} ${t.strike} <span style="font-size:11px; color:#58a6ff; font-weight:normal; display:block;">${t.otm_depth ? t.otm_depth + ' OTM' : (t.otm_display || '')}</span></td>
       <td><span class="badge ${t.type.toLowerCase()}">${t.type}</span></td>
       <td class="mono">₹${t.entry_price.toFixed(2)}</td>
       <td class="mono">₹${t.exit_price.toFixed(2)}</td>
@@ -907,7 +907,7 @@ function applyFilters() {
   const res = document.getElementById("resultFilter").value;
 
   const filtered = RAW_DATA.trades.filter(t => {
-    const matchSearch = !q || (t.strike + " " + t.index + " " + t.type + " " + t.date).toUpperCase().includes(q);
+    const matchSearch = !q || (t.strike + " " + t.index + " " + t.type + " " + t.date + " " + (t.otm_display || "")).toUpperCase().includes(q);
     const matchPillar = (pillar === "ALL") || t.pillar.includes(pillar);
     
     let matchResult = true;
@@ -932,7 +932,7 @@ function openForensicModal(tradeId) {
   const wy = f.wyckoff || {};
 
   document.getElementById("modalTitle").innerHTML = `
-    <span>#${trade.id} · ${trade.index} ${trade.strike} ${trade.type}</span>
+    <span>#${trade.id} · ${trade.index} ${trade.strike} ${trade.type} <span style="font-size:13px; color:#58a6ff; font-weight:normal; margin-left:6px;">[${trade.otm_display || ''}]</span></span>
     <span class="badge ${trade.is_win ? 'win' : 'loss'}">${trade.result}</span>
   `;
 
@@ -942,6 +942,7 @@ function openForensicModal(tradeId) {
       <div class="forensic-card">
         <div class="forensic-card-title">🎯 Macro Price Action Setup</div>
         <div class="forensic-row"><span class="forensic-label">Pillar:</span><span class="forensic-val">${trade.pillar}</span></div>
+        <div class="forensic-row"><span class="forensic-label">Strike Moneyness:</span><span class="forensic-val" style="color:#58a6ff;">${trade.otm_display || 'OTM'} (ATM: ₹${trade.atm || '—'})</span></div>
         <div class="forensic-row"><span class="forensic-label">Anchor Level (S*/R*):</span><span class="forensic-val">${f.anchor_price ? '₹' + f.anchor_price : 'Dynamic 20 EMA'}</span></div>
         <div class="forensic-row"><span class="forensic-label">Hub Prominence:</span><span class="forensic-val">${f.anchor_prominence ? f.anchor_prominence + 'x' : '1.25x'}</span></div>
         <div class="forensic-row"><span class="forensic-label">Candle Body Ratio:</span><span class="forensic-val">${f.candle_body_ratio ? (f.candle_body_ratio * 100).toFixed(1) + '%' : '72%'}</span></div>
@@ -1009,6 +1010,7 @@ function openForensicModal(tradeId) {
     <!-- LEARNINGS & CODE CHANGE -->
     <div class="learnings-box">
       <h4>💡 Post-Mortem &amp; Quant Learnings:</h4>
+      <p><strong>Moneyness &amp; OTM Depth:</strong> <span style="color:#58a6ff; font-weight:600;">${trade.otm_display || 'OTM'}</span> | Reference ATM: ₹${trade.atm || '—'}</p>
       <p><strong>Post-Mortem:</strong> ${trade.key_learnings || 'Execution followed strict maker TP protocols with zero adverse selection.'}</p>
       <p><strong>Code Evolution:</strong> ${trade.code_change || 'Tolerances validated.'}</p>
       <p style="margin-bottom:0;"><strong>Machine Behavior:</strong> ${trade.remarks || 'Passively filled maker order.'}</p>

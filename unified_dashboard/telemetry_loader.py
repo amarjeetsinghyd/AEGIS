@@ -533,6 +533,39 @@ def get_journal_data(force_reload: bool = False) -> Dict[str, Any]:
         is_loss = "LOSS" in res_str
         is_be = "BE" in res_str
 
+        atm_val = row.get("ATM", "")
+        otm_strikes_val = str(row.get("OTM Strikes", "")).strip()
+
+        step = 100 if "SENSEX" in index_name.upper() else 50
+        try:
+            stk_num = float(strike)
+        except Exception:
+            stk_num = 0.0
+
+        try:
+            atm_num = float(atm_val) if atm_val else (round(idx_entry / step) * step if idx_entry > 0 else 0.0)
+        except Exception:
+            atm_num = round(idx_entry / step) * step if idx_entry > 0 else 0.0
+
+        otm_depth = 0
+        otm_display = ""
+        if stk_num > 0 and atm_num > 0:
+            if trade_type == "CALL":
+                otm_depth = int(round((stk_num - atm_num) / step))
+            else:
+                otm_depth = int(round((atm_num - stk_num) / step))
+            
+            pts_diff = abs(stk_num - atm_num)
+            bps_diff = (pts_diff / idx_entry * 10000) if idx_entry > 0 else 0.0
+            if otm_depth > 0:
+                otm_display = f"{otm_depth} OTM ({pts_diff:.0f} pts / {bps_diff:.1f} bps)"
+            elif otm_depth == 0:
+                otm_display = "ATM (0 OTM)"
+            else:
+                otm_display = f"{abs(otm_depth)} ITM ({pts_diff:.0f} pts / {bps_diff:.1f} bps)"
+        elif otm_strikes_val:
+            otm_display = f"{otm_strikes_val} OTM"
+
         if pnl > 0:
             gross_profit += pnl
         elif pnl < 0:
@@ -682,6 +715,10 @@ def get_journal_data(force_reload: bool = False) -> Dict[str, Any]:
             "index": index_name,
             "type": trade_type,
             "strike": strike,
+            "atm": atm_num,
+            "otm_depth": otm_depth,
+            "otm_display": otm_display,
+            "otm_strikes": otm_strikes_val,
             "expiry": expiry,
             "dte": dte,
             "entry_price": entry_prc,
