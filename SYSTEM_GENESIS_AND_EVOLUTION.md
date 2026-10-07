@@ -623,6 +623,7 @@ Across the two-week consistency testing period (21 September – 05 October 2026
 | **19** | 05 Oct | 09:46:35 | NIFTY | CALL | 22950 | 8.10 | 8.40 | +3.70% | 11s | +₹19.50 | ✅ LIVE WIN | Pillar 3 (Volatility Squeeze Breakout) | Maker Limit TP Hit (+3.70% in 11s) |
 | **20** | 05 Oct | 14:58:55 | NIFTY | PUT | 22100 | 8.15 | 8.50 | +4.29% | 132s | +₹22.75 | ✅ LIVE WIN | Pillar 4 (Breakdown below 22,539.30 anchor) | Maker Limit TP Hit (+4.29% in 132s) |
 | **21** | 07 Oct | 12:20:47 | SENSEX | CALL | 73800 | 28.85 | 28.85 | 0.00% | 14s | ₹0.00 | 🛡️ BE WIN | Pillar 2 (Liquidity Sweep on 200 EMA) | 9-EMA Choke Scratch (₹0.00 in 14s) |
+| **22** | 07 Oct | 13:20:06 | SENSEX | PUT | 71300 | 24.30 | 25.25 | +3.91% | 38s | +₹19.00 | ✅ LIVE WIN | Pillar 1 (20 EMA Pullback Exhaustion) | Maker Limit TP Hit (+3.91% in 38s) |
 
 *\*Trades 11 and 12 were validated shadow executions during strike depth limit testing prior to the 15-OTM depth upgrade.*
 
@@ -630,23 +631,23 @@ Across the two-week consistency testing period (21 September – 05 October 2026
 
 | Metric | Empirical Value | Institutional Benchmark | Evaluation |
 |---|---|---|---|
-| **Total Trades** | **21** | $\ge 15$ for statistical sample | Validated sample size across NIFTY & SENSEX |
-| **Winning Trades** | **17** | — | High-conviction consistency |
+| **Total Trades** | **22** | $\ge 15$ for statistical sample | Validated sample size across NIFTY & SENSEX |
+| **Winning Trades** | **18** | — | High-conviction consistency |
 | **Breakeven / Scratch** | **1** | — | Capital protected with zero loss |
 | **Losing Trades** | **3** | — | Losses severed rapidly ($\le 28$s average) |
-| **Win / Neutral Rate** | **85.71%** | $> 70.0\%$ | Exceptional outperformance on retail options |
-| **Gross Profit** | **+₹298.90** | — | Systematic edge accumulation |
+| **Win / Neutral Rate** | **86.36%** | $> 70.0\%$ | Exceptional outperformance on retail options |
+| **Gross Profit** | **+₹317.90** | — | Systematic edge accumulation |
 | **Gross Loss** | **-₹67.75** | — | Strict tail-risk containment |
-| **Profit Factor** | **4.41** | $> 2.00$ | World-class risk-adjusted return ratio |
-| **Net Realized PnL** | **+₹231.15** | — | Real account capital growth |
-| **Net Capital Growth** | **+39.29%** | $> +10.0\%$ | Scaled on micro-capital (~₹588 base) |
-| **Average Hold Duration** | **50.6 seconds** | $\le 180$ seconds | High-speed gamma scalping (Median: 25s, Min: 5s) |
-| **Average Winning Trade** | **+3.40%** | $\approx +4.0\%$ | High fill accuracy with zero slippage |
+| **Profit Factor** | **4.69** | $> 2.00$ | World-class risk-adjusted return ratio |
+| **Net Realized PnL** | **+₹250.15** | — | Real account capital growth |
+| **Net Capital Growth** | **+42.52%** | $> +10.0\%$ | Scaled on micro-capital (~₹588 base) |
+| **Average Hold Duration** | **50.0 seconds** | $\le 180$ seconds | High-speed gamma scalping (Median: 25s, Min: 5s) |
+| **Average Winning Trade** | **+3.43%** | $\approx +4.0\%$ | High fill accuracy with zero slippage |
 | **Average Losing Trade** | **-4.96%** | $\le -12.0\%$ | Cut cleanly before adverse theta decay |
 | **Max Drawdown (MAE)** | **-1.7% average** | $\le -12.0\%$ | Negligible pain across winning entries |
 
 #### 3. Pillar Hit-Rate Distribution
-- **Pillar 1 (`20_ema_rejection`)**: 7 trades | 5 Wins, 2 Losses | **71.4% Win Rate**
+- **Pillar 1 (`20_ema_rejection`)**: 8 trades | 6 Wins, 2 Losses | **75.0% Win Rate**
 - **Pillar 2 (`micro_sweep_reclaim`)**: 3 trades | 2 Wins, 1 Scratch | **100.0% Win/BE Rate**
 - **Pillar 3 (`volatility_squeeze_breakout`)**: 4 trades | 4 Wins, 0 Losses | **100.0% Win Rate**
 - **Pillar 4 (`hvg_network_phase_shift`)**: 7 trades | 6 Wins, 1 Loss | **85.7% Win Rate**
