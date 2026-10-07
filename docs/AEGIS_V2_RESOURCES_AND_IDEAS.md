@@ -508,3 +508,13 @@ Option premiums for the same OTM rank fluctuate wildly based on market trend and
    * If PE is cheap (market surged), the bot automatically grabs 9 or 10 OTM within ₹600 budget!
    * If PE is expensive (market crashed), the bot automatically steps down to 12 or 13 OTM where ₹600 budget fits!
    * **Result**: Zero manual intervention, 100% budget adherence, and complete immunity to IV distortion.
+
+---
+
+### 4. Canonical Consensus & Operational Discipline
+
+* **Final Quantitative Architecture Decision (Locked for Future V2)**:
+  Under equal capital allocation (e.g. ₹1,000), **allocating across 2 Lots of Cheap Far OTM (~₹25 premium)** strictly dominates **1 Lot of Expensive Near OTM (~₹50 premium)**. While both deliver identical net profit (**+₹23.50 net in pocket** post-charges), the cheap 2-lot contract requires **35% less spot movement (6.6 index points vs. 10.0 points)** and features **$10\times$ deeper order book liquidity**, ensuring rapid passive limit fills and protecting the 86.96% win-rate.
+* **Testing Phase Production Discipline (Current ~₹600 Capital)**:
+  * **Zero Code Changes in Production Hot-Path**: Current AEGIS Version 1.0 is locked and untouched.
+  * In current testing mode with ~₹600 capital, the locked `StrikeSelector` automatically selects the highest affordable strike within the budget band (typically 9 to 13 OTM @ ₹24–₹29 per lot), perfectly preserving consistency without code alterations.
