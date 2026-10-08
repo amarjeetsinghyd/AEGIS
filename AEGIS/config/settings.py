@@ -5,8 +5,6 @@ from common.runtime.paths import get_project_root
 
 BASE_DIR = str(get_project_root())
 load_dotenv(os.path.join(BASE_DIR, ".env"))
-# Engine-local .env override (VPS layout)
-load_dotenv(os.path.join(BASE_DIR, "AEGIS", ".env"), override=True)
 
 RUNTIME_PATHS = configure_runtime("aegis")
 DATA_DIR = RUNTIME_PATHS["data_dir"]
