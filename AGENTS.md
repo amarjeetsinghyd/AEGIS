@@ -82,6 +82,7 @@ Shared library: `common/` (broker / execution / market / ipc / runtime / config 
 
 ### 4. Strike Selection & Subscription Universe (15 OTM Depth)
 * **Subscription Universe**: ATM $\pm 15$ strikes (31 strikes total, 62 tokens CE+PE) tracked on WebSocket ($t+d$).
+* **Index Futures Passive Feed**: Subscribes 1 active near-month Index Future token (passive WebSocket feed, 0 polling loops, 0 extra REST calls) solely for emergency cold-boot candle seeding fallback and basis/telemetry. AEGIS does NOT trade futures; execution is strictly on options.
 * **Low-Capital Testing Mode (`funds < 5000`)**: `StrikeSelector` scans all 15 OTM strikes (`TESTING_DEEP_DEPTH = 16`). Automatically selects the closest affordable OTM strike for 1 lot (e.g. ₹15–₹28).
 * **Index Option Liquidity**: Major Indian index options (NIFTY/SENSEX) have massive liquidity (millions of shares). **NEVER** apply artificial 2% spread blocks or thin-ask blocks.
 
@@ -145,6 +146,18 @@ Shared library: `common/` (broker / execution / market / ipc / runtime / config 
 
 ## SHOONYA / NORENAPI RULES (broker seam)
 
+- **Mandatory 90-Day Password Rotation Schedule**:
+  - Shoonya enforces an involuntary password reset every 90 days.
+  - **Last Rotated Date**: `08 October 2026` (Active: `Freedom@2026`).
+  - **Next Mandatory Rotation Deadline**: `31 December 2026`.
+  - **Human Ownership**: The user maintains a personal alarm/reminder and rotates this manually via the Shoonya web portal. AI agents must NEVER attempt automated credential rotation, scraping, or brute-force logins.
+  - **When user rotates password**: Update **ONLY** the single canonical root `.env` (`c:\Users\Amarjeet Singh\quant-bot\.env` locally and `/home/opc/.env` on VPS). Clear cached session files (`data/shoonya_session.json` and `tokens_cache.json`) to trigger automatic fresh OAuth login.
+- **Single Root `.env` Architecture (Engine-Level `.env` Strictly Prohibited)**:
+  - There is exactly **ONE** `.env` file per environment:
+    - Local: `c:\Users\Amarjeet Singh\quant-bot\.env`
+    - VPS: `/home/opc/.env` (and repo root `/home/opc/quant-bot/.env`)
+  - **Strict Prohibition**: Engine subdirectories (such as `AEGIS/.env`, `ARGUS/.env`, `astra_bot/.env`) are **STRICTLY PROHIBITED**.
+  - **Root Cause & Rationale**: On 2026-10-08, a legacy `/home/opc/AEGIS/.env` overrode the root `.env` with stale credentials, causing repeated broker auth rejections and account lockout. All engines (including `AEGIS/config/settings.py`) load solely from repo root / `/home/opc/.env`.
 - **Weekend offline is normal.** The Shoonya WebSocket drops on Saturdays/Sundays and
   NSE holidays. A Sat/Sun 'no tick' or WS close is **not a bug** — do not file it,
   add alerts for it, or build weekday-specific reconnect logic for it. Reconnect /
@@ -184,6 +197,7 @@ Rules every change must uphold:
   package on the VPS, or output into a tool's private brain are deprecated
   one-shots — delete them, do not commit new ones.
 - **SSH key only at repo root** (`Oracle SSH keys/`), never inside an engine dir.
+- **No engine-level `.env` files.** Credentials live ONLY in the root `.env` (locally) or `/home/opc/.env` (VPS). Never place `.env` inside `AEGIS/`, `ARGUS/`, or any engine subdirectory.
 - **Engine files stay in their engine.** A file used by only one engine lives in
   that engine's folder; cross-engine code goes through `common/`.
 - **Legacy / backup copies** go in the relevant engine's `archive/` (e.g.
