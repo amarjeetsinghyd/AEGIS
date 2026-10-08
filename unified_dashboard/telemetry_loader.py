@@ -190,6 +190,89 @@ def compile_journal_excel() -> bool:
         return False
 
 
+BSE_WEEKLY_MONTH_MAP = {
+    "1": "Jan", "2": "Feb", "3": "Mar", "4": "Apr", "5": "May", "6": "Jun",
+    "7": "Jul", "8": "Aug", "9": "Sep", "O": "Oct", "N": "Nov", "D": "Dec"
+}
+
+
+def _extract_strike_and_expiry(
+    sym: str,
+    r: Optional[Dict[str, Any]] = None,
+    default_date: str = ""
+) -> Tuple[str, str]:
+    """
+    Extracts the correct option strike price and expiry string from symbol or record.
+    Properly handles:
+    - BSE Weekly options: e.g. SENSEX26O0871300PE -> Year 26, Month O (Oct), Day 08, Strike 71300, PE
+    - BSE Monthly options: e.g. SENSEX26SEP75600CE -> Strike 75600, CE
+    - NSE options: e.g. NIFTY06OCT26C22950 -> Strike 22950, C
+    - Direct strike fields in record if >= 1000
+    """
+    sym_clean = (sym or "").strip().upper()
+    strike_str = ""
+
+    # 1. Direct strike from record if valid
+    if r:
+        for key in ("strike", "stk"):
+            val = r.get(key)
+            if val is not None:
+                try:
+                    fval = float(val)
+                    if fval >= 1000:
+                        strike_str = str(int(fval))
+                        break
+                except Exception:
+                    pass
+        if not strike_str:
+            dp_stk = r.get("decision_payload", {}).get("metrics", {}).get("strike")
+            if dp_stk is not None:
+                try:
+                    fval = float(dp_stk)
+                    if fval >= 1000:
+                        strike_str = str(int(fval))
+                except Exception:
+                    pass
+
+    # 2. NSE option: ends with [CP](\d{4,6})$ e.g. NIFTY06OCT26C22950 -> 22950
+    if not strike_str:
+        m_nfo = re.search(r"[CP](\d{4,6})$", sym_clean)
+        if m_nfo:
+            strike_str = str(int(m_nfo.group(1)))
+
+    # 3. BSE weekly format: YY + [1-9OND] + DD + STRIKE(4-6 digits) + CE/PE
+    # e.g. SENSEX26O0871300PE -> Day 08, Strike 71300
+    if not strike_str:
+        m_bse_weekly = re.search(r"\d{2}[1-9OND]\d{2}(\d{4,6})(?:CE|PE)$", sym_clean)
+        if m_bse_weekly:
+            strike_str = str(int(m_bse_weekly.group(1)))
+
+    # 4. BSE monthly format: YY + MMM + STRIKE(4-6 digits) + CE/PE
+    # e.g. SENSEX26SEP75600CE -> Strike 75600
+    if not strike_str:
+        m_bse_monthly = re.search(r"(\d{4,6})(?:CE|PE)$", sym_clean)
+        if m_bse_monthly:
+            strike_str = str(int(m_bse_monthly.group(1)))
+
+    # Parse Expiry
+    expiry_str = default_date
+
+    # Check BSE weekly expiry: YY + [1-9OND] + DD
+    m_bse_exp = re.search(r"\d{2}([1-9OND])(\d{2})\d{4,6}(?:CE|PE)$", sym_clean)
+    if m_bse_exp:
+        m_code, d_code = m_bse_exp.group(1), m_bse_exp.group(2)
+        if m_code in BSE_WEEKLY_MONTH_MAP:
+            expiry_str = f"{d_code} {BSE_WEEKLY_MONTH_MAP[m_code]}"
+    else:
+        # Check standard 2-digit day + 3-letter month (NSE or BSE monthly)
+        exp_m = re.search(r"(\d{2}[A-Z]{3})\d{2}", sym_clean)
+        if exp_m:
+            raw_exp = exp_m.group(1)
+            expiry_str = f"{raw_exp[:2]} {raw_exp[2:].capitalize()}"
+
+    return strike_str, expiry_str
+
+
 def reconcile_and_auto_journal() -> bool:
     """
     Scans AEGIS telemetry JSONL files and trade_history.json from the latest journal date onwards.
@@ -321,8 +404,7 @@ def reconcile_and_auto_journal() -> bool:
         if iso_d < latest_iso:
             continue
 
-        stk_m = re.search(r"(\d{4,5})", sym)
-        stk = stk_m.group(1) if stk_m else ""
+        stk, expiry_str = _extract_strike_and_expiry(sym, r, default_date=date_str)
 
         sig1 = (date_str, entry_hms)
         sig2 = (iso_d, entry_hms)
@@ -368,12 +450,13 @@ def reconcile_and_auto_journal() -> bool:
         else:
             opt_type = "CALL"
 
-        exp_m = re.search(r"(\d{2}[A-Z]{3})\d{2}", sym)
-        if exp_m:
-            raw_exp = exp_m.group(1)
-            expiry_str = f"{raw_exp[:2]} {raw_exp[2:].capitalize()}"
-        else:
-            expiry_str = date_str
+        if not expiry_str:
+            exp_m = re.search(r"(\d{2}[A-Z]{3})\d{2}", sym)
+            if exp_m:
+                raw_exp = exp_m.group(1)
+                expiry_str = f"{raw_exp[:2]} {raw_exp[2:].capitalize()}"
+            else:
+                expiry_str = date_str
 
         dte_val = 0 if date_str.lower() == expiry_str.lower() else 1
 
@@ -546,6 +629,18 @@ def get_journal_data(force_reload: bool = False) -> Dict[str, Any]:
             stk_num = float(strike)
         except Exception:
             stk_num = 0.0
+
+        # Self-healing if strike in CSV was corrupted (e.g. 8713 instead of 71300)
+        min_expected = 10000 if "SENSEX" in index_name.upper() else 5000
+        if stk_num < min_expected:
+            diag_text = str(row.get("Key Learnings (Trader Post-Mortem)", "") or "")
+            recovered_stk, _ = _extract_strike_and_expiry(diag_text)
+            if recovered_stk:
+                try:
+                    stk_num = float(recovered_stk)
+                    strike = int(stk_num)
+                except Exception:
+                    pass
 
         try:
             atm_num = float(atm_val) if atm_val else (round(idx_entry / step) * step if idx_entry > 0 else 0.0)
