@@ -304,12 +304,6 @@ class SimulatedPositionManager:
             self._close_position(lp, pnl_pct, f"PREMIUM_HARD_SL (-12.0% disaster floor: {pnl_pct:.1f}%)", current_ts_sec)
             return
 
-        # 1B. Point 4 Gate 2: 3-Minute Profit Harvest (+1.5% to +2.5%)
-        # If trade has spent >= 180s and profit is hovering in +1.5% to +2.5%, lock in gains
-        if hold_time >= 180.0 and hold_time < self.max_hold_sec and 1.5 <= pnl_pct <= 2.5:
-            self._close_position(lp, pnl_pct, f"TIME_HARVEST_LOCKED_GAIN (+{pnl_pct:.1f}%)", current_ts_sec)
-            return
-
         # ─── Stepped Risk Compression + Cost-Shield + Near-Target Engine (Parity with Live V4.1) ───
         # 1. Near-Target Profit Lock (Peak >= +3.5%, exits on >= 0.5% drop from peak)
         if trade.peak_pnl_pct >= 3.5:

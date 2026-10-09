@@ -95,8 +95,7 @@ Shared library: `common/` (broker / execution / market / ipc / runtime / config 
   * Peak Bid $\ge +3.5\% \implies$ **Exits immediately on $\ge 0.8\%$ pullback from peak bid**!
 * **Strict 1-Lot Maker TP**: Resting Limit Order at **`+4.0%`** (100% quantity).
   * **Target Discipline Mandate (Never Expand to +5%–6%)**: +4.0% is the mathematically optimal safe harbor that fills passively within 10–40s across choppy regimes. Option momentum beyond +4% frequently faces sharp institutional dumps (e.g. crashing back below entry immediately after reaching +8%). Never greed for 5%–6% as holding for bigger targets destroys the 84%+ win-rate.
-  * **Exchange Tick-Size Rounding**: Option target prices are rounded to the nearest ₹0.05 tick (e.g. ₹8.10 entry rounds 8.424 to ₹8.40 = +3.70%), ensuring instant passive fill on the opening crest.
-* **3-Minute Time Harvest**: Stagnation $> 180$s with $+1.5\%$ to $+2.5\%$ locks profit.
+* **3-Minute Time Harvest (DECOMMISSIONED 2026-10-09)**: Premature 180s profit choke permanently removed. Running green trades are given the full 5-minute (300s) baseline runway (`MAX_HOLD_SEC = 300s`) to reach the resting +4.0% Maker TP.
 * **EOD CAS Flush**: 15:08:00 IST force flattens all open inventory.
 
 ### 6. Component Operational State (Live vs Shadow)

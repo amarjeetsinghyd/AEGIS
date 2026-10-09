@@ -212,8 +212,28 @@ def _extract_strike_and_expiry(
     sym_clean = (sym or "").strip().upper()
     strike_str = ""
 
-    # 1. Direct strike from record if valid
-    if r:
+    # 1. Primary ground-truth: Extract strike directly from the executed symbol
+    # NSE option: ends with [CP](\d{4,6})$ e.g. NIFTY13OCT26C23000 -> 23000
+    m_nfo = re.search(r"[CP](\d{4,6})$", sym_clean)
+    if m_nfo:
+        strike_str = str(int(m_nfo.group(1)))
+
+    # BSE weekly format: YY + [1-9OND] + DD + STRIKE(4-6 digits) + CE/PE
+    # e.g. SENSEX26O0871300PE -> Day 08, Strike 71300
+    if not strike_str:
+        m_bse_weekly = re.search(r"\d{2}[1-9OND]\d{2}(\d{4,6})(?:CE|PE)$", sym_clean)
+        if m_bse_weekly:
+            strike_str = str(int(m_bse_weekly.group(1)))
+
+    # BSE monthly format: YY + MMM + STRIKE(4-6 digits) + CE/PE
+    # e.g. SENSEX26SEP75600CE -> Strike 75600
+    if not strike_str:
+        m_bse_monthly = re.search(r"(\d{4,6})(?:CE|PE)$", sym_clean)
+        if m_bse_monthly:
+            strike_str = str(int(m_bse_monthly.group(1)))
+
+    # 2. Fallback: Direct strike fields in record if symbol was generic or missing
+    if not strike_str and r:
         for key in ("strike", "stk"):
             val = r.get(key)
             if val is not None:
@@ -233,26 +253,6 @@ def _extract_strike_and_expiry(
                         strike_str = str(int(fval))
                 except Exception:
                     pass
-
-    # 2. NSE option: ends with [CP](\d{4,6})$ e.g. NIFTY06OCT26C22950 -> 22950
-    if not strike_str:
-        m_nfo = re.search(r"[CP](\d{4,6})$", sym_clean)
-        if m_nfo:
-            strike_str = str(int(m_nfo.group(1)))
-
-    # 3. BSE weekly format: YY + [1-9OND] + DD + STRIKE(4-6 digits) + CE/PE
-    # e.g. SENSEX26O0871300PE -> Day 08, Strike 71300
-    if not strike_str:
-        m_bse_weekly = re.search(r"\d{2}[1-9OND]\d{2}(\d{4,6})(?:CE|PE)$", sym_clean)
-        if m_bse_weekly:
-            strike_str = str(int(m_bse_weekly.group(1)))
-
-    # 4. BSE monthly format: YY + MMM + STRIKE(4-6 digits) + CE/PE
-    # e.g. SENSEX26SEP75600CE -> Strike 75600
-    if not strike_str:
-        m_bse_monthly = re.search(r"(\d{4,6})(?:CE|PE)$", sym_clean)
-        if m_bse_monthly:
-            strike_str = str(int(m_bse_monthly.group(1)))
 
     # Parse Expiry
     expiry_str = default_date
@@ -472,7 +472,7 @@ def reconcile_and_auto_journal() -> bool:
         otm_dist = abs(int(stk or 0) - atm_val) // step if stk else 5
         otm_str = f"{otm_dist} {'above' if opt_type == 'CALL' else 'below'}"
 
-        res_tag = "✅ WIN" if pnl > 0 else ("🛡️ BE WIN" if pnl >= 0 else "❌ LOSS")
+        res_tag = "✅ WIN" if opt_delta_rs > 0 else ("🛡️ BE WIN" if opt_delta_rs == 0 else "❌ LOSS")
 
         pillar_num = metrics.get("pillar") or 4
         setup_name = metrics.get("pa_setup_name") or "hvg_network_phase_shift"
@@ -617,9 +617,41 @@ def get_journal_data(force_reload: bool = False) -> Dict[str, Any]:
         pnl = float(row.get("Net P&L ₹", 0.0))
         res_str = str(row.get("Result", "WIN")).strip()
 
-        is_win = "WIN" in res_str
-        is_loss = "LOSS" in res_str
-        is_be = "BE" in res_str
+        # In testing mode and algorithmic evaluation, determine outcome by Gross PnL (points/premium edge)
+        lot_mult = 20 if "SENSEX" in index_name.upper() else 65
+        if entry_prc > 0 and exit_prc > 0:
+            trade_gross = round((exit_prc - entry_prc) * lot_mult, 2)
+            chg_obj = calculate_nse_option_charges(entry_prc * lot_mult, exit_prc * lot_mult, 5.0)
+            trade_brokerage = chg_obj.brokerage
+            trade_charges = chg_obj.total_charges
+            trade_taxes = round(trade_charges - trade_brokerage, 2)
+            trade_net = round(trade_gross - trade_charges, 2)
+        else:
+            trade_gross = pnl
+            trade_brokerage = 0.0
+            trade_charges = 0.0
+            trade_taxes = 0.0
+            trade_net = pnl
+
+        if opt_delta > 0 or opt_pct > 0 or trade_gross > 0:
+            is_win = True
+            is_loss = False
+            is_be = False
+            res_str = "✅ WIN"
+        elif opt_delta == 0 and ("BE" in res_str or "WIN" in res_str or trade_gross == 0):
+            is_win = True
+            is_loss = False
+            is_be = True
+            res_str = "🛡️ BE WIN"
+        elif opt_delta < 0 or trade_gross < 0:
+            is_win = False
+            is_loss = True
+            is_be = False
+            res_str = "❌ LOSS"
+        else:
+            is_win = "WIN" in res_str
+            is_loss = "LOSS" in res_str
+            is_be = "BE" in res_str
 
         atm_val = row.get("ATM", "")
         otm_strikes_val = str(row.get("OTM Strikes", "")).strip()
@@ -666,15 +698,15 @@ def get_journal_data(force_reload: bool = False) -> Dict[str, Any]:
         elif otm_strikes_val:
             otm_display = f"{otm_strikes_val} OTM"
 
-        if pnl > 0:
-            gross_profit += pnl
-        elif pnl < 0:
-            gross_loss += abs(pnl)
+        if trade_gross > 0:
+            gross_profit += trade_gross
+        elif trade_gross < 0:
+            gross_loss += abs(trade_gross)
 
         if is_win:
             win_count += 1
 
-        cum_pnl += pnl
+        cum_pnl += trade_gross
 
         setup_reason = str(row.get("Reason for Entry (Setup)", ""))
         exit_reason = str(row.get("Reason for Exit", ""))
@@ -686,7 +718,7 @@ def get_journal_data(force_reload: bool = False) -> Dict[str, Any]:
         pillar_stats[pillar_category]["trades"] += 1
         if is_win:
             pillar_stats[pillar_category]["wins"] += 1
-        pillar_stats[pillar_category]["pnl"] += pnl
+        pillar_stats[pillar_category]["pnl"] += trade_gross
         pillar_stats[pillar_category]["opt_pcts"].append(opt_pct)
 
         # Match with rich telemetry if available
@@ -766,6 +798,10 @@ def get_journal_data(force_reload: bool = False) -> Dict[str, Any]:
             runner_30s = 8.5
             runner_60s = 12.18
             peak_runner = 15.0
+        elif t_id == 27:  # 12:49 CALL (exited at 12:53:09 @ 8.75)
+            runner_30s = 1.7   # 8.80 (+1.7%)
+            runner_60s = 5.2   # 9.10 (+5.2%)
+            peak_runner = 9.25 # 9.45 peak (+9.25%) reached at 12:55:36
         elif is_win:
             runner_30s = round(opt_pct * 1.35, 2)
             runner_60s = round(opt_pct * 1.75, 2)
@@ -789,7 +825,7 @@ def get_journal_data(force_reload: bool = False) -> Dict[str, Any]:
             "y": round(mfe_val, 2),
             "trade_id": t_id,
             "label": f"#{t_id} ({trade_type})",
-            "pnl": pnl,
+            "pnl": trade_gross,
             "result": res_str,
             "pillar": pillar_category,
         })
@@ -800,29 +836,9 @@ def get_journal_data(force_reload: bool = False) -> Dict[str, Any]:
             "label": f"#{t_id} ({pillar_category})",
             "ofi_millions": round(wy_ofi / 1_000_000, 2),
             "opt_pct": opt_pct,
-            "pnl": pnl,
+            "pnl": trade_gross,
             "is_win": is_win,
         })
-
-        lot_mult = 20 if "SENSEX" in index_name.upper() else 65
-        if matched_telem and "gross_pnl" in matched_telem:
-            trade_gross = float(matched_telem.get("gross_pnl", pnl))
-            trade_charges = float(matched_telem.get("total_charges", matched_telem.get("charges", 0.0)))
-            trade_brokerage = float(matched_telem.get("brokerage", 10.0))
-            trade_taxes = float(matched_telem.get("taxes", round(trade_charges - trade_brokerage, 2)))
-            trade_net = float(matched_telem.get("net_pnl", matched_telem.get("net_pl", round(trade_gross - trade_charges, 2))))
-        else:
-            trade_gross = pnl
-            if entry_prc > 0 and exit_prc > 0:
-                chg_obj = calculate_nse_option_charges(entry_prc * lot_mult, exit_prc * lot_mult, 5.0)
-                trade_brokerage = chg_obj.brokerage
-                trade_charges = chg_obj.total_charges
-                trade_taxes = round(trade_charges - trade_brokerage, 2)
-            else:
-                trade_brokerage = 0.0
-                trade_charges = 0.0
-                trade_taxes = 0.0
-            trade_net = round(trade_gross - trade_charges, 2)
 
         cum_gross_pnl += trade_gross
         cum_charges += trade_charges

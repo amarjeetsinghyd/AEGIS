@@ -1193,14 +1193,6 @@ class AegisExecutionManager:
             noise_floor = self._compute_noise_floor(leg, live_bid, live_ask)
             hold_sec = (now - context.entry_time).total_seconds() if context.entry_time else 0.0
 
-            # ─── Point 4 Gate 2: 3-Minute Harvest Exit (+1.5% to +2.5%) ───
-            # If trade has spent >= 180s and profit is hovering in +1.5% to +2.5%,
-            # lock in gains immediately to prevent late-bar theta melt and reversals.
-            if hold_sec >= 180.0 and 1.5 <= cur_pnl_pct <= 2.5:
-                self._close_all_legs(
-                    f"TIME_HARVEST_LOCKED_GAIN (+{cur_pnl_pct:.1f}% after {int(hold_sec)}s @ {effective_bid:.2f})"
-                )
-                return
 
             # ─── Point 4: Stepped Risk Compression + Cost-Shield + Near-Target Engine (V4.1) ───
             # Scale-Invariant Normalized Percentage Model (strictly % normalized, no fixed paise!)

@@ -336,8 +336,8 @@ Monitored at 2 Hz by `_manage_open_trade()` (`aegis_execution_manager.py`):
    - Scale-invariant normalized percentage model (strictly % normalized, no fixed paise):
      - **Step 1 (Stepped Safety Net)**: When peak gain reaches $\ge +3.0\%$ (`STEP1_TRIGGER_PCT = 0.030`), SL is tightened from the disaster floor to **-3.0%** (`STEP1_SL_PCT = -0.030`), giving wide breathing room (+2.0% premature choke removed to prevent stopouts on normal candle open wicks).
      - **Step 2 (Cost-Shield Scratch)**: When peak gain reaches $\ge +3.5\%$ (`STEP2_TRIGGER_PCT = 0.035`), SL is permanently locked to **0.0% (Entry Price)** (`STEP2_SL_PCT = 0.000`). A winning trade is mathematically prevented from ever turning into a loss!
-5. **3-Minute Profit Harvest Exit (+1.5% to +2.5%)**:
-   - If a trade has spent $\ge 180\text{s}$ (3 mins) and current gain is hovering between $+1.5\%$ and $+2.5\%$, exits immediately (`TIME_HARVEST_LOCKED_GAIN`) to prevent late-bar theta melt and sudden reversals.
+5. **3-Minute Profit Harvest Choke (DECOMMISSIONED 2026-10-09)**:
+   - Permanently removed to give profitable running trades the full 5-minute (`MAX_HOLD_SEC = 300s`) breathing runway to reach their full resting maker target (+4.0% TP). A trade in green (+1.5% to +2.5%) is never prematurely choked at 180s.
 6. **Dynamic 0DTE Time-Decay Shield & Stagnation Trap**:
    - Expiry days: 240s baseline before 12:30 PM, 180s strict after 12:30 PM.
    - At 90s on expiry afternoon (post-12:30 PM): if gain $< +0.5\%$ and 50-EMA is opposed, exits on `0DTE_STAGNATION_TRAP_EXIT`.

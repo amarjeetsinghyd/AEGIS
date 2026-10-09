@@ -507,51 +507,6 @@ class AegisGammaEngine:
             side = info["side"]          # 0=CE, 1=PE
             strike = float(info["strike"])
 
-            # ─── Phase 1 (V4.1b): Absolute Pain Zone Band Veto — TRUE EARLY RETURN ───
-            # Single source with ATR buffer (0.3x ATR): UP blocked only when spot
-            # is decisively below the band, DOWN only when decisively above it.
-            # Inside band+buffer both pass (chop handled downstream by pillars).
-            _early_direction = "UP" if side == 0 else "DOWN"  # 0=CE/CALL, 1=PE/PUT
-            _pz_top = 0.0
-            _pz_bottom = 0.0
-            _vetoed = False
-            if self.price_action_engine is not None:
-                try:
-                    _vetoed, _pz_top, _pz_bottom, _pz_buf = self.price_action_engine.band_veto_blocks(
-                        _early_direction, spot=self.last_spot
-                    )
-                except Exception:
-                    _vetoed, _pz_top, _pz_bottom = False, 0.0, 0.0
-            # V4.1b band observability: per-minute pass/block counters per direction
-            # (O(1) counters; single log line per minute — diagnoses single-side flow).
-            try:
-                _dg = self.__dict__.setdefault("_band_diag", {"m": -1, "up_p": 0, "up_b": 0, "dn_p": 0, "dn_b": 0})
-                _now_m = int(now_sec // 60)
-                if _dg["m"] != _now_m:
-                    if _dg["m"] > 0:
-                        logger.info(
-                            f"[BAND DIAG] spot={self.last_spot:.1f} top={_pz_top:.1f} bot={_pz_bottom:.1f} "
-                            f"UP pass={_dg['up_p']} block={_dg['up_b']} DOWN pass={_dg['dn_p']} block={_dg['dn_b']}"
-                        )
-                    _dg.update({"m": _now_m, "up_p": 0, "up_b": 0, "dn_p": 0, "dn_b": 0})
-                if _early_direction == "UP":
-                    _dg["up_p" if not _vetoed else "up_b"] += 1
-                else:
-                    _dg["dn_p" if not _vetoed else "dn_b"] += 1
-                if _vetoed:
-                    return None
-            except Exception:
-                if _vetoed:
-                    return None
-            except Exception:
-                if _pz_top > 0 and _pz_bottom > 0 and self.last_spot > 0:
-                    if _early_direction == "UP" and self.last_spot < _pz_top:
-                        return None
-                    if _early_direction == "DOWN" and self.last_spot > _pz_bottom:
-                        return None
-                    if _pz_bottom <= self.last_spot <= _pz_top:
-                        return None
-
             # [NEW] O(1) Rolling 30.0s Time-Window Tick Rate & L1 History
             if sym not in self.tick_ring:
                 self.tick_ring[sym] = deque(maxlen=300)
@@ -660,8 +615,40 @@ class AegisGammaEngine:
                 self.scorer.update_tick(sym, now_sec, lp, bp1, sp1, b1, a1, b2, a2, b3, a3, b4, a4, b5, a5, vol=vol_val)
 
                 direction = "UP" if side == 0 else "DOWN"  # 0=CE -> UP, 1=PE -> DOWN
-                # NOTE (V3.0): Phase-1 VWAP veto already enforced at absolute top
-                # before buffering/scoring. No second veto here by design.
+
+                # ─── Phase 1 (V4.1b): Absolute Pain Zone Band Veto ───
+                # Vetoes entry trade consideration for opposing direction while
+                # preserving 100% full option flow telemetry (update_option_tick, depth, OI) above.
+                _pz_top = 0.0
+                _pz_bottom = 0.0
+                _vetoed = False
+                if self.price_action_engine is not None:
+                    try:
+                        _vetoed, _pz_top, _pz_bottom, _pz_buf = self.price_action_engine.band_veto_blocks(
+                            direction, spot=self.last_spot
+                        )
+                    except Exception:
+                        _vetoed, _pz_top, _pz_bottom = False, 0.0, 0.0
+
+                try:
+                    _dg = self.__dict__.setdefault("_band_diag", {"m": -1, "up_p": 0, "up_b": 0, "dn_p": 0, "dn_b": 0})
+                    _now_m = int(now_sec // 60)
+                    if _dg["m"] != _now_m:
+                        if _dg["m"] > 0:
+                            logger.info(
+                                f"[BAND DIAG] spot={self.last_spot:.1f} top={_pz_top:.1f} bot={_pz_bottom:.1f} "
+                                f"UP pass={_dg['up_p']} block={_dg['up_b']} DOWN pass={_dg['dn_p']} block={_dg['dn_b']}"
+                            )
+                        _dg.update({"m": _now_m, "up_p": 0, "up_b": 0, "dn_p": 0, "dn_b": 0})
+                    if direction == "UP":
+                        _dg["up_p" if not _vetoed else "up_b"] += 1
+                    else:
+                        _dg["dn_p" if not _vetoed else "dn_b"] += 1
+                    if _vetoed:
+                        return None
+                except Exception:
+                    if _vetoed:
+                        return None
 
                 # ─── V3.0 Event-Bound Anchor T (formal 1m close) ───
                 # Production path slices strictly to [T-60, T] / [T-30, T] and
@@ -711,7 +698,7 @@ class AegisGammaEngine:
                     self._purge_impulse_memory(sym)
                     return None
 
-                # ─── Wyckoff Volume & Order Flow Delta Gate (Parallel Price & Volume Confirmation) ───
+                # ─── Wyckoff Volume & Order Flow Delta Gate (Shadow Mode Observability) ───
                 wyckoff_passed = True
                 wyckoff_reason = "wyckoff_passed"
                 wyckoff_m = {}
@@ -728,22 +715,23 @@ class AegisGammaEngine:
                         pa_details=pa_details,
                     )
 
+                    # Wyckoff Volume & Order Flow Delta Gate (Active Institutional Gatekeeper)
                     if not wyckoff_passed:
-                        self._purge_impulse_memory(sym)
                         self._throttled_veto_log(
-                            "wyckoff_veto",
-                            f"[WYCKOFF VETO] {sym} ({direction}) {pa_setup_name} P{pillar_num} blocked: {wyckoff_reason} | {wyckoff_m}"
+                            f"wyckoff_veto_{sym}_{direction}",
+                            f"[WYCKOFF VETO] {sym} ({direction}) {pa_setup_name} P{pillar_num} blocked: "
+                            f"{wyckoff_reason} | {wyckoff_m}"
                         )
                         return None
-                    else:
-                        logger.info(
-                            f"[WYCKOFF CONFIRMED] {sym} ({direction}) {pa_setup_name} P{pillar_num} | "
-                            f"{wyckoff_reason} | VDR={wyckoff_m.get('vdr', 0.0):.2f}, "
-                            f"Absorption={wyckoff_m.get('absorption_score', 0.0):.1f}x, "
-                            f"OFI={wyckoff_m.get('opt_delta_flow', 0.0):+.0f}"
-                        )
-                        pa_details["wyckoff_metrics"] = wyckoff_m
-                        pa_details["wyckoff_reason"] = wyckoff_reason
+
+                    logger.info(
+                        f"[WYCKOFF CONFIRMED] {sym} ({direction}) {pa_setup_name} P{pillar_num} | "
+                        f"{wyckoff_reason} | VDR={wyckoff_m.get('vdr', 0.0):.2f}, "
+                        f"Absorption={wyckoff_m.get('absorption_score', 0.0):.1f}x, "
+                        f"OFI={wyckoff_m.get('opt_delta_flow', 0.0):+.0f}"
+                    )
+                    pa_details["wyckoff_metrics"] = wyckoff_m
+                    pa_details["wyckoff_reason"] = wyckoff_reason
 
 
 

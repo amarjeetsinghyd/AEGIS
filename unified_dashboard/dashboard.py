@@ -139,6 +139,15 @@ def _trade_history_aegis(limit: int = 20) -> list[dict]:
             gross_val = float(t.get("gross_pnl_rs", t.get("pnl_rs", 0.0)))
             charges_val = float(t.get("charges_rs", 0.0))
             net_val = float(t.get("net_pnl_rs", round(gross_val - charges_val, 2)))
+            raw_res = str(t.get("result", ""))
+            if gross_val > 0 or "WIN" in raw_res:
+                res_val = "✅ WIN"
+            elif gross_val == 0 and ("BE" in raw_res or "WIN" in raw_res):
+                res_val = "🛡️ BE WIN"
+            elif gross_val < 0:
+                res_val = "❌ LOSS"
+            else:
+                res_val = raw_res
             res.append({
                 "id": t.get("id"),
                 "date": f"{t.get('date')} {t.get('entry_time')}",
@@ -155,7 +164,7 @@ def _trade_history_aegis(limit: int = 20) -> list[dict]:
                 "net_pl": net_val,
                 "opt_pct": t.get("opt_pct"),
                 "reason": t.get("exit_reason"),
-                "result": t.get("result"),
+                "result": res_val,
                 "pillar": t.get("pillar"),
             })
         return res

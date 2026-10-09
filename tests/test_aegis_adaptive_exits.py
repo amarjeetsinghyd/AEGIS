@@ -836,8 +836,9 @@ def test_v41_near_target_profit_lock():
     assert "Near-Target Profit Lock" in em.exit_reasons[0]
 
 
-def test_point4_gate2_three_minute_harvest_exit():
-    """Verify that a trade held >= 180s with profit +1.5% to +4.0% exits via Time Harvest."""
+def test_no_premature_three_minute_harvest_choke():
+    """Verify that a trade held >= 180s with profit +1.5% to +2.5% is NOT prematurely choked,
+    allowing it to continue running towards the target or 300s baseline."""
     em, ctx, leg = create_test_manager(entry_price=100.0, spot_entry=24000.0, signal_type="CALL")
     em._is_active_instrument_expiry = lambda *args: False
     ctx.entry_time = datetime.now() - timedelta(seconds=185)
@@ -845,8 +846,7 @@ def test_point4_gate2_three_minute_harvest_exit():
     # Floating gain is +2.5% (102.50)
     em.broker.market_data_provider._quote = {"ltp": 102.50, "bp1": 102.50, "sp1": 102.60, "sq1": 500, "bq1": 500}
     em._manage_open_trade()
-    assert len(em.exit_reasons) == 1
-    assert "TIME_HARVEST_LOCKED_GAIN" in em.exit_reasons[0]
+    assert len(em.exit_reasons) == 0  # No premature choke!
 
 
 def test_point2_0dte_afternoon_time_stop():
