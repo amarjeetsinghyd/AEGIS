@@ -1669,6 +1669,23 @@ class AegisGammaEngine:
                                             "recommended_tp_pct": recommended_tp_pct,
                                         },
                                     )
+                                # ─── V4 DEFENSIVE TOP-5 DEPTH GUARD (BBO Micro-Price Skew + Spread Veto) ───
+                                if self.top5_depth_guard is not None:
+                                    bids_mat = np.array([
+                                        [bp1, b1], [bp2, b2], [bp3, b3], [bp4, b4], [bp5, b5]
+                                    ], dtype=np.float64)
+                                    asks_mat = np.array([
+                                        [sp1, a1], [sp2, a2], [sp3, a3], [sp4, a4], [sp5, a5]
+                                    ], dtype=np.float64)
+                                    dir_enum = V4Direction.BULLISH if direction == "UP" else V4Direction.BEARISH
+                                    guard_ok, guard_reason = self.top5_depth_guard.validate_execution(
+                                        dir_enum, bids_mat, asks_mat
+                                    )
+                                    if not guard_ok:
+                                        self._purge_impulse_memory(sym)
+                                        self._throttled_veto_log("v4_depth_guard_veto", f"[V4 DEPTH GUARD VETO] {sym} ({direction}) blocked: {guard_reason}")
+                                        return None
+
                                 if self.signal_fsm:
                                     self.signal_fsm.register_trade_executed(sym, now_sec)
 
@@ -1692,23 +1709,6 @@ class AegisGammaEngine:
                                                 "energy_score": energy_score,
                                             },
                                         )
-
-                                # ─── V4 DEFENSIVE TOP-5 DEPTH GUARD (BBO Micro-Price Skew + Spread Veto) ───
-                                if self.top5_depth_guard is not None:
-                                    bids_mat = np.array([
-                                        [bp1, b1], [bp2, b2], [bp3, b3], [bp4, b4], [bp5, b5]
-                                    ], dtype=np.float64)
-                                    asks_mat = np.array([
-                                        [sp1, a1], [sp2, a2], [sp3, a3], [sp4, a4], [sp5, a5]
-                                    ], dtype=np.float64)
-                                    dir_enum = V4Direction.BULLISH if direction == "UP" else V4Direction.BEARISH
-                                    guard_ok, guard_reason = self.top5_depth_guard.validate_execution(
-                                        dir_enum, bids_mat, asks_mat
-                                    )
-                                    if not guard_ok:
-                                        self._purge_impulse_memory(sym)
-                                        self._throttled_veto_log("v4_depth_guard_veto", f"[V4 DEPTH GUARD VETO] {sym} ({direction}) blocked: {guard_reason}")
-                                        return None
 
                                 self.cooldowns[sym] = now_sec
                                 logger.info(
