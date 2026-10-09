@@ -32,6 +32,8 @@
 | **20** | 05 Oct | 14:58:55 | 15:01:07 | 00:02:12 | NIFTY | PUT | 22100 | 8.15 | 8.50 | +0.35 | +4.29% | -3.50 | +22.75 | ✅ LIVE WIN | Pillar 4 (`hvg_network_phase_shift`) Breakdown below 22,539.30 anchor with Wyckoff SOS Harmony (OFI -4.13M institutional put flow). Conviction 84.0. | Take-Profit Hit (+4.3% @ 8.50) — resting maker limit TP filled passively at broker in 132s. | Afternoon Gamma Expansion: Spot rejected at 22,539 and broke down toward 22,530. Institutional put flow provided instant liquidity. Resting maker TP filled at +4.29% without slippage. | Validated Pillar 4 afternoon breakdown and resting Maker Limit TP (+4.0%) on 1 DTE NIFTY options. | Flawless automated execution. Entered at 14:58:55, filled passively at 15:01:07. Second winning trade of the day (100% daily win rate). |
 | **21** | 07 Oct | 12:20:47 | 12:21:01 | 00:00:14 | SENSEX | CALL | 73800 | 28.85 | 28.85 | 0.00 | 0.00% | +5.20 | +0.00 | 🛡️ BE WIN | Pillar 2 Liquidity Sweep Reclaim (`micro_sweep_reclaim`) on SENSEX 1m chart. Sweep of prior swing low directly at 200 EMA support zone (72,835-72,853) with Wyckoff volume confirmation. Conviction: 83.5. | Trend Reversal Exit (Spot 1m Bar Closed Below 9-EMA @ 72,880.64 vs 9-EMA 72,907.9) — premature choke after 14s. | 1) Premature choke by legacy 9-EMA bar close check. 2) Entry candle low (72,868.5) was NEVER broken; 12:21 candle expanded green upwards. 3) Sweeps retest macro institutional floors (200 EMA); 9-EMA close check is an implementation flaw on sweeps. | 1) Section 3C 9-EMA / 50-EMA check completely removed for all 4 Pillars (P1, P2, P3, P4). 2) Universal Invalidation rule deployed: CALL exits ONLY if Spot <= Entry Candle Low, PUT exits ONLY if Spot >= Entry Candle High. | Defensive Breakeven execution saved capital (₹0.00 loss, zero capital drawdown). Filled passively at ₹28.85 scratch without slippage. Fixed UnboundLocalError in telemetry loader. |
 | **22** | 07 Oct | 13:20:06 | 13:20:44 | 00:00:38 | SENSEX | PUT | 71300 | 24.30 | 25.25 | +0.95 | +3.91% | -3.10 | +19.00 | ✅ LIVE WIN | Pillar 1 20 EMA Pullback Exhaustion (`20_ema_rejection`) on PUT in downtrend (Zone: BEAR_CLEAR, VWAP: BEAR). Pullback to 20 EMA exhausted with Wyckoff volume confirmation (OFI -1.90M institutional put flow). Conviction: 85.0, EQS: 85.0. | Take-Profit Hit (+3.9% @ 25.25) — resting maker limit order filled passively at broker in 38s. | 1) Empirical validation of Universal Invalidation fix: With Section 3C 9-EMA choke removed, the trade had room to breathe across 38 seconds without premature exit. 2) Spot rejected off 20 EMA and collapsed into 13:21 gap-down candle as anticipated. 3) +4.0% resting Maker TP filled passively at ₹25.25 with zero slippage. | Validated removal of 9-EMA choke on Pillar 1; confirmed clean breathing room and passive maker fill. | Flawless automated execution. Entered at 13:20:06 @ ₹24.30, armed stepped safety net at +3.1%, filled maker limit TP at 13:20:44 @ ₹25.25 (+3.91%). Net Profit ₹19.00 locked in 38s. |
+| **23** | 07 Oct | 13:53:58 | 13:54:15 | 00:00:17 | SENSEX | PUT | 71400 | 25.05 | 26.05 | +1.00 | +3.99% | -10.20 | +20.00 | ✅ LIVE WIN | Pillar 4 (`hvg_network_phase_shift`) Breakdown below 72,598.46 breakout price / 72,613.59 Prominence Hub anchor with Wyckoff SOS Harmony (VDR 29.01, OFI -26.98M option delta, +27.56M put buy). Conviction: 85.0, EQS: 85.0. | Take-Profit Hit (+4.0% @ 26.05) — resting maker limit order filled passively at broker in 17s. | Lightning 17-second institutional execution. Spot collapsed through prominence hub; resting maker TP hit cleanly with zero slippage. | Verified Pillar 4 lightning execution with massive institutional Wyckoff volume confirmation. | Perfect institutional execution. Entered at 13:53:58, filled at 13:54:15. Third consecutive trade of the day (100% daily win rate). |
+| **24** | 08 Oct | 12:17:57 | 12:18:06 | 00:00:09 | SENSEX | PUT | 71300 | 22.75 | 23.65 | +0.90 | +3.96% | -18.30 | +18.00 | ✅ LIVE WIN | Pillar 4 (`hvg_network_phase_shift`) Breakdown below Prominence Hub anchor with Wyckoff volume harmony (VDR 0.90, OFI -4.69M). Conviction 85.0, EQS 85.0. | Take-Profit Hit (+4.0% @ 23.65) — resting maker limit order filled passively in 9 seconds. | 9-second sniper win on SENSEX 0 DTE expiry day! Option moved +4% instantaneously without adverse tick. | Verified Pillar 4 fast maker limit fill on 0 DTE SENSEX options with 1 lot testing discipline. | Flawless 9s execution. Sizing 1 lot inside testing capital. First trade under fresh password session. |
 
 ---
 
@@ -665,6 +667,85 @@
 * **कुल पीएनएल**: **+₹39.00** (~₹588 की टेस्टिंग कैपिटल पर **+6.63% का शुद्ध इंट्राडे रिटर्न**!)
 * **स्टार पिलर्स**: **Pillar 1 (`20_ema_rejection`)** & **Pillar 4 (`hvg_network_phase_shift`)**
 * **सिस्टम हेल्थ**: 100% ग्रीन, 3 में से 3 सुरक्षित एग्जीक्यूशन, पूंजी पर ज़ीरो ड्रॉडाउन।
+
+---
+
+## 📅 Trading Session & Forensic Breakdown: 08 October 2026 (Thursday — SENSEX 0 DTE Expiry Day)
+
+### 📌 सारांश (Executive Summary)
+08 अक्टूबर को Shoonya के 90-दिन अनिवार्य पासवर्ड रोटेशन के बाद दोपहर 11:45 बजे सिस्टम ऑनलाइन आया। 12:17 पर मशीन ने 0 DTE SENSEX पर मात्र 9 सेकंड में शानदार +4.0% मेकर लिमिट विन दर्ज किया। इसके बाद दोपहर में कई उच्च-कन्विक्शन सेटअप्स बनने के बावजूद मशीन ने कोई ट्रेड नहीं लिया, जिसकी विस्तृत फॉरेंसिक जांच की गई।
+
+---
+
+### 1. ट्रेड #24 विस्तृत विश्लेषण (12:17:57 IST — 9-Second Sniper Win)
+* **सेटअप**: **Pillar 4 (`hvg_network_phase_shift`)** — प्रॉमिनेंस हब ब्रेकडाउन।
+* **Wyckoff Harmony**: $VDR = 0.90$, OFI पुट डेल्टा **-4.69M** संस्थागत पुट बाइंग।
+* **कम्पोजिट कनविक्शन स्कोर**: **85.0 / 100** (Struct: 25.0, Impulse: 26.0, Flow: 19.0, Contract: 15.0), EQS: 85.0.
+* **कॉन्ट्रैक्ट**: `SENSEX 71300 PE` (0 DTE Expiry, लॉट साइज़ 20)
+* **एंट्री**: ₹22.75 @ 12:17:57 IST (लागत: ₹455.00)
+* **एग्जिट**: ₹23.65 @ 12:18:06 IST (अवधि: **मात्र 9 सेकंड!**)
+* **एग्जिट का कारण**: **Take-Profit Hit (+4.0% @ 23.65)** — ब्रोकर पर पहले से लगा हुआ रेस्टिंग मेकर लिमिट ऑर्डर पैसिवली भर गया।
+* **नतीजा**: **✅ LIVE WIN (+₹0.90 / +3.96% $\approx$ +4.0% — ₹+18.00 Net Profit)**
+* **परफॉर्मेंस**: 9 सेकंड का स्नाइपर एग्जीक्यूशन, ज़ीरो स्लिपेज, 100% पैसिव मेकर लिमिट फिल।
+
+---
+
+### 2. दोपहर के सन्नाटे का फॉरेंसिक ऑडिट (The Afternoon Lockout Investigation)
+12:18 से 15:08 के बीच SENSEX 1m चार्ट पर 5 क्लासिक ब्रेकआउट/रेक्लेम सेटअप्स बने (Conviction $\ge 80.0$), लेकिन मशीन ने कोई ट्रेड नहीं लिया। VPS लॉग्स (`/home/opc/AEGIS/logs/aegis.log`) के ऑडिट से 3 मुख्य कारण सामने आए:
+
+1. **फैंटम स्लॉट लीकेज (Phantom Slot Leakage Bug)**:
+   - 12:14:02 IST पर 71600 PE सेटअप पर ब्रोकर कोट्स की विसंगति के कारण `top5_depth_guard` ने `INVALID_QUOTES` वीटो दिया।
+   - लेकिन पुराने कोड में `slot_policy.mark_admitted()` इस गार्ड से पहले ही चल चुका था, जिससे बिना ट्रेड लगे स्लॉट #1 बर्बाद हो गया।
+   - ट्रेड #24 (12:17:51) लगने पर स्लॉट #2 कंज़्यूम हो गया (Used = 2 / 3)।
+2. **14:45 IST आफ्टरनून लॉक (`slot_reserved_afternoon`)**:
+   - क्वालिटी स्लॉट पॉलिसी में एक कृत्रिम नियम था कि तीसरा स्लॉट दोपहर 14:45 IST से पहले खर्च नहीं हो सकता (`is_afternoon = tmin >= 885`)।
+   - नतीजा: दोपहर 12:18 से 14:45 के बीच बने 5 वैलिड हाई-कन्विक्शन सेटअप्स `slot_reserved_afternoon` द्वारा ब्लॉक हो गए।
+3. **डायनामिक स्कोर एस्केलेशन (`slot_dynamic_bar`)**:
+   - पहले ट्रेड के बाद अगले ट्रेड के लिए आवश्यक स्कोर को 80 से बढ़ाकर 85 और 88+ कर दिया गया, जिससे कई 82-84 स्कोर वाले सही ट्रेड्स छूट गए।
+
+---
+
+## 📅 Architectural Upgrade & Machine Liberation: 09 October 2026 (Friday — Quality Stack Overhaul)
+
+आज 09 अक्टूबर 2026 को मार्केट ओपन से पहले क्वालिटी स्टैक में ऐतिहासिक बदलाव करके मशीन को पूरी तरह **अवरोध-मुक्त (Liberated)** कर दिया गया है:
+
+### 1. क्या-क्या हटाया गया (Barriers Permanently Removed):
+1. **14:45 IST आफ्टरनून लॉक समाप्त (`reserve_release_min = 0`)**:
+   - दोपहर 2:45 तक स्लॉट रोक कर रखने की कृत्रिम पाबंदी पूरी तरह हटा दी गई है।
+   - अब दिन के किसी भी घंटे (09:15 से 15:08 CAS तक) जैसे ही 80+ कनविक्शन सेटअप बनेगा, मशीन तुरंत ट्रेड लेगी।
+2. **डायनामिक स्कोर एस्केलेशन समाप्त (`slot_dynamic_bar = False`)**:
+   - कृत्रिम रूप से स्कोर बार को 85-90 तक बढ़ाने का नियम बंद कर दिया गया है। 80+ कनविक्शन वाला हर वास्तविक सेटअप अपनी मेरिट पर निष्पादित होगा।
+3. **फैंटम स्लॉट लीकेज का स्थायी समाधान**:
+   - `top5_depth_guard` और अन-प्री-ऑर्डर कोट्स को अब स्लॉट कंज़्यूम (`slot_policy.mark_admitted`) करने से पहले चेक किया जाता है।
+   - यदि कोट्स या स्प्रेड रिजेक्ट होते हैं, तो स्लॉट कभी भी वेस्ट नहीं होगा।
+
+### 2. पवित्र रिस्क सुरक्षा 100% बरकरार (Sacred Risk Pillars):
+- **अधिकतम 3 ट्रेड्स प्रतिदिन (`max_trades_per_day = 3`)**: ओवर-ट्रेडिंग और ब्रोकरेज ड्रैग को रोकने के लिए सख्त लॉक।
+- **2 लगातार लॉस पर स्टॉप (`consec_loss_stop = 2`)**: यदि 2 ट्रेड्स में स्टॉपलॉस लगता है, तो मशीन कैपिटल बचाने के लिए ट्रेडिंग बंद कर देगी।
+- **डेली लॉस कैप**: ₹2,000 पर अपरिवर्तित।
+
+---
+
+## 🔬 मॉर्निंग ट्रेडिंग पर सत्य एवं समयवार ऑडिट (Morning Session Audit: < 11:30 AM)
+
+### 📌 क्या सुबह में कोई कृत्रिम लॉक या टाइम-गेट है?
+**उत्तर: 100% नहीं!** कोड में सुबह 09:15 पर मार्केट खुलते ही पूरी तरह लाइव ट्रेडिंग सक्रिय रहती है (`MARKET_OPEN_TIME = 09:15:00`)।
+
+### 📊 मास्टर ट्रेड लेजर का समयवार वितरण (All 24 Recorded Trades):
+
+| समय विंडो (Hour Window) | कुल ट्रेड्स | ट्रेड्स सूची | विन रेट (Win Rate) |
+| :--- | :---: | :--- | :---: |
+| **09:00 AM – 09:59 AM** | **4** | Trade #1 (09:47), Trade #9 (09:27), Trade #11 (09:26), Trade #19 (09:46) | **100% WIN (4/4 WIN)** 🏆 |
+| **10:00 AM – 10:59 AM** | **2** | Trade #12 (10:21), Trade #16 (10:31) | 50% (1 Win, 1 Loss) |
+| **11:00 AM – 11:59 AM** | **4** | Trade #2 (11:54), Trade #4 (11:32), Trade #6 (11:42), Trade #10 (11:48) | 100% Green (3 Win, 1 BE) |
+| **12:00 PM – 12:59 PM** | **7** | Trade #3, #7, #13, #17, #18, #21, #24 | 86% Green (5 Win, 1 BE, 1 Loss) |
+| **01:00 PM – 01:59 PM** | **5** | Trade #8, #14, #15, #22, #23 | 100% Green (4 Win, 1 BE) |
+| **02:00 PM – 03:00 PM** | **2** | Trade #5, #20 | 50% (1 Win, 1 Loss) |
+
+### 💡 हाल के दिनों में सुबह 11:30 से पहले ट्रेड न दिखने का वास्तविक कारण:
+1. **07 अक्टूबर**: सुबह Shoonya का सेशन एक्सपायर/पासवर्ड इनवैलिड था। 11:45 तक ब्रोकर ऑथेंटिकेशन डाउन रहा, ठीक होते ही 12:20 पर ट्रेड हुआ।
+2. **08 अक्टूबर**: Shoonya का 90-दिन का पासवर्ड रोटेशन था और सबडायरेक्टरी `.env` की वजह से सुबह 11:15 तक क्रेडेंशियल रिजेक्ट हो रहे थे। ठीक होते ही 12:17 पर ट्रेड हुआ।
+3. **ओपनिंग मार्केट फिजिक्स (09:15 – 09:25)**: पिलर 3 (Squeeze) को कम से कम 3-4 कैंडल्स का बेस चाहिए होता है। बेस बनने के बाद ठीक **09:26 – 09:27** पर ट्रेड स्वाभाविक रूप से निकलता है (जैसे Trade #9 @ 09:27 और Trade #11 @ 09:26 में हुआ)।
 
 ---
 *Maintained by Quant Trading Desk | AEGIS Production Version 1.0 (v1.0 Locked) Ledger*
