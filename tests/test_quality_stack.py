@@ -218,3 +218,38 @@ def test_execution_manager_get_slot_state():
     assert slot_state["consec_losses"] == 0
     assert slot_state["consec_loss_stop"] == 2
     assert slot_state["daily_loss_cap_rs"] == 2000.0
+
+
+def test_quality_slot_policy_unrestricted_day_mode():
+    """Verify that default QualitySlotPolicy allows 3 trades anytime without afternoon lock or score escalation."""
+    policy = QualitySlotPolicy(max_trades_per_day=3)
+    assert policy.reserve_release_min == 0
+    assert policy.dynamic_bar is False
+
+    # Morning 10:15 IST
+    ts1 = datetime(2026, 9, 14, 10, 15, 0).timestamp()
+    admit1, _ = policy.admit(score=92.0, now_sec=ts1)
+    assert admit1 is True
+    policy.mark_admitted(92.0, now_sec=ts1)
+    assert policy.used == 1
+
+    # Midday 12:30 IST with a LOWER score (82.0 < 92.0) -> MUST BE ADMITTED (no dynamic bar)
+    ts2 = datetime(2026, 9, 14, 12, 30, 0).timestamp()
+    admit2, _ = policy.admit(score=82.0, now_sec=ts2)
+    assert admit2 is True
+    policy.mark_admitted(82.0, now_sec=ts2)
+    assert policy.used == 2
+
+    # Early Afternoon 13:45 IST (before 14:45) -> MUST BE ADMITTED (no afternoon reserve lock)
+    ts3 = datetime(2026, 9, 14, 13, 45, 0).timestamp()
+    admit3, _ = policy.admit(score=85.0, now_sec=ts3)
+    assert admit3 is True
+    policy.mark_admitted(85.0, now_sec=ts3)
+    assert policy.used == 3
+
+    # Trade 4 -> BLOCKED by max 3 trades limit
+    ts4 = datetime(2026, 9, 14, 14, 0, 0).timestamp()
+    admit4, reason4 = policy.admit(score=95.0, now_sec=ts4)
+    assert admit4 is False
+    assert reason4 == "slot_limit"
+

@@ -22,8 +22,8 @@ class QualitySlotPolicy:
     def __init__(
         self,
         max_trades_per_day: int = 3,
-        reserve_release_min: int = 885,  # 14:45 IST — release reserved 3rd slot
-        dynamic_bar: bool = True,
+        reserve_release_min: int = 0,  # 0 = disabled (no afternoon lockout; all slots free all day)
+        dynamic_bar: bool = False,     # False = disabled (any score >= 80 admitted; no artificial escalation)
         consec_loss_stop: int = 2,
         daily_loss_cap_rs: float = 2000.0,
     ):
@@ -63,9 +63,12 @@ class QualitySlotPolicy:
             return False, "daily_loss_cap"
         dt = datetime.fromtimestamp(now_sec)
         tmin = dt.hour * 60 + dt.minute
-        is_afternoon = tmin >= self.reserve_release_min
-        if not is_afternoon and self.used >= (self.max_trades_per_day - 1):
-            return False, "slot_reserved_afternoon"
+        if self.reserve_release_min > 0:
+            is_afternoon = tmin >= self.reserve_release_min
+            if not is_afternoon and self.used >= (self.max_trades_per_day - 1):
+                return False, "slot_reserved_afternoon"
+        else:
+            is_afternoon = True
         if self.used >= 1 and self.dynamic_bar:
             if not is_afternoon and float(score) <= self.day_best_score:
                 return False, "slot_dynamic_bar"

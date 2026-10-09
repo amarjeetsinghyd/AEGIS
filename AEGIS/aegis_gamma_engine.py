@@ -322,8 +322,8 @@ class AegisGammaEngine:
         self.quality_stability_fade_frac = float(self.P.get("quality_stability_fade_frac", 0.25))
         self.slot_policy = QualitySlotPolicy(
             max_trades_per_day=int(self.P.get("max_trades_per_day", os.getenv("MAX_TRADES_PER_DAY", "3"))),
-            reserve_release_min=int(self.P.get("slot_reserve_release_min", 885)),
-            dynamic_bar=bool(self.P.get("slot_dynamic_bar", True)),
+            reserve_release_min=int(self.P.get("slot_reserve_release_min", os.getenv("AEGIS_SLOT_RESERVE_RELEASE_MIN", "0"))),
+            dynamic_bar=bool(self.P.get("slot_dynamic_bar", False)),
             consec_loss_stop=int(self.P.get("consec_loss_stop", 2)),
             daily_loss_cap_rs=float(self.P.get("daily_loss_cap_rs", os.getenv("AEGIS_DAILY_LOSS_CAP_RS", "2000.0"))),
         ) if QualitySlotPolicy is not None else None
