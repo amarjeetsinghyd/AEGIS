@@ -724,11 +724,13 @@ class AegisGammaEngine:
                         )
                         return None
 
-                    logger.info(
+                    self._throttled_veto_log(
+                        f"wyckoff_conf_{sym}_{direction}",
                         f"[WYCKOFF CONFIRMED] {sym} ({direction}) {pa_setup_name} P{pillar_num} | "
                         f"{wyckoff_reason} | VDR={wyckoff_m.get('vdr', 0.0):.2f}, "
                         f"Absorption={wyckoff_m.get('absorption_score', 0.0):.1f}x, "
-                        f"OFI={wyckoff_m.get('opt_delta_flow', 0.0):+.0f}"
+                        f"OFI={wyckoff_m.get('opt_delta_flow', 0.0):+.0f}",
+                        interval_sec=15.0,
                     )
                     pa_details["wyckoff_metrics"] = wyckoff_m
                     pa_details["wyckoff_reason"] = wyckoff_reason
@@ -1414,10 +1416,12 @@ class AegisGammaEngine:
                                             )
                                         return None
                                     elif self.ml_gatekeeper_mode == "SHADOW":
-                                        logger.info(
+                                        self._throttled_veto_log(
+                                            f"ml_shadow_{sym}",
                                             f"[ML CONFLUENCE SHADOW] {sym} ({direction}) {pa_setup_name} P{pillar} | "
                                             f"Score: {effective_score:.4f} | Peak5m: {conf_max_score:.4f} | "
-                                            f"Passed: {effective_ml_passed} | Reason: {conf_details.get('reason', ml_reason)}"
+                                            f"Passed: {effective_ml_passed} | Reason: {conf_details.get('reason', ml_reason)}",
+                                            interval_sec=15.0,
                                         )
                                         # Track dropped candidates in shadow mode for counterfactual evaluation
                                         if not effective_ml_passed and self.outcome_telemetry:
@@ -1453,12 +1457,14 @@ class AegisGammaEngine:
                                         now_sec=now_sec,
                                     )
                                     if shadow_m:
-                                        logger.info(
+                                        self._throttled_veto_log(
+                                            f"shadow_quant_{sym}",
                                             f"[SHADOW QUANT TELEMETRY] {sym} ({direction}) | "
                                             f"StraddleExp: {shadow_m.get('shadow_straddle_expanding')} ({shadow_m.get('shadow_straddle_ret_60s_pct'):+.2f}%) | "
                                             f"Skew: {shadow_m.get('shadow_skew_bias')} (Aligned: {shadow_m.get('shadow_skew_aligned')}) | "
                                             f"OptLeadsSpot: {shadow_m.get('shadow_option_leads_spot')} ({shadow_m.get('shadow_velocity_ratio'):.2f}x) | "
-                                            f"Charm: {shadow_m.get('shadow_is_charm_window')} | Zone: {shadow_m.get('shadow_seasonality_zone')}"
+                                            f"Charm: {shadow_m.get('shadow_is_charm_window')} | Zone: {shadow_m.get('shadow_seasonality_zone')}",
+                                            interval_sec=15.0,
                                         )
 
                                 # Extract Passive Volume Profile Telemetry (100% Shadow Observation)
@@ -1470,7 +1476,8 @@ class AegisGammaEngine:
                                         direction=direction,
                                     )
                                     if vp_metrics:
-                                        logger.info(
+                                        self._throttled_veto_log(
+                                            f"vp_shadow_{sym}",
                                             f"[VOLUME PROFILE SHADOW] {sym} ({direction}) | "
                                             f"SpotPOC: {vp_metrics.get('poc_price', 0.0):.1f} | "
                                             f"VA: [{vp_metrics.get('val_price', 0.0):.1f} - {vp_metrics.get('vah_price', 0.0):.1f}] "
@@ -1479,7 +1486,8 @@ class AegisGammaEngine:
                                             f"POCAlign: {vp_metrics.get('poc_alignment', 'N/A')} | "
                                             f"LVN: {vp_metrics.get('is_lvn_zone', False)} | "
                                             f"CallPOC_K: {vp_metrics.get('call_poc_strike', 0.0):.0f} | "
-                                            f"PutPOC_K: {vp_metrics.get('put_poc_strike', 0.0):.0f}"
+                                            f"PutPOC_K: {vp_metrics.get('put_poc_strike', 0.0):.0f}",
+                                            interval_sec=15.0,
                                         )
 
                                 # ─── AI Shadow Reviewer (Gemini 3.8 Flash Technical Analyst Co-Pilot in Shadow Mode) ───
@@ -1534,11 +1542,13 @@ class AegisGammaEngine:
                                         daily_pnl=float(getattr(self, "_em_daily_pnl", 0.0)),
                                     )
 
-                                logger.info(
+                                self._throttled_veto_log(
+                                    f"qs_telemetry_{sym}",
                                     f"[QUALITY STACK TELEMETRY] {sym} ({direction}) {pa_setup_name} | "
                                     f"skew={qs_skew_ok} leads={qs_leads_ok} energy={energy_score:.0f}>={self.quality_energy_min:.0f}:{qs_energy_ok} "
                                     f"spread={spread_pct_val:.3f}<={self.quality_max_spread_pct}:{qs_spread_ok} | "
-                                    f"slot={slot_reason} (used={self.slot_policy.used if self.slot_policy else 0}/{(self.slot_policy.max_trades_per_day if self.slot_policy else 3)})"
+                                    f"slot={slot_reason} (used={self.slot_policy.used if self.slot_policy else 0}/{(self.slot_policy.max_trades_per_day if self.slot_policy else 3)})",
+                                    interval_sec=15.0,
                                 )
 
                                 if self.quality_stack_mode == "ACTIVE":
@@ -2129,12 +2139,12 @@ class AegisGammaEngine:
         except Exception:
             pass
 
-    def _throttled_veto_log(self, key: str, msg: str) -> None:
+    def _throttled_veto_log(self, key: str, msg: str, interval_sec: Optional[float] = None) -> None:
         """Hot-path log throttle: first hit immediate, then at most once per
         interval with suppressed-count summary. Keeps CPU < 10% (no per-tick disk writes)."""
         try:
             now = time.time()
-            interval = float(getattr(self, "_veto_log_interval_sec", 60.0) or 60.0)
+            interval = float(interval_sec if interval_sec is not None else (getattr(self, "_veto_log_interval_sec", 60.0) or 60.0))
             last = self._veto_log_ts.get(key, 0.0)
             if now - last >= interval:
                 suppressed = int(self._veto_log_suppressed.get(key, 0))

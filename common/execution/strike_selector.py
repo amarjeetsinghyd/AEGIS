@@ -169,16 +169,20 @@ class StrikeSelector:
             if ltp is None and token.isdigit() and isinstance(option_cache, dict):
                 ltp = option_cache.get(int(token))
                 
+            # RAM Fast-Path: check market_data_provider._live_quotes in-memory cache directly (0.001ms)
             if (ltp is None or ltp <= 0) and market_data_provider is not None:
-                try:
-                    exch = "BFO" if "SENSEX" in str(index_name).upper() else "NFO"
-                    q = market_data_provider.get_quote(exch, token)
-                    if isinstance(q, dict) and q.get("ltp", 0.0) > 0:
-                        ltp = float(q["ltp"])
+                live_quotes = getattr(market_data_provider, "_live_quotes", None)
+                if isinstance(live_quotes, dict):
+                    q_mem = live_quotes.get(token) or (live_quotes.get(int(token)) if token.isdigit() else None)
+                    if isinstance(q_mem, dict) and float(q_mem.get("ltp", 0.0) or 0.0) > 0:
+                        ltp = float(q_mem["ltp"])
                         if isinstance(option_cache, dict):
                             option_cache[token] = ltp
-                except Exception as e_quote:
-                    logger.debug(f"[StrikeSelector] Quote fetch fallback warning for token {token}: {e_quote}")
+
+            # Zero-REST Discipline: If token has no tick streaming in memory, it is illiquid.
+            # Skip instantly in 0.001ms — NEVER block hot-path with synchronous HTTP REST calls!
+            if ltp is None or ltp <= 0:
+                continue
             
             if ltp is not None and ltp > 0:
                 if ltp < _prem_min:

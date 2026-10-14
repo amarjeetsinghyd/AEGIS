@@ -774,15 +774,30 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
         if pc is not None:
             q_dict["pc"] = pc
 
+    def get_live_quote_fast(self, token: str) -> dict:
+        """Zero-overhead in-memory RAM lookup from _live_quotes (< 0.001ms).
+        Never triggers synchronous REST calls.
+        """
+        return self._live_quotes.get(
+            str(token), {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0, "pc": 0.0}
+        )
+
     def get_quote(self, exchange: str, token: str) -> dict:
         self._ensure_ws_started()
         token = str(token)
         exch = str(exchange or "").upper()
+
+        # 1. RAM Fast-Path: if quote is already streaming in memory, return instantly (< 0.001ms)
+        cached_q = self._live_quotes.get(token)
+        if isinstance(cached_q, dict) and (cached_q.get("ltp", 0.0) > 0 or cached_q.get("ask", 0.0) > 0 or cached_q.get("bid", 0.0) > 0):
+            return cached_q
+
         if not hasattr(self, "_subscribed_pairs"):
             self._subscribed_pairs = set()
         pair = (exch, token)
         if pair not in self._subscribed_pairs:
             self._subscribed_tokens.add(token)
+            self._subscribed_pairs.add(pair)
             try:
                 self.subscribe([token], exchange, feed_type="t")
                 self.subscribe([token], exchange, feed_type="d")

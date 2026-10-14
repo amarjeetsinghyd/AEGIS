@@ -802,6 +802,18 @@ def get_journal_data(force_reload: bool = False) -> Dict[str, Any]:
             runner_30s = 1.7   # 8.80 (+1.7%)
             runner_60s = 5.2   # 9.10 (+5.2%)
             peak_runner = 9.25 # 9.45 peak (+9.25%) reached at 12:55:36
+        elif t_id == 28:  # 10:41 PUT (exited at 10:41:56 @ 8.70)
+            runner_30s = 3.2   # 8.77 (+3.2% bid post 30s)
+            runner_60s = 5.2   # 8.95 (+5.2% runner post 60s)
+            peak_runner = 5.2  # 8.95 peak runner (+5.2%)
+        elif t_id == 29:  # 10:50 PUT (exited at 10:50:52 @ 7.60)
+            runner_30s = 4.11  # 7.60 (+4.11% Maker TP fill)
+            runner_60s = 4.80  # 7.65 (+4.80% post 60s)
+            peak_runner = 5.50 # 7.70 peak runner (+5.50%)
+        elif t_id == 30:  # 11:53 PUT (exited at 11:58:20 @ 7.75)
+            runner_30s = -3.73 # 7.75 (-3.73% time stop exit)
+            runner_60s = -3.73 # Consolidating / theta decay
+            peak_runner = 2.48 # Intra-trade peak was +2.5% (8.25)
         elif is_win:
             runner_30s = round(opt_pct * 1.35, 2)
             runner_60s = round(opt_pct * 1.75, 2)

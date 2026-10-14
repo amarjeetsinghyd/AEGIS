@@ -1749,6 +1749,7 @@ class PriceActionEngine:
         direction: str,
         current_vwap: float = 0.0,
         lookback_bars: int = 5,
+        current_time: float = 0.0,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
         Pillar 2: Micro-Sweep & Reclaim (Turtle Soup / 5-Bar Liquidity Grab Scalp).
@@ -1756,6 +1757,25 @@ class PriceActionEngine:
         and closes firmly back inside the range in the direction of the dominant trend.
         Full-candle entries only.
         """
+        # ─── LUNCH CHOP REGIME VETO (11:15 to 13:00 IST) ───
+        # Micro-sweeps during midday lunch consolidation represent low-volume retail wick noise,
+        # lacking institutional expansion follow-through.
+        if os.getenv("AEGIS_LUNCH_SWEEP_VETO_ENABLED", "1") != "0":
+            eval_ts = current_time if current_time > 0 else (
+                self.bars_1m[-1].ts_start if (self.bars_1m and getattr(self.bars_1m[-1], "ts_start", 0) > 0) else getattr(self, "last_ts", 0.0)
+            )
+            if eval_ts > 0:
+                from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+                _IST = _tz(_td(hours=5, minutes=30))
+                dt_ist = _dt.fromtimestamp(eval_ts, _IST)
+                time_mins = dt_ist.hour * 60 + dt_ist.minute
+                if 675 <= time_mins < 780:
+                    return False, "lunch_chop_sweep_veto", {
+                        "time_ist": dt_ist.strftime("%H:%M:%S"),
+                        "time_mins": time_mins,
+                        "verdict": "LUNCH_CHOP_MICRO_SWEEP_BLOCKED",
+                    }
+
         if len(self.bars_1m) < (lookback_bars + 1):
             return False, "insufficient_bars", {}
 
@@ -2333,7 +2353,7 @@ class PriceActionEngine:
             except Exception as e:
                 logger.debug(f"[PriceActionEngine] HVG shadow sweep check failed: {e}")
 
-        ok_sw, reason_sw, details_sw = self.check_micro_sweep_reclaim(direction, eff_vwap)
+        ok_sw, reason_sw, details_sw = self.check_micro_sweep_reclaim(direction, eff_vwap, current_time=current_time)
         if ok_sw:
             # V4.1: second-place Pain Zone removed — absolute band veto at tick top is single source.
             details_sw["pain_zone_score"] = 0.0

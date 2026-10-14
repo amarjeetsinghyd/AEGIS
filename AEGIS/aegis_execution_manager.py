@@ -338,9 +338,9 @@ class AegisExecutionManager:
                     self.daily_net_pnl = 0.0
                     self.last_trade_date = today_d
 
-                # 1. Process AEGIS signals (blocking with timeout)
+                # 1. Process AEGIS signals (non-blocking fast poll with 50ms timeout)
                 try:
-                    signal = self.signal_queue.get(timeout=0.5)
+                    signal = self.signal_queue.get(timeout=0.05)
                     self._process_aegis_signal(signal)
                 except queue.Empty:
                     pass
@@ -535,18 +535,23 @@ class AegisExecutionManager:
                 self._rollback_slot()
                 return
 
-            # Live ask quote resolution (Major Indian index options are highly liquid — no artificial spread gating)
+            # Live ask quote resolution: 100% In-Memory RAM lookup (0.001ms)
             live_ask = 0.0
-            if hasattr(self.broker, "market_data_provider"):
+            mdp = getattr(self.broker, "market_data_provider", None)
+            if mdp:
                 try:
-                    exch_seg = params["exchange"]
-                    q = self.broker.market_data_provider.get_quote(exch_seg, token_str)
-                    if q:
-                        ask = float(q.get("sp1") or 0)
+                    live_q = getattr(mdp, "_live_quotes", {}).get(token_str)
+                    if isinstance(live_q, dict):
+                        ask = float(live_q.get("sp1") or live_q.get("ask") or 0.0)
+                        if ask > 0:
+                            live_ask = ask
+                    if live_ask <= 0.0 and hasattr(mdp, "get_live_quote_fast"):
+                        q_fast = mdp.get_live_quote_fast(token_str)
+                        ask = float(q_fast.get("sp1") or q_fast.get("ask") or 0.0)
                         if ask > 0:
                             live_ask = ask
                 except Exception as e:
-                    logger.debug(f"[AegisEM] Live quote fetch for ask price: {e}")
+                    logger.debug(f"[AegisEM] Live ask in-memory resolution: {e}")
 
             # Execute entry
             signal_ts = float(signal.get("timestamp") or metrics.get("impulse_timestamp") or time.time())

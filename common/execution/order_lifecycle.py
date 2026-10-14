@@ -257,14 +257,20 @@ class ShoonyaOrderLifecycle(OrderLifecycle):
                 if api and hasattr(api, "single_order_history"):
                     fill_confirmed = False
                     avg_prc = limit_price
-                    for _ in range(3):
-                        time.sleep(1.0)
+                    # Adaptive Micro-Poll: [0.05, 0.10, 0.15, 0.25, 0.45]s
+                    # Zero hard-sleep: returns in ~50ms on instant marketable limit fills!
+                    delays = [0.05, 0.10, 0.15, 0.25, 0.45]
+                    for d in delays:
+                        time.sleep(d)
                         history = api.single_order_history(orderno=ordno)
                         if history and isinstance(history, list):
                             status = history[0].get("status")
                             if status in ["FILLED", "COMPLETE"]:
                                 fill_confirmed = True
                                 avg_prc = float(history[0].get("avgprc", limit_price))
+                                break
+                            elif status in ["REJECTED", "CANCELLED"]:
+                                logger.warning(f"[ShoonyaOrderLifecycle] Entry order {ordno} {status}")
                                 break
                     
                     if fill_confirmed:

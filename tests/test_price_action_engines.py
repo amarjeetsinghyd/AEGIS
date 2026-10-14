@@ -412,6 +412,49 @@ class TestPillar2_AlBrooks_2Legged_Pullback:
         assert details["rejection_type"] == "liquidity_sweep_put_reclaim"
         assert details["sl_price"] >= 23982.0 + 5.0
 
+    def test_micro_sweep_vetoed_in_lunch_window(self):
+        """Verifies that Pillar 2 micro-sweeps are strictly vetoed during 11:15 to 13:00 IST."""
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        _IST = _tz(_td(hours=5, minutes=30))
+        # 11:30:00 IST on 2026-10-12
+        lunch_dt = _dt(2026, 10, 12, 11, 30, 0, tzinfo=_IST)
+        lunch_ts = lunch_dt.timestamp()
+
+        engine = PriceActionEngine()
+        for i in range(5):
+            engine._on_1m_bar_close(OHLCBar(lunch_ts - (5 - i) * 60, lunch_ts - (4 - i) * 60, 24000.0, 24010.0, 23990.0, 24005.0))
+
+        sweep_bar = OHLCBar(lunch_ts - 60, lunch_ts, 24001.0, 24025.0, 23985.0, 24020.0)
+        engine._on_1m_bar_close(sweep_bar)
+        engine.last_price = sweep_bar.close
+
+        is_sweep, reason, details = engine.check_micro_sweep_reclaim("UP", current_vwap=23950.0, current_time=lunch_ts)
+        assert is_sweep is False
+        assert reason == "lunch_chop_sweep_veto"
+        assert details["verdict"] == "LUNCH_CHOP_MICRO_SWEEP_BLOCKED"
+
+    def test_micro_sweep_allowed_outside_lunch_window(self):
+        """Verifies that Pillar 2 micro-sweeps are allowed during morning momentum (e.g. 10:45 IST)."""
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        _IST = _tz(_td(hours=5, minutes=30))
+        # 10:45:00 IST on 2026-10-12
+        morning_dt = _dt(2026, 10, 12, 10, 45, 0, tzinfo=_IST)
+        morning_ts = morning_dt.timestamp()
+
+        engine = PriceActionEngine()
+        # 5 bars establishing swing low at 24020.0
+        for i in range(5):
+            engine._on_1m_bar_close(OHLCBar(morning_ts - (6 - i) * 60, morning_ts - (5 - i) * 60, 24022.0, 24030.0, 24020.0, 24026.0))
+
+        # Sweep bar: dips to 24017.0 (< 24020.0), closes at 24025.0 (wick = 8 pts / 10 pts = 80%)
+        sweep_bar = OHLCBar(morning_ts - 60, morning_ts, 24021.0, 24027.0, 24017.0, 24025.0)
+        engine._on_1m_bar_close(sweep_bar)
+        engine.last_price = sweep_bar.close
+
+        is_sweep, reason, details = engine.check_micro_sweep_reclaim("UP", current_vwap=23950.0, current_time=morning_ts)
+        assert is_sweep is True
+        assert details["pa_setup_name"] == "micro_sweep_reclaim"
+
 
 # ═══════════════════════════════════════════════════════════════
 # PILLAR 3: VOLATILITY SQUEEZE BREAKOUT TESTS

@@ -520,3 +520,55 @@ Option premiums for the same OTM rank fluctuate wildly based on market trend and
 * **Testing Phase Production Discipline (Current ~₹600 Capital)**:
   * **Zero Code Changes in Production Hot-Path**: Current AEGIS Version 1.0 is locked and untouched.
   * In current testing mode with ~₹600 capital, the locked `StrikeSelector` automatically selects the highest affordable strike within our budget band (typically 9 to 13 OTM @ ₹24–₹29 per lot), perfectly following this 1-lot runway without any manual interference or code alterations.
+
+---
+
+## ⚡ Evidence Docket #7: Target Transition Velocity & Post-Exit What-If Runner Analytics
+
+* **Date of Live Observation**: 12 October 2026 (Monday — NIFTY 1 DTE)
+* **Instrument**: NSE NIFTY 50 Options (`NIFTY13OCT26P22050` & `NIFTY13OCT26P22000`)
+* **Live Combat References**: Trade #28 (10:41 IST) & Trade #29 (10:50 IST)
+
+### 1. Empirical Forensic Observations from Live Trades
+
+#### Case A: Trade #28 (10:41 IST — `NIFTY13OCT26P22050`)
+* **Realized Exit**: Near-Target Profit Lock fired at **₹8.70 (+2.35% / +₹0.20)** in 46s after intra-trade peak bid reached ₹8.80 (+3.5%) and pulled back 0.8%.
+* **Post-Exit 30s Behavior**: Option bid stabilized at **₹8.77 (+3.2%)**.
+* **Post-Exit Peak Runner**: Within the next 60–90 seconds, the contract expanded to a peak of **₹8.95 (+5.2%)** before rolling over into consolidation.
+* **Key Finding**: While Near-Target Lock perfectly protected capital from sudden reversal noise, the trade had substantial residual kinetic energy to reach +5.2%.
+
+#### Case B: Trade #29 (10:50 IST — `NIFTY13OCT26P22000`)
+* **Realized Exit**: Strict 1-Lot Maker TP filled passively at **₹7.60 (+4.11% / +₹0.30)** in **42 seconds flat** with zero slippage.
+* **Post-Exit Behavior**: The option extended further to **₹7.70 (+5.5%)** in the immediate follow-through bar before settling.
+* **Key Finding**: When an impulse trade hits +4.0% in rapid time ($t \le 45\text{s}$), the transition from +4.0% to +5.0% is often frictionless and requires only 5–15 additional seconds of momentum.
+
+---
+
+### 2. Candidate Architecture Ideas for AEGIS Version 2.0
+
+#### 💡 Idea 7A: Target Transition Velocity Tracking ($\Delta \% / \Delta t$)
+* **Concept**: Measure the speed of target achievement. If a trade reaches +4.0% in $< 45\text{s}$, calculate:
+  $$\text{Target Velocity } V_{\text{target}} = \frac{\Delta \text{Gain } \%}{\text{Elapsed Seconds}}$$
+* **Hypothesis**: High velocity ($V_{\text{target}} \ge 0.10\% / \text{sec}$) correlates with institutional ask-vacuum conditions, where expanding the target from +4.0% to +5.0% or +5.5% has an extremely high success probability with negligible drawdown.
+* **Telemetry Metric to Track**: `time_from_4pct_to_5pct_sec` — exact seconds taken by the contract to cross from +4.0% to +5.0%.
+
+#### 💡 Idea 7B: Asymmetric Multi-Lot Split Harvesting (V2 Scale-Up Architecture)
+* **Context**: Once account capital scales beyond 1 lot into 2+ lots (e.g. ₹2,000+ capital):
+  * **Lot 1 (Base Target)**: Fixed Resting Maker TP at **+4.0%** (100% passive fill at broker, guarantees charges covered and secures daily win-rate).
+  * **Lot 2 (Dynamic Runner)**: Allowed to run past +4.0% with a **Dynamic Peak-Ratchet Lock**:
+    * Hard profit floor locked at **+3.5%** the moment +4.0% is achieved (impossible to lose money).
+    * Trails behind new peaks by $\le 0.8\%$ pullback tolerance.
+    * Resting TP cap placed at **+5.5% to +6.0%**.
+
+#### 💡 Idea 7C: Granular Post-Exit What-If Telemetry Pipeline
+* To scientifically evaluate whether to modify exit thresholds in Version 2.0 without guessing, the telemetry engine systematically logs:
+  1. `mfe_30s_post_exit_pct`: Option % gain 30 seconds after bot exit.
+  2. `mfe_60s_post_exit_pct`: Option % gain 60 seconds after bot exit.
+  3. `peak_runner_pct`: Absolute maximum gain reached within 180s post-exit.
+  4. `time_to_peak_runner_sec`: Seconds taken from exit to peak runner.
+  5. `drawdown_post_exit_mae_pct`: Maximum drop below exit price post-exit (evaluates if staying would have caused emotional or financial pain).
+
+---
+
+### 3. Operational Discipline Guardrail
+* **V1.0 Lock Retained**: AEGIS Version 1.0 remains **100% locked at +4.0% Maker TP** for 1-lot testing. No exit thresholds in the live execution engine are to be altered until Docket #7 telemetry collects at least 30 consecutive live trades of empirical post-exit data.
