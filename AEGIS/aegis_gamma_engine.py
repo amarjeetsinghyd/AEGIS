@@ -1143,7 +1143,7 @@ class AegisGammaEngine:
                                 conviction_breakdown = {}
                                 conviction_sub_scores = {}
                                 if self.conviction_engine and self.price_action_engine:
-                                    current_bar = self.price_action_engine._curr_1m_bar or (self.price_action_engine.bars_1m[-1] if self.price_action_engine.bars_1m else None)
+                                    current_bar = (self.price_action_engine.bars_1m[-1] if self.price_action_engine.bars_1m else None) or self.price_action_engine._curr_1m_bar
                                     wyckoff_context = dict(pa_details.get("wyckoff_metrics") or {})
                                     if wyckoff_passed:
                                         wyckoff_context["wyckoff_confirmed"] = True

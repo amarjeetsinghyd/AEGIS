@@ -243,6 +243,21 @@ class WyckoffVolumeEngine:
         norm_spread = max(spread / atr, 0.1)
         absorption_score = (vol_curr / v_base) / norm_spread if (v_base > 0 and norm_spread > 0) else 1.0
 
+        body = abs(curr_bar.close - curr_bar.open)
+        body_ratio = body / max(spread, 1e-4)
+
+        is_directional_bar = (curr_bar.close > curr_bar.open) if is_up else (curr_bar.close < curr_bar.open)
+
+        # Prior bar wick calculation for two-bar retest support (valid when current bar confirms bounce in direction)
+        prev_bar = bars[-2] if len(bars) >= 2 else None
+        prev_wick = 0.0
+        if prev_bar and is_directional_bar:
+            prev_spread = max(float(prev_bar.high - prev_bar.low), 1e-4)
+            if is_up:
+                prev_wick = (min(prev_bar.open, prev_bar.close) - prev_bar.low) / prev_spread
+            else:
+                prev_wick = (prev_bar.high - max(prev_bar.open, prev_bar.close)) / prev_spread
+
         # Wick and Asymmetric Effort calculation
         if is_up:
             lower_wick = min(curr_bar.open, curr_bar.close) - curr_bar.low
@@ -255,6 +270,7 @@ class WyckoffVolumeEngine:
             opposing_effort = cb_curr + ps_curr
             supporting_effort = pb_curr + cs_curr
 
+        eff_wick_ratio = max(wick_ratio, prev_wick)
         norm_opposing = (opposing_effort / max(v_base, 1.0)) if v_base > 0 else 0.0
         asym_absorption_score = norm_opposing / norm_spread if norm_spread > 0 else 0.0
 
@@ -263,11 +279,12 @@ class WyckoffVolumeEngine:
         is_moderate_dry = (vdr <= self.pullback_dry_ratio) and (vol_slope <= 0)
         is_dry_approach = is_deep_dry_test or is_moderate_dry
 
-        # Stopping Volume / Asymmetric Absorption at 20 EMA
-        is_asym_absorption = (wick_ratio >= self.absorption_wick_min) and (
+        # Stopping Volume / Asymmetric Absorption at 20 EMA (Supports Two-Bar Expansion/Retest)
+        is_asym_absorption = (eff_wick_ratio >= self.absorption_wick_min) and (
             (asym_absorption_score >= 1.0) or (absorption_score >= 1.20) or (vol_curr >= v_base * 0.9)
         )
-        is_stopping_vol = is_asym_absorption or (absorption_score >= 1.2 and wick_ratio >= self.absorption_wick_min)
+        is_expansion_retest = is_directional_bar and (body_ratio >= 0.40) and (vol_curr >= v_base * 0.85) and (supporting_effort >= opposing_effort)
+        is_stopping_vol = is_asym_absorption or (absorption_score >= 1.2 and eff_wick_ratio >= self.absorption_wick_min) or is_expansion_retest
 
         # ─── VETO CHECK 3: Supply Dry-Up or Stopping Absorption Requirement ───
         # In Wyckoff theory, if volume didn't dry up (supply still heavy), and there was no absorption
@@ -276,7 +293,7 @@ class WyckoffVolumeEngine:
             return False, "wyckoff_pullback_no_absorption_nor_dryup", {
                 "vdr": round(vdr, 2),
                 "vol_slope": round(vol_slope, 1),
-                "wick_ratio": round(wick_ratio, 2),
+                "wick_ratio": round(eff_wick_ratio, 2),
                 "absorption_score": round(absorption_score, 2),
                 "asym_absorption_score": round(asym_absorption_score, 2),
                 "verdict": "PULLBACK_LACKS_DRYUP_AND_ABSORPTION",
@@ -285,18 +302,22 @@ class WyckoffVolumeEngine:
         synth_delta = (cb_curr + ps_curr) - (pb_curr + cs_curr)
 
         verdict = "ASYMMETRIC_STOPPING_ABSORPTION" if is_asym_absorption else (
-            "SUPPLY_DRYUP_TEST" if is_deep_dry_test else "WYCKOFF_PULLBACK_EXHAUSTION"
+            "EXPANSION_RETEST_CONFIRMATION" if is_expansion_retest else (
+                "SUPPLY_DRYUP_TEST" if is_deep_dry_test else "WYCKOFF_PULLBACK_EXHAUSTION"
+            )
         )
 
         metrics = {
             "vdr": round(vdr, 2),
             "vol_slope": round(vol_slope, 1),
-            "wick_ratio": round(wick_ratio, 2),
+            "wick_ratio": round(eff_wick_ratio, 2),
+            "body_ratio": round(body_ratio, 2),
             "absorption_score": round(absorption_score, 2),
             "asym_absorption_score": round(asym_absorption_score, 2),
             "is_dry_approach": is_dry_approach,
             "is_deep_dry_test": is_deep_dry_test,
             "is_stopping_vol": is_stopping_vol,
+            "is_expansion_retest": is_expansion_retest,
             "opt_delta_flow": round(cb_curr - pb_curr, 1),
             "synthetic_net_delta": round(synth_delta, 1),
             "call_buy": cb_curr,
@@ -330,17 +351,30 @@ class WyckoffVolumeEngine:
         ps_curr = float(getattr(curr_bar, "put_sell_vol", 0.0) or 0.0)
 
         # Check opposing option volume runaway
-        if is_up and pb_curr > (self.max_opposing_delta_ratio * 1.5 * max(cb_curr, 1.0)):
-            # If put buyers completely swamp call buyers on a spring, breakdown may be real
-            return False, "wyckoff_spring_failed_heavy_put_dump", {
-                "call_buy": cb_curr,
-                "put_buy": pb_curr,
-            }
-        elif (not is_up) and cb_curr > (self.max_opposing_delta_ratio * 1.5 * max(pb_curr, 1.0)):
-            return False, "wyckoff_upthrust_failed_heavy_call_expansion", {
-                "call_buy": cb_curr,
-                "put_buy": pb_curr,
-            }
+        if (cb_curr + pb_curr) >= self.min_liquidation_volume:
+            if is_up and pb_curr > (1.5 * max(cb_curr, 1.0)):
+                return False, "wyckoff_p2_opposing_put_dominance", {
+                    "call_buy": cb_curr,
+                    "put_buy": pb_curr,
+                    "verdict": "SPRING_OPPOSING_PUT_DOMINANCE",
+                }
+            elif (not is_up) and cb_curr > (1.5 * max(pb_curr, 1.0)):
+                return False, "wyckoff_p2_opposing_call_dominance", {
+                    "call_buy": cb_curr,
+                    "put_buy": pb_curr,
+                    "verdict": "UPTHRUST_OPPOSING_CALL_DOMINANCE",
+                }
+        else:
+            if is_up and pb_curr > (self.max_opposing_delta_ratio * max(cb_curr, 1.0)):
+                return False, "wyckoff_spring_failed_heavy_put_dump", {
+                    "call_buy": cb_curr,
+                    "put_buy": pb_curr,
+                }
+            elif (not is_up) and cb_curr > (self.max_opposing_delta_ratio * max(pb_curr, 1.0)):
+                return False, "wyckoff_upthrust_failed_heavy_call_expansion", {
+                    "call_buy": cb_curr,
+                    "put_buy": pb_curr,
+                }
 
         # Check liquidation dump on spring/upthrust (CallSell / PutSell Trap)
         if is_up and cs_curr > (self.max_liquidation_ratio * max(cb_curr, 1.0)) and cs_curr >= self.min_liquidation_volume:
@@ -379,11 +413,13 @@ class WyckoffVolumeEngine:
                 }
 
         vol_curr = float(getattr(curr_bar, "volume", 0.0) or 0.0)
+        vdr = (vol_curr / v_base) if v_base > 0 else 1.0
         norm_spread = max(spread / atr, 0.1)
         absorption_score = (vol_curr / v_base) / norm_spread if (v_base > 0 and norm_spread > 0) else 1.0
         synth_delta = (cb_curr + ps_curr) - (pb_curr + cs_curr)
 
         metrics = {
+            "vdr": round(vdr, 2),
             "wick_ratio": round(wick_ratio, 2),
             "absorption_score": round(absorption_score, 2),
             "opt_delta_flow": round(cb_curr - pb_curr, 1),

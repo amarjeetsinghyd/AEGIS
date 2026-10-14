@@ -368,9 +368,9 @@ class TestPillar2_AlBrooks_2Legged_Pullback:
 
     def test_micro_sweep_call_reclaim(self):
         engine = PriceActionEngine()
-        # Seed 25 bars in uptrend
+        # Seed 25 bars in uptrend leading into consolidation
         for i in range(25):
-            engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 24000.0 + i * 1.0, 24003.0 + i * 1.0, 23999.0 + i * 1.0, 24001.0 + i * 1.0))
+            engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 24000.0 + i * 0.5, 24002.0 + i * 0.5, 23999.0 + i * 0.5, 24001.0 + i * 0.5))
 
         # Prior 5 bars have swing low at 24020.0
         for i in range(5):

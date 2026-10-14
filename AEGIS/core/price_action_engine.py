@@ -1787,13 +1787,43 @@ class PriceActionEngine:
         if total_range <= 0:
             return False, "zero_range", {}
 
+        # Minimum range filter on sweep candle (filter micro-tick noise)
+        ref_spot = self.last_price if self.last_price > 0 else 24000.0
+        _atr_ref = self.current_atr_1m if self.current_atr_1m > 0 else (ref_spot * 0.001)
+        if self.current_atr_1m > 0 and total_range < (0.25 * _atr_ref):
+            return False, "tiny_range_noise", {}
+
+        # Bar Close Freshness Window (max 15.0s cutoff)
+        if current_time > 0 and bar.ts_end > 0:
+            both_epoch = (current_time > 1_000_000_000.0 and bar.ts_end > 1_000_000_000.0)
+            both_synthetic = (current_time < 1_000_000_000.0 and bar.ts_end < 1_000_000_000.0)
+            if both_epoch or both_synthetic:
+                time_since_close = current_time - bar.ts_end
+                if time_since_close > 15.0:
+                    return False, "stale_bar_entry_window_expired", {
+                        "time_since_close": round(time_since_close, 1),
+                        "max_allowed_s": 15.0,
+                    }
+
         # Lookback prior 5 closed bars (excluding current bar)
         prior_bars = list(self.bars_1m)[-(lookback_bars + 1):-1]
         sw_low = min(b.low for b in prior_bars)
         sw_high = max(b.high for b in prior_bars)
 
-        ref_spot = self.last_price if self.last_price > 0 else 24000.0
         buffer_pts = max(5.0, (ref_spot / 24000.0) * 5.0)
+
+        # Live Spot Sanity Guard
+        if self.last_price > 0:
+            if direction.upper() in ("UP", "CALL") and self.last_price <= sw_low:
+                return False, "live_price_below_sweep_low", {
+                    "last_price": round(self.last_price, 2),
+                    "sw_low": round(sw_low, 2),
+                }
+            elif direction.upper() in ("DOWN", "PUT") and self.last_price >= sw_high:
+                return False, "live_price_above_sweep_high", {
+                    "last_price": round(self.last_price, 2),
+                    "sw_high": round(sw_high, 2),
+                }
 
         live_ema_20, live_slope_20_bps = self.get_live_20_ema_and_slope()
         live_ema_50, live_slope_50_bps = self.get_live_50_ema_and_slope()
@@ -1809,6 +1839,11 @@ class PriceActionEngine:
             is_sweep_reclaim = (bar.low < sw_low) and (bar.close > sw_low) and (bar.close > bar.open) and (wick_ratio >= 0.35)
 
             if is_sweep_reclaim:
+                # Structural Obstacle Shield
+                ok_struct, r_struct, det_struct = self._check_structural_obstacle("CALL", bar.close)
+                if not ok_struct:
+                    return False, f"structural_obstacle_{r_struct}", det_struct
+
                 sl_price = round(bar.low - buffer_pts, 2)
                 details = {
                     "pa_setup_name": "micro_sweep_reclaim",
@@ -1836,6 +1871,11 @@ class PriceActionEngine:
             is_sweep_reclaim = (bar.high > sw_high) and (bar.close < sw_high) and (bar.close < bar.open) and (wick_ratio >= 0.35)
 
             if is_sweep_reclaim:
+                # Structural Obstacle Shield
+                ok_struct, r_struct, det_struct = self._check_structural_obstacle("PUT", bar.close)
+                if not ok_struct:
+                    return False, f"structural_obstacle_{r_struct}", det_struct
+
                 sl_price = round(bar.high + buffer_pts, 2)
                 details = {
                     "pa_setup_name": "micro_sweep_reclaim",
@@ -1859,6 +1899,7 @@ class PriceActionEngine:
         self,
         direction: str,
         current_vwap: float = 0.0,
+        current_time: float = 0.0,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
         Pillar 3: Volatility Squeeze to Expansion Breakout.
@@ -1867,6 +1908,22 @@ class PriceActionEngine:
         """
         if len(self.bars_1m) < 4:
             return False, "insufficient_bars", {}
+
+        bar = self.bars_1m[-1]
+        if bar is None:
+            return False, "no_closed_bar", {}
+
+        # Bar Close Freshness Window (max 15.0s cutoff)
+        if current_time > 0 and bar.ts_end > 0:
+            both_epoch = (current_time > 1_000_000_000.0 and bar.ts_end > 1_000_000_000.0)
+            both_synthetic = (current_time < 1_000_000_000.0 and bar.ts_end < 1_000_000_000.0)
+            if both_epoch or both_synthetic:
+                time_since_close = current_time - bar.ts_end
+                if time_since_close > 15.0:
+                    return False, "stale_bar_entry_window_expired", {
+                        "time_since_close": round(time_since_close, 1),
+                        "max_allowed_s": 15.0,
+                    }
 
         # Look back 3 to 4 prior closed bars
         n_box = 4 if len(self.bars_1m) >= 5 else 3
@@ -1883,8 +1940,18 @@ class PriceActionEngine:
         if squeeze_range > (1.25 * atr):
             return False, "not_in_squeeze", {}
 
-        # Full-candle entries only: wait for 1-minute close.
-        bar = self.bars_1m[-1]
+        # Live Spot Sanity Guard
+        if self.last_price > 0:
+            if direction.upper() in ("UP", "CALL") and self.last_price < box_high:
+                return False, "live_price_below_box_high", {
+                    "last_price": round(self.last_price, 2),
+                    "box_high": round(box_high, 2),
+                }
+            elif direction.upper() in ("DOWN", "PUT") and self.last_price > box_low:
+                return False, "live_price_above_box_low", {
+                    "last_price": round(self.last_price, 2),
+                    "box_low": round(box_low, 2),
+                }
 
         if direction.upper() in ("DOWN", "PUT"):
             if current_vwap > 0 and bar.close >= current_vwap:
@@ -2186,6 +2253,7 @@ class PriceActionEngine:
         self,
         direction: str,
         current_vwap: float = 0.0,
+        current_time: float = 0.0,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
         Pillar 4 (V4 Final): 0-D Prominence Hub Structural Breakout.
@@ -2198,6 +2266,18 @@ class PriceActionEngine:
         bar = self.bars_1m[-1]
         if bar is None:
             return False, "no_closed_bar", {}
+
+        # Bar Close Freshness Window (max 15.0s cutoff)
+        if current_time > 0 and bar.ts_end > 0:
+            both_epoch = (current_time > 1_000_000_000.0 and bar.ts_end > 1_000_000_000.0)
+            both_synthetic = (current_time < 1_000_000_000.0 and bar.ts_end < 1_000_000_000.0)
+            if both_epoch or both_synthetic:
+                time_since_close = current_time - bar.ts_end
+                if time_since_close > 15.0:
+                    return False, "stale_bar_entry_window_expired", {
+                        "time_since_close": round(time_since_close, 1),
+                        "max_allowed_s": 15.0,
+                    }
 
         prices_window = np.array([b.close for b in list(self.bars_1m)[-60:]], dtype=np.float64)
         if len(prices_window) < 5:
@@ -2235,32 +2315,58 @@ class PriceActionEngine:
         is_bullish = direction.upper() in ("UP", "CALL")
         is_bearish = direction.upper() in ("DOWN", "PUT")
 
+        # Live Spot Sanity Guard
+        if self.last_price > 0:
+            if is_bullish and self.last_price < hub_price:
+                return False, "live_price_below_hub", {
+                    "last_price": round(self.last_price, 2),
+                    "hub_price": round(hub_price, 2),
+                }
+            elif is_bearish and self.last_price > hub_price:
+                return False, "live_price_above_hub", {
+                    "last_price": round(self.last_price, 2),
+                    "hub_price": round(hub_price, 2),
+                }
+
+        ref_spot = self.last_price if self.last_price > 0 else hub_price
+        buffer_pts = max(5.0, (ref_spot / 24000.0) * 5.0)
+
         if is_bullish and bar.close > hub_price and trend_5m_bullish:
             if current_vwap > 0 and bar.close < current_vwap:
                 return False, "counter_to_vwap", {}
+            sl_price = round(bar.low - buffer_pts, 2)
             return True, "prominence_hub_breakout_up", {
+                "pa_setup_name": "topological_prominence_breakout",
                 "pillar": 4,
                 "hub_price": hub_price,
                 "pi_hat": pi_hat,
                 "vr_t": vr_t,
                 "breakout_direction": "UP",
+                "bar_open": round(bar.open, 2),
+                "bar_close": round(bar.close, 2),
                 "bar_low": round(bar.low, 2),
                 "bar_high": round(bar.high, 2),
-                "sl_price": round(bar.low, 2),
+                "sl_price": sl_price,
+                "buffer_pts": round(buffer_pts, 2),
             }
 
         if is_bearish and bar.close < hub_price and trend_5m_bearish:
             if current_vwap > 0 and bar.close > current_vwap:
                 return False, "counter_to_vwap", {}
+            sl_price = round(bar.high + buffer_pts, 2)
             return True, "prominence_hub_breakout_down", {
+                "pa_setup_name": "topological_prominence_breakout",
                 "pillar": 4,
                 "hub_price": hub_price,
                 "pi_hat": pi_hat,
                 "vr_t": vr_t,
                 "breakout_direction": "DOWN",
+                "bar_open": round(bar.open, 2),
+                "bar_close": round(bar.close, 2),
                 "bar_low": round(bar.low, 2),
                 "bar_high": round(bar.high, 2),
-                "sl_price": round(bar.high, 2),
+                "sl_price": sl_price,
+                "buffer_pts": round(buffer_pts, 2),
             }
 
         return False, "no_breakout_against_hub", {}
@@ -2279,7 +2385,7 @@ class PriceActionEngine:
 
     def get_relative_bar_metrics(self, bar: Optional[OHLCBar] = None) -> Dict[str, Any]:
         """Calculates scale-invariant bar geometry, body %, wick %, and volume ratio."""
-        b = bar or self._curr_1m_bar or (self.bars_1m[-1] if self.bars_1m else None)
+        b = bar or (self.bars_1m[-1] if self.bars_1m else None) or self._curr_1m_bar
         if not b:
             return {}
         rng = max(b.high - b.low, 0.1)
@@ -2311,7 +2417,8 @@ class PriceActionEngine:
 
     def _enrich_details(self, details: Dict[str, Any]) -> Dict[str, Any]:
         """Enriches setup details dict with relative bar metrics and volume SMA."""
-        bar_m = self.get_relative_bar_metrics()
+        closed_bar = (self.bars_1m[-1] if self.bars_1m else None) or self._curr_1m_bar
+        bar_m = self.get_relative_bar_metrics(bar=closed_bar)
         for k, v in bar_m.items():
             if k not in details:
                 details[k] = v
@@ -2368,7 +2475,7 @@ class PriceActionEngine:
 
         # Pillar 3: Volatility Squeeze Breakout (3-Bar Tight Box Expansion)
         # V4.1: second-place Pain Zone removed — absolute band veto at tick top is single source.
-        ok_sq, reason_sq, details_sq = self.check_volatility_squeeze_breakout(direction, eff_vwap)
+        ok_sq, reason_sq, details_sq = self.check_volatility_squeeze_breakout(direction, eff_vwap, current_time=current_time)
         if ok_sq:
             details_sq["pain_zone_score"] = 0.0
             details_sq["pain_zone_reason"] = "band_veto_top_only"
@@ -2376,7 +2483,7 @@ class PriceActionEngine:
 
         # Pillar 4 (V4 Final): 0-D Prominence Hub Structural Breakout (\hat{\pi} >= 1.75, VR_t >= 1.4, 5m Alignment)
         # V4.1: second-place Pain Zone removed — absolute band veto at tick top is single source.
-        ok_prom, reason_prom, details_prom = self.check_topological_prominence_breakout(direction, eff_vwap)
+        ok_prom, reason_prom, details_prom = self.check_topological_prominence_breakout(direction, eff_vwap, current_time=current_time)
         if ok_prom:
             details_prom["pain_zone_score"] = 0.0
             details_prom["pain_zone_reason"] = "band_veto_top_only"

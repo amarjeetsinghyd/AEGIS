@@ -422,7 +422,7 @@ class CompositeConvictionEngine:
         vol_ratio = (bar_volume / vol_sma10) if vol_sma10 > 0 else 1.0
         pa_vr = float((pa_details or {}).get("vr_t", 0.0))
         wyckoff_vdr = float((wyckoff_details or {}).get("vdr", 0.0))
-        wyckoff_abs = float((wyckoff_details or {}).get("absorption_ratio", (wyckoff_details or {}).get("absorption_score", 0.0)))
+        wyckoff_abs = float((wyckoff_details or {}).get("absorption_score") or (wyckoff_details or {}).get("absorption_ratio") or 0.0)
         eff_vol_ratio = max(vol_ratio, pa_vr, wyckoff_vdr, wyckoff_abs)
         wyckoff_conf = bool((wyckoff_details or {}).get("wyckoff_confirmed", False))
 
@@ -470,9 +470,9 @@ class CompositeConvictionEngine:
         is_up = direction.upper() in ("UP", "CALL")
 
         wyckoff_confirmed = bool((wyckoff_details or {}).get("wyckoff_confirmed", False))
-        absorption = float((wyckoff_details or {}).get("absorption_ratio", (wyckoff_details or {}).get("absorption_score", 0.0)))
+        absorption = float((wyckoff_details or {}).get("absorption_score") or (wyckoff_details or {}).get("absorption_ratio") or 0.0)
         vdr = float((wyckoff_details or {}).get("vdr", 0.0))
-        ofi = float((wyckoff_details or {}).get("opt_delta_flow", (wyckoff_details or {}).get("ofi_delta", 0.0)))
+        ofi = float((wyckoff_details or {}).get("opt_delta_flow") or (wyckoff_details or {}).get("ofi_delta") or (wyckoff_details or {}).get("synthetic_net_delta") or 0.0)
 
         # 1. Directional Persistence / Institutional Reclaim (8 pts max)
         if persistence_dp >= 0.65:
