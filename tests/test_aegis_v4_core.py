@@ -332,3 +332,65 @@ def test_marketable_limit_prices_scale_invariant():
     assert p_exit_cheap >= 8.00
     assert p_exit_cheap <= 8.10
 
+
+def test_smart_maker_tp_price_flooring():
+    """Verify get_smart_maker_tp_price floors to tick when achieved >= min_acceptable_pct."""
+    from common.execution.order_lifecycle import get_smart_maker_tp_price
+
+    # Case 1: Trade #32 entry at 37.30 (4% target = 38.792 -> floors to 38.75 because +3.887% >= 3.85%)
+    tp_37 = get_smart_maker_tp_price(37.30, target_pct=0.04, min_acceptable_pct=0.0385)
+    assert tp_37 == 38.75
+    gain_pct = (tp_37 - 37.30) / 37.30
+    assert gain_pct >= 0.0385
+
+    # Case 2: Exact tick alignment (20.00 * 1.04 = 20.80)
+    tp_20 = get_smart_maker_tp_price(20.00, target_pct=0.04)
+    assert tp_20 == 20.80
+
+    # Case 3: Floor tick falls below 3.85% hurdle (e.g. 18.40 * 1.04 = 19.136 -> floor 19.10 is +3.804% < 3.85% -> ceils to 19.15)
+    tp_18 = get_smart_maker_tp_price(18.40, target_pct=0.04, min_acceptable_pct=0.0385)
+    assert tp_18 == 19.15
+    assert (tp_18 - 18.40) / 18.40 >= 0.04
+
+
+def test_marketable_exit_limit_price_3tier_urgency():
+    """Verify 3-tier urgency, capped spread adaptivity, and entry protection in get_marketable_exit_limit_price."""
+    from common.execution.order_lifecycle import get_marketable_exit_limit_price
+
+    # 1. Normal tight spread (NIFTY 0.05 spread): 1-tick buffer (37.95 - 0.05 = 37.90)
+    p_tight = get_marketable_exit_limit_price(
+        best_bid=37.95, exit_reason="NEAR_TARGET_LOCK", entry_price=37.30, best_ask=38.00
+    )
+    assert p_tight == 37.90
+
+    # 2. Wide spread (SENSEX 0.15 spread): capped at 2-tick buffer (37.95 - 0.10 = 37.85)
+    p_wide = get_marketable_exit_limit_price(
+        best_bid=37.95, exit_reason="NEAR_TARGET_LOCK", entry_price=37.30, best_ask=38.10
+    )
+    assert p_wide == 37.85
+
+    # 3. Entry price clamping: best_bid=37.35, entry_price=37.30 -> clamps at entry_price 37.30 (maintains 1-tick buffer)
+    p_clamped = get_marketable_exit_limit_price(
+        best_bid=37.35, exit_reason="BREAKEVEN_GUARD", entry_price=37.30, best_ask=37.45
+    )
+    assert p_clamped == 37.30
+
+    # 4. Flash dump below entry: best_bid=37.10, entry_price=37.30 -> escalates to 2-tick SL buffer (37.10 - 0.10 = 37.00)
+    p_dump = get_marketable_exit_limit_price(
+        best_bid=37.10, exit_reason="NEAR_TARGET_LOCK", entry_price=37.30, best_ask=37.20
+    )
+    assert p_dump == 37.00
+
+    # 5. Structural SL (2-tick buffer on normal spread): best_bid=37.95 -> 37.85
+    p_struct = get_marketable_exit_limit_price(
+        best_bid=37.95, exit_reason="STRUCTURAL_SL", entry_price=37.30, best_ask=38.00
+    )
+    assert p_struct == 37.85
+
+    # 6. Emergency / Disaster exit (1.5% buffer)
+    p_emerg = get_marketable_exit_limit_price(
+        best_bid=37.95, exit_reason="EMERGENCY"
+    )
+    assert p_emerg == 37.40
+
+

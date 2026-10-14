@@ -32,6 +32,7 @@ from common.execution.order_lifecycle import (
     PaperOrderLifecycle,
     ShoonyaOrderLifecycle,
     get_marketable_exit_limit_price,
+    get_smart_maker_tp_price,
 )
 from common.execution.strike_selector import StrikeSelector
 from common.execution.trade_context import TradeContext, TradeLeg
@@ -671,7 +672,7 @@ class AegisExecutionManager:
     def _place_initial_take_profit(self, leg: TradeLeg, params: dict, target_pct: Optional[float] = None):
         """Resting DAY limit target (Fast 4.0% Scalp Target)."""
         eff_tp_pct = target_pct if (target_pct is not None and target_pct > 0.0) else RESTING_TP_LIMIT_PCT
-        tp_price = _round_tick(leg.entry_price * (1.0 + eff_tp_pct))
+        tp_price = get_smart_maker_tp_price(leg.entry_price, target_pct=eff_tp_pct, min_acceptable_pct=0.0385)
         leg.tp_price = tp_price
         leg.initial_tp_pct = eff_tp_pct
         leg.highest_price = leg.entry_price
@@ -1386,15 +1387,36 @@ class AegisExecutionManager:
                         fill_price = limit_fill_price
 
             # Case B: Emergency or Trail Exit Chase (Anchored to live bid: Bid-0% -> Bid-1% -> Bid-2%)
-            def _get_live_bid(ref_px: float) -> float:
+            # Parse urgency tier from close reason
+            norm_reason = "EMERGENCY"
+            r_upper = str(reason).upper()
+            if any(k in r_upper for k in ("NEAR-TARGET", "NEAR_TARGET", "PROFIT LOCK", "PROFIT_LOCK")):
+                norm_reason = "NEAR_TARGET_LOCK"
+            elif any(k in r_upper for k in ("COST-SHIELD", "BREAKEVEN")):
+                norm_reason = "BREAKEVEN_GUARD"
+            elif any(k in r_upper for k in ("TIME HARVEST", "TIME_HARVEST")):
+                norm_reason = "TIME_HARVEST"
+            elif any(k in r_upper for k in ("PILLAR 4", "SPOT INVALIDATION", "STRUCTURAL")):
+                norm_reason = "STRUCTURAL_SL"
+            elif any(k in r_upper for k in ("STEPPED SL", "STEPPED_SL")):
+                norm_reason = "STEPPED_SL"
+            elif any(k in r_upper for k in ("TIMEOUT", "TIME STOP", "MAX HOLD")):
+                norm_reason = "TIME_STOP"
+
+            def _get_live_quote(ref_px: float) -> tuple:
                 try:
                     if hasattr(self.broker, "market_data_provider"):
                         q = self.broker.market_data_provider.get_quote(exch_seg, leg.token)
-                        if q and float(q.get("bp1") or 0) > 0:
-                            return float(q["bp1"])
+                        if q:
+                            bp1 = float(q.get("bp1") or 0)
+                            sp1 = float(q.get("sp1") or 0)
+                            return (bp1 if bp1 > 0 else ref_px, sp1 if sp1 > 0 else (ref_px + OPTION_TICK_SIZE))
                 except Exception:
                     pass
-                return ref_px
+                return (ref_px, ref_px + OPTION_TICK_SIZE)
+
+            def _get_live_bid(ref_px: float) -> float:
+                return _get_live_quote(ref_px)[0]
 
             if not filled:
                 # Pre-chase safety check: Did the resting TP order already fill at broker?
@@ -1415,8 +1437,13 @@ class AegisExecutionManager:
 
             if not filled:
                 # Step 1: Anchor to fresh live bid (marketable fill)
-                live_bid_1 = _get_live_bid(leg.current_price)
-                price_1 = _round_tick(get_marketable_exit_limit_price(live_bid_1)) if live_bid_1 > 0 else _round_tick(leg.current_price * 0.99)
+                live_bid_1, live_ask_1 = _get_live_quote(leg.current_price)
+                price_1 = _round_tick(get_marketable_exit_limit_price(
+                    live_bid_1,
+                    exit_reason=norm_reason,
+                    entry_price=leg.entry_price,
+                    best_ask=live_ask_1
+                )) if live_bid_1 > 0 else _round_tick(leg.current_price * 0.99)
                 ordno = None
                 
                 if self.tp_order_id and not str(self.tp_order_id).startswith("PAPER_"):
@@ -1480,8 +1507,13 @@ class AegisExecutionManager:
                         fill_price = h_px if h_px > 0 else price_1
                     else:
                         # Step 2: Refresh live bid and chase 1% below current bid
-                        live_bid_2 = _get_live_bid(price_1)
-                        price_2 = _round_tick(get_marketable_exit_limit_price(live_bid_2 * 0.99)) if live_bid_2 > 0 else _round_tick(leg.current_price * 0.98)
+                        live_bid_2, live_ask_2 = _get_live_quote(price_1)
+                        price_2 = _round_tick(get_marketable_exit_limit_price(
+                            live_bid_2 * 0.99,
+                            exit_reason=norm_reason,
+                            entry_price=leg.entry_price,
+                            best_ask=live_ask_2
+                        )) if live_bid_2 > 0 else _round_tick(leg.current_price * 0.98)
                         if api and hasattr(api, "modify_order"):
                             api.modify_order(exchange=exch_seg, tradingsymbol=leg.symbol, orderno=ordno,
                                              newquantity=qty, newprice_type="LMT", newprice=f"{price_2:.2f}")

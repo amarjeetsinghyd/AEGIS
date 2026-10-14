@@ -1,3 +1,4 @@
+import math
 import time
 import uuid
 from typing import Optional
@@ -111,12 +112,74 @@ def get_marketable_entry_limit_price(best_ask: float, tick_size: float = 0.05) -
     raw_price = best_ask + buffer
     return round(round(raw_price / tick_size) * tick_size, 2)
 
-def get_marketable_exit_limit_price(best_bid: float, tick_size: float = 0.05) -> float:
+def get_smart_maker_tp_price(
+    entry_price: float,
+    target_pct: float = 0.04,
+    min_acceptable_pct: float = 0.0385,
+    tick_size: float = 0.05
+) -> float:
+    """
+    Scale-invariant Smart Maker TP with floor tick preference.
+    Avoids setting resting limit orders at ceiling ticks when the lower tick
+    already captures >= min_acceptable_pct (default +3.85% vs nominal +4.00%).
+    Example:
+        entry = 37.30 -> raw_tp = 38.792 -> floor_tp = 38.75 (+3.89% >= +3.85%) -> returns 38.75!
+        (Prevents hanging at 38.80 [+4.02%] and missing the fill by a single 5-paise tick).
+    """
+    if entry_price <= 0:
+        return 0.0
+    raw_tp = entry_price * (1.0 + target_pct)
+    floored_tp = round(math.floor(raw_tp / tick_size) * tick_size, 2)
+    achieved_pct = (floored_tp - entry_price) / entry_price
+    if achieved_pct >= min_acceptable_pct:
+        return floored_tp
+    return round(math.ceil(raw_tp / tick_size) * tick_size, 2)
+
+
+def get_marketable_exit_limit_price(
+    best_bid: float,
+    tick_size: float = 0.05,
+    exit_reason: str = "EMERGENCY",
+    entry_price: float = 0.0,
+    best_ask: float = 0.0
+) -> float:
+    """
+    3-Tier Urgency exit limit price calculator with capped spread-adaptivity and entry protection:
+    1. PROFIT_LOCK / NEAR_TARGET_LOCK / TIME_HARVEST / BREAKEVEN_GUARD:
+       - Tight 1-tick buffer (0.05) if spread <= 1 tick (NIFTY).
+       - Max 2-tick buffer (0.10) if spread > 1 tick (SENSEX thin book).
+       - Clamped to entry_price as hard floor when best_bid > entry_price.
+       - Escalates to 2-tick SL buffer if best_bid <= entry_price (flash dump evacuation).
+    2. STRUCTURAL_SL / STEPPED_SL / TIME_STOP:
+       - 2-tick buffer (0.10) for normal spread, 3-tick (0.15) for wide spread.
+    3. EMERGENCY / DISASTER_SL / FORCE_FLATTEN (Default):
+       - 1.5% buffer (min 2 ticks, max 1.0 pt) for guaranteed catastrophic exit fill.
+    """
     if best_bid <= 0:
         return 0.0
-    buffer = max(tick_size * 2, min(1.0, best_bid * 0.015))
-    raw_price = max(tick_size, best_bid - buffer)
-    return round(round(raw_price / tick_size) * tick_size, 2)
+    spread = (best_ask - best_bid) if (best_ask > best_bid) else tick_size
+
+    if exit_reason in ("PROFIT_LOCK", "NEAR_TARGET_LOCK", "TIME_HARVEST", "BREAKEVEN_GUARD"):
+        if entry_price > 0 and best_bid <= entry_price:
+            buffer = tick_size * 2
+            raw_price = best_bid - buffer
+        else:
+            buffer = tick_size if spread <= tick_size else (tick_size * 2)
+            raw_price = best_bid - buffer
+            if entry_price > 0 and best_bid > entry_price:
+                raw_price = max(raw_price, entry_price)
+
+    elif exit_reason in ("STRUCTURAL_SL", "STEPPED_SL", "TIME_STOP"):
+        buffer = tick_size * 2 if spread <= (tick_size * 2) else (tick_size * 3)
+        raw_price = best_bid - buffer
+
+    else:
+        buffer = max(tick_size * 2, min(1.0, best_bid * 0.015))
+        raw_price = best_bid - buffer
+
+    safe_price = max(tick_size, raw_price)
+    return round(round(safe_price / tick_size) * tick_size, 2)
+
 
 class ShoonyaOrderLifecycle(OrderLifecycle):
     def __init__(self, broker_gateway, grace_period_sec: float = EXIT_LIMIT_GRACE_PERIOD_SEC):
