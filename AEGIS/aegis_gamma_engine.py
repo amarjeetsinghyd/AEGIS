@@ -650,29 +650,20 @@ class AegisGammaEngine:
                     if _vetoed:
                         return None
 
-                # ─── V3.0 Event-Bound Anchor T (formal 1m close) ───
-                # Production path slices strictly to [T-60, T] / [T-30, T] and
-                # excludes any T+1s tick. Stale-T fallback (synthetic unit-test
-                # bars) keeps legacy now_sec behaviour so the suite stays green.
-                anchor_T = self._get_last_closed_bar_T()
-                use_anchor = self._is_T_fresh(anchor_T, now_sec, 120.0)
-                anchor_arg = anchor_T if use_anchor else None
+                # ─── Fail-Fast Gate 1: Burst Cooldown (O(1)) ───
+                last_fired = self.cooldowns.get(sym, 0.0)
+                cooldown_dur = float(self.P.get("burst_cooldown_sec", 60.0))
+                if (now_sec - last_fired) < cooldown_dur:
+                    return None
 
-                # V3.1: Cross-strike OTM 1-4 loop decommissioned from per-tick hot path.
-                # Price Action provides the primary trigger; Order Flow Energy Validator (OFEE)
-                # validates target option momentum and book aggression directly.
-                score, is_high_conv, feats = self.scorer.compute_score(
-                    sym,
-                    now_sec,
-                    adjacent_otm_returns={},
-                    opp_side_return=0.0,
-                    anchor_ts_sec=anchor_arg,
-                )
-
-                # V3.0 DEPRECATED: impulse memory eliminated. No forward retention,
-                # no queuing, no delayed trigger. Always purge; DROP on failure.
-                # Kept attribute stays empty for backward compat.
-                self._purge_impulse_memory(sym)
+                # ─── Fail-Fast Gate 2: Quality Stack Slot Policy Limit (O(1)) ───
+                if self.quality_stack_mode == "ACTIVE" and self.slot_policy:
+                    if self.slot_policy.used >= self.slot_policy.max_trades_per_day:
+                        return None
+                    if int(getattr(self, "_em_consec_losses", 0)) >= self.slot_policy.consec_loss_stop and self.slot_policy.consec_loss_stop > 0:
+                        return None
+                    if float(getattr(self, "_em_daily_pnl", 0.0)) <= -self.slot_policy.daily_loss_cap_rs and self.slot_policy.daily_loss_cap_rs > 0:
+                        return None
 
                 # ─── THE 4 ACTIVE PRICE ACTION & MICROSTRUCTURE SCALPER ENGINES ───
                 # Pillar 1: 20 EMA + Wick Rejection (Top Performer)
@@ -697,6 +688,23 @@ class AegisGammaEngine:
                 if not is_pa_setup:
                     self._purge_impulse_memory(sym)
                     return None
+
+                # ─── V3.0 Event-Bound Anchor T (formal 1m close) & Option Scorer ───
+                # Compute empirical microstructure score ONLY when a valid Pillar has fired!
+                # Avoids wasting 2.5ms on 99.9% of non-setup market ticks.
+                anchor_T = self._get_last_closed_bar_T()
+                use_anchor = self._is_T_fresh(anchor_T, now_sec, 120.0)
+                anchor_arg = anchor_T if use_anchor else None
+
+                score, is_high_conv, feats = self.scorer.compute_score(
+                    sym,
+                    now_sec,
+                    adjacent_otm_returns={},
+                    opp_side_return=0.0,
+                    anchor_ts_sec=anchor_arg,
+                )
+
+                self._purge_impulse_memory(sym)
 
                 # ─── Wyckoff Volume & Order Flow Delta Gate (Shadow Mode Observability) ───
                 wyckoff_passed = True
@@ -1286,251 +1294,46 @@ class AegisGammaEngine:
                                     conviction_breakdown = conviction_res.breakdown
                                     conviction_sub_scores = conviction_res.sub_scores
 
-                                # ─── ML Gatekeeper Evaluation (LightGBM Secondary Validation) ───
-                                idx_id = 1 if ("SENSEX" in str(getattr(self, "index_name", "")).upper() or self.strike_step >= 100.0) else 0
-                                bar = self.price_action_engine.bars_1m[-1] if (self.price_action_engine and self.price_action_engine.bars_1m) else None
-                                if bar is not None:
-                                    b_open = float(bar.open)
-                                    b_high = float(bar.high)
-                                    b_low = float(bar.low)
-                                    b_close = float(bar.close)
-                                else:
-                                    b_open = float(pa_details.get("bar_open", self.last_spot))
-                                    b_high = float(pa_details.get("bar_high", self.last_spot))
-                                    b_low = float(pa_details.get("bar_low", self.last_spot))
-                                    b_close = float(pa_details.get("bar_close", self.last_spot))
-
-                                b_rng = max(b_high - b_low, 0.5)
-                                atr_val = max(atr_1m_val, 1.0)
-
-                                if direction.upper() in ("UP", "CALL"):
-                                    wick_rej = (min(b_close, b_open) - b_low) / b_rng
-                                else:
-                                    wick_rej = (b_high - max(b_close, b_open)) / b_rng
-
-                                body_atr = abs(b_close - b_open) / atr_val
-
-                                ema_20 = getattr(self.price_action_engine, "ema_20_1m", 0.0) if self.price_action_engine else 0.0
-                                if ema_20 <= 0 and self.price_action_engine:
-                                    ema_20, _ = self.price_action_engine.get_live_20_ema_and_slope()
-                                if ema_20 <= 0:
-                                    ema_20 = self.last_spot
-
-                                if direction.upper() in ("UP", "CALL"):
-                                    dist_ema20 = (b_close - ema_20) / atr_val
-                                else:
-                                    dist_ema20 = (ema_20 - b_close) / atr_val
-
-                                sw_depth = 0.0
-                                if pillar == 2:
-                                    if direction.upper() in ("UP", "CALL"):
-                                        sw_low = float(pa_details.get("swing_low", b_low))
-                                        sw_depth = max(0.0, sw_low - b_low) / atr_val
-                                    else:
-                                        sw_high = float(pa_details.get("swing_high", b_high))
-                                        sw_depth = max(0.0, b_high - sw_high) / atr_val
-
-                                ema_50 = getattr(self.price_action_engine, "ema_50_1m", 0.0) if self.price_action_engine else 0.0
-                                if ema_50 <= 0 and self.price_action_engine:
-                                    ema_50, _ = self.price_action_engine.get_live_50_ema_and_slope()
-                                if ema_50 <= 0:
-                                    ema_50 = ema_20
-
-                                if direction.upper() in ("UP", "CALL"):
-                                    ribbon_spread = (ema_20 - ema_50) / atr_val
-                                else:
-                                    ribbon_spread = (ema_50 - ema_20) / atr_val
-
-                                vwap_val = (getattr(self.price_action_engine, "current_vwap", 0.0) if self.price_action_engine else 0.0) or (getattr(self.vwap_engine, "current_vwap", 0.0) if self.vwap_engine else 0.0)
-                                if vwap_val <= 0:
-                                    vwap_val = self.last_spot
-
-                                if direction.upper() in ("UP", "CALL"):
-                                    vwap_bias = (b_close - vwap_val) / atr_val
-                                else:
-                                    vwap_bias = (vwap_val - b_close) / atr_val
-
-                                dt_now = datetime.fromtimestamp(now_sec)
-                                t_min = dt_now.hour * 60 + dt_now.minute
-                                t_bucket = 0 if t_min < 660 else (1 if t_min < 810 else 2)
-
-                                touch_i1 = float(micro_m.get("touch_i1", 0.0))
-                                opt_ret = float(micro_m.get("option_ret_30s", micro_m.get("micro_ret_30s", 0.0)))
-                                kyle_lambda = float(micro_m.get("kyle_lambda_30s", 0.0))
-                                momentum_accel = float(micro_m.get("momentum_accel_10s", 0.0))
-                                spread_pct_val = float(micro_m.get("spread_pct", spread_val))
-
-                                ml_feats = {
-                                    "kyle_lambda_30s": round(kyle_lambda, 6),
-                                    "momentum_accel_10s": round(momentum_accel, 4),
-                                    "option_ret_30s": round(opt_ret, 4),
-                                    "spread_pct": round(spread_pct_val, 4),
-                                }
-
+                                # ─── ML Gatekeeper (Synchronous evaluation ONLY if in ACTIVE mode) ───
                                 ml_passed = True
                                 ml_score = 1.0
-                                ml_reason = "ML_GATEKEEPER_DISABLED"
-
-                                if self.ml_gatekeeper and self.ml_gatekeeper_mode != "DISABLED":
-                                    # 1. Instantaneous Microstructure Check
+                                ml_reason = "ML_GATEKEEPER_SHADOW"
+                                if self.ml_gatekeeper and self.ml_gatekeeper_mode == "ACTIVE":
+                                    idx_id = 1 if ("SENSEX" in str(getattr(self, "index_name", "")).upper() or self.strike_step >= 100.0) else 0
+                                    bar = self.price_action_engine.bars_1m[-1] if (self.price_action_engine and self.price_action_engine.bars_1m) else None
+                                    if bar is not None:
+                                        b_open, b_high, b_low, b_close = float(bar.open), float(bar.high), float(bar.low), float(bar.close)
+                                    else:
+                                        b_open = float(pa_details.get("bar_open", self.last_spot))
+                                        b_high = float(pa_details.get("bar_high", self.last_spot))
+                                        b_low = float(pa_details.get("bar_low", self.last_spot))
+                                        b_close = float(pa_details.get("bar_close", self.last_spot))
+                                    b_rng = max(b_high - b_low, 0.5)
+                                    atr_val = max(atr_1m_val, 1.0)
+                                    opt_ret = float(micro_m.get("option_ret_30s", micro_m.get("micro_ret_30s", 0.0)))
+                                    kyle_lambda = float(micro_m.get("kyle_lambda_30s", 0.0))
+                                    momentum_accel = float(micro_m.get("momentum_accel_10s", 0.0))
+                                    spread_pct_val = float(micro_m.get("spread_pct", spread_val))
+                                    ml_feats = {
+                                        "kyle_lambda_30s": round(kyle_lambda, 6),
+                                        "momentum_accel_10s": round(momentum_accel, 4),
+                                        "option_ret_30s": round(opt_ret, 4),
+                                        "spread_pct": round(spread_pct_val, 4),
+                                    }
                                     ml_passed, ml_score, ml_reason = self.ml_gatekeeper.evaluate(
                                         ml_feats, index_name=getattr(self, "index_name", "NIFTY")
                                     )
-                                    # 2. Rolling 5-Minute Confluence Memory Check
-                                    # Adaptive ML Confluence Hurdle:
-                                    # When Conviction Score is high (>= 80.0), the setup has verified structural
-                                    # and price action confluence. We adaptively relax the ML option order flow
-                                    # hurdle from the rigid day-median (~30%) down to 15% (0.15) [or 10% if score >= 81],
-                                    # preventing high-conviction winning moves (e.g. 10:43 PE +4.5%, 12:01 PE +8.2%)
-                                    # from being vetoed by lagging option flow.
-                                    adaptive_ml_thresh = None
-                                    if conviction_score_val >= 81.0:
-                                        adaptive_ml_thresh = 0.10
-                                    elif conviction_score_val >= 80.0:
-                                        adaptive_ml_thresh = 0.15
-
+                                    adaptive_ml_thresh = 0.10 if conviction_score_val >= 81.0 else (0.15 if conviction_score_val >= 80.0 else None)
                                     conf_passed, conf_max_score, conf_details = self.ml_gatekeeper.check_rolling_confluence(
-                                        threshold=adaptive_ml_thresh,
-                                        current_ts=now_sec
+                                        threshold=adaptive_ml_thresh, current_ts=now_sec
                                     )
-                                    effective_ml_passed = ml_passed or conf_passed
-                                    effective_score = max(ml_score, conf_max_score)
-                                    if conf_passed:
-                                        ml_reason = f"{ml_reason} | {conf_details.get('reason', '')}"
-
-                                    if self.ml_gatekeeper_mode == "ACTIVE" and not effective_ml_passed:
+                                    if not (ml_passed or conf_passed):
                                         self._purge_impulse_memory(sym)
                                         self._throttled_veto_log("ml_gatekeeper_veto", f"[ML CONFLUENCE VETO] {sym} ({direction}) {pa_setup_name} P{pillar} blocked: {conf_details.get('reason', ml_reason)}")
-                                        # Register dropped trade for 5-minute counterfactual audit
-                                        if self.outcome_telemetry:
-                                            self.outcome_telemetry.register_entry(
-                                                event_id=f"VETO_{sym}_{int(now_sec*1000)}",
-                                                symbol=sym,
-                                                direction=direction,
-                                                entry_ts=now_sec,
-                                                entry_opt_price=lp,
-                                                entry_spot_price=self.last_spot,
-                                                eqs_score=conviction_score_val,
-                                                features_snapshot=ml_feats,
-                                                trade_status="DROPPED_BY_ML"
-                                            )
                                         return None
-                                    elif self.ml_gatekeeper_mode == "SHADOW":
-                                        self._throttled_veto_log(
-                                            f"ml_shadow_{sym}",
-                                            f"[ML CONFLUENCE SHADOW] {sym} ({direction}) {pa_setup_name} P{pillar} | "
-                                            f"Score: {effective_score:.4f} | Peak5m: {conf_max_score:.4f} | "
-                                            f"Passed: {effective_ml_passed} | Reason: {conf_details.get('reason', ml_reason)}",
-                                            interval_sec=15.0,
-                                        )
-                                        # Track dropped candidates in shadow mode for counterfactual evaluation
-                                        if not effective_ml_passed and self.outcome_telemetry:
-                                            self.outcome_telemetry.register_entry(
-                                                event_id=f"SHADOW_VETO_{sym}_{int(now_sec*1000)}",
-                                                symbol=sym,
-                                                direction=direction,
-                                                entry_ts=now_sec,
-                                                entry_opt_price=lp,
-                                                entry_spot_price=self.last_spot,
-                                                eqs_score=conviction_score_val,
-                                                features_snapshot=ml_feats,
-                                                trade_status="SHADOW_VETO"
-                                            )
-                                    ml_score = effective_score
-                                    ml_passed = effective_ml_passed
+                                    ml_score = max(ml_score, conf_max_score)
 
-                                # Extract Passive Shadow Quant Telemetry (Zero-Veto, 100% Observation)
-                                shadow_m = {}
-                                if self.shadow_quant_tracker:
-                                    atm_k = self.current_atm_strike or (round(self.last_spot / self.strike_step) * self.strike_step)
-                                    atm_ce_sym = self.strike_to_symbol.get((0, atm_k))
-                                    atm_pe_sym = self.strike_to_symbol.get((1, atm_k))
-                                    ce_px = self._resolve_option_ltp(atm_ce_sym, None) if atm_ce_sym else 0.0
-                                    pe_px = self._resolve_option_ltp(atm_pe_sym, None) if atm_pe_sym else 0.0
-                                    shadow_m = self.shadow_quant_tracker.get_shadow_metrics(
-                                        symbol=sym,
-                                        direction=direction,
-                                        current_opt_price=lp,
-                                        current_spot_price=self.last_spot,
-                                        ce_price=ce_px,
-                                        pe_price=pe_px,
-                                        now_sec=now_sec,
-                                    )
-                                    if shadow_m:
-                                        self._throttled_veto_log(
-                                            f"shadow_quant_{sym}",
-                                            f"[SHADOW QUANT TELEMETRY] {sym} ({direction}) | "
-                                            f"StraddleExp: {shadow_m.get('shadow_straddle_expanding')} ({shadow_m.get('shadow_straddle_ret_60s_pct'):+.2f}%) | "
-                                            f"Skew: {shadow_m.get('shadow_skew_bias')} (Aligned: {shadow_m.get('shadow_skew_aligned')}) | "
-                                            f"OptLeadsSpot: {shadow_m.get('shadow_option_leads_spot')} ({shadow_m.get('shadow_velocity_ratio'):.2f}x) | "
-                                            f"Charm: {shadow_m.get('shadow_is_charm_window')} | Zone: {shadow_m.get('shadow_seasonality_zone')}",
-                                            interval_sec=15.0,
-                                        )
-
-                                # Extract Passive Volume Profile Telemetry (100% Shadow Observation)
-                                vp_metrics = {}
-                                if self.volume_profile_engine:
-                                    vp_metrics = self.volume_profile_engine.get_profile_metrics(
-                                        spot_price=self.last_spot,
-                                        atr_1m=atr_1m_val,
-                                        direction=direction,
-                                    )
-                                    if vp_metrics:
-                                        self._throttled_veto_log(
-                                            f"vp_shadow_{sym}",
-                                            f"[VOLUME PROFILE SHADOW] {sym} ({direction}) | "
-                                            f"SpotPOC: {vp_metrics.get('poc_price', 0.0):.1f} | "
-                                            f"VA: [{vp_metrics.get('val_price', 0.0):.1f} - {vp_metrics.get('vah_price', 0.0):.1f}] "
-                                            f"({vp_metrics.get('auction_zone', 'N/A')}) | "
-                                            f"DistPOC: {vp_metrics.get('dist_to_poc_pts', 0.0):+.1f}pts ({vp_metrics.get('dist_to_poc_atr', 0.0):+.2f} ATR) | "
-                                            f"POCAlign: {vp_metrics.get('poc_alignment', 'N/A')} | "
-                                            f"LVN: {vp_metrics.get('is_lvn_zone', False)} | "
-                                            f"CallPOC_K: {vp_metrics.get('call_poc_strike', 0.0):.0f} | "
-                                            f"PutPOC_K: {vp_metrics.get('put_poc_strike', 0.0):.0f}",
-                                            interval_sec=15.0,
-                                        )
-
-                                # ─── AI Shadow Reviewer (Gemini 3.8 Flash Technical Analyst Co-Pilot in Shadow Mode) ───
-                                if self.ai_shadow_reviewer:
-                                    pa_eng = getattr(self, "price_action_engine", None)
-                                    pdh_val = getattr(pa_eng, "pdh", 0.0) if pa_eng else 0.0
-                                    pdl_val = getattr(pa_eng, "pdl", 0.0) if pa_eng else 0.0
-                                    pdc_val = getattr(pa_eng, "pdc", 0.0) if pa_eng else 0.0
-                                    bars_1m_deque = getattr(pa_eng, "bars_1m", None)
-                                    day_open_val = bars_1m_deque[0].open if (bars_1m_deque and len(bars_1m_deque) > 0) else self.last_spot
-                                    bars_list = list(bars_1m_deque) if bars_1m_deque else []
-                                    self.ai_shadow_reviewer.review_setup_async(
-                                        symbol=sym,
-                                        direction=direction,
-                                        setup_name=pa_setup_name,
-                                        pillar=pillar,
-                                        spot_price=self.last_spot,
-                                        pdh=pdh_val,
-                                        pdl=pdl_val,
-                                        pdc=pdc_val,
-                                        session_high=self.session_high,
-                                        session_low=self.session_low,
-                                        day_open=day_open_val,
-                                        vwap=vwap_val,
-                                        ema_20=ema_20,
-                                        ema_50=ema_50,
-                                        atr_1m=atr_1m_val,
-                                        index_name=getattr(self, "index_name", "NIFTY"),
-                                        strike_step=self.strike_step,
-                                        bars_1m=bars_list,
-                                        machine_conviction_score=conviction_score_val,
-                                        conviction_breakdown=conviction_breakdown,
-                                        micro_metrics=micro_m,
-                                        now_sec=now_sec,
-                                    )
-
-                                # ─── Quality Stack (SHADOW-first): shadow AND-gate + 3-slot policy ───
-                                qs_skew_ok = bool(shadow_m.get("shadow_skew_aligned", False)) if shadow_m else False
-                                qs_leads_ok = bool(shadow_m.get("shadow_option_leads_spot", False)) if shadow_m else False
-                                qs_energy_ok = energy_score >= self.quality_energy_min
-                                qs_spread_ok = spread_pct_val <= self.quality_max_spread_pct
-                                qs_all_ok = qs_skew_ok and qs_leads_ok and qs_energy_ok and qs_spread_ok
-
+                                # ─── Quality Stack 3-Slot Policy Gate ───
                                 slot_admit = True
                                 slot_reason = "slot_policy_off"
                                 slot_score = float(conviction_score_val if conviction_score_val > 0 else micro_m.get("energy_score", score))
@@ -1541,31 +1344,15 @@ class AegisGammaEngine:
                                         consec_losses=int(getattr(self, "_em_consec_losses", 0)),
                                         daily_pnl=float(getattr(self, "_em_daily_pnl", 0.0)),
                                     )
+                                if self.quality_stack_mode == "ACTIVE" and not slot_admit:
+                                    self._purge_impulse_memory(sym)
+                                    self._throttled_veto_log(
+                                        "slot_policy_veto",
+                                        f"[SLOT POLICY VETO] {sym} ({direction}) {pa_setup_name} blocked: {slot_reason}",
+                                    )
+                                    return None
 
-                                self._throttled_veto_log(
-                                    f"qs_telemetry_{sym}",
-                                    f"[QUALITY STACK TELEMETRY] {sym} ({direction}) {pa_setup_name} | "
-                                    f"skew={qs_skew_ok} leads={qs_leads_ok} energy={energy_score:.0f}>={self.quality_energy_min:.0f}:{qs_energy_ok} "
-                                    f"spread={spread_pct_val:.3f}<={self.quality_max_spread_pct}:{qs_spread_ok} | "
-                                    f"slot={slot_reason} (used={self.slot_policy.used if self.slot_policy else 0}/{(self.slot_policy.max_trades_per_day if self.slot_policy else 3)})",
-                                    interval_sec=15.0,
-                                )
-
-                                if self.quality_stack_mode == "ACTIVE":
-                                    if not slot_admit:
-                                        self._purge_impulse_memory(sym)
-                                        self._throttled_veto_log(
-                                            "slot_policy_veto",
-                                            f"[SLOT POLICY VETO] {sym} ({direction}) {pa_setup_name} blocked: {slot_reason}",
-                                        )
-                                        return None
-
-                                # ─── V4 CONFIRM15 FUTURES CONFIRMATION (relocated 2026-09-22:
-                                # post-gates / pre-commit). All independent gates above
-                                # (conviction/ML/quality) already passed on this tick, so
-                                # ARM snapshots them; TRIGGER path is fresh depth + fire
-                                # only. Commits below (slot consume, FSM, telemetry) run
-                                # solely on TRIGGER pass-through — never on ARM.
+                                # ─── V4 CONFIRM15 FUTURES CONFIRMATION ───
                                 if Confirm15StateMachine is not None and self.v4_futures_buffer is not None:
                                     _c15_snap = {
                                         "conviction": conviction_score_val,
@@ -1582,9 +1369,7 @@ class AegisGammaEngine:
                                     if _c15 is None:
                                         return None  # armed, holding for futures confirmation
 
-                                # ─── Shield v2 (2026-09-22): delta inflection + OI kinematics ───
-                                # Both run post-TRIGGER / pre-commit on fresh data; either veto
-                                # blocks the entry. Fail-open when data is missing.
+                                # ─── Shield v2: delta inflection + OI kinematics ───
                                 _di_veto, _di_detail = self._delta_inflection_check(sym, direction)
                                 if _di_veto:
                                     self._di_vetoed += 1
@@ -1607,10 +1392,35 @@ class AegisGammaEngine:
                                                 f"blocked: fresh dumping vel={_oi_vel:.2f}%/min acc={_oi_acc:+.2f}")
                                             return None
                                     else:
-                                        # Thin OI history (<2 points): fail-open, counted for visibility.
                                         self._oi_kin_skipped += 1
 
-                                telemetry_metrics = {
+                                # ─── V4 DEFENSIVE TOP-5 DEPTH GUARD (BBO Micro-Price Skew + Spread Veto) ───
+                                if self.top5_depth_guard is not None:
+                                    bids_mat = np.array([
+                                        [bp1, b1], [bp2, b2], [bp3, b3], [bp4, b4], [bp5, b5]
+                                    ], dtype=np.float64)
+                                    asks_mat = np.array([
+                                        [sp1, a1], [sp2, a2], [sp3, a3], [sp4, a4], [sp5, a5]
+                                    ], dtype=np.float64)
+                                    dir_enum = V4Direction.BULLISH if direction == "UP" else V4Direction.BEARISH
+                                    guard_ok, guard_reason = self.top5_depth_guard.validate_execution(
+                                        dir_enum, bids_mat, asks_mat
+                                    )
+                                    if not guard_ok:
+                                        self._purge_impulse_memory(sym)
+                                        self._throttled_veto_log("v4_depth_guard_veto", f"[V4 DEPTH GUARD VETO] {sym} ({direction}) blocked: {guard_reason}")
+                                        return None
+
+                                # ─── EXECUTION COMMIT & IMMEDIATE DISPATCH (<0.8ms from Tick) ───
+                                if self.signal_fsm:
+                                    self.signal_fsm.register_trade_executed(sym, now_sec)
+
+                                if self.slot_policy and slot_admit:
+                                    self.slot_policy.mark_admitted(slot_score, now_sec=now_sec)
+
+                                self.cooldowns[sym] = now_sec
+
+                                live_signal_metrics = {
                                     "impulse_timestamp": now_sec,
                                     "impulse_time_iso": datetime.fromtimestamp(now_sec).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
                                     "volatility_burst_age_sec": vol_burst_age,
@@ -1635,88 +1445,26 @@ class AegisGammaEngine:
                                     "ml_gatekeeper_reason": ml_reason,
                                     "ml_gatekeeper_mode": self.ml_gatekeeper_mode,
                                     "quality_stack_mode": self.quality_stack_mode,
-                                    "quality_skew_ok": qs_skew_ok,
-                                    "quality_leads_ok": qs_leads_ok,
-                                    "quality_energy_ok": qs_energy_ok,
-                                    "quality_spread_ok": qs_spread_ok,
                                     "slot_verdict": slot_reason,
                                     "slot_used": self.slot_policy.used if self.slot_policy else 0,
                                     "oi_snapshot": self._get_oi_snapshot(sym, direction, now_sec),
-                                    **shadow_m,
-                                    **vp_metrics,
-                                    **fut_basis_m,
+                                    "eqs_score": eqs,
+                                    "recommended_tp_pct": recommended_tp_pct,
+                                    "microstructure_score": round(score, 2),
+                                    "persistence_score": round(pers_score, 3),
+                                    "live_tick_rate": round(live_tick_rate, 2),
+                                    "strike": strike,
+                                    "side": "CE" if side == 0 else "PE",
                                     **pa_details,
                                     **micro_m,
+                                    **fut_basis_m,
+                                    **feats,
+                                    **eqs_breakdown,
+                                    **perm_metrics,
                                 }
 
-                                event_id = f"{sym}_{int(now_sec*1000)}"
-                                if self.outcome_telemetry:
-                                    self.outcome_telemetry.register_entry(
-                                        event_id=event_id,
-                                        symbol=sym,
-                                        direction=direction,
-                                        entry_ts=now_sec,
-                                        entry_opt_price=lp,
-                                        entry_spot_price=self.last_spot,
-                                        eqs_score=eqs,
-                                        features_snapshot={
-                                            **feats,
-                                            **eqs_breakdown,
-                                            **perm_metrics,
-                                            **telemetry_metrics,
-                                            "recommended_tp_pct": recommended_tp_pct,
-                                        },
-                                    )
-                                # ─── V4 DEFENSIVE TOP-5 DEPTH GUARD (BBO Micro-Price Skew + Spread Veto) ───
-                                if self.top5_depth_guard is not None:
-                                    bids_mat = np.array([
-                                        [bp1, b1], [bp2, b2], [bp3, b3], [bp4, b4], [bp5, b5]
-                                    ], dtype=np.float64)
-                                    asks_mat = np.array([
-                                        [sp1, a1], [sp2, a2], [sp3, a3], [sp4, a4], [sp5, a5]
-                                    ], dtype=np.float64)
-                                    dir_enum = V4Direction.BULLISH if direction == "UP" else V4Direction.BEARISH
-                                    guard_ok, guard_reason = self.top5_depth_guard.validate_execution(
-                                        dir_enum, bids_mat, asks_mat
-                                    )
-                                    if not guard_ok:
-                                        self._purge_impulse_memory(sym)
-                                        self._throttled_veto_log("v4_depth_guard_veto", f"[V4 DEPTH GUARD VETO] {sym} ({direction}) blocked: {guard_reason}")
-                                        return None
-
-                                if self.signal_fsm:
-                                    self.signal_fsm.register_trade_executed(sym, now_sec)
-
-                                # Quality stack: consume slot + arm post-trigger stability telemetry
-                                if self.slot_policy and slot_admit:
-                                    self.slot_policy.mark_admitted(slot_score, now_sec=now_sec)
-
-                                if self.stability_tracker and micro_m:
-                                    _sbp = float(micro_m.get("bp1", 0.0) or 0.0)
-                                    _ssp = float(micro_m.get("sp1", 0.0) or 0.0)
-                                    _mid_T = ((_sbp + _ssp) / 2.0) if (_sbp > 0 and _ssp > 0) else float(micro_m.get("p1", 0.0) or 0.0)
-                                    if _mid_T > 0:
-                                        self.stability_tracker.arm(
-                                            sym=sym,
-                                            direction=direction,
-                                            t_sec=now_sec,
-                                            mid_T=_mid_T,
-                                            meta={
-                                                "ml_score": ml_score,
-                                                "opt_ret_30s": float(micro_m.get("micro_ret_30s", 0.0) or 0.0),
-                                                "energy_score": energy_score,
-                                            },
-                                        )
-
-                                self.cooldowns[sym] = now_sec
-                                logger.info(
-                                    f"[AEGIS V3 FIRED] {sym} ({direction}) | Conviction: {conviction_score_val:.1f}/100 ({sizing_tier}) | "
-                                    f"Energy: {energy_score:.1f}/100 | EQS: {eqs:.1f}/100 | "
-                                    f"ML: {ml_score:.4f} ({self.ml_gatekeeper_mode}) | Target: +{recommended_tp_pct*100:.1f}% | "
-                                    f"Basis: {self.last_basis_pts:+.1f}pts ({self.last_basis_bps:+.1f}bps) | FutPx: {self.last_futures_price:.1f} | "
-                                    f"Persist: {pers_score:.2f} | Struct: {perm_metrics.get('market_structure', 'N/A')} | "
-                                    f"ATR_Ratio: {perm_metrics.get('atr_ratio', 1.0):.2f} | Spread: {opt_metrics.get('spread_pct', 0.5):.2f}%"
-                                )
+                                # Dispatch live signal to execution manager IMMEDIATELY!
+                                # Order placement starts on downstream execution thread with zero delay.
                                 self._emit_signal(
                                     sym=sym,
                                     lp=lp,
@@ -1729,22 +1477,205 @@ class AegisGammaEngine:
                                         "eqs_qualified": is_eqs_qual,
                                         "conviction_approved": True,
                                     },
-                                    metrics={
-                                        "conviction_score": conviction_score_val,
-                                        "sizing_tier": sizing_tier,
-                                        "conviction_sub_scores": conviction_sub_scores,
-                                        "eqs_score": eqs,
-                                        "recommended_tp_pct": recommended_tp_pct,
-                                        "microstructure_score": round(score, 2),
-                                        "persistence_score": round(pers_score, 3),
-                                        "live_tick_rate": round(live_tick_rate, 2),
-                                        "strike": strike,
-                                        "side": "CE" if side == 0 else "PE",
-                                        **telemetry_metrics,
-                                        **feats,
-                                        **eqs_breakdown,
-                                        **perm_metrics,
-                                    }
+                                    metrics=live_signal_metrics,
+                                )
+
+                                # ─── POST-DISPATCH SHADOW & TELEMETRY ENRICHMENT ───
+                                # Runs immediately after order dispatch; live execution is never delayed.
+                                # 1. Passive Shadow Quant Telemetry
+                                shadow_m = {}
+                                if self.shadow_quant_tracker:
+                                    try:
+                                        atm_k = self.current_atm_strike or (round(self.last_spot / self.strike_step) * self.strike_step)
+                                        atm_ce_sym = self.strike_to_symbol.get((0, atm_k))
+                                        atm_pe_sym = self.strike_to_symbol.get((1, atm_k))
+                                        ce_px = self._resolve_option_ltp(atm_ce_sym, None) if atm_ce_sym else 0.0
+                                        pe_px = self._resolve_option_ltp(atm_pe_sym, None) if atm_pe_sym else 0.0
+                                        shadow_m = self.shadow_quant_tracker.get_shadow_metrics(
+                                            symbol=sym,
+                                            direction=direction,
+                                            current_opt_price=lp,
+                                            current_spot_price=self.last_spot,
+                                            ce_price=ce_px,
+                                            pe_price=pe_px,
+                                            now_sec=now_sec,
+                                        )
+                                        if shadow_m:
+                                            self._throttled_veto_log(
+                                                f"shadow_quant_{sym}",
+                                                f"[SHADOW QUANT TELEMETRY] {sym} ({direction}) | "
+                                                f"StraddleExp: {shadow_m.get('shadow_straddle_expanding')} ({shadow_m.get('shadow_straddle_ret_60s_pct'):+.2f}%) | "
+                                                f"Skew: {shadow_m.get('shadow_skew_bias')} (Aligned: {shadow_m.get('shadow_skew_aligned')}) | "
+                                                f"OptLeadsSpot: {shadow_m.get('shadow_option_leads_spot')} ({shadow_m.get('shadow_velocity_ratio'):.2f}x) | "
+                                                f"Charm: {shadow_m.get('shadow_is_charm_window')} | Zone: {shadow_m.get('shadow_seasonality_zone')}",
+                                                interval_sec=15.0,
+                                            )
+                                    except Exception as _e_sq:
+                                        logger.debug(f"[Aegis] Shadow Quant error: {_e_sq}")
+
+                                # 2. Passive Volume Profile Telemetry
+                                vp_metrics = {}
+                                if self.volume_profile_engine:
+                                    try:
+                                        vp_metrics = self.volume_profile_engine.get_profile_metrics(
+                                            spot_price=self.last_spot,
+                                            atr_1m=atr_1m_val,
+                                            direction=direction,
+                                        )
+                                        if vp_metrics:
+                                            self._throttled_veto_log(
+                                                f"vp_shadow_{sym}",
+                                                f"[VOLUME PROFILE SHADOW] {sym} ({direction}) | "
+                                                f"SpotPOC: {vp_metrics.get('poc_price', 0.0):.1f} | "
+                                                f"VA: [{vp_metrics.get('val_price', 0.0):.1f} - {vp_metrics.get('vah_price', 0.0):.1f}] "
+                                                f"({vp_metrics.get('auction_zone', 'N/A')}) | "
+                                                f"DistPOC: {vp_metrics.get('dist_to_poc_pts', 0.0):+.1f}pts ({vp_metrics.get('dist_to_poc_atr', 0.0):+.2f} ATR) | "
+                                                f"POCAlign: {vp_metrics.get('poc_alignment', 'N/A')} | "
+                                                f"LVN: {vp_metrics.get('is_lvn_zone', False)} | "
+                                                f"CallPOC_K: {vp_metrics.get('call_poc_strike', 0.0):.0f} | "
+                                                f"PutPOC_K: {vp_metrics.get('put_poc_strike', 0.0):.0f}",
+                                                interval_sec=15.0,
+                                            )
+                                    except Exception as _e_vp:
+                                        logger.debug(f"[Aegis] Volume Profile error: {_e_vp}")
+
+                                # 3. CatBoost ML Gatekeeper Shadow Evaluation & Logging
+                                if self.ml_gatekeeper and self.ml_gatekeeper_mode == "SHADOW":
+                                    try:
+                                        bar = self.price_action_engine.bars_1m[-1] if (self.price_action_engine and self.price_action_engine.bars_1m) else None
+                                        if bar is not None:
+                                            b_open, b_high, b_low, b_close = float(bar.open), float(bar.high), float(bar.low), float(bar.close)
+                                        else:
+                                            b_open = float(pa_details.get("bar_open", self.last_spot))
+                                            b_high = float(pa_details.get("bar_high", self.last_spot))
+                                            b_low = float(pa_details.get("bar_low", self.last_spot))
+                                            b_close = float(pa_details.get("bar_close", self.last_spot))
+                                        b_rng = max(b_high - b_low, 0.5)
+                                        atr_val = max(atr_1m_val, 1.0)
+                                        opt_ret = float(micro_m.get("option_ret_30s", micro_m.get("micro_ret_30s", 0.0)))
+                                        kyle_lambda = float(micro_m.get("kyle_lambda_30s", 0.0))
+                                        momentum_accel = float(micro_m.get("momentum_accel_10s", 0.0))
+                                        spread_pct_val = float(micro_m.get("spread_pct", spread_val))
+                                        ml_feats = {
+                                            "kyle_lambda_30s": round(kyle_lambda, 6),
+                                            "momentum_accel_10s": round(momentum_accel, 4),
+                                            "option_ret_30s": round(opt_ret, 4),
+                                            "spread_pct": round(spread_pct_val, 4),
+                                        }
+                                        ml_passed, ml_score, ml_reason = self.ml_gatekeeper.evaluate(
+                                            ml_feats, index_name=getattr(self, "index_name", "NIFTY")
+                                        )
+                                        adaptive_ml_thresh = 0.10 if conviction_score_val >= 81.0 else (0.15 if conviction_score_val >= 80.0 else None)
+                                        conf_passed, conf_max_score, conf_details = self.ml_gatekeeper.check_rolling_confluence(
+                                            threshold=adaptive_ml_thresh, current_ts=now_sec
+                                        )
+                                        effective_ml_passed = ml_passed or conf_passed
+                                        effective_score = max(ml_score, conf_max_score)
+                                        if conf_passed:
+                                            ml_reason = f"{ml_reason} | {conf_details.get('reason', '')}"
+                                        self._throttled_veto_log(
+                                            f"ml_shadow_{sym}",
+                                            f"[ML CONFLUENCE SHADOW] {sym} ({direction}) {pa_setup_name} P{pillar} | "
+                                            f"Score: {effective_score:.4f} | Peak5m: {conf_max_score:.4f} | "
+                                            f"Passed: {effective_ml_passed} | Reason: {conf_details.get('reason', ml_reason)}",
+                                            interval_sec=15.0,
+                                        )
+                                        ml_score = effective_score
+                                        ml_passed = effective_ml_passed
+                                    except Exception as _e_ml:
+                                        logger.debug(f"[Aegis] Shadow ML error: {_e_ml}")
+
+                                # 4. AI Shadow Reviewer
+                                if self.ai_shadow_reviewer:
+                                    try:
+                                        pa_eng = getattr(self, "price_action_engine", None)
+                                        pdh_val = getattr(pa_eng, "pdh", 0.0) if pa_eng else 0.0
+                                        pdl_val = getattr(pa_eng, "pdl", 0.0) if pa_eng else 0.0
+                                        pdc_val = getattr(pa_eng, "pdc", 0.0) if pa_eng else 0.0
+                                        bars_1m_deque = getattr(pa_eng, "bars_1m", None)
+                                        day_open_val = bars_1m_deque[0].open if (bars_1m_deque and len(bars_1m_deque) > 0) else self.last_spot
+                                        bars_list = list(bars_1m_deque) if bars_1m_deque else []
+                                        self.ai_shadow_reviewer.review_setup_async(
+                                            symbol=sym,
+                                            direction=direction,
+                                            setup_name=pa_setup_name,
+                                            pillar=pillar,
+                                            spot_price=self.last_spot,
+                                            pdh=pdh_val,
+                                            pdl=pdl_val,
+                                            pdc=pdc_val,
+                                            session_high=self.session_high,
+                                            session_low=self.session_low,
+                                            day_open=day_open_val,
+                                            vwap=vwap_val,
+                                            ema_20=getattr(self.price_action_engine, "ema_20_1m", 0.0) if self.price_action_engine else 0.0,
+                                            ema_50=getattr(self.price_action_engine, "ema_50_1m", 0.0) if self.price_action_engine else 0.0,
+                                            atr_1m=atr_1m_val,
+                                            index_name=getattr(self, "index_name", "NIFTY"),
+                                            strike_step=self.strike_step,
+                                            bars_1m=bars_list,
+                                            machine_conviction_score=conviction_score_val,
+                                            conviction_breakdown=conviction_breakdown,
+                                            micro_metrics=micro_m,
+                                            now_sec=now_sec,
+                                        )
+                                    except Exception as _e_ai:
+                                        logger.debug(f"[Aegis] AI Shadow Reviewer error: {_e_ai}")
+
+                                # 5. Stability Tracker Post-Trigger Arming
+                                if self.stability_tracker and micro_m:
+                                    try:
+                                        _sbp = float(micro_m.get("bp1", 0.0) or 0.0)
+                                        _ssp = float(micro_m.get("sp1", 0.0) or 0.0)
+                                        _mid_T = ((_sbp + _ssp) / 2.0) if (_sbp > 0 and _ssp > 0) else float(micro_m.get("p1", 0.0) or 0.0)
+                                        if _mid_T > 0:
+                                            self.stability_tracker.arm(
+                                                sym=sym,
+                                                direction=direction,
+                                                t_sec=now_sec,
+                                                mid_T=_mid_T,
+                                                meta={
+                                                    "ml_score": ml_score,
+                                                    "opt_ret_30s": float(micro_m.get("micro_ret_30s", 0.0) or 0.0),
+                                                    "energy_score": energy_score,
+                                                },
+                                            )
+                                    except Exception as _e_st:
+                                        logger.debug(f"[Aegis] Stability tracker arm error: {_e_st}")
+
+                                # 6. Outcome Telemetry Database Entry (100% enriched payload)
+                                if self.outcome_telemetry:
+                                    try:
+                                        event_id = f"{sym}_{int(now_sec*1000)}"
+                                        self.outcome_telemetry.register_entry(
+                                            event_id=event_id,
+                                            symbol=sym,
+                                            direction=direction,
+                                            entry_ts=now_sec,
+                                            entry_opt_price=lp,
+                                            entry_spot_price=self.last_spot,
+                                            eqs_score=eqs,
+                                            features_snapshot={
+                                                **feats,
+                                                **eqs_breakdown,
+                                                **perm_metrics,
+                                                **live_signal_metrics,
+                                                "recommended_tp_pct": recommended_tp_pct,
+                                                **shadow_m,
+                                                **vp_metrics,
+                                            },
+                                        )
+                                    except Exception as _e_ot:
+                                        logger.debug(f"[Aegis] Outcome telemetry error: {_e_ot}")
+
+                                # 7. Consolidated Execution Log
+                                logger.info(
+                                    f"[AEGIS V3 FIRED] {sym} ({direction}) | Conviction: {conviction_score_val:.1f}/100 ({sizing_tier}) | "
+                                    f"Energy: {energy_score:.1f}/100 | EQS: {eqs:.1f}/100 | "
+                                    f"ML: {ml_score:.4f} ({self.ml_gatekeeper_mode}) | Target: +{recommended_tp_pct*100:.1f}% | "
+                                    f"Basis: {self.last_basis_pts:+.1f}pts ({self.last_basis_bps:+.1f}bps) | FutPx: {self.last_futures_price:.1f} | "
+                                    f"Persist: {pers_score:.2f} | Struct: {perm_metrics.get('market_structure', 'N/A')} | "
+                                    f"ATR_Ratio: {perm_metrics.get('atr_ratio', 1.0):.2f} | Spread: {opt_metrics.get('spread_pct', 0.5):.2f}%"
                                 )
 
         except Exception as e:
