@@ -341,7 +341,7 @@ class AegisGammaEngine:
             min_approval_score=float(self.P.get("conviction_min_approval_score", 80.0)),
             high_conviction_score=float(self.P.get("conviction_high_score", 85.0)),
             standard_tp_pct=float(self.P.get("standard_tp_pct", 0.040)),
-            high_conviction_tp_pct=float(self.P.get("high_conviction_tp_pct", 0.050)),
+            high_conviction_tp_pct=float(self.P.get("high_conviction_tp_pct", 0.040)),
         ) if CompositeConvictionEngine is not None else None
 
         # ─── Volume Profile & Auction Market Engine (100% Passive Shadow Telemetry) ───
@@ -1144,6 +1144,10 @@ class AegisGammaEngine:
                                 conviction_sub_scores = {}
                                 if self.conviction_engine and self.price_action_engine:
                                     current_bar = self.price_action_engine._curr_1m_bar or (self.price_action_engine.bars_1m[-1] if self.price_action_engine.bars_1m else None)
+                                    wyckoff_context = dict(pa_details.get("wyckoff_metrics") or {})
+                                    if wyckoff_passed:
+                                        wyckoff_context["wyckoff_confirmed"] = True
+
                                     conviction_res = self.conviction_engine.compute_conviction_score(
                                         direction=direction,
                                         setup_name=pa_setup_name,
@@ -1164,6 +1168,8 @@ class AegisGammaEngine:
                                         option_delta=None,
                                         option_strike=float(strike),
                                         spread_pct=float(spread_val or (micro_m.get("spread_pct", 0.5))),
+                                        pa_details=pa_details,
+                                        wyckoff_details=wyckoff_context,
                                     )
 
                                     if not conviction_res.is_approved:
@@ -1201,6 +1207,8 @@ class AegisGammaEngine:
                                                     option_delta=None,
                                                     option_strike=float(strike),
                                                     spread_pct=float(spread_val or (past_60_m.get("spread_pct", 0.5))),
+                                                    pa_details=pa_details,
+                                                    wyckoff_details=wyckoff_context,
                                                 )
                                                 if past_conv_res.is_approved:
                                                     conviction_res = past_conv_res
@@ -1263,6 +1271,8 @@ class AegisGammaEngine:
                                                     option_delta=None,
                                                     option_strike=float(strike),
                                                     spread_pct=float(spread_val or (live_micro_m.get("spread_pct", 0.5))),
+                                                    pa_details=pa_details,
+                                                    wyckoff_details=wyckoff_context,
                                                 )
                                                 if live_conv_res.is_approved:
                                                     conviction_res = live_conv_res

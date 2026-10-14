@@ -370,3 +370,157 @@ class TestCompositeConvictionEngine:
             assert "impulse" in weights
             assert "flow" in weights
             assert "contract" in weights
+
+    def test_pillar_2_wyckoff_spring_reclaim_scores_above_80(self, engine):
+        """
+        Pillar 2 Micro-Sweep Reclaim (Exact 14:36 SENSEX Case Study):
+        - Bar-close setup with 73% lower wick and close in top 15% of range.
+        - Newborn bar is 1-second old (1 pt range, 0 vol) -> engine selects last_closed bar.
+        - Wyckoff confirmed: VDR = 1.35, Absorption = True, OFI delta positive.
+        - Structure: Validated pullback reclaim (+15 swing pts, no LH penalty), VWAP proximity.
+        Expected: Score >= 85.0 (approved, FULL_SIZE tier).
+        """
+        prior_bars = [
+            MockBar(open=82450.0, high=82470.0, low=82410.0, close=82420.0, volume=150.0),
+            MockBar(open=82420.0, high=82430.0, low=82380.0, close=82390.0, volume=180.0),
+            # Setup bar: Swept down to 82350, then rocketed back to close at 82396 (high 82400)
+            # Range: 50 pts, Low: 82350, Close: 82396, Lower wick: (82388 - 82350)/50 = 76%
+            MockBar(open=82388.0, high=82400.0, low=82350.0, close=82396.0, volume=320.0),
+        ]
+        # 1-second old newborn bar (just started forming)
+        newborn_bar = MockBar(open=82396.0, high=82397.0, low=82396.0, close=82397.0, volume=2.0)
+
+        wyckoff_context = {
+            "wyckoff_confirmed": True,
+            "vdr": 1.35,
+            "ofi": 150.0,
+            "is_absorption": True,
+        }
+        pa_details = {
+            "candle_wick_pct": 0.76,
+            "sweep_depth_pts": 30.0,
+            "reclaim_level": 82380.0,
+        }
+
+        res = engine.compute_conviction_score(
+            direction="UP",
+            setup_name="micro_sweep_reclaim",
+            spot_price=82397.0,
+            prior_bars=prior_bars,
+            current_bar=newborn_bar,
+            atr=28.0,
+            ema_20=82400.0,
+            ema_50=82360.0,
+            vwap=82390.0,
+            pdh=82500.0,
+            pdl=82300.0,
+            vol_sma10=180.0,
+            persistence_dp=0.80,
+            touch_i1=0.20,
+            delta_fut_60s_bps=0.0,  # Passive futures feed (handled gracefully by Wyckoff proxy)
+            delta_basis_60s_bps=0.0,
+            option_delta=0.35,
+            spread_pct=0.25,
+            pa_details=pa_details,
+            wyckoff_details=wyckoff_context,
+        )
+
+        assert res.is_approved is True
+        assert res.total_score >= 85.0
+        assert res.sizing_tier == "FULL_SIZE"
+        assert res.sub_scores["structure"] >= 25.0
+        assert res.sub_scores["impulse"] >= 25.0
+        assert res.sub_scores["flow"] >= 20.0
+        assert res.sub_scores["contract"] == 15.0
+
+    def test_pillar_1_20_ema_rejection_with_wick_scores_approved(self, engine):
+        """
+        Pillar 1 20 EMA Rejection:
+        - Natural pullback into 20 EMA in an uptrend (lower highs during pullback).
+        - Anatomical rejection wick >= 35% bouncing off 20 EMA.
+        - Wyckoff confirmed.
+        Expected: Validated pullback reclaim (+15 swing pts, no counter-trend penalty),
+        Score >= 80.0 (approved).
+        """
+        prior_bars = [
+            MockBar(open=24050.0, high=24080.0, low=24040.0, close=24075.0, volume=100.0),
+            MockBar(open=24075.0, high=24078.0, low=24050.0, close=24055.0, volume=80.0),
+            # Bounce off 20 EMA (24045): Low 24043, High 24065, Close 24063 (Wick = 12/22 = 54%)
+            MockBar(open=24055.0, high=24065.0, low=24043.0, close=24063.0, volume=140.0),
+        ]
+        curr_bar = prior_bars[-1]
+
+        wyckoff_context = {
+            "wyckoff_confirmed": True,
+            "vdr": 1.20,
+            "ofi": 80.0,
+            "is_absorption": False,
+        }
+
+        res = engine.compute_conviction_score(
+            direction="UP",
+            setup_name="20_ema_rejection",
+            spot_price=24063.0,
+            prior_bars=prior_bars,
+            current_bar=curr_bar,
+            atr=20.0,
+            ema_20=24045.0,
+            ema_50=24010.0,
+            vwap=24050.0,
+            pdh=24150.0,
+            pdl=23950.0,
+            vol_sma10=100.0,
+            persistence_dp=0.75,
+            touch_i1=0.10,
+            delta_fut_60s_bps=1.0,
+            delta_basis_60s_bps=0.3,
+            option_delta=0.35,
+            spread_pct=0.30,
+            wyckoff_details=wyckoff_context,
+        )
+
+        assert res.is_approved is True
+        assert res.total_score >= 80.0
+        assert res.breakdown["structure_details"]["swing_reason"] == "validated_pullback_reclaim"
+        assert res.sub_scores["structure"] >= 25.0
+
+    def test_newborn_bar_protection_on_bar_close(self, engine):
+        """
+        Verifies that when a setup triggers at bar close (:00s), passing a newborn 1-tick
+        current_bar does not crush the impulse score. The engine must fall back to the
+        setup bar (last_closed).
+        """
+        setup_bar = MockBar(open=82000.0, high=82030.0, low=81970.0, close=82025.0, volume=300.0)
+        prior_bars = [
+            MockBar(open=81950.0, high=81980.0, low=81940.0, close=81970.0, volume=150.0),
+            setup_bar,
+        ]
+        newborn_bar = MockBar(open=82025.0, high=82025.5, low=82025.0, close=82025.5, volume=1.0)
+
+        # Evaluating with newborn_bar
+        res = engine.compute_conviction_score(
+            direction="UP",
+            setup_name="micro_sweep_reclaim",
+            spot_price=82025.5,
+            prior_bars=prior_bars,
+            current_bar=newborn_bar,
+            atr=25.0,
+            ema_20=81980.0,
+            ema_50=81950.0,
+            vwap=82000.0,
+            pdh=82100.0,
+            pdl=81900.0,
+            vol_sma10=150.0,
+            persistence_dp=0.80,
+            touch_i1=0.15,
+            delta_fut_60s_bps=1.0,
+            delta_basis_60s_bps=0.5,
+            option_delta=0.35,
+            spread_pct=0.25,
+            wyckoff_details={"wyckoff_confirmed": True, "vdr": 1.5, "ofi": 100.0},
+        )
+
+        # Impulse score should be evaluated against setup_bar (60 pt range, 300 vol), NOT newborn (0.5 pt range, 1 vol)
+        assert res.sub_scores["impulse"] >= 25.0
+        assert res.total_score >= 85.0
+

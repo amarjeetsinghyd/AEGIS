@@ -115,7 +115,7 @@ class CompositeConvictionEngine:
         min_approval_score: float = 80.0,
         high_conviction_score: float = 85.0,
         standard_tp_pct: float = 0.040,
-        high_conviction_tp_pct: float = 0.050,
+        high_conviction_tp_pct: float = 0.040,
     ):
         self.min_approval_score = float(min_approval_score)
         self.high_conviction_score = float(high_conviction_score)
@@ -162,20 +162,29 @@ class CompositeConvictionEngine:
         vwap: float,
         pdh: float,
         pdl: float,
+        setup_name: str = "",
+        pa_details: Optional[Dict[str, Any]] = None,
     ) -> Tuple[float, Dict[str, Any]]:
         """
         Domain 1: Structure & Runway (Max 30 pts raw)
-        - Swing geometry (HH/HL vs LH/LL): +15 to -15 pts
+        - Swing geometry (HH/HL vs LH/LL): +15 to -15 pts (Pillar-aware)
         - Runway to obstacle (PDH/PDL): +10 to 0 pts
         - EMA & VWAP alignment: +5 to 0 pts
         """
         is_up = direction.upper() in ("UP", "CALL")
         eff_atr = max(atr, 1.0)
 
-        # 1. Swing Geometry Evaluation (15 pts)
+        # 1. Swing Geometry Evaluation (15 pts max)
         swing_pts = 5.0  # Neutral default
         swing_reason = "neutral"
-        if len(prior_bars) >= 3:
+
+        if setup_name in ("micro_sweep_reclaim", "20_ema_rejection", "albrooks_2legged_pullback"):
+            # Case A — Pullback & Sweep Setups: Do NOT penalize lower highs / lower lows.
+            # A dip/pullback into the key level is mandatory for these setups.
+            # Since PriceActionEngine already validated the sweep reclaim or EMA rejection, award full points.
+            swing_pts = 15.0
+            swing_reason = "validated_pullback_reclaim"
+        elif len(prior_bars) >= 3:
             b1, b2, b3 = prior_bars[-3], prior_bars[-2], prior_bars[-1]
             h1, h2, h3 = b1.high, b2.high, b3.high
             l1, l2, l3 = b1.low, b2.low, b3.low
@@ -185,36 +194,74 @@ class CompositeConvictionEngine:
             is_lower_highs = (h3 < h2) and (h2 <= h1)
             is_lower_lows = (l3 < l2) and (l2 <= l1)
 
-            if is_up:
-                if is_higher_highs and is_higher_lows:
+            # Case B — Breakout Setups
+            if setup_name in (
+                "volatility_squeeze_breakout",
+                "topological_prominence_breakout",
+                "hvg_network_phase_shift",
+                "break_of_structure",
+            ):
+                ref_high = max(b1.high, b2.high)
+                ref_low = min(b1.low, b2.low)
+                check_price = max(spot_price, b3.close) if is_up else min(spot_price, b3.close)
+                if is_up and check_price > ref_high:
                     swing_pts = 15.0
-                    swing_reason = "bullish_hh_hl"
-                elif is_higher_lows or b3.close > b2.close:
-                    swing_pts = 10.0
-                    swing_reason = "bullish_hl"
-                elif is_lower_highs:
-                    # Distribution top / lower highs warning!
-                    swing_pts = -15.0
-                    swing_reason = "exhaustion_lower_highs"
-                elif is_lower_lows:
-                    swing_pts = -10.0
-                    swing_reason = "bearish_lower_lows"
+                    swing_reason = "breakout_structure_expansion"
+                elif (not is_up) and check_price < ref_low:
+                    swing_pts = 15.0
+                    swing_reason = "breakout_structure_expansion"
+                elif is_up:
+                    if is_higher_highs and is_higher_lows:
+                        swing_pts = 15.0
+                        swing_reason = "bullish_hh_hl"
+                    elif is_higher_lows or b3.close > b2.close:
+                        swing_pts = 10.0
+                        swing_reason = "bullish_hl"
+                    else:
+                        swing_pts = 0.0
+                        swing_reason = "breakout_compression_neutral"
+                else:
+                    if is_lower_lows and is_lower_highs:
+                        swing_pts = 15.0
+                        swing_reason = "bearish_ll_lh"
+                    elif is_lower_highs or b3.close < b2.close:
+                        swing_pts = 10.0
+                        swing_reason = "bearish_lh"
+                    else:
+                        swing_pts = 0.0
+                        swing_reason = "breakout_compression_neutral"
             else:
-                if is_lower_lows and is_lower_highs:
-                    swing_pts = 15.0
-                    swing_reason = "bearish_ll_lh"
-                elif is_lower_highs or b3.close < b2.close:
-                    swing_pts = 10.0
-                    swing_reason = "bearish_lh"
-                elif is_higher_highs:
-                    # Rally bottom / higher highs warning!
-                    swing_pts = -15.0
-                    swing_reason = "exhaustion_higher_highs"
-                elif is_higher_lows:
-                    swing_pts = -10.0
-                    swing_reason = "bullish_higher_lows"
+                # Case C — Fallback / General
+                if is_up:
+                    if is_higher_highs and is_higher_lows:
+                        swing_pts = 15.0
+                        swing_reason = "bullish_hh_hl"
+                    elif is_higher_lows or b3.close > b2.close:
+                        swing_pts = 10.0
+                        swing_reason = "bullish_hl"
+                    elif is_lower_highs:
+                        # Distribution top / lower highs warning!
+                        swing_pts = -15.0
+                        swing_reason = "exhaustion_lower_highs"
+                    elif is_lower_lows:
+                        swing_pts = -10.0
+                        swing_reason = "bearish_lower_lows"
+                else:
+                    if is_lower_lows and is_lower_highs:
+                        swing_pts = 15.0
+                        swing_reason = "bearish_ll_lh"
+                    elif is_lower_highs or b3.close < b2.close:
+                        swing_pts = 10.0
+                        swing_reason = "bearish_lh"
+                    elif is_higher_highs:
+                        # Rally bottom / higher highs warning!
+                        swing_pts = -15.0
+                        swing_reason = "exhaustion_higher_highs"
+                    elif is_higher_lows:
+                        swing_pts = -10.0
+                        swing_reason = "bullish_higher_lows"
 
-        # 2. Runway to Key Obstacles (10 pts)
+        # 2. Runway to Key Obstacles (10 pts max)
         runway_pts = 10.0
         runway_dist = 999.0
         if is_up:
@@ -246,22 +293,38 @@ class CompositeConvictionEngine:
                 # Already broken below PDL -> open sky breakdown!
                 runway_pts = 10.0
 
-        # 3. EMA & VWAP Alignment (5 pts)
+        # 3. EMA & VWAP Alignment (5 pts max)
         ema_vwap_pts = 0.0
         if is_up:
             ema_aligned = (ema_20 > ema_50) if (ema_20 > 0 and ema_50 > 0) else True
             vwap_aligned = (spot_price > vwap) if vwap > 0 else True
-            if ema_aligned and vwap_aligned:
-                ema_vwap_pts = 5.0
-            elif ema_aligned or vwap_aligned:
-                ema_vwap_pts = 3.0
+            if setup_name in ("micro_sweep_reclaim", "20_ema_rejection"):
+                if ema_aligned or vwap_aligned:
+                    ema_vwap_pts = 5.0
+                elif setup_name == "micro_sweep_reclaim":
+                    ema_vwap_pts = 4.0
+                else:
+                    ema_vwap_pts = 2.0
+            else:
+                if ema_aligned and vwap_aligned:
+                    ema_vwap_pts = 5.0
+                elif ema_aligned or vwap_aligned:
+                    ema_vwap_pts = 3.0
         else:
             ema_aligned = (ema_20 < ema_50) if (ema_20 > 0 and ema_50 > 0) else True
             vwap_aligned = (spot_price < vwap) if vwap > 0 else True
-            if ema_aligned and vwap_aligned:
-                ema_vwap_pts = 5.0
-            elif ema_aligned or vwap_aligned:
-                ema_vwap_pts = 3.0
+            if setup_name in ("micro_sweep_reclaim", "20_ema_rejection"):
+                if ema_aligned or vwap_aligned:
+                    ema_vwap_pts = 5.0
+                elif setup_name == "micro_sweep_reclaim":
+                    ema_vwap_pts = 4.0
+                else:
+                    ema_vwap_pts = 2.0
+            else:
+                if ema_aligned and vwap_aligned:
+                    ema_vwap_pts = 5.0
+                elif ema_aligned or vwap_aligned:
+                    ema_vwap_pts = 3.0
 
         raw_score = max(0.0, min(30.0, swing_pts + runway_pts + ema_vwap_pts))
         details = {
@@ -284,13 +347,16 @@ class CompositeConvictionEngine:
         bar_volume: float,
         vol_sma10: float,
         atr: float,
+        setup_name: str = "",
+        pa_details: Optional[Dict[str, Any]] = None,
+        wyckoff_details: Optional[Dict[str, Any]] = None,
     ) -> Tuple[float, Dict[str, Any]]:
         """
-        Domain 2: PA Impulse & Volume (Max 30 pts raw)
-        - Body %: +12 to +1 pts
-        - Edge Close & Wick: +8 to -8 pts penalty
-        - Range Expansion vs ATR: +5 to +1 pts
-        - Volume Surge vs SMA10: +5 to +1 pts
+        Domain 2: PA Impulse & Volume (Max 30 pts raw) — Pillar-Aware
+        - Candle Anatomy (Body vs Wick Rejection): +12 to +2 pts
+        - Edge Close & Wick: +8 to -4 pts penalty
+        - Range Expansion vs ATR: +5 to +2 pts
+        - Volume / Institutional Participation: +5 to +2 pts
         """
         is_up = direction.upper() in ("UP", "CALL")
         rng = max(bar_high - bar_low, 0.1)
@@ -298,60 +364,74 @@ class CompositeConvictionEngine:
         body = abs(bar_close - bar_open)
         body_pct = body / rng
 
-        # 1. Body % (12 pts)
-        if body_pct >= 0.60:
-            body_pts = 12.0
-        elif body_pct >= 0.45:
-            body_pts = 8.0
-        elif body_pct >= 0.30:
-            body_pts = 4.0
-        else:
-            body_pts = 1.0
-
-        # 2. Edge Close / Wick Rejection (8 pts)
-        wick_penalty = 0.0
+        # Directional wick and edge close
         if is_up:
             close_edge = (bar_close - bar_low) / rng
-            upper_wick = (bar_high - max(bar_open, bar_close)) / rng
-            if upper_wick > 0.35:
-                close_pts = -8.0  # Severe upper wick rejection into highs
-                wick_penalty = -8.0
-            elif close_edge >= 0.75:
-                close_pts = 8.0
-            elif close_edge >= 0.60:
-                close_pts = 5.0
-            else:
-                close_pts = 2.0
+            favorable_wick = (min(bar_open, bar_close) - bar_low) / rng
+            adverse_wick = (bar_high - max(bar_open, bar_close)) / rng
         else:
             close_edge = (bar_high - bar_close) / rng
-            lower_wick = (min(bar_open, bar_close) - bar_low) / rng
-            if lower_wick > 0.35:
-                close_pts = -8.0  # Severe lower wick rejection off lows
-                wick_penalty = -8.0
-            elif close_edge >= 0.75:
-                close_pts = 8.0
-            elif close_edge >= 0.60:
-                close_pts = 5.0
+            favorable_wick = (bar_high - max(bar_open, bar_close)) / rng
+            adverse_wick = (min(bar_open, bar_close) - bar_low) / rng
+
+        pa_wick_ratio = float((pa_details or {}).get("wick_ratio", 0.0))
+        eff_wick = max(favorable_wick, pa_wick_ratio)
+
+        # 1. Candle Anatomy (12 pts max)
+        if setup_name in ("micro_sweep_reclaim", "20_ema_rejection", "albrooks_2legged_pullback"):
+            # Reward EITHER strong rejection wick OR strong expansion body
+            if eff_wick >= 0.33 or body_pct >= 0.50:
+                body_pts = 12.0
+            elif eff_wick >= 0.25 or body_pct >= 0.35:
+                body_pts = 9.0
             else:
-                close_pts = 2.0
+                body_pts = 5.0
+        else:
+            # Breakout Setups (P3, P4, BOS)
+            if body_pct >= 0.55:
+                body_pts = 12.0
+            elif body_pct >= 0.40:
+                body_pts = 9.0
+            elif body_pct >= 0.25:
+                body_pts = 6.0
+            else:
+                body_pts = 2.0
 
-        # 3. Range Expansion vs ATR (5 pts)
+        # 2. Edge Close / Wick Rejection (8 pts max)
+        wick_penalty = 0.0
+        if adverse_wick > 0.40:
+            close_pts = -4.0
+            wick_penalty = -4.0
+        elif close_edge >= 0.70 or (setup_name in ("micro_sweep_reclaim", "20_ema_rejection") and eff_wick >= 0.35 and close_edge >= 0.55):
+            close_pts = 8.0
+        elif close_edge >= 0.55:
+            close_pts = 6.0
+        else:
+            close_pts = 3.0
+
+        # 3. Range Expansion vs ATR (5 pts max)
         range_atr = rng / eff_atr
-        if range_atr >= 1.0:
+        if range_atr >= 0.90:
             range_pts = 5.0
-        elif range_atr >= 0.60:
-            range_pts = 3.0
+        elif range_atr >= 0.55:
+            range_pts = 4.0
         else:
-            range_pts = 1.0
+            range_pts = 2.0
 
-        # 4. Volume Surge vs SMA10 (5 pts)
+        # 4. Volume / Institutional Participation (5 pts max)
         vol_ratio = (bar_volume / vol_sma10) if vol_sma10 > 0 else 1.0
-        if vol_ratio >= 1.5:
+        pa_vr = float((pa_details or {}).get("vr_t", 0.0))
+        wyckoff_vdr = float((wyckoff_details or {}).get("vdr", 0.0))
+        wyckoff_abs = float((wyckoff_details or {}).get("absorption_ratio", (wyckoff_details or {}).get("absorption_score", 0.0)))
+        eff_vol_ratio = max(vol_ratio, pa_vr, wyckoff_vdr, wyckoff_abs)
+        wyckoff_conf = bool((wyckoff_details or {}).get("wyckoff_confirmed", False))
+
+        if eff_vol_ratio >= 1.2 or wyckoff_conf:
             vol_pts = 5.0
-        elif vol_ratio >= 1.0:
-            vol_pts = 3.0
+        elif eff_vol_ratio >= 0.9:
+            vol_pts = 3.5
         else:
-            vol_pts = 1.0
+            vol_pts = 2.0
 
         raw_score = max(0.0, min(30.0, body_pts + close_pts + range_pts + vol_pts))
         details = {
@@ -359,9 +439,12 @@ class CompositeConvictionEngine:
             "body_pts": body_pts,
             "close_pts": close_pts,
             "wick_penalty": wick_penalty,
+            "eff_wick": round(eff_wick, 3),
+            "adverse_wick": round(adverse_wick, 3),
             "range_atr": round(range_atr, 2),
             "range_pts": range_pts,
             "vol_ratio": round(vol_ratio, 2),
+            "eff_vol_ratio": round(eff_vol_ratio, 2),
             "vol_pts": vol_pts,
             "raw_impulse": round(raw_score, 2),
         }
@@ -374,27 +457,36 @@ class CompositeConvictionEngine:
         touch_i1: float,
         delta_fut_60s_bps: float,
         delta_basis_60s_bps: float,
+        setup_name: str = "",
+        wyckoff_details: Optional[Dict[str, Any]] = None,
     ) -> Tuple[float, Dict[str, Any]]:
         """
-        Domain 3: Flow & Futures Momentum (Max 25 pts raw)
-        - Directional Persistence Dp: +8 to 0 pts
-        - Touch Aggression I1: +7 to 0 pts
+        Domain 3: Flow & Futures Momentum (Max 25 pts raw) — Wyckoff Wired
+        - Directional Persistence Dp: +8 to 0 pts (Wyckoff-aware)
+        - Touch Aggression I1 & OFI: +7 to 0 pts
         - Active Futures Lead-Lag Momentum: +6 to -6 pts penalty
         - Futures Basis Expansion: +4 to 0 pts
         """
         is_up = direction.upper() in ("UP", "CALL")
 
-        # 1. Directional Persistence Dp (8 pts)
-        if persistence_dp >= 0.70:
+        wyckoff_confirmed = bool((wyckoff_details or {}).get("wyckoff_confirmed", False))
+        absorption = float((wyckoff_details or {}).get("absorption_ratio", (wyckoff_details or {}).get("absorption_score", 0.0)))
+        vdr = float((wyckoff_details or {}).get("vdr", 0.0))
+        ofi = float((wyckoff_details or {}).get("opt_delta_flow", (wyckoff_details or {}).get("ofi_delta", 0.0)))
+
+        # 1. Directional Persistence / Institutional Reclaim (8 pts max)
+        if persistence_dp >= 0.65:
             dp_pts = 8.0
-        elif persistence_dp >= 0.55:
-            dp_pts = 5.0
-        elif persistence_dp >= 0.45:
-            dp_pts = 2.0
+        elif wyckoff_confirmed and setup_name in ("micro_sweep_reclaim", "20_ema_rejection"):
+            dp_pts = 7.0
+        elif persistence_dp >= 0.50 or wyckoff_confirmed:
+            dp_pts = 6.0
+        elif persistence_dp >= 0.40:
+            dp_pts = 3.0
         else:
             dp_pts = 0.0
 
-        # 2. Touch Aggression I1 (7 pts)
+        # 2. Touch Aggression / Option Flow Imbalance (7 pts max)
         if is_up:
             if touch_i1 >= 0.10:
                 i1_pts = 7.0
@@ -414,7 +506,12 @@ class CompositeConvictionEngine:
             else:
                 i1_pts = 0.0
 
-        # 3. Active Futures Lead-Lag Momentum (6 pts)
+        if wyckoff_confirmed:
+            ofi_aligned = (ofi > 0) if is_up else (ofi < 0)
+            if ofi_aligned or ofi != 0:
+                i1_pts = max(i1_pts, 6.0)
+
+        # 3. Active Futures Lead-Lag Momentum (6 pts max)
         # Scale-invariant: 1 bps = 0.01% price displacement in futures
         fut_pts = 2.0  # Neutral
         fut_divergence_penalty = 0.0
@@ -445,7 +542,7 @@ class CompositeConvictionEngine:
             else:
                 fut_pts = 0.0
 
-        # 4. Futures Basis Expansion (4 pts)
+        # 4. Futures Basis Expansion (4 pts max)
         if is_up:
             if delta_basis_60s_bps > 0.2:
                 basis_pts = 4.0
@@ -461,6 +558,11 @@ class CompositeConvictionEngine:
             else:
                 basis_pts = 0.0
 
+        # Passive Futures Feed Proxy via Wyckoff Option-Flow
+        if delta_fut_60s_bps == 0.0 and delta_basis_60s_bps == 0.0 and wyckoff_confirmed:
+            fut_pts = 5.0
+            basis_pts = 3.0
+
         raw_score = max(0.0, min(25.0, dp_pts + i1_pts + fut_pts + basis_pts))
         details = {
             "persistence_dp": round(persistence_dp, 3),
@@ -473,6 +575,7 @@ class CompositeConvictionEngine:
             "delta_basis_60s_bps": round(delta_basis_60s_bps, 2),
             "basis_pts": basis_pts,
             "raw_flow": round(raw_score, 2),
+            "wyckoff_flow_proxy": (delta_fut_60s_bps == 0.0 and delta_basis_60s_bps == 0.0 and wyckoff_confirmed),
         }
         return raw_score, details
 
@@ -535,11 +638,30 @@ class CompositeConvictionEngine:
         option_delta: Optional[float] = None,
         option_strike: float = 0.0,
         spread_pct: float = 0.50,
+        pa_details: Optional[Dict[str, Any]] = None,
+        wyckoff_details: Optional[Dict[str, Any]] = None,
     ) -> ConvictionResult:
         """
         Computes the unified 0 to 100 composite conviction score.
         """
+        # Bug #1 Fix — The Newborn Bar Evaluation Guard
         bar = current_bar or (prior_bars[-1] if prior_bars else None)
+        if prior_bars:
+            last_closed = prior_bars[-1]
+            if current_bar is not None and current_bar is not last_closed:
+                c_rng = max(getattr(current_bar, "high", spot_price) - getattr(current_bar, "low", spot_price), 0.0)
+                p_rng = max(getattr(last_closed, "high", spot_price) - getattr(last_closed, "low", spot_price), 0.0)
+                eff_atr = max(atr, 1.0)
+                if setup_name in (
+                    "micro_sweep_reclaim",
+                    "20_ema_rejection",
+                    "topological_prominence_breakout",
+                    "volatility_squeeze_breakout",
+                    "albrooks_2legged_pullback",
+                ):
+                    if c_rng < (0.5 * eff_atr) or c_rng < p_rng:
+                        bar = last_closed
+
         b_open = float(getattr(bar, "open", spot_price) if bar else spot_price)
         b_high = float(getattr(bar, "high", spot_price) if bar else spot_price)
         b_low = float(getattr(bar, "low", spot_price) if bar else spot_price)
@@ -557,6 +679,8 @@ class CompositeConvictionEngine:
             vwap=vwap,
             pdh=pdh,
             pdl=pdl,
+            setup_name=setup_name,
+            pa_details=pa_details,
         )
 
         # 2. Domain 2: PA Impulse & Volume (30 pts max raw)
@@ -569,6 +693,9 @@ class CompositeConvictionEngine:
             bar_volume=b_vol,
             vol_sma10=vol_sma10,
             atr=atr,
+            setup_name=setup_name,
+            pa_details=pa_details,
+            wyckoff_details=wyckoff_details,
         )
 
         # 3. Domain 3: Flow & Futures Momentum (25 pts max raw)
@@ -578,6 +705,8 @@ class CompositeConvictionEngine:
             touch_i1=touch_i1,
             delta_fut_60s_bps=delta_fut_60s_bps,
             delta_basis_60s_bps=delta_basis_60s_bps,
+            setup_name=setup_name,
+            wyckoff_details=wyckoff_details,
         )
 
         # 4. Domain 4: Contract & Feasibility (15 pts max raw)
