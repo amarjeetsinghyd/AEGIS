@@ -296,10 +296,10 @@ class AegisGammaEngine:
         # Shadow Quant Telemetry Tracker (Tracks 5 novel quant edges in passive shadow mode)
         self.shadow_quant_tracker = ShadowQuantTracker() if ShadowQuantTracker is not None else None
 
-        # ML Gatekeeper Engine (100% Independent SHADOW Telemetry & Standalone Paper Trader)
+        # ML Gatekeeper Engine (DECOMMISSIONED / DISABLED — Zero CPU overhead)
         self.is_sensex = is_sensex
         self.index_name = "SENSEX" if is_sensex else "NIFTY"
-        self.ml_gatekeeper_mode = "SHADOW"
+        self.ml_gatekeeper_mode = str(self.P.get("ml_gatekeeper_mode", os.getenv("AEGIS_ML_MODE", "DISABLED"))).upper()
         self.ml_gatekeeper = MLGatekeeper() if (MLGatekeeper is not None and self.ml_gatekeeper_mode != "DISABLED") else None
         if self.ml_gatekeeper is not None:
             self.ml_gatekeeper.strike_to_symbol = self.strike_to_symbol
@@ -1307,7 +1307,7 @@ class AegisGammaEngine:
                                 # ─── ML Gatekeeper (Synchronous evaluation ONLY if in ACTIVE mode) ───
                                 ml_passed = True
                                 ml_score = 1.0
-                                ml_reason = "ML_GATEKEEPER_SHADOW"
+                                ml_reason = "ML_GATEKEEPER_DISABLED" if self.ml_gatekeeper_mode == "DISABLED" else "ML_GATEKEEPER_SHADOW"
                                 if self.ml_gatekeeper and self.ml_gatekeeper_mode == "ACTIVE":
                                     idx_id = 1 if ("SENSEX" in str(getattr(self, "index_name", "")).upper() or self.strike_step >= 100.0) else 0
                                     bar = self.price_action_engine.bars_1m[-1] if (self.price_action_engine and self.price_action_engine.bars_1m) else None

@@ -100,8 +100,8 @@ Shared library: `common/` (broker / execution / market / ipc / runtime / config 
 
 ### 6. Component Operational State (Live vs Shadow)
 * **LIVE**: 4 Price Action Pillars, Absolute Pain Zone Band, Wyckoff Volume & OFI Gate, Composite Conviction Engine ($\ge 80$), Adaptive Exits, StrikeSelector.
-* **SHADOW**: Volume Profile Engine (VAH/VAL/POC), CatBoost ML Gatekeeper, Standalone CatBoost Paper Trader, ShadowQuantTracker.
-* **DECOMMISSIONED**: Gemini 3.8 / `ai_shadow_reviewer.py` is DELETED. Kronos is SHUT DOWN.
+* **SHADOW**: Volume Profile Engine (VAH/VAL/POC), ShadowQuantTracker.
+* **DECOMMISSIONED**: CatBoost ML Gatekeeper & Standalone CatBoost Paper Trader (SHUT DOWN / DISABLED 2026-10-14 after 18-day trial proved 46.4% win rate inferior to 84%+ price action; Kyle's Lambda inactive), Gemini 3.8 / `ai_shadow_reviewer.py` is DELETED. Kronos is SHUT DOWN.
 
 ### 7. Trading Calendar & Weekly Engine Schedule
 * **Monday**: **NIFTY** (**1 DTE**) [NFO, strike step 50, lot 65]

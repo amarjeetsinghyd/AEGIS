@@ -91,7 +91,7 @@ def test_ml_gatekeeper_disabled():
     assert reason == "ML_GATEKEEPER_DISABLED"
 
 
-def test_ml_gatekeeper_engine_integration():
+def test_ml_gatekeeper_engine_integration(monkeypatch):
     import queue
     from AEGIS.aegis_gamma_engine import create_aegis_engine
 
@@ -104,21 +104,37 @@ def test_ml_gatekeeper_engine_integration():
         "26000": {"side": 0, "strike": 0.0, "is_index": True},
         "1001": {"side": 0, "strike": 24000.0},
     }
-    engine = create_aegis_engine(
+
+    # 1. Default mode is DISABLED (0 CPU overhead in production)
+    monkeypatch.delenv("AEGIS_ML_MODE", raising=False)
+    engine_disabled = create_aegis_engine(
         token_to_symbol=token_to_symbol,
         token_map=token_map,
         strike_step=50.0,
         signal_queue=sig_q
     )
-    assert engine.ml_gatekeeper is not None
-    assert engine.ml_gatekeeper_mode == "SHADOW"
-    assert engine.index_name == "NIFTY"
+    assert engine_disabled.ml_gatekeeper is None
+    assert engine_disabled.ml_gatekeeper_mode == "DISABLED"
+    assert engine_disabled.index_name == "NIFTY"
+
+    # 2. When AEGIS_ML_MODE=SHADOW is explicitly configured, it initializes cleanly
+    monkeypatch.setenv("AEGIS_ML_MODE", "SHADOW")
+    engine_shadow = create_aegis_engine(
+        token_to_symbol=token_to_symbol,
+        token_map=token_map,
+        strike_step=50.0,
+        signal_queue=sig_q
+    )
+    assert engine_shadow.ml_gatekeeper is not None
+    assert engine_shadow.ml_gatekeeper_mode == "SHADOW"
+    assert engine_shadow.index_name == "NIFTY"
 
 
-def test_ml_gatekeeper_active_mode_veto():
+def test_ml_gatekeeper_active_mode_veto(monkeypatch):
     import queue
     from AEGIS.aegis_gamma_engine import create_aegis_engine
 
+    monkeypatch.setenv("AEGIS_ML_MODE", "SHADOW")
     sig_q = queue.Queue()
     token_to_symbol = {
         "26000": "NIFTY",
@@ -146,6 +162,7 @@ def test_ml_gatekeeper_active_mode_veto():
     passed, score, reason = engine.ml_gatekeeper.evaluate(poor_features, "SENSEX")
     assert passed is False
     assert "ML_VETO" in reason
+
 
 
 def test_kyle_lambda_end_to_end_engine_pipeline():
