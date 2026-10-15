@@ -9,35 +9,35 @@ COCKPIT_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Quant Console — AEGIS V4.1 Live Cockpit</title>
+<title>Quant Console — AEGIS v1.0 Production Cockpit</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
 <style>
 :root {
-  --bg: #0d1117;
-  --surface: #161b22;
-  --surface-hover: #1f242c;
-  --card: #161b22;
-  --border: #30363d;
-  --border-light: #3d444d;
-  --text: #e6edf3;
-  --text-muted: #8b949e;
-  --primary: #388bfd;
-  --primary-soft: rgba(56, 139, 253, 0.15);
-  --aegis: #238636;
-  --aegis-bright: #3fb950;
-  --aegis-soft: rgba(46, 160, 67, 0.15);
-  --danger: #da3633;
-  --danger-bright: #f85149;
-  --danger-soft: rgba(248, 81, 73, 0.15);
-  --warning: #d29922;
-  --warning-soft: rgba(210, 153, 34, 0.15);
-  --purple: #a371f7;
-  --purple-soft: rgba(163, 113, 247, 0.15);
-  --font-sans: "IBM Plex Sans", -apple-system, sans-serif;
-  --font-mono: "IBM Plex Mono", monospace;
-  --font-serif: "Fraunces", serif;
+  --bg: #090d14;
+  --surface: #111722;
+  --surface-hover: #18202f;
+  --card: #111722;
+  --border: #1e293b;
+  --border-light: #283548;
+  --text: #f1f5f9;
+  --text-muted: #94a3b8;
+  --primary: #38bdf8;
+  --primary-soft: rgba(56, 189, 248, 0.12);
+  --aegis: #10b981;
+  --aegis-bright: #34d399;
+  --aegis-soft: rgba(16, 185, 129, 0.12);
+  --danger: #ef4444;
+  --danger-bright: #f87171;
+  --danger-soft: rgba(239, 68, 68, 0.12);
+  --warning: #f59e0b;
+  --warning-soft: rgba(245, 158, 11, 0.12);
+  --purple: #a855f7;
+  --purple-soft: rgba(168, 85, 247, 0.12);
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "IBM Plex Mono", monospace;
+  --font-serif: "Inter", sans-serif;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -427,6 +427,50 @@ body {
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
 }
+
+/* Mobile Responsive Card Transformation */
+@media (max-width: 768px) {
+  .trades-table thead {
+    display: none;
+  }
+  .trades-table, .trades-table tbody, .trades-table tr, .trades-table td {
+    display: block;
+    width: 100%;
+  }
+  .trades-table tr {
+    margin-bottom: 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  }
+  .trades-table td {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    padding: 7px 0;
+    font-size: 12px;
+  }
+  .trades-table td:last-child {
+    border-bottom: none;
+  }
+  .trades-table td::before {
+    content: attr(data-label);
+    font-size: 11px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+  #todayTradesFoot tr td {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 0;
+  }
+}
+
 .mono { font-family: var(--font-mono); }
 .badge {
   display: inline-flex;
@@ -480,7 +524,7 @@ body {
 <nav class="nav">
   <div class="nav-brand">
     <div class="brand-title">Quant Console</div>
-    <div class="brand-badge">⚡ AEGIS V4.1 Cockpit</div>
+    <div class="brand-badge">⚡ AEGIS v1.0 Production</div>
   </div>
   <div class="nav-links">
     <div class="meta-clock">
@@ -499,7 +543,7 @@ body {
   <div class="live-strip">
     <div class="strip-status">
       <div class="pulse-dot"></div>
-      <span id="systemStatusText">AEGIS V4.1 ENGINE ONLINE · SCANNING 31 STRIKES (62 TOKENS)</span>
+      <span id="systemStatusText">AEGIS v1.0 PRODUCTION ENGINE ONLINE · SCANNING 31 STRIKES (62 TOKENS)</span>
     </div>
     <div class="strip-info">
       <div>Active Trading Day: <strong id="tradingDaySchedule">Monday (NIFTY 1 DTE)</strong></div>
@@ -911,16 +955,16 @@ function renderLiveState(data) {
       const sideClass = (t.signal || "").includes("CALL") ? "call" : "put";
 
       tr.innerHTML = `
-        <td class="mono" style="color:var(--text-muted);"><span class="badge" style="background:var(--primary-soft); color:var(--primary); font-size:10px; margin-right:4px;">TODAY</span>${t.date || '—'}</td>
-        <td class="mono" style="font-weight:600;">${t.symbol || '—'}</td>
-        <td><span class="badge ${sideClass}">${t.signal || '—'}</span></td>
-        <td class="mono">₹${t.entry_price ? parseFloat(t.entry_price).toFixed(2) : '—'}</td>
-        <td class="mono">₹${t.exit_price ? parseFloat(t.exit_price).toFixed(2) : '—'}</td>
-        <td class="mono bold ${gainClass}" style="font-weight:600;">${gainPrefix}${gainPct.toFixed(2)}%</td>
-        <td class="mono ${grossClass}">${grossPrefix}${gross.toFixed(2)}</td>
-        <td class="mono" style="color:var(--text-muted); font-size:11px;">₹${chg.toFixed(2)}</td>
-        <td class="mono ${netClass}" style="font-weight:700;">${netPrefix}${net.toFixed(2)}</td>
-        <td style="color:var(--purple); font-size:11px;">${t.pillar || 'Pillar 4 (BOS)'}</td>
+        <td data-label="Time" class="mono" style="color:var(--text-muted);"><span class="badge" style="background:var(--primary-soft); color:var(--primary); font-size:10px; margin-right:4px;">TODAY</span>${t.date || '—'}</td>
+        <td data-label="Contract" class="mono" style="font-weight:600;">${t.symbol || '—'}</td>
+        <td data-label="Side"><span class="badge ${sideClass}">${t.signal || '—'}</span></td>
+        <td data-label="Fill Price" class="mono">₹${t.entry_price ? parseFloat(t.entry_price).toFixed(2) : '—'}</td>
+        <td data-label="Exit Price" class="mono">₹${t.exit_price ? parseFloat(t.exit_price).toFixed(2) : '—'}</td>
+        <td data-label="Gain %" class="mono bold ${gainClass}" style="font-weight:600;">${gainPrefix}${gainPct.toFixed(2)}%</td>
+        <td data-label="Gross PnL" class="mono ${grossClass}">${grossPrefix}${gross.toFixed(2)}</td>
+        <td data-label="Charges" class="mono" style="color:var(--text-muted); font-size:11px;">₹${chg.toFixed(2)}</td>
+        <td data-label="Net PnL" class="mono ${netClass}" style="font-weight:700;">${netPrefix}${net.toFixed(2)}</td>
+        <td data-label="Setup" style="color:var(--purple); font-size:11px;">${t.pillar || 'Pillar 4 (BOS)'}</td>
       `;
       tradesBody.appendChild(tr);
     });
