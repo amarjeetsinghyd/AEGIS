@@ -1208,7 +1208,7 @@ class AegisExecutionManager:
             cur_pnl_frac = cur_pnl_rs / leg.entry_price if leg.entry_price > 0 else 0.0
             peak_bid_frac = (peak_bid - leg.entry_price) / leg.entry_price if leg.entry_price > 0 else 0.0
 
-            # 1. Near-Target Profit Lock (Peak Bid >= +3.5%, exits on >= 0.5% pullback from peak bid)
+            # 1. Near-Target Profit Lock (Peak Bid >= +3.5%, exits on >= 0.8% pullback from peak bid)
             if peak_bid_frac >= NEAR_TARGET_TRIGGER_PCT:
                 pullback_frac = peak_bid_frac - cur_pnl_frac
                 if pullback_frac >= NEAR_TARGET_PULLBACK_TOLERANCE:
@@ -1711,10 +1711,17 @@ class AegisExecutionManager:
 
         highest_px = float(getattr(leg0, "highest_price", entry_px)) if leg0 else entry_px
         lowest_px = float(getattr(leg0, "lowest_price", entry_px)) if leg0 else entry_px
+        if exit_px > 0:
+            highest_px = max(highest_px, exit_px)
+            lowest_px = min(lowest_px, exit_px)
         peak_mfe_pct = round(max(0.0, ((highest_px - entry_px) / entry_px * 100.0)), 2) if entry_px > 0 else 0.0
+        if pnl_pct > 0:
+            peak_mfe_pct = max(peak_mfe_pct, pnl_pct)
         peak_mfe_rs = round(max(0.0, highest_px - entry_px), 2)
         time_to_peak_mfe_sec = round(float(getattr(leg0, "time_to_highest_sec", 0.0)), 1) if leg0 else 0.0
         peak_mae_pct = round(min(0.0, ((lowest_px - entry_px) / entry_px * 100.0)), 2) if entry_px > 0 else 0.0
+        if pnl_pct < 0:
+            peak_mae_pct = min(peak_mae_pct, pnl_pct)
         peak_mae_rs = round(min(0.0, lowest_px - entry_px), 2)
 
         entry_spot = float(context.index_entry) if context else 0.0
