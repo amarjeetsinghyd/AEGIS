@@ -33,6 +33,7 @@ from common.runtime.paths import get_runtime_paths
 # ─── MODULAR HTML TEMPLATES ───
 from unified_dashboard.cockpit_html import COCKPIT_HTML as CONSOLE_HTML
 from unified_dashboard.research_html import RESEARCH_HTML
+from unified_dashboard.quantum_cockpit_html import QUANTUM_COCKPIT_HTML
 from unified_dashboard.telemetry_loader import (
     get_journal_data,
     get_trade_detail,
@@ -189,6 +190,12 @@ def index():
     return CONSOLE_HTML
 
 
+@app.route("/quantum")
+def quantum_cockpit():
+    """Renders the Linear-aesthetic 3D Quantum Manifold Console."""
+    return QUANTUM_COCKPIT_HTML
+
+
 @app.route("/research")
 def research_page():
     """Renders the dedicated Research & Forensics Console with Chart.js visualizations."""
@@ -206,6 +213,7 @@ def health():
     })
 
 
+@app.route("/api/state")
 @app.route("/api/live_state")
 def live_state():
     """Real-time operational telemetry for the Live Cockpit."""
