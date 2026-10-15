@@ -13,8 +13,11 @@
 - **Session Cache:** Single daily token in `data/shoonya_session.json` (lockfile protected; weekly `tokens_cache.json` refresh).
 
 ### Ground Truth Rules
-- **Locked AEGIS Parameters:** +6.5% Baseline TP (DAY Limit, dynamic 5.5%–10.0%), -5.0% Hard SL, Breakeven Guard (+3.0% arm / +0.5% fee lock), Runner Lock (+7.0% arm / +5.0% floor, 2.0% trail), 300s max hold, 120s cooldown, max 3 trades/day.
-- **45s Microstructure Impulse Memory Window (`impulse_validity_window_sec = 45.0s`):** Bridges the sub-second order book spike with the 30s–60s macro spot confirmation lag. Caches strong impulses (score $\ge 75.0$) for 45s; permits execution at moderate score ($\ge 60.0$) or active memory ($\ge 55.0$) once macro drift confirms $\ge 1.0$ bps.
-- **Real-Time OI Built-Up & Wall Gate (`OIBuiltupGate`):** 4-quadrant real-time classification (Long Buildup, Short Covering, Short Buildup, Long Liquidation). Tracks ceiling resistance (max CE OI strike) and floor support (max PE OI strike). Normalized strike-step wall defense ($D_{\text{strikes}} = \text{dist}/\text{strike\_step}$: Zone 1 $\le 0.40$ strikes, Zone 2 $\le 1.00$ strike) with 3-minute rolling unwinding velocity ($\le -1.0\%$ Zone 1, $\le -0.5\%$ Zone 2 in 3m) and squeeze breakout acceleration.
-- **Microstructure Gates:** EQS $\ge 70.0$, 60s Spot Drift $\ge \pm 1.0$ bps (agile momentum target), Directional Displacement Override $\ge 2.5$ pts (NIFTY) / $\ge 5.0$ pts (SENSEX), KER floor 0.04, dynamic 9-EMA slope aligned, market structure unopposed.
-- **Decommissioned Invariant:** `kronos_bot` is permanently retired. `_archive/` is strictly read-only history.
+- **Locked AEGIS Production v1.0 Parameters:** Strict 1-Lot Maker TP at constant **+4.0%** (resting limit order at entry + 4.0%), Hard Disaster SL Floor at **-12.0%**, Step 1 Safety Net (peak >= +3.0% compresses SL to -3.0%), Step 2 Cost-Shield Scratch (peak >= +3.5% compresses SL to 0.0% breakeven), Near-Target Profit Lock (peak >= +3.5% exits on >= 0.8% pullback from peak bid), 300s max hold, 60s inter-trade cooldown / 120s post-loss cooloff, 15:08:00 IST CAS force-flatten.
+- **Human-Eye Geometry across 4 Pillars:**
+  - Pillar 1 (20 EMA Rejection): Two-bar confirmation path added, upper wick <= 15% (two-bar <= 18%), close edge >= 0.60.
+  - Pillar 2 (Liquidity Sweep & Reclaim): min_sweep_depth normalized, upper wick <= 15%, close edge >= 0.55, lower wick >= 1.25x upper wick.
+  - Pillar 3 (Volatility Squeeze Breakout): min_box_clearance normalized, opposing wick <= 18%, close edge >= 0.55, body >= 0.35x range.
+  - Pillar 4 (0-D Prominence Hub Breakout): min_hub_clearance normalized, directional expansion body >= 0.35x range, close edge >= 0.55, opposing wick <= 20%.
+- **Wyckoff Volume & OFI Gate:** Dual-regime P1 (Supply Dry Test VDR <= 0.80 vs Stopping Absorption with rejection wick >= 60%), Breakout volume thrust (VDR >= 1.0) on P3/P4.
+- **Decommissioned Invariants:** `kronos_bot` is permanently decommissioned. CatBoost ML Gatekeeper is permanently disabled / shadow-only. Gemini 3.8 / `ai_shadow_reviewer.py` is deleted. 3-Minute Time Harvest is permanently removed. `_archive/` is strictly read-only history.

@@ -1,5 +1,32 @@
 # Changelog
 
+## [Unreleased] - 2026-10-15 (AEGIS v1.0 Production: 4-Pillar Human Geometry, Telemetry Integrity & 3-Tier Exit Pricing)
+
+### Added
+- **Human-Eye Geometry Upgrades Across 4 Pillars (`AEGIS/core/price_action_engine.py`)**:
+  - **Pillar 1 (20 EMA Pullback)**: Two-bar retest confirmation path added (`two_bar_retest_confirmed`), strict opposing wick cap $\le 15\%$ (two-bar $\le 18\%$), outer 40% close edge $\ge 0.60$.
+  - **Pillar 2 (Liquidity Sweep & Reclaim)**: Normalized sweep depth floor (`min_sweep_depth = max(1.5, (ref_spot / 24000.0) * 1.5, 0.08 * atr)`), opposing wick cap $\le 15\%$, close edge $\ge 0.55$, lower wick $\ge 1.25\times$ upper wick.
+  - **Pillar 3 (Volatility Squeeze Breakout)**: Normalized box clearance (`min_box_clearance = max(2.0, (ref_spot / 24000.0) * 2.0, 0.08 * atr)`), opposing wick cap $\le 18\%$, close edge $\ge 0.55$, body $\ge 0.35\times$ range.
+  - **Pillar 4 (0-D Prominence Hub Breakout)**: Normalized hub clearance (`min_hub_clearance = max(2.0, (ref_spot / 24000.0) * 2.0, 0.08 * atr)`), directional expansion body $\ge 0.35\times$ range, close edge $\ge 0.55$, opposing wick $\le 20\%$.
+- **Post-Trade MFE & MAE Reconciliation (`AEGIS/aegis_execution_manager.py`)**:
+  - Aligned peak MFE and MAE with realized exit execution price (`highest_px = max(highest_px, exit_px)` and `peak_mfe_pct = max(peak_mfe_pct, pnl_pct)`), eliminating telemetry sampling artifacts where fast limit order fills (3–15s) showed $Exit > MFE$.
+- **Wyckoff Volume & OFI Gate Dual-Regime Formalization (`AEGIS/core/wyckoff_volume_engine.py`)**:
+  - Explicitly differentiated breakout volume thrust ($VDR \ge 1.0$) from 20 EMA pullback dynamics (Regime A: Supply Dry Test $VDR \le 0.80$ vs Regime B: Stopping Absorption with rejection wick $\ge 60\%$).
+
+### Changed
+- **Smart Maker TP Floor & 3-Tier Urgency Exit Pricing (`AEGIS/aegis_execution_manager.py`)**:
+  - Replaced hard-sleep chaser with 3-tier cascade: (1) In-place modify resting TP order, (2) Marketable limit order with dynamic tick buffer (`get_marketable_exit_limit_price`), (3) Fallback limit order.
+  - Near-target profit lock pullback threshold updated to `0.8%` (`NEAR_TARGET_PULLBACK_TOLERANCE = 0.008`) from peak bid $\ge +3.5\%$.
+- **Permanent Decommissioning & Cleanup**:
+  - Permanently removed premature 3-Minute Profit Harvest choke (`EX_HARVEST`), granting green trades full 300s baseline runway.
+  - Disabled live CatBoost ML Gatekeeper (shadow telemetry only; Kyle Lambda inactive).
+  - Deleted legacy Gemini 3.8 / `ai_shadow_reviewer.py`.
+- **Dual-Side Option Universe Robustness (`AEGIS/execution/data_fetcher.py`)**:
+  - Enforced continuous concurrent CE + PE option side polling and subscription, permanently preventing single-sided universe blindness and zero-volume synthetic delta artifacts (`test_universe_side_split.py`).
+
+### Tests
+- Full test suite `python -m pytest tests/ -q`: 133 core tests passing 100% green.
+
 ## [Unreleased] - 2026-09-28 (AEGIS V4.1 Pain Zone Band Only: Single-Source Veto)
 
 ### Added

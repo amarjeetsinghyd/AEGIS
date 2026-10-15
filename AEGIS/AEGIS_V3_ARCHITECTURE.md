@@ -70,10 +70,10 @@ flowchart TD
         BAND -->|Blocked| DROP["Instant Discard & Purge<br/>(return None)"]
         BAND -->|Passed| PA_CHECK{"Price Action Setup?<br/>(evaluate_setup)"}
         PA_CHECK -->|No Setup| DROP
-        PA_CHECK -->|Pillar 1| P1["Pillar 1: 20 EMA Pullback & Momentum Rejection<br/>• 20 EMA Wick Rejection<br/>• Two-Touch Confirmation<br/>• Same-Side Pause Discipline"]
-        PA_CHECK -->|Pillar 2| P2["Pillar 2: Liquidity Sweep & Reclaim<br/>• 5-Bar Turtle Soup Stop-Hunt Reclaim<br/>• Lower/Upper Wick ≥ 35% Absorption"]
-        PA_CHECK -->|Pillar 3| P3["Pillar 3: Volatility Squeeze Breakout<br/>• 3-4 Bar Box Compression (≤1.25x ATR)<br/>• Full Bar Close Outside Box"]
-        PA_CHECK -->|Pillar 4| P4["Pillar 4: 0-D Prominence Hub Breakout<br/>• Prominence Anchor (π ≥ 1.75)<br/>• Volume Ratio (VR ≥ 1.4 vs 60m med)<br/>• 5m Structural Trend Alignment"]
+        PA_CHECK -->|Pillar 1| P1["Pillar 1: 20 EMA Pullback & Momentum Rejection<br/>• 20 EMA Wick Rejection<br/>• Two-Bar / Retest Confirmation<br/>• Upper Wick ≤ 15% (Two-Bar ≤ 18%), Close Edge ≥ 0.60"]
+        PA_CHECK -->|Pillar 2| P2["Pillar 2: Liquidity Sweep & Reclaim<br/>• 5-Bar Turtle Soup Stop-Hunt Reclaim<br/>• Lower Wick ≥ 35% & ≥ 1.25x Upper Wick<br/>• Upper Wick ≤ 15%, Close Edge ≥ 0.55"]
+        PA_CHECK -->|Pillar 3| P3["Pillar 3: Volatility Squeeze Breakout<br/>• 3-4 Bar Box Compression (≤1.25x ATR)<br/>• Full Bar Close Outside Box, Opposing Wick ≤ 18%<br/>• Body ≥ 35% of Range, Close Edge ≥ 0.55"]
+        PA_CHECK -->|Pillar 4| P4["Pillar 4: 0-D Prominence Hub Breakout<br/>• Prominence Anchor (π ≥ 1.75)<br/>• Directional Expansion Body ≥ 35%<br/>• Opposing Wick ≤ 20%, Close Edge ≥ 0.55"]
         P1 & P2 & P3 & P4 --> SINGLE_ADM{"Single Admission Policy<br/>(Deterministic First-Hit Resolution)"}
     end
 
@@ -81,7 +81,7 @@ flowchart TD
         SINGLE_ADM --> WYCKOFF{"WyckoffVolumeEngine<br/>(core/wyckoff_volume_engine.py)"}
         WYCKOFF -->|P1: VDR ≥ 1.25 Rising Vol| W_DUMP["Veto: Institutional Liquidation Dump"] --> DROP
         WYCKOFF -->|P3/P4: Opposing Delta > 2.2x| W_TRAP["Veto: Delta Divergence Bull/Bear Trap"] --> DROP
-        WYCKOFF -->|P1: VDR < 0.85 Decay + Absorption Wick<br/>P2: Spring Stop-Hunt Reclaim<br/>P3/P4: Volume Expansion + Delta Harmony| W_PASS["Wyckoff Confirmed 🚀"]
+        WYCKOFF -->|P1: Regime A Supply Dry-Up (VDR ≤ 0.80) OR Regime B Stopping Absorption (Wick ≥ 60%)<br/>P2: Spring Stop-Hunt Reclaim<br/>P3/P4: Volume Expansion (VDR ≥ 1.0) + Delta Harmony| W_PASS["Wyckoff Confirmed 🚀"]
     end
 
     subgraph Defensive_Gating ["5. Defensive Gating & Conviction Ladder"]
@@ -99,15 +99,14 @@ flowchart TD
         CCE --> C_CHECK{"Conviction Score Check<br/>(Score ≥ 80.0?)"}
         C_CHECK -->|Score < 80.0| DROP
         
-        C_CHECK -->|Score ≥ 80.0| Q_SLOT["Quality Slot Policy (3 Slots/Day)<br/>• Slot 1 & 2: Dynamic Hurdle (Beat Prev)<br/>• Slot 3: Reserved for Afternoon (≥14:45)<br/>• Loss Guard: Consec Loss ≤ 2, Daily Cap ₹2k"]
+        C_CHECK -->|Score ≥ 80.0| Q_SLOT["Quality Slot Policy (3 Slots/Day)<br/>• Slot 1, 2, 3: Full-Day Agile Quality Sizing<br/>• Dynamic Hurdle: Beat Prev Score<br/>• Loss Guard: Consec Loss ≤ 2, Daily Cap ₹2k"]
         Q_SLOT -->|No Slot Available| DROP
         Q_SLOT -->|Slot Admitted| SIZING["Locked Sizing Discipline<br/>• Strict 1 Lot Allocation<br/>• Constant +4.0% Maker Limit TP"]
     end
 
-    subgraph Shadow_Telemetry ["6. Independent Shadow Telemetry & Paper Trader"]
-        W_PASS -.-> ML_SHADOW["ML Gatekeeper (100% SHADOW)<br/>• CatBoost 1m Flow Inference<br/>• Non-blocking Telemetry Logging"]
-        ML_SHADOW -.-> CB_PAPER["CatBoost Standalone Paper Trader<br/>• Independent Virtual 1-Lot Trades<br/>• TP: +4.0%, SL: -3.0%, 300s Timeout<br/>• Persists to catboost_paper_trades.jsonl"]
-        W_PASS -.-> AI_SHADOW["Gemini 3.8 Flash AI Reviewer<br/>• Asynchronous Technical Analyst Co-Pilot<br/>• Pure Observational Shadow"]
+    subgraph Shadow_Telemetry ["6. Independent Shadow Telemetry (Passive)"]
+        W_PASS -.-> ML_SHADOW["ML Order Flow Tracker (100% SHADOW)<br/>• CatBoost 1m Flow Feature Logging<br/>• Standalone CatBoost Paper Trader (Shadow)"]
+        W_PASS -.-> SHADOW_QUANT["ShadowQuantTracker<br/>• ATM Straddle, Skew, Opt-Spot Lead"]
     end
 
     subgraph Execution_Manager ["7. AegisExecutionManager (Daemon Loop)"]
@@ -115,13 +114,8 @@ flowchart TD
         Q --> EM_LOOP["_run_loop() Consumer"]
         
         EM_LOOP --> G_LOCK{"Non-Consecutive Route Lockout<br/>(incoming == last_exited && age < 180s)"}
-        G_LOCK -->|Active Lock| REJ["Reject & Rollback Slot"]
-        
         EM_LOOP --> G_COOL{"Inter-Trade Cooldown (60s)<br/>Post-Loss Cooloff (120s)"}
-        G_COOL -->|In Cooldown| REJ
-        
         EM_LOOP --> G_TIME{"Session Window<br/>(09:16 ≤ now ≤ 15:00)"}
-        G_TIME -->|Outside Window| REJ
         
         EM_LOOP --> ORDER_FIRE["Execute Entry Order (1 Lot)<br/>(LMT Day at Ask / Sweep)"]
         ORDER_FIRE --> RESTING_TP["Place Exchange Resting Limit TP<br/>(Maker Order @ Entry + 4.0%)"]
@@ -133,17 +127,14 @@ flowchart TD
         MANAGE --> EX_TP{"Resting TP Hit?<br/>(Bid ≥ TP Price / Maker fill verified)"}
         EX_TP -->|YES| CL_TP["Passive Maker TP Exit (+4.0%)<br/>(Zero Slippage Exchange Fill)"]
         
-        MANAGE --> EX_NEAR{"Near-Target Profit Lock?<br/>Peak ≥ +3.5% AND Pullback ≥ 0.5%"}
-        EX_NEAR -->|YES| CL_NEAR["Near-Target Lock Exit<br/>(Guarantees ≥ +3.0% Profit)"]
+        MANAGE --> EX_NEAR{"Near-Target Profit Lock?<br/>Peak ≥ +3.5% AND Pullback ≥ 0.8%"}
+        EX_NEAR -->|YES| CL_NEAR["Near-Target Lock Exit<br/>(Exits on ≥0.8% pullback from peak bid)"]
         
-        MANAGE --> EX_STEP2{"Cost-Shield Scratch?<br/>Peak ≥ +3.0% AND Bid ≤ Entry"}
+        MANAGE --> EX_STEP2{"Cost-Shield Scratch?<br/>Peak ≥ +3.5% AND Bid ≤ Entry"}
         EX_STEP2 -->|YES| CL_STEP2["Cost-Shield Scratch Exit (0.0% Breakeven)<br/>(Loss Permanently Prevented!)"]
         
-        MANAGE --> EX_STEP1{"Stepped Safety Net?<br/>Peak ≥ +2.0% AND Bid ≤ Entry - 3.0%"}
-        EX_STEP1 -->|YES| CL_STEP1["Stepped Safety Net SL (-3.0%)<br/>(Capped Downside with 5% Cushion)"]
-        
-        MANAGE --> EX_HARVEST{"3-Min Profit Harvest?<br/>Hold ≥ 180s AND Gain +1.5% to +2.5%"}
-        EX_HARVEST -->|YES| CL_HARVEST["Time-Harvest Gain Lock<br/>(Theta Decay Shield)"]
+        MANAGE --> EX_STEP1{"Stepped Safety Net?<br/>Peak ≥ +3.0% AND Bid ≤ Entry - 3.0%"}
+        EX_STEP1 -->|YES| CL_STEP1["Stepped Safety Net SL (-3.0%)<br/>(SL compressed from -12% to -3%)"]
         
         MANAGE --> EX_STAG{"0DTE Stagnation Trap?<br/>Expiry PM (≥12:30), Hold ≥ 90s, Gain < +0.5%<br/>AND 50-EMA Opposed Structure"}
         EX_STAG -->|YES| CL_STAG["0DTE Stagnation Trap Exit"]
@@ -157,8 +148,8 @@ flowchart TD
         MANAGE --> EX_SPOT_SL{"Spot Invalidation SL Hit?<br/>(Spot move ≥ 6.5 bps + 1.0x ATR)"}
         EX_SPOT_SL -->|YES| CL_SPOT["Adaptive Spot SL Exit<br/>(Derived via Realized Delta, max 35%)"]
         
-        MANAGE --> EX_TIME{"Time Ceiling Hit?<br/>• Expiry: 180s (PM) / 240s (AM)<br/>• Non-Expiry: 300s baseline (360s extended)"}
-        EX_TIME -->|YES| CL_TIME["Time Stop Exit"]
+        MANAGE --> EX_TIME{"Time Ceiling Hit?<br/>• Baseline Max Hold: 300s (5 Minutes)<br/>(3-min harvest choke decommissioned)"]
+        EX_TIME -->|YES| CL_TIME["Time Stop Exit (300s Runway)"]
         
         MANAGE --> EX_DISASTER{"Disaster Circuit Breaker?<br/>(Option Bid Drops ≤ Entry - 12.0%)"}
         EX_DISASTER -->|YES| CL_DISASTER["Disaster Circuit Breaker (-12.0% Floor)<br/>(Catastrophic Black-Swan Shield)"]
@@ -168,9 +159,9 @@ flowchart TD
     end
 
     subgraph Exit_Execution ["9. Order Exit Chaser & Telemetry"]
-        CL_NEAR & CL_STEP2 & CL_STEP1 & CL_HARVEST & CL_STAG & CL_REV & CL_WICK & CL_SPOT & CL_TIME & CL_DISASTER & CL_FLAT --> CHASE["_chase_exit_thread (Daemon)<br/>3-Step Limit Chase: Bid-0% → Bid-1% → Bid-2%"]
+        CL_NEAR & CL_STEP2 & CL_STEP1 & CL_STAG & CL_REV & CL_WICK & CL_SPOT & CL_TIME & CL_DISASTER & CL_FLAT --> CHASE["_chase_exit_thread (Daemon)<br/>3-Tier Urgency Exit Pricing:<br/>1. In-Place Modify Resting TP<br/>2. Marketable Limit with Dynamic Buffer<br/>3. Fallback Limit Place Order"]
         CL_TP --> SYNC["Broker TP Order Sync"]
-        CHASE & SYNC --> POST["Post-Fill Bookkeeping<br/>• Record last_exited_route<br/>• Update trades_today & daily_pnl<br/>• OutcomeTelemetry JSONL append<br/>• StabilityTracker verdict append<br/>• VolumeProfile & Wyckoff Telemetry audit"]
+        CHASE & SYNC --> POST["Post-Fill Bookkeeping & Telemetry<br/>• Post-trade MFE/MAE Reconciliation (exit_px)<br/>• Record last_exited_route<br/>• Update trades_today & daily_pnl<br/>• OutcomeTelemetry JSONL append"]
     end
 ```
 
@@ -189,10 +180,8 @@ All active non-archive modules within `AEGIS/` mapped with exact lines, responsi
 | `AEGIS/core/wyckoff_volume_engine.py` | **Wyckoff Volume & Delta Gate**: Effort vs Result, Volume Dry-Up Ratio (VDR), Absorption pin wick, Delta Harmony (Call Buy vs Put Buy) | `WyckoffVolumeEngine`, `evaluate()` |
 | `AEGIS/core/volume_profile_engine.py` | **Auction Market Volume Profile (Shadow)**: Spot POC, 70% Value Area (VAH/VAL dual pointer), LVN liquidity vacuums, Strike-wise Call/Put POC magnets | `VolumeProfileEngine`, `get_profile_metrics()`, `record_spot_tick()`, `record_option_tick()` |
 | `AEGIS/core/composite_conviction_engine.py` | **Continuous 0–100 Evaluator**: 4 orthogonal domains, dynamic conviction ladder ($\ge 80.0 \to 1\text{ Lot}, +4.0\%\text{ TP}$) | `CompositeConvictionEngine`, `ConvictionResult`, `compute_conviction_score()` |
-| `AEGIS/core/catboost_paper_trader.py` | **Autonomous ML Paper Trader Loop**: Evaluates 1m CatBoost model independently, executes virtual 1-lot trades (+4% TP, -3% SL, 300s timeout), logs MFE/MAE | `CatBoostPaperTrader`, `on_1m_bar()` |
-| `AEGIS/core/ml_gatekeeper.py` | **1-Minute Option Flow Brain**: CatBoost & LightGBM inference, rolling 5m confluence memory, shadow audit mode | `MLGatekeeper`, `evaluate()`, `check_rolling_confluence()` |
-| `AEGIS/core/ai_shadow_reviewer.py` | **Gemini 3.8 Flash Co-Pilot (Shadow)**: Asynchronous LLM technical analyst reviewing setups and context | `AIShadowReviewer`, `review_setup_async()` |
-| `AEGIS/core/quality_stack.py` | **Institutional 3-Slot Daily Policy**: Afternoon reserve (14:45), dynamic score hurdle, stability tracker | `QualitySlotPolicy`, `PostTriggerStabilityTracker` |
+| `AEGIS/core/ml_gatekeeper.py` | **1-Minute Option Flow Brain (Decommissioned)**: CatBoost & LightGBM inference (decommissioned from live gating 2026-10-14, shadow-only) | `MLGatekeeper`, `evaluate()`, `check_rolling_confluence()` |
+| `AEGIS/core/quality_stack.py` | **Institutional 3-Slot Daily Policy**: Full-day agile sizing (14:45 lockout removed), dynamic score hurdle, stability tracker | `QualitySlotPolicy`, `PostTriggerStabilityTracker` |
 | `AEGIS/core/shadow_quant_tracker.py` | **Passive Intraday Quant Edges**: ATM straddle expansion, call/put skew, option lead-lag, 0-DTE charm | `ShadowQuantTracker`, `get_shadow_metrics()` |
 | `AEGIS/core/index_vwap_engine.py` | Constituent-volume weighted index VWAP poller and structural proximity gate | `IndexVWAPEngine`, `get_vwap_metrics()` |
 | `AEGIS/core/oi_builtup_gate.py` | 4-quadrant real-time Open Interest analysis and strike defense wall gate | `OIBuiltupGate`, `evaluate_gate()` |
@@ -218,9 +207,11 @@ A pure-Python, sub-5-microsecond gate wired **in parallel with Price Action trig
 - **Law of Effort vs Result**:
   $$\text{Absorption Index} = \frac{\text{Volume}_T}{\text{Spread}_T / \text{ATR}_{14}}$$
   High volume with narrow spread and a long rejection wick at support/resistance confirms institutional limit absorption.
-- **Law of Cause and Effect (Volume Dry-Up)**:
-  $$\text{VDR} = \frac{\text{Avg Volume}(\text{Pullback Candles})}{V_{\text{baseline}}}$$
-  A healthy retracement must see volume dry up ($VDR < 0.85$, negative volume slope).
+- **Law of Cause and Effect (Dual-Regime Volume Dynamics)**:
+  - **Pillar 3 & 4 (Breakouts):** Demand surge required ($VDR \ge 1.0$).
+  - **Pillar 1 (20 EMA Pullback Retest):** Operates under two distinct, mathematically sound regimes:
+    1. **Regime A (Supply Dry Test):** $VDR \le 0.80$ with decaying volume slope, confirming supply exhaustion / lack of selling interest into the 20 EMA.
+    2. **Regime B (Stopping Absorption):** Normal to high volume accepted ONLY IF accompanied by an asymmetric absorption pin-bar (rejection wick $\ge 60\%$) and directional delta absorption.
 - **Law of Supply and Demand (Delta Harmony)**:
   $$\text{Net Delta Flow} = \text{Call Buy Volume} - \text{Put Buy Volume}$$
   On breakouts, aggressive option volume must align with price movement.
