@@ -1402,33 +1402,33 @@ class PriceActionEngine:
 
             # Refined is_bearish_expansion:
             # Must be a red candle (bar.close < bar.open), body >= total_range * 0.45,
-            # and closing strong near the low (close_edge >= 0.65 and lower_wick_ratio <= 0.30).
+            # and closing strong near the low (close_edge >= 0.65 and lower_wick_ratio <= 0.15).
             is_bearish_expansion = (
                 (bar.close < bar.open)
                 and (body >= total_range * 0.45)
                 and (close_edge >= 0.65)
-                and (lower_wick_ratio <= 0.30)
+                and (lower_wick_ratio <= 0.15)
             )
 
             # Refined is_pin_bar:
             # Red/Doji Shooting Star (bar.close <= bar.open):
-            #   wick_ratio >= min_wick_ratio (0.33), close_edge >= 0.60, lower_wick_ratio <= 0.28,
+            #   wick_ratio >= min_wick_ratio (0.33), close_edge >= 0.60, lower_wick_ratio <= 0.15,
             #   and upper_wick >= 1.5 * lower_wick.
             # Green Shooting Star (bar.close > bar.open):
             #   Requires massive upper tail: wick_ratio >= 0.50, close_edge >= 0.55,
-            #   and tiny lower wick: lower_wick_ratio <= 0.20.
+            #   and tiny lower wick: lower_wick_ratio <= 0.15.
             if bar.close <= bar.open:
                 is_pin_bar = (
                     (wick_ratio >= min_wick_ratio)
                     and (close_edge >= 0.60)
-                    and (lower_wick_ratio <= 0.28)
+                    and (lower_wick_ratio <= 0.15)
                     and (upper_wick >= 1.5 * lower_wick)
                 )
             else:
                 is_pin_bar = (
                     (wick_ratio >= 0.50)
                     and (close_edge >= 0.55)
-                    and (lower_wick_ratio <= 0.20)
+                    and (lower_wick_ratio <= 0.15)
                 )
 
             # Path A (Single-Bar): T itself tests EMA and is expansion/pin.
@@ -1447,7 +1447,7 @@ class PriceActionEngine:
                 curr_expansion = (
                     (bar.close < bar.open)
                     and ((body > total_range * 0.40) or (bar.close < prev_B.low))
-                    and (lower_wick_ratio <= 0.35)
+                    and (lower_wick_ratio <= 0.18)
                 )
                 signal_B = bool(prev_touched and prev_held and curr_held and curr_expansion and curr_not_overextended)
 
@@ -1533,33 +1533,33 @@ class PriceActionEngine:
 
             # Refined is_bullish_expansion:
             # Must be a green candle (bar.close > bar.open), body >= total_range * 0.45,
-            # and closing strong near the high (close_edge >= 0.65 and upper_wick_ratio <= 0.30).
+            # and closing strong near the high (close_edge >= 0.65 and upper_wick_ratio <= 0.15).
             is_bullish_expansion = (
                 (bar.close > bar.open)
                 and (body >= total_range * 0.45)
                 and (close_edge >= 0.65)
-                and (upper_wick_ratio <= 0.30)
+                and (upper_wick_ratio <= 0.15)
             )
 
             # Refined is_hammer (No more red spinning tops!):
             # Green/Doji Hammer (bar.close >= bar.open):
-            #   wick_ratio >= min_wick_ratio (0.33), close_edge >= 0.60, upper_wick_ratio <= 0.28,
+            #   wick_ratio >= min_wick_ratio (0.33), close_edge >= 0.60, upper_wick_ratio <= 0.15,
             #   and lower wick must clearly dominate upper wick: lower_wick >= 1.5 * upper_wick.
             # Red Pin-Bar (bar.close < bar.open):
             #   If slightly red, only a bullish pin-bar if lower tail is massive:
-            #   wick_ratio >= 0.50, close_edge >= 0.55, and upper_wick_ratio <= 0.20.
+            #   wick_ratio >= 0.50, close_edge >= 0.55, and upper_wick_ratio <= 0.15.
             if bar.close >= bar.open:
                 is_hammer = (
                     (wick_ratio >= min_wick_ratio)
                     and (close_edge >= 0.60)
-                    and (upper_wick_ratio <= 0.28)
+                    and (upper_wick_ratio <= 0.15)
                     and (lower_wick >= 1.5 * upper_wick)
                 )
             else:
                 is_hammer = (
                     (wick_ratio >= 0.50)
                     and (close_edge >= 0.55)
-                    and (upper_wick_ratio <= 0.20)
+                    and (upper_wick_ratio <= 0.15)
                 )
 
             # Path A (Single-Bar): T itself tests EMA and is expansion/hammer.
@@ -1577,7 +1577,7 @@ class PriceActionEngine:
                 curr_expansion = (
                     (bar.close > bar.open)
                     and ((body > total_range * 0.40) or (bar.close > prev_B.high))
-                    and (upper_wick_ratio <= 0.35)
+                    and (upper_wick_ratio <= 0.18)
                 )
                 signal_B = bool(prev_touched and prev_held and curr_held and curr_expansion and curr_not_overextended)
 
@@ -1918,7 +1918,7 @@ class PriceActionEngine:
             # 1. Swept below prior swing low and closed back above it.
             # 2. Bullish directional close (Close > Open).
             # 3. Lower absorption wick >= 35% of total range.
-            # 4. Upper rejection wick capped at <= 28% (no overhead selling pressure).
+            # 4. Upper rejection wick strictly capped at <= 15% (zero overhead selling pressure).
             # 5. Strong reclaim into upper body: close_edge >= 0.55.
             # 6. Lower wick clearly dominates upper wick (lower_wick >= 1.25 * upper_wick).
             is_sweep_reclaim = (
@@ -1926,7 +1926,7 @@ class PriceActionEngine:
                 and (bar.close > sw_low)
                 and (bar.close > bar.open)
                 and (wick_ratio >= 0.35)
-                and (upper_wick_ratio <= 0.28)
+                and (upper_wick_ratio <= 0.15)
                 and (close_edge >= 0.55)
                 and (lower_wick >= 1.25 * upper_wick)
             )
@@ -1971,7 +1971,7 @@ class PriceActionEngine:
             # 1. Popped above prior swing high and closed back below it.
             # 2. Bearish directional close (Close < Open).
             # 3. Upper absorption wick >= 35% of total range.
-            # 4. Lower rejection wick capped at <= 28% (no underlying buying pressure).
+            # 4. Lower rejection wick strictly capped at <= 15% (zero underlying buying pressure).
             # 5. Strong reclaim into lower body: close_edge >= 0.55.
             # 6. Upper wick clearly dominates lower wick (upper_wick >= 1.25 * lower_wick).
             is_sweep_reclaim = (
@@ -1979,7 +1979,7 @@ class PriceActionEngine:
                 and (bar.close < sw_high)
                 and (bar.close < bar.open)
                 and (wick_ratio >= 0.35)
-                and (lower_wick_ratio <= 0.28)
+                and (lower_wick_ratio <= 0.15)
                 and (close_edge >= 0.55)
                 and (upper_wick >= 1.25 * lower_wick)
             )

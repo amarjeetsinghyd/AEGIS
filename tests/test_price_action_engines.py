@@ -436,8 +436,8 @@ class TestPillar2_AlBrooks_2Legged_Pullback:
         for i in range(5):
             engine._on_1m_bar_close(OHLCBar((25 + i) * 60, (26 + i) * 60, 24022.0, 24026.0, 24020.0, 24024.0))
 
-        # Sweep bar: dips to 24017.0 (< 24020.0), but closes at 24025.0 with long lower wick (8 pts / 10 pts = 80%)
-        sweep_bar = OHLCBar(1860, 1920, 24021.0, 24027.0, 24017.0, 24025.0)
+        # Sweep bar: dips to 24017.0 (< 24020.0), but closes at 24026.0 with long lower wick (9 pts / 10 pts = 90%)
+        sweep_bar = OHLCBar(1860, 1920, 24021.0, 24027.0, 24017.0, 24026.0)
         engine._on_1m_bar_close(sweep_bar)
         engine.last_price = sweep_bar.close
 
@@ -459,8 +459,8 @@ class TestPillar2_AlBrooks_2Legged_Pullback:
         for i in range(5):
             engine._on_1m_bar_close(OHLCBar((25 + i) * 60, (26 + i) * 60, 23976.0, 23978.0, 23972.0, 23974.0))
 
-        # Sweep bar: pops to 23982.0 (> 23978.0), but closes at 23973.0 with long upper wick
-        sweep_bar = OHLCBar(1860, 1920, 23977.0, 23982.0, 23971.0, 23973.0)
+        # Sweep bar: pops to 23982.0 (> 23978.0), but closes at 23972.0 with long upper wick
+        sweep_bar = OHLCBar(1860, 1920, 23977.0, 23982.0, 23971.0, 23972.0)
         engine._on_1m_bar_close(sweep_bar)
         engine.last_price = sweep_bar.close
 
@@ -506,15 +506,15 @@ class TestPillar2_AlBrooks_2Legged_Pullback:
         for i in range(5):
             engine._on_1m_bar_close(OHLCBar(morning_ts - (6 - i) * 60, morning_ts - (5 - i) * 60, 24022.0, 24030.0, 24020.0, 24026.0))
 
-        # Sweep bar: dips to 24017.0 (< 24020.0), closes at 24025.0 (wick = 8 pts / 10 pts = 80%)
-        sweep_bar = OHLCBar(morning_ts - 60, morning_ts, 24021.0, 24027.0, 24017.0, 24025.0)
+        # Sweep bar: dips to 24017.0 (< 24020.0), closes at 24026.0 (wick = 9 pts / 10 pts = 90%)
+        sweep_bar = OHLCBar(morning_ts - 60, morning_ts, 24021.0, 24027.0, 24017.0, 24026.0)
         engine._on_1m_bar_close(sweep_bar)
         engine.last_price = sweep_bar.close
 
         is_sweep, reason, details = engine.check_micro_sweep_reclaim("UP", current_vwap=23950.0, current_time=morning_ts)
         assert is_sweep is True
         assert details["pa_setup_name"] == "micro_sweep_reclaim"
-        assert details["upper_wick_ratio"] <= 0.28
+        assert details["upper_wick_ratio"] <= 0.15
         assert details["close_edge"] >= 0.55
 
     def test_micro_sweep_call_rejected_on_heavy_upper_wick(self):
