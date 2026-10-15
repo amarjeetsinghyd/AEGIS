@@ -1909,8 +1909,27 @@ class PriceActionEngine:
 
             # Micro sweep: dipped below prior swing low, but closed firmly back above it
             lower_wick = min(bar.open, bar.close) - bar.low
+            upper_wick = bar.high - max(bar.open, bar.close)
             wick_ratio = lower_wick / total_range
-            is_sweep_reclaim = (bar.low < sw_low) and (bar.close > sw_low) and (bar.close > bar.open) and (wick_ratio >= 0.35)
+            upper_wick_ratio = upper_wick / total_range
+            close_edge = (bar.close - bar.low) / total_range
+
+            # Enforce clean absorption:
+            # 1. Swept below prior swing low and closed back above it.
+            # 2. Bullish directional close (Close > Open).
+            # 3. Lower absorption wick >= 35% of total range.
+            # 4. Upper rejection wick capped at <= 28% (no overhead selling pressure).
+            # 5. Strong reclaim into upper body: close_edge >= 0.55.
+            # 6. Lower wick clearly dominates upper wick (lower_wick >= 1.25 * upper_wick).
+            is_sweep_reclaim = (
+                (bar.low < sw_low)
+                and (bar.close > sw_low)
+                and (bar.close > bar.open)
+                and (wick_ratio >= 0.35)
+                and (upper_wick_ratio <= 0.28)
+                and (close_edge >= 0.55)
+                and (lower_wick >= 1.25 * upper_wick)
+            )
 
             if is_sweep_reclaim:
                 # Structural Obstacle Shield
@@ -1928,6 +1947,8 @@ class PriceActionEngine:
                     "bar_low": round(bar.low, 2),
                     "bar_close": round(bar.close, 2),
                     "wick_ratio": round(wick_ratio, 3),
+                    "upper_wick_ratio": round(upper_wick_ratio, 3),
+                    "close_edge": round(close_edge, 3),
                     "rejection_type": "liquidity_sweep_call_reclaim",
                     "sl_price": sl_price,
                     "buffer_pts": round(buffer_pts, 2),
@@ -1941,8 +1962,27 @@ class PriceActionEngine:
 
             # Micro sweep: popped above prior swing high, but closed firmly back below it
             upper_wick = bar.high - max(bar.open, bar.close)
+            lower_wick = min(bar.open, bar.close) - bar.low
             wick_ratio = upper_wick / total_range
-            is_sweep_reclaim = (bar.high > sw_high) and (bar.close < sw_high) and (bar.close < bar.open) and (wick_ratio >= 0.35)
+            lower_wick_ratio = lower_wick / total_range
+            close_edge = (bar.high - bar.close) / total_range
+
+            # Enforce clean absorption:
+            # 1. Popped above prior swing high and closed back below it.
+            # 2. Bearish directional close (Close < Open).
+            # 3. Upper absorption wick >= 35% of total range.
+            # 4. Lower rejection wick capped at <= 28% (no underlying buying pressure).
+            # 5. Strong reclaim into lower body: close_edge >= 0.55.
+            # 6. Upper wick clearly dominates lower wick (upper_wick >= 1.25 * lower_wick).
+            is_sweep_reclaim = (
+                (bar.high > sw_high)
+                and (bar.close < sw_high)
+                and (bar.close < bar.open)
+                and (wick_ratio >= 0.35)
+                and (lower_wick_ratio <= 0.28)
+                and (close_edge >= 0.55)
+                and (upper_wick >= 1.25 * lower_wick)
+            )
 
             if is_sweep_reclaim:
                 # Structural Obstacle Shield
@@ -1960,6 +2000,8 @@ class PriceActionEngine:
                     "bar_low": round(bar.low, 2),
                     "bar_close": round(bar.close, 2),
                     "wick_ratio": round(wick_ratio, 3),
+                    "lower_wick_ratio": round(lower_wick_ratio, 3),
+                    "close_edge": round(close_edge, 3),
                     "rejection_type": "liquidity_sweep_put_reclaim",
                     "sl_price": sl_price,
                     "buffer_pts": round(buffer_pts, 2),

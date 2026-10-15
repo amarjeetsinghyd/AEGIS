@@ -514,6 +514,61 @@ class TestPillar2_AlBrooks_2Legged_Pullback:
         is_sweep, reason, details = engine.check_micro_sweep_reclaim("UP", current_vwap=23950.0, current_time=morning_ts)
         assert is_sweep is True
         assert details["pa_setup_name"] == "micro_sweep_reclaim"
+        assert details["upper_wick_ratio"] <= 0.28
+        assert details["close_edge"] >= 0.55
+
+    def test_micro_sweep_call_rejected_on_heavy_upper_wick(self):
+        """Verifies that Pillar 2 CALL rejects candles with heavy upper selling wick (> 28%)."""
+        engine = PriceActionEngine()
+        for i in range(5):
+            engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 24022.0, 24030.0, 24020.0, 24026.0))
+
+        # Sweep bar: sweeps low to 24016.0 (< 24020.0), bounces to 24040.0, but gets slammed down to 24024.0.
+        # Range = 24.0. Open = 24021.0, Close = 24024.0 (body = 3.0). Lower wick = 5.0 (20.8%).
+        # Upper wick = 24040 - 24024 = 16.0 (66.7% > 28%).
+        sweep_bar = OHLCBar(300, 360, 24021.0, 24040.0, 24016.0, 24024.0)
+        engine._on_1m_bar_close(sweep_bar)
+        engine.last_price = sweep_bar.close
+
+        is_sweep, reason, details = engine.check_micro_sweep_reclaim("UP", current_vwap=23950.0)
+        assert is_sweep is False
+        assert reason == "sweep_structure_not_met"
+
+    def test_micro_sweep_call_rejected_on_weak_close_edge(self):
+        """Verifies that Pillar 2 CALL rejects candles closing in lower half (< 55% close_edge)."""
+        engine = PriceActionEngine()
+        for i in range(5):
+            engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 24022.0, 24030.0, 24020.0, 24026.0))
+
+        # Sweep bar: low 24018.0 (< 24020.0), close 24021.0 (> 24020.0), but high 24035.0.
+        # Range = 17.0. close_edge = (24021 - 24018) / 17.0 = 3.0 / 17.0 = 0.176 (< 0.55).
+        # Open = 24019.0. Lower wick = 1.0. Upper wick = 14.0.
+        sweep_bar = OHLCBar(300, 360, 24019.0, 24035.0, 24018.0, 24021.0)
+        engine._on_1m_bar_close(sweep_bar)
+        engine.last_price = sweep_bar.close
+
+        is_sweep, reason, details = engine.check_micro_sweep_reclaim("UP", current_vwap=23950.0)
+        assert is_sweep is False
+        assert reason == "sweep_structure_not_met"
+
+    def test_micro_sweep_put_rejected_on_heavy_lower_wick(self):
+        """Verifies that Pillar 2 PUT rejects candles with heavy lower buying wick (> 28%)."""
+        engine = PriceActionEngine()
+        for i in range(25):
+            engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 24000.0 - i * 1.0, 24002.0 - i * 1.0, 23997.0 - i * 1.0, 23999.0 - i * 1.0))
+        for i in range(5):
+            engine._on_1m_bar_close(OHLCBar((25 + i) * 60, (26 + i) * 60, 23976.0, 23978.0, 23972.0, 23974.0))
+
+        # Sweep bar: pops to 23982.0 (> 23978.0), dumps to 23960.0, but buyers push it back to 23975.0.
+        # Range = 22.0. Open = 23977.0, Close = 23975.0. Upper wick = 5.0 (22.7%).
+        # Lower wick = 23975.0 - 23960.0 = 15.0 (68.2% > 28%).
+        sweep_bar = OHLCBar(1860, 1920, 23977.0, 23982.0, 23960.0, 23975.0)
+        engine._on_1m_bar_close(sweep_bar)
+        engine.last_price = sweep_bar.close
+
+        is_sweep, reason, details = engine.check_micro_sweep_reclaim("DOWN", current_vwap=23995.0)
+        assert is_sweep is False
+        assert reason == "sweep_structure_not_met"
 
 
 # ═══════════════════════════════════════════════════════════════
