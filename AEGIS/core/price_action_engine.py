@@ -1392,15 +1392,47 @@ class PriceActionEngine:
                 return False, "tiny_range_noise", {}
             body = abs(bar.close - bar.open)
             upper_wick = bar.high - max(bar.open, bar.close)
+            lower_wick = min(bar.open, bar.close) - bar.low
             wick_ratio = upper_wick / total_range
+            lower_wick_ratio = lower_wick / total_range
+            close_edge = (bar.high - bar.close) / total_range
 
             # Anti-chasing extension cap: Bar T must not have already plunged too far below 20 EMA.
             curr_not_overextended = (live_ema_20 - bar.close) <= max_retest_dist
 
+            # Refined is_bearish_expansion:
+            # Must be a red candle (bar.close < bar.open), body >= total_range * 0.45,
+            # and closing strong near the low (close_edge >= 0.65 and lower_wick_ratio <= 0.30).
+            is_bearish_expansion = (
+                (bar.close < bar.open)
+                and (body >= total_range * 0.45)
+                and (close_edge >= 0.65)
+                and (lower_wick_ratio <= 0.30)
+            )
+
+            # Refined is_pin_bar:
+            # Red/Doji Shooting Star (bar.close <= bar.open):
+            #   wick_ratio >= min_wick_ratio (0.33), close_edge >= 0.60, lower_wick_ratio <= 0.28,
+            #   and upper_wick >= 1.5 * lower_wick.
+            # Green Shooting Star (bar.close > bar.open):
+            #   Requires massive upper tail: wick_ratio >= 0.50, close_edge >= 0.55,
+            #   and tiny lower wick: lower_wick_ratio <= 0.20.
+            if bar.close <= bar.open:
+                is_pin_bar = (
+                    (wick_ratio >= min_wick_ratio)
+                    and (close_edge >= 0.60)
+                    and (lower_wick_ratio <= 0.28)
+                    and (upper_wick >= 1.5 * lower_wick)
+                )
+            else:
+                is_pin_bar = (
+                    (wick_ratio >= 0.50)
+                    and (close_edge >= 0.55)
+                    and (lower_wick_ratio <= 0.20)
+                )
+
             # Path A (Single-Bar): T itself tests EMA and is expansion/pin.
             touched_A = bar.high >= (live_ema_20 - tol_pts)
-            is_bearish_expansion = (bar.close < bar.open) and (body > total_range * 0.40)
-            is_pin_bar = (wick_ratio >= min_wick_ratio)
             signal_A = touched_A and (is_bearish_expansion or is_pin_bar) and curr_not_overextended
 
             # Path B (Two-Bar): T-1 tested EMA without piercing; T confirms bounce
@@ -1412,8 +1444,10 @@ class PriceActionEngine:
                 prev_touched = prev_B.high >= (live_ema_20 - tol_pts)
                 prev_held = prev_B.close <= (live_ema_20 + 0.5 * tol_pts)
                 curr_held = bar.close <= (live_ema_20 + 0.5 * tol_pts)
-                curr_expansion = (bar.close < bar.open) and (
-                    (body > total_range * 0.40) or (bar.close < prev_B.low)
+                curr_expansion = (
+                    (bar.close < bar.open)
+                    and ((body > total_range * 0.40) or (bar.close < prev_B.low))
+                    and (lower_wick_ratio <= 0.35)
                 )
                 signal_B = bool(prev_touched and prev_held and curr_held and curr_expansion and curr_not_overextended)
 
@@ -1451,7 +1485,10 @@ class PriceActionEngine:
                     "total_range": round(total_range, 2),
                     "body": round(body, 2),
                     "upper_wick": round(upper_wick, 2),
+                    "lower_wick": round(lower_wick, 2),
                     "wick_ratio": round(wick_ratio, 3),
+                    "lower_wick_ratio": round(lower_wick_ratio, 3),
+                    "close_edge": round(close_edge, 3),
                     "rejection_type": sig_type,
                     "confirmation_path": "single_bar" if signal_A else "two_bar",
                     "runway_state": runway_mode,
@@ -1486,15 +1523,47 @@ class PriceActionEngine:
                 return False, "tiny_range_noise", {}
             body = abs(bar.close - bar.open)
             lower_wick = min(bar.open, bar.close) - bar.low
+            upper_wick = bar.high - max(bar.open, bar.close)
             wick_ratio = lower_wick / total_range
+            upper_wick_ratio = upper_wick / total_range
+            close_edge = (bar.close - bar.low) / total_range
 
             # Anti-chasing extension cap: Bar T must not have already surged too far above 20 EMA.
             curr_not_overextended = (bar.close - live_ema_20) <= max_retest_dist
 
+            # Refined is_bullish_expansion:
+            # Must be a green candle (bar.close > bar.open), body >= total_range * 0.45,
+            # and closing strong near the high (close_edge >= 0.65 and upper_wick_ratio <= 0.30).
+            is_bullish_expansion = (
+                (bar.close > bar.open)
+                and (body >= total_range * 0.45)
+                and (close_edge >= 0.65)
+                and (upper_wick_ratio <= 0.30)
+            )
+
+            # Refined is_hammer (No more red spinning tops!):
+            # Green/Doji Hammer (bar.close >= bar.open):
+            #   wick_ratio >= min_wick_ratio (0.33), close_edge >= 0.60, upper_wick_ratio <= 0.28,
+            #   and lower wick must clearly dominate upper wick: lower_wick >= 1.5 * upper_wick.
+            # Red Pin-Bar (bar.close < bar.open):
+            #   If slightly red, only a bullish pin-bar if lower tail is massive:
+            #   wick_ratio >= 0.50, close_edge >= 0.55, and upper_wick_ratio <= 0.20.
+            if bar.close >= bar.open:
+                is_hammer = (
+                    (wick_ratio >= min_wick_ratio)
+                    and (close_edge >= 0.60)
+                    and (upper_wick_ratio <= 0.28)
+                    and (lower_wick >= 1.5 * upper_wick)
+                )
+            else:
+                is_hammer = (
+                    (wick_ratio >= 0.50)
+                    and (close_edge >= 0.55)
+                    and (upper_wick_ratio <= 0.20)
+                )
+
             # Path A (Single-Bar): T itself tests EMA and is expansion/hammer.
             touched_A = bar.low <= (live_ema_20 + tol_pts)
-            is_bullish_expansion = (bar.close > bar.open) and (body > total_range * 0.40)
-            is_hammer = (wick_ratio >= min_wick_ratio)
             signal_A = touched_A and (is_bullish_expansion or is_hammer) and curr_not_overextended
 
             # Path B (Two-Bar): T-1 tested EMA without piercing; T confirms bounce
@@ -1505,8 +1574,10 @@ class PriceActionEngine:
                 prev_touched = prev_B.low <= (live_ema_20 + tol_pts)
                 prev_held = prev_B.close >= (live_ema_20 - 0.5 * tol_pts)
                 curr_held = bar.close >= (live_ema_20 - 0.5 * tol_pts)
-                curr_expansion = (bar.close > bar.open) and (
-                    (body > total_range * 0.40) or (bar.close > prev_B.high)
+                curr_expansion = (
+                    (bar.close > bar.open)
+                    and ((body > total_range * 0.40) or (bar.close > prev_B.high))
+                    and (upper_wick_ratio <= 0.35)
                 )
                 signal_B = bool(prev_touched and prev_held and curr_held and curr_expansion and curr_not_overextended)
 
@@ -1544,7 +1615,10 @@ class PriceActionEngine:
                     "total_range": round(total_range, 2),
                     "body": round(body, 2),
                     "lower_wick": round(lower_wick, 2),
+                    "upper_wick": round(upper_wick, 2),
                     "wick_ratio": round(wick_ratio, 3),
+                    "upper_wick_ratio": round(upper_wick_ratio, 3),
+                    "close_edge": round(close_edge, 3),
                     "rejection_type": sig_type,
                     "confirmation_path": "single_bar" if signal_A else "two_bar",
                     "runway_state": runway_mode,
@@ -1961,8 +2035,26 @@ class PriceActionEngine:
             if self.ema_20_1m > 0 and self.ema_50_1m > 0 and self.ema_20_1m > self.ema_50_1m:
                 return False, "bull_overlap_ema_disallowed", {}
 
+            bar_range = bar.high - bar.low
+            if bar_range <= 0:
+                return False, "zero_range", {}
+            bar_body = abs(bar.close - bar.open)
+
             # Downside breakout
             if bar.close < box_low:
+                close_edge_put = (bar.high - bar.close) / bar_range
+                if not (
+                    (bar.close < bar.open)
+                    and (bar_body >= 0.35 * bar_range)
+                    and (close_edge_put >= 0.55)
+                ):
+                    return False, "weak_squeeze_breakout_candle", {
+                        "bar_open": round(bar.open, 2),
+                        "bar_close": round(bar.close, 2),
+                        "body_ratio": round(bar_body / bar_range, 3),
+                        "close_edge": round(close_edge_put, 3),
+                    }
+
                 sl_price = round(box_high + buffer_pts, 2)
                 details = {
                     "pa_setup_name": "volatility_squeeze_breakout",
@@ -1975,6 +2067,7 @@ class PriceActionEngine:
                     "bar_high": round(bar.high, 2),
                     "bar_low": round(bar.low, 2),
                     "bar_close": round(bar.close, 2),
+                    "close_edge": round(close_edge_put, 3),
                     "rejection_type": "squeeze_downside_breakout",
                     "sl_price": sl_price,
                     "buffer_pts": round(buffer_pts, 2),
@@ -1990,8 +2083,26 @@ class PriceActionEngine:
             if self.ema_20_1m > 0 and self.ema_50_1m > 0 and self.ema_20_1m < self.ema_50_1m:
                 return False, "bear_overlap_ema_disallowed", {}
 
+            bar_range = bar.high - bar.low
+            if bar_range <= 0:
+                return False, "zero_range", {}
+            bar_body = abs(bar.close - bar.open)
+
             # Upside breakout
             if bar.close > box_high:
+                close_edge_call = (bar.close - bar.low) / bar_range
+                if not (
+                    (bar.close > bar.open)
+                    and (bar_body >= 0.35 * bar_range)
+                    and (close_edge_call >= 0.55)
+                ):
+                    return False, "weak_squeeze_breakout_candle", {
+                        "bar_open": round(bar.open, 2),
+                        "bar_close": round(bar.close, 2),
+                        "body_ratio": round(bar_body / bar_range, 3),
+                        "close_edge": round(close_edge_call, 3),
+                    }
+
                 sl_price = round(box_low - buffer_pts, 2)
                 details = {
                     "pa_setup_name": "volatility_squeeze_breakout",
@@ -2004,6 +2115,7 @@ class PriceActionEngine:
                     "bar_high": round(bar.high, 2),
                     "bar_low": round(bar.low, 2),
                     "bar_close": round(bar.close, 2),
+                    "close_edge": round(close_edge_call, 3),
                     "rejection_type": "squeeze_upside_breakout",
                     "sl_price": sl_price,
                     "buffer_pts": round(buffer_pts, 2),

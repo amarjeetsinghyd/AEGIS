@@ -302,6 +302,66 @@ class TestPillar1_20_EMA_Rejection:
         assert reason == "live_price_piercing_below_20_ema"
         assert details["last_price"] == round(live_ema_20 - 5.0, 2)
 
+    def test_human_eye_rejection_geometry_and_two_bar_transition(self):
+        """
+        Verifies that:
+        1. A red spinning-top candle touching 20 EMA (like 10:26 IST) is NOT misclassified as a hammer for Signal A.
+        2. When followed by a strong green confirmation candle (Signal B / Two-Bar), it confirms cleanly!
+        """
+        engine = PriceActionEngine()
+        # Seed 25 bars in an uptrend
+        for i in range(25):
+            engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 73600.0 + i * 4.0, 73605.0 + i * 4.0, 73595.0 + i * 4.0, 73602.0 + i * 4.0))
+
+        live_ema_20, _ = engine.get_live_20_ema_and_slope()
+        assert live_ema_20 > 73600.0
+
+        # Prior touch bar at EMA 20 (Leg 1 HL)
+        engine._on_1m_bar_close(OHLCBar(1500.0, 1560.0, live_ema_20 + 2.0, live_ema_20 + 5.0, live_ema_20 - 0.5, live_ema_20 + 2.0))
+        live_ema_20, _ = engine.get_live_20_ema_and_slope()
+
+        # 6 pause / spacing bars
+        for k in range(6):
+            engine._on_1m_bar_close(OHLCBar(1560.0 + k * 60, 1620.0 + k * 60, live_ema_20 + 10.0, live_ema_20 + 15.0, live_ema_20 + 5.0, live_ema_20 + 12.0))
+
+        live_ema_20, _ = engine.get_live_20_ema_and_slope()
+
+        # Bar T-1: Red spinning-top (like 10:26 IST):
+        # Open > Close, with upper wick (8 pts) and lower wick (6 pts)
+        red_spinning_top = OHLCBar(
+            ts_start=1920.0,
+            ts_end=1980.0,
+            open=live_ema_20 + 12.0,
+            high=live_ema_20 + 20.0,
+            low=live_ema_20 + 1.0,   # Touches EMA zone
+            close=live_ema_20 + 7.0,  # Red candle (Close < Open) with upper wick
+        )
+        engine._on_1m_bar_close(red_spinning_top)
+        engine.last_price = red_spinning_top.close
+
+        # Must NOT trigger Signal A (red spinning top is rejected as a hammer!)
+        ok_A, reason_A, det_A = engine.check_20_ema_rejection("UP")
+        assert ok_A is False
+
+        # Now Bar T: Green expansion bounce candle (like 10:28 IST)
+        # Opens at EMA + 16, expands above T-1 high, closes strong above prior swing high (T low does NOT retest EMA)
+        green_expansion = OHLCBar(
+            ts_start=1980.0,
+            ts_end=2040.0,
+            open=live_ema_20 + 16.0,
+            high=live_ema_20 + 35.0,
+            low=live_ema_20 + 15.0,  # Does not touch EMA zone (tol_pts is ~11 pts)
+            close=live_ema_20 + 33.0,
+        )
+        engine._on_1m_bar_close(green_expansion)
+        engine.last_price = green_expansion.close
+
+        # Must trigger Signal B (Two-Bar Path B confirmed cleanly!)
+        ok_B, reason_B, det_B = engine.check_20_ema_rejection("UP")
+        assert ok_B is True
+        assert det_B["confirmation_path"] == "two_bar"
+        assert det_B["rejection_type"] == "two_bar_retest_bullish_expansion"
+
 
 
 
@@ -505,6 +565,25 @@ class TestPillar3_VolatilitySqueezeBreakout:
         assert details["pillar"] == 3
         assert details["sl_price"] >= 24106.0 + 5.0  # SL placed above box high
 
+    def test_volatility_squeeze_weak_breakout_candle_rejected(self):
+        """Verifies Upgrade 2: Breakout candles that are wicked-out or wrong color are rejected."""
+        engine = PriceActionEngine()
+        engine.current_atr_1m = 30.0
+
+        for i in range(4):
+            engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 24100.0, 24106.0, 24095.0, 24101.0))
+
+        # Breakout bar closes above 24106.0 BUT is a red candle (Close < Open)
+        weak_bar = OHLCBar(240, 300, 24115.0, 24120.0, 24100.0, 24108.0)
+        engine._on_1m_bar_close(weak_bar)
+        engine.last_price = weak_bar.close
+        engine.current_atr_1m = 30.0
+
+        current_vwap = 24050.0
+        is_breakout, reason, details = engine.check_volatility_squeeze_breakout("UP", current_vwap)
+        assert is_breakout is False
+        assert reason == "weak_squeeze_breakout_candle"
+
 
 # ═══════════════════════════════════════════════════════════════
 # MASTER DISPATCHER & WATERTIGHT FILTER BYPASS TESTS
@@ -555,6 +634,7 @@ class TestWatertightPriceActionIntegration:
         live_ema_20, _ = pa_engine.get_live_20_ema_and_slope()
         pa_engine.last_price = live_ema_20 + 3.0
         hammer = OHLCBar(1500, 1560, live_ema_20 + 2.0, live_ema_20 + 4.0, live_ema_20 - 0.5, live_ema_20 + 3.5)
+        pa_engine._on_1m_bar_close(hammer)
         pa_engine._curr_1m_bar = hammer
         engine.price_action_engine = pa_engine
         engine.time_bar_engine = pa_engine
@@ -757,8 +837,8 @@ class TestRefinedPriceActionFilters:
             engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 24000.0, 24001.0, 23999.0, 24000.0))
 
         engine.last_price = 24000.0
-        # Force a retest candle with hammer rejection off 20 EMA
-        test_bar = OHLCBar(3000.0, 3060.0, 24000.0, 24001.0, 23999.5, 24000.5)
+        # Force a retest candle with genuine hammer rejection off 20 EMA
+        test_bar = OHLCBar(3000.0, 3060.0, 24000.0, 24001.1, 23999.1, 24001.0)
         engine._on_1m_bar_close(test_bar)
 
         ok, reason, details = engine.check_20_ema_rejection("UP")
