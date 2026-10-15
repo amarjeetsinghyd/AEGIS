@@ -1885,6 +1885,7 @@ class PriceActionEngine:
         sw_high = max(b.high for b in prior_bars)
 
         buffer_pts = max(5.0, (ref_spot / 24000.0) * 5.0)
+        min_sweep_depth = max(1.5, (ref_spot / 24000.0) * 1.5, 0.08 * _atr_ref)
 
         # Live Spot Sanity Guard
         if self.last_price > 0:
@@ -1907,7 +1908,7 @@ class PriceActionEngine:
             if current_vwap > 0 and bar.close <= current_vwap:
                 return False, "below_vwap", {}
 
-            # Micro sweep: dipped below prior swing low, but closed firmly back above it
+            # Micro sweep: dipped below prior swing low by at least min_sweep_depth, but closed firmly back above it
             lower_wick = min(bar.open, bar.close) - bar.low
             upper_wick = bar.high - max(bar.open, bar.close)
             wick_ratio = lower_wick / total_range
@@ -1915,14 +1916,15 @@ class PriceActionEngine:
             close_edge = (bar.close - bar.low) / total_range
 
             # Enforce clean absorption:
-            # 1. Swept below prior swing low and closed back above it.
-            # 2. Bullish directional close (Close > Open).
-            # 3. Lower absorption wick >= 35% of total range.
-            # 4. Upper rejection wick strictly capped at <= 15% (zero overhead selling pressure).
-            # 5. Strong reclaim into upper body: close_edge >= 0.55.
-            # 6. Lower wick clearly dominates upper wick (lower_wick >= 1.25 * upper_wick).
+            # 1. Genuine stop hunt: swept below prior swing low by at least min_sweep_depth.
+            # 2. Closed firmly back above swing low.
+            # 3. Bullish directional close (Close > Open).
+            # 4. Lower absorption wick >= 35% of total range.
+            # 5. Upper rejection wick strictly capped at <= 15% (zero overhead selling pressure).
+            # 6. Strong reclaim into upper body: close_edge >= 0.55.
+            # 7. Lower wick clearly dominates upper wick (lower_wick >= 1.25 * upper_wick).
             is_sweep_reclaim = (
-                (bar.low < sw_low)
+                (bar.low <= (sw_low - min_sweep_depth))
                 and (bar.close > sw_low)
                 and (bar.close > bar.open)
                 and (wick_ratio >= 0.35)
@@ -1942,6 +1944,8 @@ class PriceActionEngine:
                     "pa_setup_name": "micro_sweep_reclaim",
                     "pillar": 2,
                     "swing_low": round(sw_low, 2),
+                    "sweep_depth": round(sw_low - bar.low, 2),
+                    "min_sweep_depth": round(min_sweep_depth, 2),
                     "bar_open": round(bar.open, 2),
                     "bar_high": round(bar.high, 2),
                     "bar_low": round(bar.low, 2),
@@ -1960,7 +1964,7 @@ class PriceActionEngine:
             if current_vwap > 0 and bar.close >= current_vwap:
                 return False, "above_vwap", {}
 
-            # Micro sweep: popped above prior swing high, but closed firmly back below it
+            # Micro sweep: popped above prior swing high by at least min_sweep_depth, but closed firmly back below it
             upper_wick = bar.high - max(bar.open, bar.close)
             lower_wick = min(bar.open, bar.close) - bar.low
             wick_ratio = upper_wick / total_range
@@ -1968,14 +1972,15 @@ class PriceActionEngine:
             close_edge = (bar.high - bar.close) / total_range
 
             # Enforce clean absorption:
-            # 1. Popped above prior swing high and closed back below it.
-            # 2. Bearish directional close (Close < Open).
-            # 3. Upper absorption wick >= 35% of total range.
-            # 4. Lower rejection wick strictly capped at <= 15% (zero underlying buying pressure).
-            # 5. Strong reclaim into lower body: close_edge >= 0.55.
-            # 6. Upper wick clearly dominates lower wick (upper_wick >= 1.25 * lower_wick).
+            # 1. Genuine stop hunt: popped above prior swing high by at least min_sweep_depth.
+            # 2. Closed firmly back below swing high.
+            # 3. Bearish directional close (Close < Open).
+            # 4. Upper absorption wick >= 35% of total range.
+            # 5. Lower rejection wick strictly capped at <= 15% (zero underlying buying pressure).
+            # 6. Strong reclaim into lower body: close_edge >= 0.55.
+            # 7. Upper wick clearly dominates lower wick (upper_wick >= 1.25 * lower_wick).
             is_sweep_reclaim = (
-                (bar.high > sw_high)
+                (bar.high >= (sw_high + min_sweep_depth))
                 and (bar.close < sw_high)
                 and (bar.close < bar.open)
                 and (wick_ratio >= 0.35)
@@ -2051,6 +2056,7 @@ class PriceActionEngine:
         ref_spot = self.last_price if self.last_price > 0 else 24000.0
         atr = self.current_atr_1m if self.current_atr_1m > 0 else (ref_spot * 0.001)
         buffer_pts = max(5.0, (ref_spot / 24000.0) * 5.0)
+        min_box_clearance = max(2.0, (ref_spot / 24000.0) * 2.0, 0.08 * atr)
 
         # Squeeze compression check (dynamically normalized to ATR)
         if squeeze_range > (1.25 * atr):
@@ -2081,20 +2087,24 @@ class PriceActionEngine:
             if bar_range <= 0:
                 return False, "zero_range", {}
             bar_body = abs(bar.close - bar.open)
+            lower_wick = min(bar.open, bar.close) - bar.low
+            lower_wick_ratio = lower_wick / bar_range
 
-            # Downside breakout
-            if bar.close < box_low:
+            # Downside breakout: must clear box_low by at least min_box_clearance
+            if bar.close <= (box_low - min_box_clearance):
                 close_edge_put = (bar.high - bar.close) / bar_range
                 if not (
                     (bar.close < bar.open)
                     and (bar_body >= 0.35 * bar_range)
                     and (close_edge_put >= 0.55)
+                    and (lower_wick_ratio <= 0.18)
                 ):
                     return False, "weak_squeeze_breakout_candle", {
                         "bar_open": round(bar.open, 2),
                         "bar_close": round(bar.close, 2),
                         "body_ratio": round(bar_body / bar_range, 3),
                         "close_edge": round(close_edge_put, 3),
+                        "lower_wick_ratio": round(lower_wick_ratio, 3),
                     }
 
                 sl_price = round(box_high + buffer_pts, 2)
@@ -2105,11 +2115,13 @@ class PriceActionEngine:
                     "box_low": round(box_low, 2),
                     "box_range": round(squeeze_range, 2),
                     "atr_14": round(atr, 2),
+                    "min_box_clearance": round(min_box_clearance, 2),
                     "bar_open": round(bar.open, 2),
                     "bar_high": round(bar.high, 2),
                     "bar_low": round(bar.low, 2),
                     "bar_close": round(bar.close, 2),
                     "close_edge": round(close_edge_put, 3),
+                    "lower_wick_ratio": round(lower_wick_ratio, 3),
                     "rejection_type": "squeeze_downside_breakout",
                     "sl_price": sl_price,
                     "buffer_pts": round(buffer_pts, 2),
@@ -2129,20 +2141,24 @@ class PriceActionEngine:
             if bar_range <= 0:
                 return False, "zero_range", {}
             bar_body = abs(bar.close - bar.open)
+            upper_wick = bar.high - max(bar.open, bar.close)
+            upper_wick_ratio = upper_wick / bar_range
 
-            # Upside breakout
-            if bar.close > box_high:
+            # Upside breakout: must clear box_high by at least min_box_clearance
+            if bar.close >= (box_high + min_box_clearance):
                 close_edge_call = (bar.close - bar.low) / bar_range
                 if not (
                     (bar.close > bar.open)
                     and (bar_body >= 0.35 * bar_range)
                     and (close_edge_call >= 0.55)
+                    and (upper_wick_ratio <= 0.18)
                 ):
                     return False, "weak_squeeze_breakout_candle", {
                         "bar_open": round(bar.open, 2),
                         "bar_close": round(bar.close, 2),
                         "body_ratio": round(bar_body / bar_range, 3),
                         "close_edge": round(close_edge_call, 3),
+                        "upper_wick_ratio": round(upper_wick_ratio, 3),
                     }
 
                 sl_price = round(box_low - buffer_pts, 2)
@@ -2153,11 +2169,13 @@ class PriceActionEngine:
                     "box_low": round(box_low, 2),
                     "box_range": round(squeeze_range, 2),
                     "atr_14": round(atr, 2),
+                    "min_box_clearance": round(min_box_clearance, 2),
                     "bar_open": round(bar.open, 2),
                     "bar_high": round(bar.high, 2),
                     "bar_low": round(bar.low, 2),
                     "bar_close": round(bar.close, 2),
                     "close_edge": round(close_edge_call, 3),
+                    "upper_wick_ratio": round(upper_wick_ratio, 3),
                     "rejection_type": "squeeze_upside_breakout",
                     "sl_price": sl_price,
                     "buffer_pts": round(buffer_pts, 2),
@@ -2484,44 +2502,82 @@ class PriceActionEngine:
 
         ref_spot = self.last_price if self.last_price > 0 else hub_price
         buffer_pts = max(5.0, (ref_spot / 24000.0) * 5.0)
+        _atr_ref = self.current_atr_1m if self.current_atr_1m > 0 else (ref_spot * 0.001)
+        min_hub_clearance = max(2.0, (ref_spot / 24000.0) * 2.0, 0.08 * _atr_ref)
 
-        if is_bullish and bar.close > hub_price and trend_5m_bullish:
-            if current_vwap > 0 and bar.close < current_vwap:
-                return False, "counter_to_vwap", {}
-            sl_price = round(bar.low - buffer_pts, 2)
-            return True, "prominence_hub_breakout_up", {
-                "pa_setup_name": "topological_prominence_breakout",
-                "pillar": 4,
-                "hub_price": hub_price,
-                "pi_hat": pi_hat,
-                "vr_t": vr_t,
-                "breakout_direction": "UP",
-                "bar_open": round(bar.open, 2),
-                "bar_close": round(bar.close, 2),
-                "bar_low": round(bar.low, 2),
-                "bar_high": round(bar.high, 2),
-                "sl_price": sl_price,
-                "buffer_pts": round(buffer_pts, 2),
-            }
+        total_range = max(bar.high - bar.low, 0.1)
+        body = abs(bar.close - bar.open)
+        body_ratio = body / total_range
+        upper_wick = bar.high - max(bar.open, bar.close)
+        lower_wick = min(bar.open, bar.close) - bar.low
+        upper_wick_ratio = upper_wick / total_range
+        lower_wick_ratio = lower_wick / total_range
+        close_edge_call = (bar.close - bar.low) / total_range
+        close_edge_put = (bar.high - bar.close) / total_range
 
-        if is_bearish and bar.close < hub_price and trend_5m_bearish:
-            if current_vwap > 0 and bar.close > current_vwap:
-                return False, "counter_to_vwap", {}
-            sl_price = round(bar.high + buffer_pts, 2)
-            return True, "prominence_hub_breakout_down", {
-                "pa_setup_name": "topological_prominence_breakout",
-                "pillar": 4,
-                "hub_price": hub_price,
-                "pi_hat": pi_hat,
-                "vr_t": vr_t,
-                "breakout_direction": "DOWN",
-                "bar_open": round(bar.open, 2),
-                "bar_close": round(bar.close, 2),
-                "bar_low": round(bar.low, 2),
-                "bar_high": round(bar.high, 2),
-                "sl_price": sl_price,
-                "buffer_pts": round(buffer_pts, 2),
-            }
+        if is_bullish and trend_5m_bullish:
+            # Enforce solid breakout candle anatomy (No shooting stars / inverted hammer traps):
+            is_solid_breakout = (
+                bar.close >= (hub_price + min_hub_clearance)
+                and bar.close > bar.open
+                and body_ratio >= 0.35
+                and close_edge_call >= 0.55
+                and upper_wick_ratio <= 0.20
+            )
+            if is_solid_breakout:
+                if current_vwap > 0 and bar.close < current_vwap:
+                    return False, "counter_to_vwap", {}
+                sl_price = round(bar.low - buffer_pts, 2)
+                return True, "prominence_hub_breakout_up", {
+                    "pa_setup_name": "topological_prominence_breakout",
+                    "pillar": 4,
+                    "hub_price": hub_price,
+                    "min_hub_clearance": round(min_hub_clearance, 2),
+                    "pi_hat": pi_hat,
+                    "vr_t": vr_t,
+                    "breakout_direction": "UP",
+                    "bar_open": round(bar.open, 2),
+                    "bar_close": round(bar.close, 2),
+                    "bar_low": round(bar.low, 2),
+                    "bar_high": round(bar.high, 2),
+                    "body_ratio": round(body_ratio, 3),
+                    "upper_wick_ratio": round(upper_wick_ratio, 3),
+                    "close_edge": round(close_edge_call, 3),
+                    "sl_price": sl_price,
+                    "buffer_pts": round(buffer_pts, 2),
+                }
+
+        if is_bearish and trend_5m_bearish:
+            # Enforce solid breakout candle anatomy (No hammer / bullish bounce traps):
+            is_solid_breakout = (
+                bar.close <= (hub_price - min_hub_clearance)
+                and bar.close < bar.open
+                and body_ratio >= 0.35
+                and close_edge_put >= 0.55
+                and lower_wick_ratio <= 0.20
+            )
+            if is_solid_breakout:
+                if current_vwap > 0 and bar.close > current_vwap:
+                    return False, "counter_to_vwap", {}
+                sl_price = round(bar.high + buffer_pts, 2)
+                return True, "prominence_hub_breakout_down", {
+                    "pa_setup_name": "topological_prominence_breakout",
+                    "pillar": 4,
+                    "hub_price": hub_price,
+                    "min_hub_clearance": round(min_hub_clearance, 2),
+                    "pi_hat": pi_hat,
+                    "vr_t": vr_t,
+                    "breakout_direction": "DOWN",
+                    "bar_open": round(bar.open, 2),
+                    "bar_close": round(bar.close, 2),
+                    "bar_low": round(bar.low, 2),
+                    "bar_high": round(bar.high, 2),
+                    "body_ratio": round(body_ratio, 3),
+                    "lower_wick_ratio": round(lower_wick_ratio, 3),
+                    "close_edge": round(close_edge_put, 3),
+                    "sl_price": sl_price,
+                    "buffer_pts": round(buffer_pts, 2),
+                }
 
         return False, "no_breakout_against_hub", {}
 

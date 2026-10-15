@@ -628,8 +628,8 @@ class TestPillar3_VolatilitySqueezeBreakout:
         for i in range(4):
             engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 24100.0, 24106.0, 24095.0, 24101.0))
 
-        # Breakout bar closes above 24106.0 BUT is a red candle (Close < Open)
-        weak_bar = OHLCBar(240, 300, 24115.0, 24120.0, 24100.0, 24108.0)
+        # Breakout bar clears box_high by > min_box_clearance (24110.0 > 24108.4) BUT is a red candle (Close < Open)
+        weak_bar = OHLCBar(240, 300, 24115.0, 24120.0, 24100.0, 24110.0)
         engine._on_1m_bar_close(weak_bar)
         engine.last_price = weak_bar.close
         engine.current_atr_1m = 30.0
@@ -638,6 +638,25 @@ class TestPillar3_VolatilitySqueezeBreakout:
         is_breakout, reason, details = engine.check_volatility_squeeze_breakout("UP", current_vwap)
         assert is_breakout is False
         assert reason == "weak_squeeze_breakout_candle"
+
+    def test_volatility_squeeze_micro_penetration_rejected(self):
+        """Verifies Upgrade 3: Breakout candle closing only 0.5 pts above box is rejected by min_box_clearance."""
+        engine = PriceActionEngine()
+        engine.current_atr_1m = 30.0
+
+        for i in range(4):
+            engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 24100.0, 24106.0, 24095.0, 24101.0))
+
+        # Candle closes at 24106.5 (only 0.5 pts above 24106.0, whereas min_box_clearance is 2.4 pts)
+        micro_bar = OHLCBar(240, 300, 24102.0, 24107.0, 24100.0, 24106.5)
+        engine._on_1m_bar_close(micro_bar)
+        engine.last_price = micro_bar.close
+        engine.current_atr_1m = 30.0
+
+        current_vwap = 24050.0
+        is_breakout, reason, details = engine.check_volatility_squeeze_breakout("UP", current_vwap)
+        assert is_breakout is False
+        assert reason == "no_upside_breakout"
 
 
 # ═══════════════════════════════════════════════════════════════
