@@ -887,26 +887,40 @@ function init3DManifold() {
   controls.autoRotate = isAutoRotating;
   controls.autoRotateSpeed = 0.9;
 
-  // Lights
-  const ambientLight = new THREE.AmbientLight(0xffffff, 0.65);
+  // Matte Studio Lighting (Zero harsh arcade specular shine)
+  const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
   scene.add(ambientLight);
 
-  const cyanLight = new THREE.DirectionalLight(0x00f0ff, 0.8);
-  cyanLight.position.set(12, 22, 12);
-  scene.add(cyanLight);
-
-  const purpleLight = new THREE.DirectionalLight(0xa855f7, 0.6);
-  purpleLight.position.set(-12, -8, -12);
-  scene.add(purpleLight);
+  const softKeyLight = new THREE.DirectionalLight(0xffffff, 0.30);
+  softKeyLight.position.set(10, 24, 10);
+  scene.add(softKeyLight);
 
   createManifoldMesh();
   createInteractiveNodes();
+  createSelectionPing();
 
   container.addEventListener('pointerdown', onManifoldPointerDown);
   container.addEventListener('pointermove', onManifoldPointerMove);
   window.addEventListener('resize', onWindowResize);
 
   animate();
+}
+
+let selectionPing = null;
+let selectedNodeGroup = null;
+
+function createSelectionPing() {
+  const pingGeo = new THREE.RingGeometry(0.5, 0.9, 32);
+  pingGeo.rotateX(-Math.PI / 2);
+  const pingMat = new THREE.MeshBasicMaterial({
+    color: 0x38bdf8,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.9
+  });
+  selectionPing = new THREE.Mesh(pingGeo, pingMat);
+  selectionPing.visible = false;
+  scene.add(selectionPing);
 }
 
 function createManifoldMesh() {
@@ -928,7 +942,6 @@ function createManifoldMesh() {
     let y = 0;
 
     if (currentMode === 'topology') {
-      // Prominence Hubs & S/R Breakout nodes with dynamic multi-modal peaks
       const hub1 = 5.2 * Math.exp(-((x - 0.2) * (x - 0.2) + (z - 0.2) * (z - 0.2)) / 12);
       const hub2 = 4.0 * Math.exp(-((x + 6.5) * (x + 6.5) + (z + 4.0) * (z + 4.0)) / 14);
       const hub3 = 4.6 * Math.exp(-((x - 6.5) * (x - 6.5) + (z - 3.5) * (z - 3.5)) / 16);
@@ -936,28 +949,26 @@ function createManifoldMesh() {
       const ripple = 0.35 * Math.sin(x * 1.1) * Math.cos(z * 1.1);
       y = hub1 + hub2 + hub3 + valley + ripple;
     } else if (currentMode === 'volatility') {
-      // High Volatility Squeeze & OFI Aggression Landscape
       y = 4.5 * Math.exp(-(x * x) / 10) * Math.cos(z * 0.45) + 1.8 * Math.sin(z * 0.7);
     } else {
-      // Absolute Pain Zone Upper/Lower VWAP Bands Curvature
       y = 3.6 * Math.tanh(x * 0.28) * Math.cos(z * 0.22) + Math.sin((x + z) * 0.35) * 0.8;
     }
 
     pos.setY(i, y);
 
-    // Color gradient: Deep Obsidian / Navy -> Cyan -> Emerald -> Amber -> Crimson
+    // Muted institutional color palette: Deep Obsidian -> Cyan -> Emerald -> Ochre -> Brick Red
     const norm = (y + 2.5) / 8.5;
     const color = new THREE.Color();
     if (norm < 0.22) {
-      color.setRGB(0.02, 0.06, 0.16); // Deep Navy
+      color.setRGB(0.04, 0.08, 0.14); // Deep Slate Navy
     } else if (norm < 0.48) {
-      color.setRGB(0.0, 0.8, 0.95);  // Electric Cyan
+      color.setRGB(0.05, 0.55, 0.75); // Muted Cyan
     } else if (norm < 0.72) {
-      color.setRGB(0.06, 0.85, 0.45); // Emerald Green
+      color.setRGB(0.08, 0.65, 0.42); // Institutional Forest Green
     } else if (norm < 0.88) {
-      color.setRGB(0.96, 0.65, 0.05); // Gold/Amber
+      color.setRGB(0.85, 0.60, 0.15); // Muted Ochre
     } else {
-      color.setRGB(0.98, 0.20, 0.35); // Crimson Peak
+      color.setRGB(0.88, 0.25, 0.30); // Brick Red Peak
     }
     colors.push(color.r, color.g, color.b);
   }
@@ -965,22 +976,23 @@ function createManifoldMesh() {
   geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
   geometry.computeVertexNormals();
 
+  // Ultra-Matte Institutional Material: zero specular glare, zero plastic shine
   const material = new THREE.MeshStandardMaterial({
     vertexColors: true,
-    roughness: 0.25,
-    metalness: 0.35,
+    roughness: 0.92,
+    metalness: 0.02,
     side: THREE.DoubleSide
   });
 
   mesh = new THREE.Mesh(geometry, material);
   scene.add(mesh);
 
-  // Subtle Wireframe Overlay for High-Tech Quant Finish
+  // Subtle Muted Hairline Grid (Charcoal)
   const wireMat = new THREE.MeshBasicMaterial({
-    color: 0x38bdf8,
+    color: 0x444444,
     wireframe: true,
     transparent: true,
-    opacity: 0.14
+    opacity: 0.08
   });
   wireframe = new THREE.Mesh(geometry, wireMat);
   wireframe.position.y += 0.02;
@@ -988,33 +1000,30 @@ function createManifoldMesh() {
 }
 
 function createInteractiveNodes() {
-  // Clear previous markers
   nodeMarkers.forEach(m => scene.remove(m));
   nodeMarkers = [];
 
-  const sphereGeo = new THREE.SphereGeometry(0.42, 24, 24);
-  const ringGeo = new THREE.RingGeometry(0.65, 0.85, 32);
+  const sphereGeo = new THREE.SphereGeometry(0.38, 20, 20);
+  const ringGeo = new THREE.RingGeometry(0.55, 0.75, 32);
   ringGeo.rotateX(-Math.PI / 2);
 
   STRIKE_NODES.forEach((sn, idx) => {
     const group = new THREE.Group();
     group.position.set(sn.pos[0], sn.pos[1], sn.pos[2]);
 
-    const sMat = new THREE.MeshStandardMaterial({
-      color: sn.color,
-      emissive: sn.color,
-      emissiveIntensity: 0.85,
-      roughness: 0.1,
-      metalness: 0.8
+    // Solid matte marker sphere
+    const sMat = new THREE.MeshBasicMaterial({
+      color: sn.color
     });
     const sphere = new THREE.Mesh(sphereGeo, sMat);
     group.add(sphere);
 
+    // Baseline calm ring
     const rMat = new THREE.MeshBasicMaterial({
       color: sn.color,
       side: THREE.DoubleSide,
       transparent: true,
-      opacity: 0.4
+      opacity: 0.35
     });
     const ring = new THREE.Mesh(ringGeo, rMat);
     ring.position.y = -0.15;
@@ -1024,6 +1033,11 @@ function createInteractiveNodes() {
     scene.add(group);
     nodeMarkers.push(group);
   });
+
+  // Select the first node by default and position ping
+  if (nodeMarkers.length > 0) {
+    selectedNodeGroup = nodeMarkers[0];
+  }
 }
 
 function setManifoldMode(mode) {
@@ -1069,15 +1083,26 @@ function onManifoldPointerDown(e) {
   nodeMarkers.forEach(grp => {
     grp.children.forEach(c => {
       c.userData = grp.userData;
+      c._group = grp;
       markerMeshes.push(c);
     });
   });
 
   const intersects = raycaster.intersectObjects(markerMeshes);
   if (intersects.length > 0) {
-    const data = intersects[0].object.userData;
+    const hitObj = intersects[0].object;
+    const grp = hitObj._group || hitObj.parent;
+    selectedNodeGroup = grp;
+    const data = grp.userData || hitObj.userData;
     updateHud(data);
     
+    // Position selection radar ping on the clicked node
+    if (selectionPing) {
+      selectionPing.position.copy(grp.position);
+      selectionPing.position.y += 0.05;
+      selectionPing.visible = true;
+    }
+
     // Smooth camera refocus on clicked node
     const targetPos = new THREE.Vector3(...data.pos);
     controls.target.lerp(targetPos, 0.5);
@@ -1089,6 +1114,12 @@ function onManifoldPointerDown(e) {
     const meshHits = raycaster.intersectObject(mesh);
     if (meshHits.length > 0) {
       const p = meshHits[0].point;
+      selectedNodeGroup = null;
+      if (selectionPing) {
+        selectionPing.position.copy(p);
+        selectionPing.position.y += 0.05;
+        selectionPing.visible = true;
+      }
       updateHudCustom({
         name: `COORDINATE [X:${p.x.toFixed(1)}, Z:${p.z.toFixed(1)}]`,
         tag: `Y: ${p.y.toFixed(2)}`,
@@ -1144,16 +1175,37 @@ function animate() {
   const time = performance.now() * 0.001;
 
   if (mesh) {
-    mesh.position.y = Math.sin(time * 0.8) * 0.12;
+    mesh.position.y = Math.sin(time * 0.8) * 0.08;
     if (wireframe) wireframe.position.y = mesh.position.y + 0.02;
   }
 
-  // Pulse node rings
-  nodeMarkers.forEach((grp, idx) => {
+  // Active clicked node radar ping expansion
+  if (selectionPing && selectionPing.visible) {
+    const cycle = (time * 2.2) % 1.0;
+    const pingScale = 1.0 + cycle * 1.6;
+    selectionPing.scale.set(pingScale, pingScale, pingScale);
+    selectionPing.material.opacity = Math.max(0, 0.9 * (1.0 - cycle));
+  }
+
+  // Blinking pulse directly on the selected node
+  nodeMarkers.forEach(grp => {
+    const sphere = grp.children[0];
     const ring = grp.children[1];
-    if (ring) {
-      const scale = 1.0 + 0.15 * Math.sin(time * 2.5 + idx);
-      ring.scale.set(scale, scale, scale);
+    if (grp === selectedNodeGroup) {
+      if (sphere) {
+        // Active selected node blinks with rhythmic expansion
+        const pulse = 1.0 + 0.28 * Math.sin(time * 7.0);
+        sphere.scale.set(pulse, pulse, pulse);
+      }
+      if (ring) {
+        ring.scale.set(1.4, 1.4, 1.4);
+      }
+    } else {
+      if (sphere) sphere.scale.set(1.0, 1.0, 1.0);
+      if (ring) {
+        const calmScale = 1.0 + 0.08 * Math.sin(time * 1.8);
+        ring.scale.set(calmScale, calmScale, calmScale);
+      }
     }
   });
 
