@@ -192,8 +192,8 @@ def index():
 
 @app.route("/quantum")
 def quantum_cockpit():
-    """Renders the Linear-aesthetic 3D Quantum Manifold Console."""
-    return QUANTUM_COCKPIT_HTML
+    """Renders the Linear-aesthetic Cockpit."""
+    return CONSOLE_HTML
 
 
 @app.route("/research")
