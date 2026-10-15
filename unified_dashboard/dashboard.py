@@ -142,11 +142,11 @@ def _trade_history_aegis(limit: int = 20) -> list[dict]:
             net_val = float(t.get("net_pnl_rs", round(gross_val - charges_val, 2)))
             raw_res = str(t.get("result", ""))
             if gross_val > 0 or "WIN" in raw_res:
-                res_val = "✅ WIN"
+                res_val = "WIN"
             elif gross_val == 0 and ("BE" in raw_res or "WIN" in raw_res):
-                res_val = "🛡️ BE WIN"
+                res_val = "BE WIN"
             elif gross_val < 0:
-                res_val = "❌ LOSS"
+                res_val = "LOSS"
             else:
                 res_val = raw_res
             res.append({

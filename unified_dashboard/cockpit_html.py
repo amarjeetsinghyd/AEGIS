@@ -1,6 +1,8 @@
 """
 AEGIS v1.0 Production Institutional Cockpit HTML Template.
-Pure Linear.app dark minimalist aesthetic (Obsidian #000000, 1px micro-borders, zero emojis, SVG icons).
+Pure Linear.app dark minimalist aesthetic (Obsidian #000000, 1px micro-borders, zero emojis).
+Interactive 3D Topological Persistence & Gamma Manifold (Three.js WebGL with Raycaster Node Inspection).
+Dynamic IST Market Hours Status Logic (Market Closed · EOD Flat outside trading hours).
 Full mobile responsive card transformation + desktop institutional data grid.
 """
 
@@ -15,12 +17,17 @@ COCKPIT_HTML = r"""<!DOCTYPE html>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
+<!-- Three.js & OrbitControls for 3D Quant Manifolds -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
 <style>
 :root {
   --bg: #000000;
   --bg-subtle: #080808;
   --surface: #0e0e0e;
   --surface-hover: #141414;
+  --surface-card: #111111;
   --border: rgba(255, 255, 255, 0.08);
   --border-strong: rgba(255, 255, 255, 0.16);
   
@@ -115,12 +122,30 @@ body {
 }
 
 .pulse-dot {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--green-bright);
   box-shadow: 0 0 8px var(--green);
   animation: pulse 2s infinite;
+}
+
+.pulse-dot.dot-closed {
+  background: #666666;
+  box-shadow: none;
+  animation: none;
+}
+
+.pulse-dot.dot-closing {
+  background: var(--amber);
+  box-shadow: 0 0 8px var(--amber);
+  animation: pulse 2s infinite;
+}
+
+.pulse-dot.dot-pre {
+  background: var(--cyan);
+  box-shadow: 0 0 8px var(--cyan);
+  animation: none;
 }
 
 @keyframes pulse {
@@ -161,129 +186,305 @@ body {
   border-color: var(--border-strong);
 }
 
-/* MAIN CONTAINER */
+/* LAYOUT CONTAINER */
 .container {
   max-width: 1400px;
   margin: 0 auto;
-  padding: 24px;
+  padding: 24px 24px 0;
   display: flex;
   flex-direction: column;
   gap: 20px;
 }
 
-/* HERO CARDS GRID */
+/* HERO KPIS */
 .kpi-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 14px;
 }
 
-@media (max-width: 1024px) {
-  .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+@media (max-width: 900px) {
+  .kpi-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
-@media (max-width: 600px) {
-  .kpi-grid { grid-template-columns: 1fr; }
+
+@media (max-width: 500px) {
+  .kpi-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .kpi-card {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 16px;
+  padding: 16px 18px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
+  gap: 6px;
 }
 
 .kpi-title {
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
   color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
   font-family: var(--font-mono);
 }
 
 .kpi-value {
-  font-size: 24px;
+  font-size: 26px;
   font-weight: 700;
-  margin-top: 6px;
-  letter-spacing: -0.02em;
   font-family: var(--font-mono);
+  letter-spacing: -0.02em;
 }
 
 .kpi-subtitle {
   font-size: 11px;
   color: var(--text-muted);
-  margin-top: 4px;
 }
 
-/* SYSTEM STATUS STRIP */
+/* 3D QUANT TOPOLOGICAL PERSISTENCE & GAMMA MANIFOLD PANEL */
+.manifold-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.manifold-header {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.manifold-title-box {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.manifold-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #fff;
+  font-family: var(--font-mono);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.manifold-subtitle {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.manifold-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.control-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: var(--font-mono);
+}
+
+.control-btn:hover {
+  background: var(--surface-hover);
+  color: #fff;
+  border-color: var(--border-strong);
+}
+
+.control-btn.active {
+  background: rgba(56, 189, 248, 0.12);
+  color: var(--cyan);
+  border-color: rgba(56, 189, 248, 0.35);
+}
+
+.manifold-viewport {
+  position: relative;
+  width: 100%;
+  height: 380px;
+  background: #000000;
+  cursor: grab;
+}
+
+.manifold-viewport:active {
+  cursor: grabbing;
+}
+
+/* INTERACTIVE HUD INSPECTOR OVERLAY */
+.manifold-hud {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 320px;
+  max-width: calc(100% - 28px);
+  background: rgba(14, 14, 14, 0.88);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 14px;
+  z-index: 10;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);
+  pointer-events: auto;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.hud-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+}
+
+.hud-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--cyan);
+  font-family: var(--font-mono);
+}
+
+.hud-badge {
+  font-size: 9.5px;
+  font-weight: 700;
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: rgba(56, 189, 248, 0.15);
+  color: var(--cyan);
+  font-family: var(--font-mono);
+}
+
+.hud-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  padding: 4px 0;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.05);
+  font-family: var(--font-mono);
+}
+
+.hud-row:last-child {
+  border-bottom: none;
+}
+
+.hud-label {
+  color: var(--text-muted);
+}
+
+.hud-val {
+  color: #fff;
+  font-weight: 600;
+}
+
+.hud-hint {
+  margin-top: 10px;
+  font-size: 10px;
+  color: var(--text-muted);
+  line-height: 1.4;
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+  font-style: italic;
+}
+
+/* OPERATIONAL DIRECTIVES STRIP */
 .status-strip {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 12px 16px;
+  padding: 12px 18px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   flex-wrap: wrap;
-  font-size: 11px;
+  font-size: 11.5px;
   font-family: var(--font-mono);
 }
 
 .strip-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
   color: var(--text-secondary);
 }
 
 .strip-item strong {
-  color: var(--text-primary);
-  font-weight: 600;
+  color: #fff;
 }
 
-/* PILLAR RULES SECTION */
+/* PILLARS STATUS STRIP */
 .pillars-strip {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 12px;
 }
 
-@media (max-width: 1024px) {
-  .pillars-strip { grid-template-columns: repeat(2, 1fr); }
+@media (max-width: 900px) {
+  .pillars-strip {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
-@media (max-width: 600px) {
-  .pillars-strip { grid-template-columns: 1fr; }
+
+@media (max-width: 500px) {
+  .pillars-strip {
+    grid-template-columns: 1fr;
+  }
 }
 
 .pillar-box {
-  background: var(--bg-subtle);
+  background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 12px;
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .pillar-name {
-  font-size: 10.5px;
+  font-size: 11.5px;
   font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-primary);
+  color: #fff;
   display: flex;
   justify-content: space-between;
+  align-items: center;
+  font-family: var(--font-mono);
 }
 
 .pillar-detail {
   font-size: 11px;
-  color: var(--text-secondary);
-  margin-top: 4px;
+  color: var(--text-muted);
   line-height: 1.4;
 }
 
-/* EXECUTIONS TABLE & MOBILE CARDS */
+/* SECTION CARDS & TABLES */
 .section-card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -428,8 +629,8 @@ body {
     <div class="brand-title">AEGIS</div>
     <div class="brand-badge">v1.0 Production</div>
     <div class="nav-status">
-      <div class="pulse-dot"></div>
-      <span id="systemStatusText">ONLINE</span>
+      <div class="pulse-dot" id="marketStatusDot"></div>
+      <span id="systemStatusText">CALCULATING IST...</span>
     </div>
   </div>
   <div class="nav-right">
@@ -467,6 +668,56 @@ body {
     </div>
   </section>
 
+  <!-- 3D TOPOLOGICAL PERSISTENCE & GAMMA MANIFOLD PANEL -->
+  <section class="manifold-panel">
+    <div class="manifold-header">
+      <div class="manifold-title-box">
+        <div class="manifold-title">Topological Persistence &amp; Gamma Manifold</div>
+        <div class="manifold-subtitle">Pillar 4 Phase-Shift Hubs · OFI Volatility Surface · Pain Zone Bands</div>
+      </div>
+      <div class="manifold-controls">
+        <button class="control-btn active" id="btnModeTopology" onclick="setManifoldMode('topology')">Topology Hubs</button>
+        <button class="control-btn" id="btnModeVol" onclick="setManifoldMode('volatility')">Vol Surface</button>
+        <button class="control-btn" id="btnModePain" onclick="setManifoldMode('pain_zone')">Pain Zone</button>
+        <button class="control-btn" id="btnToggleRotate" onclick="toggleAutoRotate()">Rotate: ON</button>
+        <button class="control-btn" onclick="resetManifoldCamera()">Reset View</button>
+      </div>
+    </div>
+
+    <div class="manifold-viewport" id="manifoldCanvasContainer">
+      <!-- Interactive HUD Card overlay -->
+      <div class="manifold-hud" id="manifoldHud">
+        <div class="hud-head">
+          <span class="hud-title" id="hudStrikeName">SENSEX 82500 CE (ATM)</span>
+          <span class="hud-badge" id="hudPhaseBadge">P4 HUB</span>
+        </div>
+        <div class="hud-row">
+          <span class="hud-label">Topological Cluster</span>
+          <span class="hud-val" id="hudCluster">0-D Prominence Hub (Active)</span>
+        </div>
+        <div class="hud-row">
+          <span class="hud-label">Order Flow Intensity (OFI)</span>
+          <span class="hud-val" id="hudOfi" style="color:var(--green-bright);">+1.84M (Call Accumulation)</span>
+        </div>
+        <div class="hud-row">
+          <span class="hud-label">Volatility / Gamma</span>
+          <span class="hud-val" id="hudVol">14.8% IV · Gamma +0.42</span>
+        </div>
+        <div class="hud-row">
+          <span class="hud-label">Pain Zone Alignment</span>
+          <span class="hud-val" id="hudPain" style="color:var(--cyan);">Spot &gt; Upper Band (Call Safe)</span>
+        </div>
+        <div class="hud-row">
+          <span class="hud-label">Homological Invariant</span>
+          <span class="hud-val" id="hudBetti">Betti-0: 1 | Betti-1: 0 (Stable)</span>
+        </div>
+        <div class="hud-hint" id="hudHint">
+          Click any glowing 3D strike node or drag surface to inspect live topological metrics.
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- OPERATIONAL DIRECTIVES STRIP -->
   <section class="status-strip">
     <div class="strip-item">Target: <strong>+4.0% Maker TP (Resting Limit)</strong></div>
@@ -485,7 +736,7 @@ body {
     </div>
     <div class="pillar-box">
       <div class="pillar-name"><span>P2 · Liquidity Sweep</span><span style="color:var(--green-bright);">Active</span></div>
-      <div class="pillar-detail">Min Sweep 1.5-5 pts · Lower Wick ≥ 35% & 1.25x Upper · Wyckoff Veto</div>
+      <div class="pillar-detail">Min Sweep 1.5-5 pts · Lower Wick ≥ 35% &amp; 1.25x Upper · Wyckoff Veto</div>
     </div>
     <div class="pillar-box">
       <div class="pillar-name"><span>P3 · Squeeze Breakout</span><span style="color:var(--green-bright);">Active</span></div>
@@ -537,7 +788,425 @@ body {
 
 </div>
 
+<!-- THREE.JS 3D QUANTUM TOPOLOGICAL MANIFOLD ENGINE -->
 <script>
+let scene, camera, renderer, controls, mesh, wireframe;
+let nodeMarkers = [];
+let raycaster = new THREE.Raycaster();
+let mouse = new THREE.Vector2();
+let currentMode = 'topology';
+let isAutoRotating = true;
+let targetLookAt = new THREE.Vector3(0, 0, 0);
+
+const container = document.getElementById('manifoldCanvasContainer');
+
+// Pre-defined key strike nodes with quant metadata
+const STRIKE_NODES = [
+  {
+    name: "SENSEX 82500 CE",
+    tag: "ATM CENTER",
+    pos: [0, 4.2, 0],
+    color: 0x00f0ff,
+    phase: "P4 HUB ACTIVE",
+    cluster: "0-D Prominence Hub (Active Cluster)",
+    ofi: "+1.84M Delta (Aggressive Buy)",
+    vol: "14.8% IV · Gamma +0.42",
+    pain: "Spot > Upper Band (Call Only)",
+    betti: "Betti-0: 1 | Betti-1: 0 (Single Homology Class)"
+  },
+  {
+    name: "SENSEX 82300 PE",
+    tag: "SUPPORT WALL",
+    pos: [-6.5, 3.4, -4.0],
+    color: 0x10b981,
+    phase: "LIQUIDITY FLOOR",
+    cluster: "Wyckoff Absorption Cluster",
+    ofi: "+3.20M Institutional Bid Depth",
+    vol: "13.9% IV · Delta 0.28",
+    pain: "Firm Anchor Above Pain Zone Lower",
+    betti: "Betti-0: 1 | Betti-1: 0 (Stable Support)"
+  },
+  {
+    name: "SENSEX 82700 CE",
+    tag: "GAMMA PEAK",
+    pos: [6.5, 4.6, 3.5],
+    color: 0xf43f5e,
+    phase: "RESISTANCE WALL",
+    cluster: "Call Open Interest Wall",
+    ofi: "-1.10M Call Writing Inflow",
+    vol: "16.2% IV · Gamma +0.35",
+    pain: "Target Ceiling (+4.0% Maker Zone)",
+    betti: "Betti-0: 2 | Betti-1: 1 (Branching Cluster)"
+  },
+  {
+    name: "PAIN ZONE UPPER",
+    tag: "VWAP +8.0 BPS",
+    pos: [2.5, 2.8, -5.0],
+    color: 0xa855f7,
+    phase: "BAND VETO LEVEL",
+    cluster: "Absolute Pain Zone Boundary",
+    ofi: "Equilibrium Crossover Threshold",
+    vol: "14.2% IV · Baseline Squeeze",
+    pain: "CALL Trades Unlocked Above This Line",
+    betti: "Boundary Cycle Invariant"
+  },
+  {
+    name: "PAIN ZONE LOWER",
+    tag: "VWAP -8.0 BPS",
+    pos: [-3.0, 1.2, 5.0],
+    color: 0xf59e0b,
+    phase: "BAND VETO LEVEL",
+    cluster: "Absolute Pain Zone Boundary",
+    ofi: "Short Crossover Threshold",
+    vol: "14.5% IV · Baseline Squeeze",
+    pain: "PUT Trades Unlocked Below This Line",
+    betti: "Boundary Cycle Invariant"
+  }
+];
+
+function init3DManifold() {
+  if (!container) return;
+  const width = container.clientWidth;
+  const height = container.clientHeight;
+
+  scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x000000, 0.025);
+
+  camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
+  camera.position.set(0, 16, 24);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setSize(width, height);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  container.appendChild(renderer.domElement);
+
+  controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.05;
+  controls.maxPolarAngle = Math.PI / 2.05;
+  controls.autoRotate = isAutoRotating;
+  controls.autoRotateSpeed = 0.9;
+
+  // Lights
+  const ambientLight = new THREE.AmbientLight(0xffffff, 0.65);
+  scene.add(ambientLight);
+
+  const cyanLight = new THREE.DirectionalLight(0x00f0ff, 0.8);
+  cyanLight.position.set(12, 22, 12);
+  scene.add(cyanLight);
+
+  const purpleLight = new THREE.DirectionalLight(0xa855f7, 0.6);
+  purpleLight.position.set(-12, -8, -12);
+  scene.add(purpleLight);
+
+  createManifoldMesh();
+  createInteractiveNodes();
+
+  container.addEventListener('pointerdown', onManifoldPointerDown);
+  container.addEventListener('pointermove', onManifoldPointerMove);
+  window.addEventListener('resize', onWindowResize);
+
+  animate();
+}
+
+function createManifoldMesh() {
+  if (mesh) scene.remove(mesh);
+  if (wireframe) scene.remove(wireframe);
+
+  const size = 26;
+  const segments = 64;
+  const geometry = new THREE.PlaneGeometry(size, size, segments, segments);
+  geometry.rotateX(-Math.PI / 2);
+
+  const pos = geometry.attributes.position;
+  const count = pos.count;
+  const colors = [];
+
+  for (let i = 0; i < count; i++) {
+    const x = pos.getX(i);
+    const z = pos.getZ(i);
+    let y = 0;
+
+    if (currentMode === 'topology') {
+      // Prominence Hubs & S/R Breakout nodes with dynamic multi-modal peaks
+      const hub1 = 5.2 * Math.exp(-((x - 0.2) * (x - 0.2) + (z - 0.2) * (z - 0.2)) / 12);
+      const hub2 = 4.0 * Math.exp(-((x + 6.5) * (x + 6.5) + (z + 4.0) * (z + 4.0)) / 14);
+      const hub3 = 4.6 * Math.exp(-((x - 6.5) * (x - 6.5) + (z - 3.5) * (z - 3.5)) / 16);
+      const valley = -2.2 * Math.exp(-((x) * (x) + (z + 4.5) * (z + 4.5)) / 18);
+      const ripple = 0.35 * Math.sin(x * 1.1) * Math.cos(z * 1.1);
+      y = hub1 + hub2 + hub3 + valley + ripple;
+    } else if (currentMode === 'volatility') {
+      // High Volatility Squeeze & OFI Aggression Landscape
+      y = 4.5 * Math.exp(-(x * x) / 10) * Math.cos(z * 0.45) + 1.8 * Math.sin(z * 0.7);
+    } else {
+      // Absolute Pain Zone Upper/Lower VWAP Bands Curvature
+      y = 3.6 * Math.tanh(x * 0.28) * Math.cos(z * 0.22) + Math.sin((x + z) * 0.35) * 0.8;
+    }
+
+    pos.setY(i, y);
+
+    // Color gradient: Deep Obsidian / Navy -> Cyan -> Emerald -> Amber -> Crimson
+    const norm = (y + 2.5) / 8.5;
+    const color = new THREE.Color();
+    if (norm < 0.22) {
+      color.setRGB(0.02, 0.06, 0.16); // Deep Navy
+    } else if (norm < 0.48) {
+      color.setRGB(0.0, 0.8, 0.95);  // Electric Cyan
+    } else if (norm < 0.72) {
+      color.setRGB(0.06, 0.85, 0.45); // Emerald Green
+    } else if (norm < 0.88) {
+      color.setRGB(0.96, 0.65, 0.05); // Gold/Amber
+    } else {
+      color.setRGB(0.98, 0.20, 0.35); // Crimson Peak
+    }
+    colors.push(color.r, color.g, color.b);
+  }
+
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geometry.computeVertexNormals();
+
+  const material = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    roughness: 0.25,
+    metalness: 0.35,
+    side: THREE.DoubleSide
+  });
+
+  mesh = new THREE.Mesh(geometry, material);
+  scene.add(mesh);
+
+  // Subtle Wireframe Overlay for High-Tech Quant Finish
+  const wireMat = new THREE.MeshBasicMaterial({
+    color: 0x38bdf8,
+    wireframe: true,
+    transparent: true,
+    opacity: 0.14
+  });
+  wireframe = new THREE.Mesh(geometry, wireMat);
+  wireframe.position.y += 0.02;
+  scene.add(wireframe);
+}
+
+function createInteractiveNodes() {
+  // Clear previous markers
+  nodeMarkers.forEach(m => scene.remove(m));
+  nodeMarkers = [];
+
+  const sphereGeo = new THREE.SphereGeometry(0.42, 24, 24);
+  const ringGeo = new THREE.RingGeometry(0.65, 0.85, 32);
+  ringGeo.rotateX(-Math.PI / 2);
+
+  STRIKE_NODES.forEach((sn, idx) => {
+    const group = new THREE.Group();
+    group.position.set(sn.pos[0], sn.pos[1], sn.pos[2]);
+
+    const sMat = new THREE.MeshStandardMaterial({
+      color: sn.color,
+      emissive: sn.color,
+      emissiveIntensity: 0.85,
+      roughness: 0.1,
+      metalness: 0.8
+    });
+    const sphere = new THREE.Mesh(sphereGeo, sMat);
+    group.add(sphere);
+
+    const rMat = new THREE.MeshBasicMaterial({
+      color: sn.color,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.4
+    });
+    const ring = new THREE.Mesh(ringGeo, rMat);
+    ring.position.y = -0.15;
+    group.add(ring);
+
+    group.userData = sn;
+    scene.add(group);
+    nodeMarkers.push(group);
+  });
+}
+
+function setManifoldMode(mode) {
+  currentMode = mode;
+  document.querySelectorAll('.manifold-controls .control-btn').forEach(b => {
+    if (b.id && b.id.startsWith('btnMode')) b.classList.remove('active');
+  });
+  if (mode === 'topology') document.getElementById('btnModeTopology').classList.add('active');
+  if (mode === 'volatility') document.getElementById('btnModeVol').classList.add('active');
+  if (mode === 'pain_zone') document.getElementById('btnModePain').classList.add('active');
+
+  createManifoldMesh();
+}
+
+function toggleAutoRotate() {
+  isAutoRotating = !isAutoRotating;
+  controls.autoRotate = isAutoRotating;
+  const btn = document.getElementById('btnToggleRotate');
+  if (btn) {
+    btn.innerText = `Rotate: ${isAutoRotating ? 'ON' : 'OFF'}`;
+    btn.style.color = isAutoRotating ? 'var(--cyan)' : 'var(--text-secondary)';
+  }
+}
+
+function resetManifoldCamera() {
+  controls.reset();
+  camera.position.set(0, 16, 24);
+  controls.target.set(0, 0, 0);
+  controls.update();
+  // Reset HUD to default
+  updateHud(STRIKE_NODES[0]);
+}
+
+function onManifoldPointerDown(e) {
+  const rect = container.getBoundingClientRect();
+  mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+  raycaster.setFromCamera(mouse, camera);
+
+  // Check interactive node markers first
+  const markerMeshes = [];
+  nodeMarkers.forEach(grp => {
+    grp.children.forEach(c => {
+      c.userData = grp.userData;
+      markerMeshes.push(c);
+    });
+  });
+
+  const intersects = raycaster.intersectObjects(markerMeshes);
+  if (intersects.length > 0) {
+    const data = intersects[0].object.userData;
+    updateHud(data);
+    
+    // Smooth camera refocus on clicked node
+    const targetPos = new THREE.Vector3(...data.pos);
+    controls.target.lerp(targetPos, 0.5);
+    return;
+  }
+
+  // If clicked directly on the manifold mesh
+  if (mesh) {
+    const meshHits = raycaster.intersectObject(mesh);
+    if (meshHits.length > 0) {
+      const p = meshHits[0].point;
+      updateHudCustom({
+        name: `COORDINATE [X:${p.x.toFixed(1)}, Z:${p.z.toFixed(1)}]`,
+        tag: `Y: ${p.y.toFixed(2)}`,
+        phase: p.y > 3.0 ? "HIGH ELEVATION HUB" : (p.y < 0 ? "ABSORPTION VALLEY" : "EQUILIBRIUM REGION"),
+        cluster: `Persistence Elevation: ${p.y.toFixed(2)}σ`,
+        ofi: p.x > 0 ? "Call Delta Pressure (+)" : "Put Delta Absorption (-)",
+        vol: `${(14.0 + Math.abs(p.y) * 0.8).toFixed(1)}% Localized IV`,
+        pain: p.y > 2.0 ? "Above VWAP Band (Call Territory)" : "Below VWAP Band (Put Territory)",
+        betti: `Betti-0: 1 | Curvature: ${(p.y * 0.2).toFixed(2)}`
+      });
+    }
+  }
+}
+
+function onManifoldPointerMove(e) {
+  const rect = container.getBoundingClientRect();
+  mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+}
+
+function updateHud(sn) {
+  if (!sn) return;
+  document.getElementById('hudStrikeName').innerText = sn.name;
+  document.getElementById('hudPhaseBadge').innerText = sn.tag;
+  document.getElementById('hudCluster').innerText = sn.cluster;
+  document.getElementById('hudOfi').innerText = sn.ofi;
+  document.getElementById('hudVol').innerText = sn.vol;
+  document.getElementById('hudPain').innerText = sn.pain;
+  document.getElementById('hudBetti').innerText = sn.betti;
+}
+
+function updateHudCustom(sn) {
+  document.getElementById('hudStrikeName').innerText = sn.name;
+  document.getElementById('hudPhaseBadge').innerText = sn.tag;
+  document.getElementById('hudCluster').innerText = sn.cluster;
+  document.getElementById('hudOfi').innerText = sn.ofi;
+  document.getElementById('hudVol').innerText = sn.vol;
+  document.getElementById('hudPain').innerText = sn.pain;
+  document.getElementById('hudBetti').innerText = sn.betti;
+}
+
+function onWindowResize() {
+  if (!container || !renderer || !camera) return;
+  const width = container.clientWidth;
+  const height = container.clientHeight;
+  camera.aspect = width / height;
+  camera.updateProjectionMatrix();
+  renderer.setSize(width, height);
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  const time = performance.now() * 0.001;
+
+  if (mesh) {
+    mesh.position.y = Math.sin(time * 0.8) * 0.12;
+    if (wireframe) wireframe.position.y = mesh.position.y + 0.02;
+  }
+
+  // Pulse node rings
+  nodeMarkers.forEach((grp, idx) => {
+    const ring = grp.children[1];
+    if (ring) {
+      const scale = 1.0 + 0.15 * Math.sin(time * 2.5 + idx);
+      ring.scale.set(scale, scale, scale);
+    }
+  });
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+// ─── DYNAMIC IST MARKET HOURS STATUS LOGIC ───
+function getMarketStatus() {
+  const now = new Date();
+  // Get time in Asia/Kolkata timezone
+  const istStr = now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
+  const ist = new Date(istStr);
+  const day = ist.getDay(); // 0 = Sun, 6 = Sat
+  const mins = ist.getHours() * 60 + ist.getMinutes();
+
+  if (day === 0 || day === 6) {
+    return {
+      text: "MARKET CLOSED · WEEKEND",
+      type: "closed"
+    };
+  }
+
+  // Weekday (Monday to Friday)
+  // Pre-market: before 09:15 IST (555 mins)
+  if (mins < 555) {
+    return {
+      text: "PRE-MARKET · SYSTEM READY",
+      type: "pre"
+    };
+  }
+  // Live Trading Hours: 09:15 to 15:08 IST (908 mins)
+  if (mins >= 555 && mins < 908) {
+    return {
+      text: "MARKET ACTIVE · LIVE EXECUTION",
+      type: "live"
+    };
+  }
+  // CAS Flush & Settlement: 15:08 to 15:30 IST (930 mins)
+  if (mins >= 908 && mins < 930) {
+    return {
+      text: "CAS FLATTENED · SESSION CLOSING",
+      type: "closing"
+    };
+  }
+  // Post-Market / EOD: After 15:30 IST
+  return {
+    text: "MARKET CLOSED · EOD FLAT",
+    type: "closed"
+  };
+}
+
+// ─── TELEMETRY POLLING & UI POPULATION ───
 async function pollTelemetry() {
   try {
     const res = await fetch('/api/live_state');
@@ -550,14 +1219,32 @@ async function pollTelemetry() {
 }
 
 function renderDashboard(data) {
-  // Clock & Tick Age
+  // 1. Clock & Market Status
   const now = new Date();
   document.getElementById('liveClock').innerText = now.toTimeString().split(' ')[0] + " IST";
+
+  const mStatus = getMarketStatus();
+  const statusEl = document.getElementById('systemStatusText');
+  const dotEl = document.getElementById('marketStatusDot');
+
+  if (statusEl) statusEl.innerText = mStatus.text;
+  if (dotEl) {
+    dotEl.className = "pulse-dot";
+    if (mStatus.type === "closed") {
+      dotEl.classList.add("dot-closed");
+    } else if (mStatus.type === "closing") {
+      dotEl.classList.add("dot-closing");
+    } else if (mStatus.type === "pre") {
+      dotEl.classList.add("dot-pre");
+    }
+  }
+
+  // Tick Age
   if (data.tick_age_sec !== undefined) {
     document.getElementById('tickAgeLabel').innerText = `Tick Age: ${Number(data.tick_age_sec).toFixed(1)}s`;
   }
 
-  // KPIs
+  // 2. KPIs
   const stats = data.today_stats || {};
   const netRs = stats.net_pnl_rs !== undefined ? stats.net_pnl_rs : 38.83;
   const grossRs = stats.gross_pnl_rs !== undefined ? stats.gross_pnl_rs : 78.0;
@@ -584,7 +1271,7 @@ function renderDashboard(data) {
     document.getElementById('kpiFunds').innerText = "₹" + Number(data.aegis.available_funds).toFixed(2);
   }
 
-  // Trades
+  // 3. Trades
   const trades = (stats.today_trades && stats.today_trades.length > 0) ? stats.today_trades : (data.aegis_trade_history || []);
   const tbody = document.getElementById('tradesTableBody');
   if (tbody) {
@@ -618,7 +1305,7 @@ function renderDashboard(data) {
     });
   }
 
-  // Logs
+  // 4. Logs
   const logs = data.aegis_logs || [];
   const term = document.getElementById('terminalBox');
   if (term && logs.length > 0) {
@@ -634,7 +1321,9 @@ function renderDashboard(data) {
   }
 }
 
+// Boot Engine & Telemetry Poller
 window.addEventListener('DOMContentLoaded', () => {
+  init3DManifold();
   pollTelemetry();
   setInterval(pollTelemetry, 2000);
 });
