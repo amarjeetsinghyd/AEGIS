@@ -83,6 +83,9 @@ class DowStructureChain:
     imp_avg_vol: float = 0.0
     pb_avg_vol: float = 0.0
     entry_vol: float = 0.0
+    swing_vdr: float = 1.0
+    imp_directional_flow: float = 0.0
+    pb_counter_flow: float = 0.0
 
 
 class PriceActionEngine:
@@ -1054,12 +1057,13 @@ class PriceActionEngine:
                 return chain
 
             # 2. Find Global HH2 within 4 to 12 bars prior to idx_t2
+            # 2. Find Global HH2 within 5 to 10 bars prior to idx_t2
             search_hh2_start = max(trend_start + 3, idx_t2 - 12)
-            if idx_t2 - 4 < search_hh2_start:
+            if idx_t2 - 5 < search_hh2_start:
                 chain.veto_reason = "noise_veto_pullback_too_short"
                 return chain
 
-            idx_hh2 = max(range(search_hh2_start, idx_t2 - 3), key=lambda j: bars[j].high)
+            idx_hh2 = max(range(search_hh2_start, idx_t2), key=lambda j: bars[j].high)
             hh2_price = bars[idx_hh2].high
 
             if hh2_price <= (e_high[idx_hh2] + 0.20 * atr) or max(bars[idx_hh2].open, bars[idx_hh2].close) < e_high[idx_hh2]:
@@ -1067,11 +1071,11 @@ class PriceActionEngine:
                 return chain
 
             pullback_bars = idx_t2 - idx_hh2
-            if not (4 <= pullback_bars <= 12):
+            if not (5 <= pullback_bars <= 10):
                 chain.veto_reason = f"noise_veto_pullback_out_of_bounds ({pullback_bars})"
                 return chain
 
-            # 3. Orderly Descending Retracement Check (>= 50%)
+            # 3. Orderly Descending Retracement Check (>= 60%)
             descent_steps = 0
             for j in range(idx_hh2 + 1, idx_t2 + 1):
                 if bars[j].close < (e_low[j] - strict_floor_tol):
@@ -1081,7 +1085,7 @@ class PriceActionEngine:
                     descent_steps += 1
 
             orderly_ratio = descent_steps / float(pullback_bars) if pullback_bars > 0 else 0.0
-            if orderly_ratio < 0.50:
+            if orderly_ratio < 0.60:
                 chain.veto_reason = f"erratic_pullback_not_orderly ({orderly_ratio:.2f})"
                 return chain
 
@@ -1118,11 +1122,27 @@ class PriceActionEngine:
                 return chain
 
             # 5. Swing vs Retracement Volume & Flow Validation
-            imp_vol_slice = [b.volume for b in bars[idx_hl1 + 1 : idx_hh2 + 1]]
+            imp_vol_slice = [getattr(b, "volume", 0.0) or 0.0 for b in bars[idx_hl1 + 1 : idx_hh2 + 1]]
             imp_avg_vol = (sum(imp_vol_slice) / len(imp_vol_slice)) if imp_vol_slice else 0.0
-            pb_vol_slice = [b.volume for b in bars[idx_hh2 + 1 : idx_t2 + 1]]
+            pb_vol_slice = [getattr(b, "volume", 0.0) or 0.0 for b in bars[idx_hh2 + 1 : idx_t2 + 1]]
             pb_avg_vol = (sum(pb_vol_slice) / len(pb_vol_slice)) if pb_vol_slice else 0.0
-            entry_vol = bars[-1].volume
+            entry_vol = getattr(bars[-1], "volume", 0.0) or 0.0
+
+            imp_bull_slice = [
+                float(getattr(b, "call_buy_vol", 0.0) or 0.0) + float(getattr(b, "put_sell_vol", 0.0) or 0.0)
+                for b in bars[idx_hl1 + 1 : idx_hh2 + 1]
+            ]
+            imp_bull_flow = (sum(imp_bull_slice) / len(imp_bull_slice)) if imp_bull_slice else 0.0
+
+            pb_bear_slice = [
+                float(getattr(b, "put_buy_vol", 0.0) or 0.0) + float(getattr(b, "call_sell_vol", 0.0) or 0.0)
+                for b in bars[idx_hh2 + 1 : idx_t2 + 1]
+            ]
+            pb_bear_flow = (sum(pb_bear_slice) / len(pb_bear_slice)) if pb_bear_slice else 0.0
+
+            imp_directional_flow = imp_bull_flow
+            pb_counter_flow = pb_bear_flow
+            swing_vdr = round(pb_avg_vol / imp_avg_vol, 2) if imp_avg_vol > 0 else 1.0
 
             if imp_avg_vol > 10.0:
                 if pb_avg_vol > 1.15 * imp_avg_vol:
@@ -1141,6 +1161,9 @@ class PriceActionEngine:
             chain.imp_avg_vol = round(imp_avg_vol, 1)
             chain.pb_avg_vol = round(pb_avg_vol, 1)
             chain.entry_vol = round(entry_vol, 1)
+            chain.swing_vdr = swing_vdr
+            chain.imp_directional_flow = round(imp_directional_flow, 1)
+            chain.pb_counter_flow = round(pb_counter_flow, 1)
             return chain
 
         # ═══════════════════════════════════════════════════════════
@@ -1169,13 +1192,13 @@ class PriceActionEngine:
                 chain.veto_reason = "noise_veto_pullback_too_short"
                 return chain
 
-            # 2. Find Global LL2 within 4 to 12 bars prior to idx_t2
+            # 2. Find Global LL2 within 5 to 10 bars prior to idx_t2
             search_ll2_start = max(trend_start + 3, idx_t2 - 12)
-            if idx_t2 - 4 < search_ll2_start:
+            if idx_t2 - 5 < search_ll2_start:
                 chain.veto_reason = "noise_veto_pullback_too_short"
                 return chain
 
-            idx_ll2 = min(range(search_ll2_start, idx_t2 - 3), key=lambda j: bars[j].low)
+            idx_ll2 = min(range(search_ll2_start, idx_t2), key=lambda j: bars[j].low)
             ll2_price = bars[idx_ll2].low
 
             if ll2_price >= (e_low[idx_ll2] - 0.20 * atr) or min(bars[idx_ll2].open, bars[idx_ll2].close) > e_low[idx_ll2]:
@@ -1183,11 +1206,11 @@ class PriceActionEngine:
                 return chain
 
             pullback_bars = idx_t2 - idx_ll2
-            if not (4 <= pullback_bars <= 12):
+            if not (5 <= pullback_bars <= 10):
                 chain.veto_reason = f"noise_veto_pullback_out_of_bounds ({pullback_bars})"
                 return chain
 
-            # 3. Orderly Ascending Retracement Check (>= 50%)
+            # 3. Orderly Ascending Retracement Check (>= 60%)
             ascent_steps = 0
             for j in range(idx_ll2 + 1, idx_t2 + 1):
                 if bars[j].close > (e_high[j] + strict_roof_tol):
@@ -1197,7 +1220,7 @@ class PriceActionEngine:
                     ascent_steps += 1
 
             orderly_ratio = ascent_steps / float(pullback_bars) if pullback_bars > 0 else 0.0
-            if orderly_ratio < 0.50:
+            if orderly_ratio < 0.60:
                 chain.veto_reason = f"erratic_pullback_not_orderly ({orderly_ratio:.2f})"
                 return chain
 
@@ -1234,11 +1257,27 @@ class PriceActionEngine:
                 return chain
 
             # 5. Swing vs Retracement Volume & Flow Validation
-            imp_vol_slice = [b.volume for b in bars[idx_lh1 + 1 : idx_ll2 + 1]]
+            imp_vol_slice = [getattr(b, "volume", 0.0) or 0.0 for b in bars[idx_lh1 + 1 : idx_ll2 + 1]]
             imp_avg_vol = (sum(imp_vol_slice) / len(imp_vol_slice)) if imp_vol_slice else 0.0
-            pb_vol_slice = [b.volume for b in bars[idx_ll2 + 1 : idx_t2 + 1]]
+            pb_vol_slice = [getattr(b, "volume", 0.0) or 0.0 for b in bars[idx_ll2 + 1 : idx_t2 + 1]]
             pb_avg_vol = (sum(pb_vol_slice) / len(pb_vol_slice)) if pb_vol_slice else 0.0
-            entry_vol = bars[-1].volume
+            entry_vol = getattr(bars[-1], "volume", 0.0) or 0.0
+
+            imp_bear_slice = [
+                float(getattr(b, "put_buy_vol", 0.0) or 0.0) + float(getattr(b, "call_sell_vol", 0.0) or 0.0)
+                for b in bars[idx_lh1 + 1 : idx_ll2 + 1]
+            ]
+            imp_bear_flow = (sum(imp_bear_slice) / len(imp_bear_slice)) if imp_bear_slice else 0.0
+
+            pb_bull_slice = [
+                float(getattr(b, "call_buy_vol", 0.0) or 0.0) + float(getattr(b, "put_sell_vol", 0.0) or 0.0)
+                for b in bars[idx_ll2 + 1 : idx_t2 + 1]
+            ]
+            pb_bull_flow = (sum(pb_bull_slice) / len(pb_bull_slice)) if pb_bull_slice else 0.0
+
+            imp_directional_flow = imp_bear_flow
+            pb_counter_flow = pb_bull_flow
+            swing_vdr = round(pb_avg_vol / imp_avg_vol, 2) if imp_avg_vol > 0 else 1.0
 
             if imp_avg_vol > 10.0:
                 if pb_avg_vol > 1.15 * imp_avg_vol:
@@ -1257,6 +1296,9 @@ class PriceActionEngine:
             chain.imp_avg_vol = round(imp_avg_vol, 1)
             chain.pb_avg_vol = round(pb_avg_vol, 1)
             chain.entry_vol = round(entry_vol, 1)
+            chain.swing_vdr = swing_vdr
+            chain.imp_directional_flow = round(imp_directional_flow, 1)
+            chain.pb_counter_flow = round(pb_counter_flow, 1)
             return chain
 
     def _had_prior_ema_touch(
@@ -1718,6 +1760,9 @@ class PriceActionEngine:
                 "imp_avg_vol": dow.imp_avg_vol,
                 "pb_avg_vol": dow.pb_avg_vol,
                 "entry_vol": dow.entry_vol,
+                "swing_vdr": dow.swing_vdr,
+                "imp_directional_flow": dow.imp_directional_flow,
+                "pb_counter_flow": dow.pb_counter_flow,
                 "bar_open": round(bar.open, 2),
                 "bar_high": round(bar.high, 2),
                 "bar_low": round(bar.low, 2),
@@ -1828,6 +1873,9 @@ class PriceActionEngine:
                 "imp_avg_vol": dow.imp_avg_vol,
                 "pb_avg_vol": dow.pb_avg_vol,
                 "entry_vol": dow.entry_vol,
+                "swing_vdr": dow.swing_vdr,
+                "imp_directional_flow": dow.imp_directional_flow,
+                "pb_counter_flow": dow.pb_counter_flow,
                 "bar_open": round(bar.open, 2),
                 "bar_high": round(bar.high, 2),
                 "bar_low": round(bar.low, 2),

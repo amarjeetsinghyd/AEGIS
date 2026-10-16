@@ -266,3 +266,63 @@ def test_wyckoff_breakout_synthetic_delta_negative_veto():
     assert "liquidation" in reason or "synthetic_delta" in reason
 
 
+def test_wyckoff_pillar_1_dow_swing_volume_confirmed():
+    """Verifies that Pillar 1 uses True Swing VDR when Dow swing metrics are passed."""
+    engine = WyckoffVolumeEngine(mode="ACTIVE")
+    bars = [MockBar(open=100.0, high=102.0, low=99.0, close=101.0, volume=1000.0) for _ in range(20)]
+    bars.append(MockBar(open=100.0, high=101.5, low=99.8, close=101.0, volume=9000.0,
+                        call_buy_vol=500.0, put_buy_vol=100.0))
+    pa_details = {
+        "imp_avg_vol": 15000.0,
+        "pb_avg_vol": 10000.0,
+        "swing_vdr": 0.67,
+        "entry_vol": 9000.0,
+        "imp_directional_flow": 5000.0,
+        "pb_counter_flow": 2000.0,
+    }
+    passed, reason, metrics = engine.evaluate(pillar=1, direction="UP", bars=bars, atr=10.0, pa_details=pa_details)
+    assert passed is True
+    assert reason == "wyckoff_dow_swing_volume_confirmed"
+    assert metrics["vdr"] == 0.67
+    assert metrics["imp_avg_vol"] == 15000.0
+    assert metrics["pb_avg_vol"] == 10000.0
+
+
+def test_wyckoff_pillar_1_dow_swing_dump_veto():
+    """Vetoes when Retracement volume dumps and exceeds Impulse Upswing volume (vdr >= 1.25)."""
+    engine = WyckoffVolumeEngine(mode="ACTIVE")
+    bars = [MockBar(open=100.0, high=102.0, low=99.0, close=101.0, volume=1000.0) for _ in range(20)]
+    bars.append(MockBar(open=100.0, high=101.5, low=99.8, close=101.0, volume=12000.0))
+    pa_details = {
+        "imp_avg_vol": 10000.0,
+        "pb_avg_vol": 13000.0,
+        "swing_vdr": 1.30,
+        "entry_vol": 12000.0,
+        "imp_directional_flow": 4000.0,
+        "pb_counter_flow": 2000.0,
+    }
+    passed, reason, metrics = engine.evaluate(pillar=1, direction="UP", bars=bars, atr=10.0, pa_details=pa_details)
+    assert passed is False
+    assert reason == "wyckoff_dump_pullback_exceeds_upswing"
+    assert metrics["vdr"] == 1.30
+
+
+def test_wyckoff_pillar_1_dow_counter_flow_dominance_veto():
+    """Vetoes when Retracement counter option flow dominates Impulse directional flow (> 1.25x)."""
+    engine = WyckoffVolumeEngine(mode="ACTIVE")
+    bars = [MockBar(open=100.0, high=102.0, low=99.0, close=101.0, volume=1000.0) for _ in range(20)]
+    bars.append(MockBar(open=100.0, high=101.5, low=99.8, close=101.0, volume=8000.0))
+    pa_details = {
+        "imp_avg_vol": 12000.0,
+        "pb_avg_vol": 9000.0,
+        "swing_vdr": 0.75,
+        "entry_vol": 8000.0,
+        "imp_directional_flow": 3000.0,
+        "pb_counter_flow": 4500.0,  # 4500 > 1.25 * 3000 (3750)
+    }
+    passed, reason, metrics = engine.evaluate(pillar=1, direction="UP", bars=bars, atr=10.0, pa_details=pa_details)
+    assert passed is False
+    assert reason == "wyckoff_pullback_counter_flow_dominance"
+
+
+

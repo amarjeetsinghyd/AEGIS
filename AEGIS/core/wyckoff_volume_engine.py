@@ -128,7 +128,7 @@ class WyckoffVolumeEngine:
 
         # Route by Pillar
         if pillar == 1:
-            passed, reason, m = self._evaluate_pillar_1_pullback(is_up, bars, v_base, eff_atr)
+            passed, reason, m = self._evaluate_pillar_1_pullback(is_up, bars, v_base, eff_atr, pa_details=pa_details)
         elif pillar == 2:
             passed, reason, m = self._evaluate_pillar_2_sweep(is_up, bars, v_base, eff_atr, pa_details)
         elif pillar in (3, 4):
@@ -154,6 +154,7 @@ class WyckoffVolumeEngine:
         bars: List[Any],
         v_base: float,
         atr: float,
+        pa_details: Optional[Dict[str, Any]] = None,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
         Pillar 1: 20 EMA Pullback Wick Rejection.
@@ -162,6 +163,136 @@ class WyckoffVolumeEngine:
         2. Touch & Rejection (Bar T): Stopping Volume pop and Absorption Wick.
         """
         curr_bar = bars[-1]
+        vol_curr = float(getattr(curr_bar, "volume", 0.0) or 0.0)
+
+        # ─── PATH A: Classical Dow Theory Swing vs Retracement Volume & Flow ───
+        has_dow_swings = False
+        imp_avg_vol = 0.0
+        pb_avg_vol = 0.0
+        entry_vol = 0.0
+        swing_vdr = 1.0
+        imp_directional_flow = 0.0
+        pb_counter_flow = 0.0
+
+        if pa_details:
+            imp_avg_vol = float(pa_details.get("imp_avg_vol", 0.0) or 0.0)
+            pb_avg_vol = float(pa_details.get("pb_avg_vol", 0.0) or 0.0)
+            entry_vol = float(pa_details.get("entry_vol", 0.0) or 0.0)
+            swing_vdr = float(pa_details.get("swing_vdr", 0.0) or 0.0)
+            imp_directional_flow = float(pa_details.get("imp_directional_flow", 0.0) or 0.0)
+            pb_counter_flow = float(pa_details.get("pb_counter_flow", 0.0) or 0.0)
+            if imp_avg_vol > 0 and pb_avg_vol > 0:
+                has_dow_swings = True
+
+        if has_dow_swings:
+            # True Swing VDR: Retracement Average Volume / Impulse Upswing Average Volume
+            vdr = swing_vdr if swing_vdr > 0 else (pb_avg_vol / imp_avg_vol)
+
+            # ─── VETO CHECK 1: Pullback Volume Dump ───
+            if vdr >= self.dump_threshold_ratio:
+                return False, "wyckoff_dump_pullback_exceeds_upswing", {
+                    "vdr": round(vdr, 2),
+                    "imp_avg_vol": round(imp_avg_vol, 1),
+                    "pb_avg_vol": round(pb_avg_vol, 1),
+                    "verdict": "INSTITUTIONAL_DUMP",
+                }
+
+            # ─── VETO CHECK 2: Option Flow Divergence Across Swing ───
+            if imp_directional_flow > 0 and pb_counter_flow > 1.25 * imp_directional_flow:
+                return False, "wyckoff_pullback_counter_flow_dominance", {
+                    "vdr": round(vdr, 2),
+                    "imp_flow": round(imp_directional_flow, 1),
+                    "pb_counter_flow": round(pb_counter_flow, 1),
+                    "ratio": round(pb_counter_flow / imp_directional_flow, 2),
+                    "verdict": "COUNTER_FLOW_DOMINANCE",
+                }
+
+            # ─── VETO CHECK 2b: Opposing Delta Surge on Entry Bar ───
+            cb_curr = float(getattr(curr_bar, "call_buy_vol", 0.0) or 0.0)
+            pb_curr = float(getattr(curr_bar, "put_buy_vol", 0.0) or 0.0)
+            cs_curr = float(getattr(curr_bar, "call_sell_vol", 0.0) or 0.0)
+            ps_curr = float(getattr(curr_bar, "put_sell_vol", 0.0) or 0.0)
+            if cb_curr > 0 or pb_curr > 0:
+                if is_up and pb_curr > (self.max_opposing_delta_ratio * max(cb_curr, 1.0)):
+                    return False, "wyckoff_opposing_put_delta_surge", {
+                        "call_buy": cb_curr,
+                        "put_buy": pb_curr,
+                        "ratio": round(pb_curr / max(cb_curr, 1.0), 2),
+                    }
+                elif (not is_up) and cb_curr > (self.max_opposing_delta_ratio * max(pb_curr, 1.0)):
+                    return False, "wyckoff_opposing_call_delta_surge", {
+                        "call_buy": cb_curr,
+                        "put_buy": pb_curr,
+                        "ratio": round(cb_curr / max(pb_curr, 1.0), 2),
+                    }
+
+            # ─── VETO CHECK 2c: Liquidation Unwinding Dump ───
+            if is_up:
+                if cs_curr > (self.max_liquidation_ratio * max(cb_curr, 1.0)) and cs_curr >= self.min_liquidation_volume:
+                    return False, "wyckoff_call_liquidation_dump", {
+                        "call_buy": cb_curr,
+                        "call_sell": cs_curr,
+                        "verdict": "CALL_LIQUIDATION_DUMP",
+                    }
+            else:
+                if ps_curr > (self.max_liquidation_ratio * max(pb_curr, 1.0)) and ps_curr >= self.min_liquidation_volume:
+                    return False, "wyckoff_put_liquidation_dump", {
+                        "put_buy": pb_curr,
+                        "put_sell": ps_curr,
+                        "verdict": "PUT_LIQUIDATION_DUMP",
+                    }
+
+            # ─── CONFIRMATION: Dow Swing Volume Retracement & Entry Volume Check ───
+            synth_delta = (cb_curr + ps_curr) - (pb_curr + cs_curr)
+            if vdr <= 1.05 and (vol_curr >= 0.70 * pb_avg_vol or vol_curr == 0.0):
+                verdict = "SUPPLY_DRYUP_TEST" if vdr <= self.supply_dry_test_ratio else "DOW_SWING_VOLUME_CONFIRMED"
+                metrics = {
+                    "vdr": round(vdr, 2),
+                    "imp_avg_vol": round(imp_avg_vol, 1),
+                    "pb_avg_vol": round(pb_avg_vol, 1),
+                    "entry_vol": round(vol_curr, 1),
+                    "absorption_score": 1.0,
+                    "opt_delta_flow": round(cb_curr - pb_curr, 1),
+                    "synthetic_net_delta": round(synth_delta, 1),
+                    "call_buy": cb_curr,
+                    "call_sell": cs_curr,
+                    "put_buy": pb_curr,
+                    "put_sell": ps_curr,
+                    "verdict": verdict,
+                }
+                return True, "wyckoff_dow_swing_volume_confirmed", metrics
+
+            spread = float(curr_bar.high - curr_bar.low)
+            body = abs(curr_bar.close - curr_bar.open)
+            body_ratio = body / max(spread, 1e-4)
+            is_directional_bar = (curr_bar.close > curr_bar.open) if is_up else (curr_bar.close < curr_bar.open)
+
+            if is_directional_bar and body_ratio >= 0.40 and vol_curr >= 0.85 * pb_avg_vol:
+                metrics = {
+                    "vdr": round(vdr, 2),
+                    "imp_avg_vol": round(imp_avg_vol, 1),
+                    "pb_avg_vol": round(pb_avg_vol, 1),
+                    "entry_vol": round(vol_curr, 1),
+                    "absorption_score": round((vol_curr / pb_avg_vol), 2) if pb_avg_vol > 0 else 1.0,
+                    "opt_delta_flow": round(cb_curr - pb_curr, 1),
+                    "synthetic_net_delta": round(synth_delta, 1),
+                    "call_buy": cb_curr,
+                    "call_sell": cs_curr,
+                    "put_buy": pb_curr,
+                    "put_sell": ps_curr,
+                    "verdict": "EXPANSION_RETEST_CONFIRMATION",
+                }
+                return True, "wyckoff_expansion_retest_confirmed", metrics
+
+            return False, "wyckoff_pullback_no_absorption_nor_dryup", {
+                "vdr": round(vdr, 2),
+                "imp_avg_vol": round(imp_avg_vol, 1),
+                "pb_avg_vol": round(pb_avg_vol, 1),
+                "entry_vol": round(vol_curr, 1),
+                "verdict": "PULLBACK_LACKS_DRYUP_AND_ABSORPTION",
+            }
+
+        # ─── PATH B: Legacy Rolling Baseline Fallback ───
         prior_bars = bars[-4:-1]  # Up to 3 approach bars
         if not prior_bars:
             return True, "insufficient_approach_bars", {}
