@@ -68,10 +68,10 @@ class TestPillar1_20_EMA_Rejection:
         pin_bar = OHLCBar(
             ts_start=2000.0,
             ts_end=2060.0,
-            open=live_ema_20 - 3.0,
+            open=live_ema_20 - 2.8,
             high=live_ema_20 + 0.2,
             low=live_ema_20 - 3.5,
-            close=live_ema_20 - 2.8,
+            close=live_ema_20 - 3.2,
         )
         engine._on_1m_bar_close(pin_bar)
         engine.last_price = pin_bar.close
@@ -148,7 +148,7 @@ class TestPillar1_20_EMA_Rejection:
 
         live_ema_20, _ = engine.get_live_20_ema_and_slope()
         engine.last_price = live_ema_20 - 2.0
-        pin_bar = OHLCBar(1500.0, 1560.0, live_ema_20 - 3.0, live_ema_20 + 0.2, live_ema_20 - 3.5, live_ema_20 - 2.8)
+        pin_bar = OHLCBar(1500.0, 1560.0, live_ema_20 - 2.8, live_ema_20 + 0.2, live_ema_20 - 3.5, live_ema_20 - 3.2)
         engine._on_1m_bar_close(pin_bar)
         engine.last_price = pin_bar.close
 

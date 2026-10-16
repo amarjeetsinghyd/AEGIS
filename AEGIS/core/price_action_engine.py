@@ -1027,22 +1027,32 @@ class PriceActionEngine:
         # CASE 1: CALL — UPTREND (HH1 -> HL1 -> HH2 -> HL2)
         # ═══════════════════════════════════════════════════════════
         if is_call:
-            # 1. Anti-Breakout Veto: Check recent 8 bars before touch2.
-            # If any bar closed below 20 EMA Low band, price is coming from below (Breakout, NOT Rejection)!
-            recent_start = max(0, idx_t2 - 8)
+            strict_floor_tol = 0.25 * tol_pts
+            # 1. Zero-Tolerance Anti-Breakout Veto (last 10 bars)
+            recent_start = max(0, idx_t2 - 10)
             for j in range(recent_start, idx_t2 + 1):
-                if bars[j].close < (e_low[j] - tol_pts):
+                if bars[j].close < (e_low[j] - strict_floor_tol):
                     chain.veto_reason = "breakout_from_below_veto"
                     return chain
 
             hl2_price = min(bars[idx_t2].low, bars[-1].low)
 
-            # 2. Find HH2: Look back up to 14 bars before idx_t2 for the highest swing peak above the band
-            search_hh2_start = max(4, idx_t2 - 14)
+            # 2. Find HH2 within 4 to 12 bars prior to idx_t2
+            search_hh2_start = max(4, idx_t2 - 12)
+            if idx_t2 - 4 < 4:
+                chain.veto_reason = "noise_veto_pullback_too_short"
+                return chain
+
+            recent_4_max = max(bars[j].high for j in range(idx_t2 - 4, idx_t2 + 1))
+            prior_window_max = max(bars[j].high for j in range(search_hh2_start, idx_t2 - 4)) if search_hh2_start < (idx_t2 - 4) else -1.0
+            if recent_4_max > prior_window_max:
+                chain.veto_reason = "noise_veto_pullback_too_short (<5_bars)"
+                return chain
+
             idx_hh2 = -1
             hh2_price = -1.0
-            for j in range(search_hh2_start, idx_t2):
-                if bars[j].high > (e_high[j] + 0.30 * atr) and bars[j].close > e_high[j]:
+            for j in range(search_hh2_start, idx_t2 - 4):
+                if bars[j].high > (e_high[j] + 0.20 * atr) and max(bars[j].open, bars[j].close) >= e_high[j]:
                     if bars[j].high >= hh2_price:
                         hh2_price = bars[j].high
                         idx_hh2 = j
@@ -1051,19 +1061,12 @@ class PriceActionEngine:
                 chain.veto_reason = "no_established_hh2_above_band"
                 return chain
 
-            # 3. Strict 4 to 12 Candle Retracement Check
             pullback_bars = idx_t2 - idx_hh2
-            if pullback_bars < 4:
-                chain.veto_reason = f"noise_veto_pullback_too_short ({pullback_bars}_bars_lt_4)"
-                return chain
-            if pullback_bars > 12:
-                chain.veto_reason = f"pullback_too_long_sideways ({pullback_bars}_bars_gt_12)"
-                return chain
 
-            # 4. Verify Orderly Descending Retracement from HH2 to HL2
+            # 3. Orderly Descending Retracement Check (>= 50%)
             descent_steps = 0
             for j in range(idx_hh2 + 1, idx_t2 + 1):
-                if bars[j].close < (e_low[j] - tol_pts):
+                if bars[j].close < (e_low[j] - strict_floor_tol):
                     chain.veto_reason = "breakout_from_below_veto"
                     return chain
                 if (bars[j].close < bars[j].open) or (bars[j].high <= bars[j - 1].high) or (bars[j].close <= bars[j - 1].close):
@@ -1078,42 +1081,43 @@ class PriceActionEngine:
                 chain.veto_reason = "shallow_pullback_insufficient_retracement"
                 return chain
 
-            # 5. Find HL1 (First Touch of 20 EMA Band) prior to HH2
-            idx_hl1 = -1
-            hl1_price = 1e18
-            for j in range(idx_hh2 - 2, 1, -1):
-                if bars[j].close < (e_low[j] - tol_pts):
+            # 4. Find Continuous Uptrend Start & Pair (HH1, HL1) Prior to HH2
+            trend_start = idx_hh2
+            for j in range(idx_hh2, -1, -1):
+                if bars[j].close < (e_low[j] - strict_floor_tol):
                     break
-                tested_band = (bars[j].low <= (e_high[j] + tol_pts)) and (bars[j].close >= (e_low[j] - 0.5 * tol_pts))
-                if tested_band and bars[j].low < hl1_price:
-                    hl1_price = bars[j].low
-                    idx_hl1 = j
+                trend_start = j
 
-            if idx_hl1 < 1:
-                chain.veto_reason = "first_touch_hl1_not_found_no_entry_on_hl1"
-                return chain
+            found_pair = False
+            idx_hh1, hh1_price, idx_hl1, hl1_price = -1, -1.0, -1, 1e18
 
-            # 6. Structural Higher Low Rule: HL2 must be strictly higher than HL1
-            if hl2_price <= (hl1_price + min_hl_diff_pts):
-                chain.veto_reason = f"hl2_not_higher_than_hl1 (HL2={hl2_price:.1f} <= HL1={hl1_price:.1f})"
-                return chain
+            for k in range(idx_hh2 - 1, trend_start, -1):
+                tested_band = (bars[k].low <= (e_high[k] + tol_pts)) and (bars[k].close >= (e_low[k] - strict_floor_tol))
+                if not tested_band:
+                    continue
+                sub_hh1_idx = -1
+                sub_hh1_price = -1.0
+                for m in range(trend_start, k):
+                    if bars[m].high > e_high[m] and bars[m].high > sub_hh1_price:
+                        sub_hh1_price = bars[m].high
+                        sub_hh1_idx = m
+                if sub_hh1_idx >= 0:
+                    trough_idx = min(range(sub_hh1_idx + 1, idx_hh2), key=lambda x: bars[x].low)
+                    trough_low = bars[trough_idx].low
+                    trough_tested = trough_low <= (e_high[trough_idx] + tol_pts)
+                    if (
+                        trough_tested
+                        and (sub_hh1_price - trough_low) >= (0.25 * atr)
+                        and (hh2_price >= sub_hh1_price + min_bos_pts)
+                        and (hl2_price >= trough_low + min_hl_diff_pts)
+                    ):
+                        idx_hh1, hh1_price = sub_hh1_idx, sub_hh1_price
+                        idx_hl1, hl1_price = trough_idx, trough_low
+                        found_pair = True
+                        break
 
-            # 7. Find HH1 prior to HL1 and verify HH2 > HH1 (2 Higher Highs Confirmation)
-            idx_hh1 = -1
-            hh1_price = -1.0
-            for j in range(idx_hl1 - 1, -1, -1):
-                if bars[j].close < (e_low[j] - tol_pts):
-                    break
-                if bars[j].high > e_high[j] and bars[j].high > hh1_price:
-                    hh1_price = bars[j].high
-                    idx_hh1 = j
-
-            if idx_hh1 < 0:
-                chain.veto_reason = "no_prior_hh1_before_hl1"
-                return chain
-
-            if hh2_price <= (hh1_price + min_bos_pts):
-                chain.veto_reason = f"hh2_did_not_break_hh1 (HH2={hh2_price:.1f} <= HH1={hh1_price:.1f})"
+            if not found_pair:
+                chain.veto_reason = "first_touch_hl1_or_hh1_structure_not_met"
                 return chain
 
             chain.is_valid = True
@@ -1128,19 +1132,32 @@ class PriceActionEngine:
         # CASE 2: PUT — DOWNTREND (LL1 -> LH1 -> LL2 -> LH2)
         # ═══════════════════════════════════════════════════════════
         else:
-            recent_start = max(0, idx_t2 - 8)
+            strict_roof_tol = 0.25 * tol_pts
+            # 1. Zero-Tolerance Anti-Breakout Veto (last 10 bars)
+            recent_start = max(0, idx_t2 - 10)
             for j in range(recent_start, idx_t2 + 1):
-                if bars[j].close > (e_high[j] + tol_pts):
+                if bars[j].close > (e_high[j] + strict_roof_tol):
                     chain.veto_reason = "breakdown_from_above_veto"
                     return chain
 
             lh2_price = max(bars[idx_t2].high, bars[-1].high)
 
-            search_ll2_start = max(4, idx_t2 - 14)
+            # 2. Find LL2 within 4 to 12 bars prior to idx_t2
+            search_ll2_start = max(4, idx_t2 - 12)
+            if idx_t2 - 4 < 4:
+                chain.veto_reason = "noise_veto_pullback_too_short"
+                return chain
+
+            recent_4_min = min(bars[j].low for j in range(idx_t2 - 4, idx_t2 + 1))
+            prior_window_min = min(bars[j].low for j in range(search_ll2_start, idx_t2 - 4)) if search_ll2_start < (idx_t2 - 4) else 1e18
+            if recent_4_min < prior_window_min:
+                chain.veto_reason = "noise_veto_pullback_too_short (<5_bars)"
+                return chain
+
             idx_ll2 = -1
             ll2_price = 1e18
-            for j in range(search_ll2_start, idx_t2):
-                if bars[j].low < (e_low[j] - 0.30 * atr) and bars[j].close < e_low[j]:
+            for j in range(search_ll2_start, idx_t2 - 4):
+                if bars[j].low < (e_low[j] - 0.20 * atr) and min(bars[j].open, bars[j].close) <= e_low[j]:
                     if bars[j].low <= ll2_price:
                         ll2_price = bars[j].low
                         idx_ll2 = j
@@ -1150,16 +1167,11 @@ class PriceActionEngine:
                 return chain
 
             pullback_bars = idx_t2 - idx_ll2
-            if pullback_bars < 4:
-                chain.veto_reason = f"noise_veto_pullback_too_short ({pullback_bars}_bars_lt_4)"
-                return chain
-            if pullback_bars > 12:
-                chain.veto_reason = f"pullback_too_long_sideways ({pullback_bars}_bars_gt_12)"
-                return chain
 
+            # 3. Orderly Ascending Retracement Check (>= 50%)
             ascent_steps = 0
             for j in range(idx_ll2 + 1, idx_t2 + 1):
-                if bars[j].close > (e_high[j] + tol_pts):
+                if bars[j].close > (e_high[j] + strict_roof_tol):
                     chain.veto_reason = "breakdown_from_above_veto"
                     return chain
                 if (bars[j].close > bars[j].open) or (bars[j].low >= bars[j - 1].low) or (bars[j].close >= bars[j - 1].close):
@@ -1174,39 +1186,43 @@ class PriceActionEngine:
                 chain.veto_reason = "shallow_pullback_insufficient_retracement"
                 return chain
 
-            idx_lh1 = -1
-            lh1_price = -1.0
-            for j in range(idx_ll2 - 2, 1, -1):
-                if bars[j].close > (e_high[j] + tol_pts):
+            # 4. Find Continuous Downtrend Start & Pair (LL1, LH1) Prior to LL2
+            trend_start = idx_ll2
+            for j in range(idx_ll2, -1, -1):
+                if bars[j].close > (e_high[j] + strict_roof_tol):
                     break
-                tested_band = (bars[j].high >= (e_low[j] - tol_pts)) and (bars[j].close <= (e_high[j] + 0.5 * tol_pts))
-                if tested_band and bars[j].high > lh1_price:
-                    lh1_price = bars[j].high
-                    idx_lh1 = j
+                trend_start = j
 
-            if idx_lh1 < 1:
-                chain.veto_reason = "first_touch_lh1_not_found_no_entry_on_lh1"
-                return chain
+            found_pair = False
+            idx_ll1, ll1_price, idx_lh1, lh1_price = -1, 1e18, -1, -1.0
 
-            if lh2_price >= (lh1_price - min_hl_diff_pts):
-                chain.veto_reason = f"lh2_not_lower_than_lh1 (LH2={lh2_price:.1f} >= LH1={lh1_price:.1f})"
-                return chain
+            for k in range(idx_ll2 - 1, trend_start, -1):
+                tested_band = (bars[k].high >= (e_low[k] - tol_pts)) and (bars[k].close <= (e_high[k] + strict_roof_tol))
+                if not tested_band:
+                    continue
+                sub_ll1_idx = -1
+                sub_ll1_price = 1e18
+                for m in range(trend_start, k):
+                    if bars[m].low < e_low[m] and bars[m].low < sub_ll1_price:
+                        sub_ll1_price = bars[m].low
+                        sub_ll1_idx = m
+                if sub_ll1_idx >= 0:
+                    peak_idx = max(range(sub_ll1_idx + 1, idx_ll2), key=lambda x: bars[x].high)
+                    peak_high = bars[peak_idx].high
+                    peak_tested = peak_high >= (e_low[peak_idx] - tol_pts)
+                    if (
+                        peak_tested
+                        and (peak_high - sub_ll1_price) >= (0.25 * atr)
+                        and (ll2_price <= sub_ll1_price - min_bos_pts)
+                        and (lh2_price <= peak_high - min_hl_diff_pts)
+                    ):
+                        idx_ll1, ll1_price = sub_ll1_idx, sub_ll1_price
+                        idx_lh1, lh1_price = peak_idx, peak_high
+                        found_pair = True
+                        break
 
-            idx_ll1 = -1
-            ll1_price = 1e18
-            for j in range(idx_lh1 - 1, -1, -1):
-                if bars[j].close > (e_high[j] + tol_pts):
-                    break
-                if bars[j].low < e_low[j] and bars[j].low < ll1_price:
-                    ll1_price = bars[j].low
-                    idx_ll1 = j
-
-            if idx_ll1 < 0:
-                chain.veto_reason = "no_prior_ll1_before_lh1"
-                return chain
-
-            if ll2_price >= (ll1_price - min_bos_pts):
-                chain.veto_reason = f"ll2_did_not_break_ll1 (LL2={ll2_price:.1f} >= LL1={ll1_price:.1f})"
+            if not found_pair:
+                chain.veto_reason = "first_touch_lh1_or_ll1_structure_not_met"
                 return chain
 
             chain.is_valid = True
@@ -1234,6 +1250,8 @@ class PriceActionEngine:
         direction: str,
         current_price: float,
         lookback: int = 30,
+        ignore_pivots_below: Optional[float] = None,
+        ignore_pivots_above: Optional[float] = None,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
         Structural Obstacle Shield (HVG Topological Anchors + Multi-Touch Horizontal Clusters).
@@ -1269,7 +1287,11 @@ class PriceActionEngine:
 
             if direction.upper() in ("DOWN", "PUT"):
                 # Find any established support level below current price or at current price
-                supports_below = [pl for pl in pivot_lows if pl <= current_price]
+                # If ignore_pivots_above is specified (e.g. LL1), broken prior lows >= that level are ignored
+                supports_below = [
+                    pl for pl in pivot_lows
+                    if pl <= current_price and (ignore_pivots_above is None or pl < ignore_pivots_above)
+                ]
                 if supports_below:
                     nearest_support = max(supports_below)
                     dist_to_support = current_price - nearest_support
@@ -1282,7 +1304,11 @@ class PriceActionEngine:
                         }
 
             elif direction.upper() in ("UP", "CALL"):
-                resistances_above = [ph for ph in pivot_highs if ph >= current_price]
+                # If ignore_pivots_below is specified (e.g. HH1), broken prior highs <= that level are ignored
+                resistances_above = [
+                    ph for ph in pivot_highs
+                    if ph >= current_price and (ignore_pivots_below is None or ph > ignore_pivots_below)
+                ]
                 if resistances_above:
                     nearest_resistance = min(resistances_above)
                     dist_to_res = nearest_resistance - current_price
@@ -1575,7 +1601,7 @@ class PriceActionEngine:
             close_edge = (bar.close - bar.low) / total_range if total_range > 0 else 0.0
             is_hammer = False
             is_bullish_expansion = False
-            if bar.close >= bar.open:
+            if bar.close > bar.open:
                 is_hammer = (
                     (lower_wick_ratio >= min_wick_ratio)
                     and (close_edge >= 0.60)
@@ -1586,12 +1612,6 @@ class PriceActionEngine:
                     (body >= 0.40 * total_range)
                     and (upper_wick_ratio <= 0.20)
                     and (close_edge >= 0.60)
-                )
-            else:
-                is_hammer = (
-                    (lower_wick_ratio >= 0.50)
-                    and (close_edge >= 0.55)
-                    and (upper_wick_ratio <= 0.15)
                 )
 
             is_green_rejection = is_hammer or is_bullish_expansion
@@ -1630,8 +1650,11 @@ class PriceActionEngine:
                     v_reason = "single_touch_no_confirmation"
                 return False, v_reason, {"dow_veto": dow.veto_reason}
 
-            # Structural Obstacle Shield
-            ok_struct, r_struct, det_struct = self._check_structural_obstacle("CALL", bar.close)
+            # Structural Obstacle Shield (ignore broken impulse_1 / HH1 pivot)
+            ignore_ph = dow.impulse_1 if (dow and dow.impulse_1 > 0) else None
+            ok_struct, r_struct, det_struct = self._check_structural_obstacle(
+                "CALL", bar.close, ignore_pivots_below=ignore_ph
+            )
             if not ok_struct:
                 return False, r_struct, det_struct
 
@@ -1679,7 +1702,7 @@ class PriceActionEngine:
             close_edge = (bar.high - bar.close) / total_range if total_range > 0 else 0.0
             is_shooting_star = False
             is_bearish_expansion = False
-            if bar.close <= bar.open:
+            if bar.close < bar.open:
                 is_shooting_star = (
                     (upper_wick_ratio >= min_wick_ratio)
                     and (close_edge >= 0.60)
@@ -1690,12 +1713,6 @@ class PriceActionEngine:
                     (body >= 0.40 * total_range)
                     and (lower_wick_ratio <= 0.20)
                     and (close_edge >= 0.60)
-                )
-            else:
-                is_shooting_star = (
-                    (upper_wick_ratio >= 0.50)
-                    and (close_edge >= 0.55)
-                    and (lower_wick_ratio <= 0.15)
                 )
 
             is_red_rejection = is_shooting_star or is_bearish_expansion
@@ -1733,7 +1750,11 @@ class PriceActionEngine:
                     v_reason = "single_touch_no_confirmation"
                 return False, v_reason, {"dow_veto": dow.veto_reason}
 
-            ok_struct, r_struct, det_struct = self._check_structural_obstacle("PUT", bar.close)
+            # Structural Obstacle Shield (ignore broken impulse_1 / LL1 pivot)
+            ignore_pl = dow.impulse_1 if (dow and dow.impulse_1 > 0) else None
+            ok_struct, r_struct, det_struct = self._check_structural_obstacle(
+                "PUT", bar.close, ignore_pivots_above=ignore_pl
+            )
             if not ok_struct:
                 return False, r_struct, det_struct
 
