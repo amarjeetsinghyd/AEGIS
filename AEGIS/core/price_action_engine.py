@@ -1600,14 +1600,14 @@ class PriceActionEngine:
             if bar.close < (band_low - 0.5 * tol_pts) or (bar.close - band_high) > max_retest_dist:
                 return False, "retest_distance_out_of_bounds", {}
 
-            # Check Band Touch: Path A (Bar T touched 20 EMA) or Path B (Bar T-1 red pullback touched EMA, Bar T green confirm)
-            touched_T = (bar.low <= (live_ema_20 + tol_pts)) and (bar.close >= (band_low - 0.5 * tol_pts))
+            # Check Band Touch: Path A (Bar T touched 20 EMA Band anywhere between High and Low) or Path B (Bar T-1 touched, Bar T confirms)
+            touched_T = (bar.low <= (band_high + tol_pts)) and (bar.close >= (band_low - 0.5 * tol_pts))
             prev_bar = self.bars_1m[-2] if len(self.bars_1m) >= 2 else None
-            prev_ema = e_close_arr[-2] if len(e_close_arr) >= 2 else live_ema_20
+            prev_ema_high = e_high_arr[-2] if len(e_high_arr) >= 2 else band_high
             touched_T1 = False
             if prev_bar and len(e_high_arr) >= 2:
                 touched_T1 = (
-                    (prev_bar.low <= (prev_ema + tol_pts))
+                    (prev_bar.low <= (prev_ema_high + tol_pts))
                     and (prev_bar.close >= (e_low_arr[-2] - 0.5 * tol_pts))
                     and (bar.close > prev_bar.high or body >= 0.45 * total_range)
                 )
@@ -1635,7 +1635,7 @@ class PriceActionEngine:
             if not ok_struct:
                 return False, r_struct, det_struct
 
-            if not touched_T and touched_T1:
+            if touched_T1 and not (bar.low <= (live_ema_20 + tol_pts)):
                 sig_type = "two_bar_retest_bullish_expansion"
                 conf_path = "two_bar"
             else:
@@ -1704,13 +1704,13 @@ class PriceActionEngine:
             if bar.close > (band_high + 0.5 * tol_pts) or (band_low - bar.close) > max_retest_dist:
                 return False, "retest_distance_out_of_bounds", {}
 
-            touched_T = (bar.high >= (live_ema_20 - tol_pts)) and (bar.close <= (band_high + 0.5 * tol_pts))
+            touched_T = (bar.high >= (band_low - tol_pts)) and (bar.close <= (band_high + 0.5 * tol_pts))
             prev_bar = self.bars_1m[-2] if len(self.bars_1m) >= 2 else None
-            prev_ema = e_close_arr[-2] if len(e_close_arr) >= 2 else live_ema_20
+            prev_ema_low = e_low_arr[-2] if len(e_low_arr) >= 2 else band_low
             touched_T1 = False
             if prev_bar and len(e_high_arr) >= 2:
                 touched_T1 = (
-                    (prev_bar.high >= (prev_ema - tol_pts))
+                    (prev_bar.high >= (prev_ema_low - tol_pts))
                     and (prev_bar.close <= (e_high_arr[-2] + 0.5 * tol_pts))
                     and (bar.close < prev_bar.low or body >= 0.45 * total_range)
                 )
@@ -1737,7 +1737,7 @@ class PriceActionEngine:
             if not ok_struct:
                 return False, r_struct, det_struct
 
-            if not touched_T and touched_T1:
+            if touched_T1 and not (bar.high >= (live_ema_20 - tol_pts)):
                 sig_type = "two_bar_retest_bearish_expansion"
                 conf_path = "two_bar"
             else:
