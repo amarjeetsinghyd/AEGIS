@@ -648,22 +648,22 @@ body {
   <section class="kpi-grid">
     <div class="kpi-card">
       <div class="kpi-title">Today Net PnL</div>
-      <div class="kpi-value" style="color:var(--green-bright);" id="kpiNetPnl">+₹38.83</div>
-      <div class="kpi-subtitle" id="kpiNetSub">3 Wins / 0 Losses (100% WR)</div>
+      <div class="kpi-value" style="color:var(--green-bright);" id="kpiNetPnl">+₹19.18</div>
+      <div class="kpi-subtitle" id="kpiNetSub">1 Profit / 0 Loss (100% Day)</div>
     </div>
     <div class="kpi-card">
-      <div class="kpi-title">Gross Win Rate</div>
-      <div class="kpi-value" style="color:#fff;" id="kpiWinRate">81.8%</div>
-      <div class="kpi-subtitle">27 Wins / 6 Losses (33 Lifetime)</div>
+      <div class="kpi-title">Profit Rate</div>
+      <div class="kpi-value" style="color:#fff;" id="kpiWinRate">82.4%</div>
+      <div class="kpi-subtitle" id="kpiWinSub">28 Profit / 6 Loss (34 Lifetime)</div>
     </div>
     <div class="kpi-card">
       <div class="kpi-title">Engine Schedule</div>
-      <div class="kpi-value" style="font-size:18px; color:#fff;" id="kpiSchedule">SENSEX · 1 DTE</div>
-      <div class="kpi-subtitle">BFO Strike Step 100 · 1 Lot (20 Qty)</div>
+      <div class="kpi-value" style="font-size:18px; color:#fff;" id="kpiSchedule">NIFTY · 4 DTE</div>
+      <div class="kpi-subtitle">NFO Strike Step 50 · 1 Lot (65 Qty)</div>
     </div>
     <div class="kpi-card">
       <div class="kpi-title">Testing Capital</div>
-      <div class="kpi-value" style="font-size:18px; color:#fff;" id="kpiFunds">₹588.36</div>
+      <div class="kpi-value" style="font-size:18px; color:#fff;" id="kpiFunds">₹607.54</div>
       <div class="kpi-subtitle">Low-Capital Consistency Mode</div>
     </div>
   </section>
@@ -1298,11 +1298,12 @@ function renderDashboard(data) {
 
   // 2. KPIs
   const stats = data.today_stats || {};
-  const netRs = stats.net_pnl_rs !== undefined ? stats.net_pnl_rs : 38.83;
-  const grossRs = stats.gross_pnl_rs !== undefined ? stats.gross_pnl_rs : 78.0;
-  const count = stats.count !== undefined ? stats.count : 3;
-  const wins = stats.wins !== undefined ? stats.wins : 3;
-  const wr = stats.win_rate !== undefined ? stats.win_rate : 81.8;
+  const netRs = stats.net_pnl_rs !== undefined ? stats.net_pnl_rs : (stats.pnl_rs !== undefined ? stats.pnl_rs : 19.18);
+  const grossRs = stats.gross_pnl_rs !== undefined ? stats.gross_pnl_rs : 32.5;
+  const count = stats.trades_count !== undefined ? stats.trades_count : (stats.count !== undefined ? stats.count : (stats.today_trades ? stats.today_trades.length : 1));
+  const profits = stats.profits !== undefined ? stats.profits : (stats.wins !== undefined ? stats.wins : 1);
+  const losses = stats.losses !== undefined ? stats.losses : Math.max(0, count - profits);
+  const pr = stats.profit_rate_pct !== undefined ? stats.profit_rate_pct : (stats.win_rate_pct !== undefined ? stats.win_rate_pct : (count > 0 ? (profits / count * 100.0) : 100.0));
 
   const netEl = document.getElementById('kpiNetPnl');
   if (netEl) {
@@ -1310,13 +1311,19 @@ function renderDashboard(data) {
     netEl.style.color = netRs >= 0 ? "var(--green-bright)" : "var(--red-bright)";
   }
   const netSub = document.getElementById('kpiNetSub');
-  if (netSub) netSub.innerText = `${wins} Wins / ${count - wins} Losses (${count > 0 ? ((wins/count)*100).toFixed(0) : 0}% Day WR)`;
+  if (netSub) {
+    if (count === 0) {
+      netSub.innerText = "0 Trades Today";
+    } else {
+      netSub.innerText = `${profits} Profit / ${losses} Loss (${Number(pr).toFixed(0)}% Day)`;
+    }
+  }
 
   const wrEl = document.getElementById('kpiWinRate');
-  if (wrEl) wrEl.innerText = Number(wr).toFixed(1) + "%";
+  if (wrEl) wrEl.innerText = Number(pr).toFixed(1) + "%";
 
   const countEl = document.getElementById('tradeCountLabel');
-  if (countEl) countEl.innerText = `${count} Execution${count === 1 ? '' : 's'} Today`;
+  if (countEl) countEl.innerText = `${count} Execution${count === 1 ? '' : 's'} Today (${profits} Profit / ${losses} Loss)`;
 
   // Available Funds
   if (data.aegis && data.aegis.available_funds) {

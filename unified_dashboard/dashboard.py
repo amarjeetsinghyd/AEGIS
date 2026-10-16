@@ -141,10 +141,10 @@ def _trade_history_aegis(limit: int = 20) -> list[dict]:
             charges_val = float(t.get("charges_rs", 0.0))
             net_val = float(t.get("net_pnl_rs", round(gross_val - charges_val, 2)))
             raw_res = str(t.get("result", ""))
-            if gross_val > 0 or "WIN" in raw_res:
-                res_val = "WIN"
-            elif gross_val == 0 and ("BE" in raw_res or "WIN" in raw_res):
-                res_val = "BE WIN"
+            if gross_val > 0 or "PROFIT" in raw_res or "WIN" in raw_res:
+                res_val = "PROFIT"
+            elif gross_val == 0 and ("BE" in raw_res or "PROFIT" in raw_res or "WIN" in raw_res):
+                res_val = "BE PROFIT"
             elif gross_val < 0:
                 res_val = "LOSS"
             else:
@@ -230,19 +230,22 @@ def live_state():
     today_trades = [t for t in aegis_hist if t.get("is_today")]
 
     today_count = len(today_trades)
-    today_wins = sum(1 for t in today_trades if "WIN" in str(t.get("result", "")))
+    today_profits = sum(1 for t in today_trades if "PROFIT" in str(t.get("result", "")) or "WIN" in str(t.get("result", "")))
     today_losses = sum(1 for t in today_trades if "LOSS" in str(t.get("result", "")))
     today_gross_pnl = sum(float(t.get("gross_pl", 0.0)) for t in today_trades)
     today_charges = sum(float(t.get("charges", 0.0)) for t in today_trades)
     today_net_pnl = sum(float(t.get("net_pl", 0.0)) for t in today_trades)
-    today_wr = round((today_wins / today_count * 100.0), 1) if today_count > 0 else 0.0
+    today_pr = round((today_profits / today_count * 100.0), 1) if today_count > 0 else 0.0
 
     today_stats = {
         "date_ist": today_ist,
         "trades_count": today_count,
-        "wins": today_wins,
+        "count": today_count,
+        "wins": today_profits,
+        "profits": today_profits,
         "losses": today_losses,
-        "win_rate_pct": today_wr,
+        "win_rate_pct": today_pr,
+        "profit_rate_pct": today_pr,
         "pnl_rs": round(today_net_pnl, 2),
         "gross_pnl_rs": round(today_gross_pnl, 2),
         "charges_rs": round(today_charges, 2),

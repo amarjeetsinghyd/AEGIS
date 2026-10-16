@@ -679,9 +679,9 @@ body {
   <!-- TOP KPI RIBBON -->
   <div class="kpi-grid">
     <div class="kpi-card win">
-      <div class="kpi-label">Win Rate</div>
+      <div class="kpi-label">Profit Rate</div>
       <div class="kpi-val" id="kpiWinRate">--%</div>
-      <div class="kpi-sub" id="kpiWinLoss">-- Wins / -- Losses</div>
+      <div class="kpi-sub" id="kpiWinLoss">-- Profit / -- Loss</div>
     </div>
     <div class="kpi-card pnl">
       <div class="kpi-label">Total Gross P&amp;L</div>
@@ -696,7 +696,7 @@ body {
     <div class="kpi-card factor">
       <div class="kpi-label">Profit Factor</div>
       <div class="kpi-val" id="kpiProfitFactor">--</div>
-      <div class="kpi-sub" id="kpiGross">Win/Loss: ₹-- / ₹--</div>
+      <div class="kpi-sub" id="kpiGross">Profit/Loss: ₹-- / ₹--</div>
     </div>
     <div class="kpi-card">
       <div class="kpi-label">Avg Duration</div>
@@ -706,7 +706,7 @@ body {
     <div class="kpi-card">
       <div class="kpi-label">Star Pillar</div>
       <div class="kpi-val" style="color: var(--purple);" id="kpiStarPillar">Pillar 4 (BOS)</div>
-      <div class="kpi-sub">100% Win Rate Today</div>
+      <div class="kpi-sub">100% Profit Rate Today</div>
     </div>
   </div>
 
@@ -792,11 +792,11 @@ body {
           <option value="Pillar 4">Pillar 4 (BOS)</option>
         </select>
         <select id="resultFilter" class="filter-select" onchange="applyFilters()">
-          <option value="ALL">All Results</option>
-          <option value="WIN">Winners Only</option>
+          <option value="ALL">All Outcomes</option>
+          <option value="WIN">Profits Only</option>
           <option value="LOSS">Losses Only</option>
           <option value="BE">Break-Even Only</option>
-          <option value="SHADOW">Shadow Wins Only</option>
+          <option value="SHADOW">Shadow Profits Only</option>
         </select>
       </div>
     </div>
@@ -932,8 +932,9 @@ async function loadData() {
 }
 
 function renderKPIs(kpis) {
-  document.getElementById("kpiWinRate").innerText = kpis.win_rate_pct + "%";
-  document.getElementById("kpiWinLoss").innerText = `${kpis.win_count} Wins / ${kpis.loss_count} Losses`;
+  const pr = kpis.profit_rate_pct !== undefined ? kpis.profit_rate_pct : kpis.win_rate_pct;
+  document.getElementById("kpiWinRate").innerText = pr + "%";
+  document.getElementById("kpiWinLoss").innerText = `${kpis.win_count} Profit / ${kpis.loss_count} Loss`;
   
   const grossTotal = kpis.total_gross_pnl_rs !== undefined ? kpis.total_gross_pnl_rs : (kpis.total_pnl_rs || 0.0);
   const chgTotal = kpis.total_charges_rs !== undefined ? kpis.total_charges_rs : 0.0;
@@ -958,7 +959,7 @@ function renderKPIs(kpis) {
   }
 
   document.getElementById("kpiProfitFactor").innerText = kpis.profit_factor >= 99 ? "∞ (Zero Losses)" : kpis.profit_factor.toFixed(2);
-  document.getElementById("kpiGross").innerText = `Wins: +₹${kpis.gross_profit_rs} / Losses: -₹${kpis.gross_loss_rs}`;
+  document.getElementById("kpiGross").innerText = `Profit: +₹${kpis.gross_profit_rs} / Loss: -₹${kpis.gross_loss_rs}`;
   document.getElementById("kpiAvgDur").innerText = kpis.avg_duration_sec + "s";
   document.getElementById("tradeCountBadge").innerText = kpis.total_trades + " trades";
 }
@@ -1141,9 +1142,11 @@ function renderTable(trades) {
     tr.onclick = () => openForensicModal(t.id);
 
     let resClass = "win";
-    if (t.result.includes("SHADOW")) resClass = "shadow";
-    else if (t.result.includes("BE")) resClass = "be";
-    else if (t.result.includes("LOSS")) resClass = "loss";
+    const rawRes = (t.result || "PROFIT").replace(/[✅🛡️❌]/g, '').trim();
+    const displayRes = rawRes.includes("WIN") ? rawRes.replace("WIN", "PROFIT") : rawRes;
+    if (rawRes.includes("SHADOW")) resClass = "shadow";
+    else if (rawRes.includes("BE")) resClass = "be";
+    else if (rawRes.includes("LOSS")) resClass = "loss";
 
     const gross = t.gross_pnl_rs !== undefined ? t.gross_pnl_rs : t.pnl_rs;
     const chg = t.charges_rs !== undefined ? t.charges_rs : 0.0;
@@ -1166,7 +1169,7 @@ function renderTable(trades) {
       <td data-label="Charges" class="mono" style="color:var(--text-muted); font-size:11px;">₹${chg.toFixed(2)}</td>
       <td data-label="Net PnL" class="mono ${netClass}" style="font-weight:800;">${netPrefix}${net.toFixed(2)}</td>
       <td data-label="Pillar"><span class="badge pillar">${t.pillar}</span></td>
-      <td data-label="Result"><span class="badge ${resClass}">${t.result.replace(/[✅🛡️❌]/g, '').trim()}</span></td>
+      <td data-label="Result"><span class="badge ${resClass}">${displayRes}</span></td>
       <td data-label="Forensics"><button class="btn-inspect" onclick="event.stopPropagation(); openForensicModal(${t.id})">Inspect</button></td>
     `;
     tbody.appendChild(tr);
@@ -1222,9 +1225,9 @@ function applyFilters() {
     const matchPillar = (pillar === "ALL") || t.pillar.includes(pillar);
     
     let matchResult = true;
-    if (res === "WIN") matchResult = t.is_win && !t.result.includes("SHADOW");
-    else if (res === "LOSS") matchResult = t.is_loss;
-    else if (res === "BE") matchResult = t.is_be;
+    if (res === "WIN") matchResult = (t.is_win || t.result.includes("PROFIT") || t.result.includes("WIN")) && !t.result.includes("SHADOW");
+    else if (res === "LOSS") matchResult = t.is_loss || t.result.includes("LOSS");
+    else if (res === "BE") matchResult = t.is_be || t.result.includes("BE");
     else if (res === "SHADOW") matchResult = t.result.includes("SHADOW");
 
     return matchSearch && matchPillar && matchResult;
@@ -1250,9 +1253,11 @@ function openForensicModal(tradeId) {
   const mGrossPrefix = mGross >= 0 ? "+₹" : "₹";
   const mNetPrefix = mNet >= 0 ? "+₹" : "₹";
 
+  const displayModalRes = (trade.result || "PROFIT").replace(/[✅🛡️❌]/g, '').replace('WIN', 'PROFIT').trim();
+
   document.getElementById("modalTitle").innerHTML = `
     <span>#${trade.id} · ${trade.index} ${trade.strike} ${trade.type} <span style="font-size:12px; color:var(--primary); font-weight:normal; margin-left:6px;">[${trade.otm_display || ''}]</span></span>
-    <span class="badge ${trade.is_win ? 'win' : 'loss'}" style="margin-left:12px;">${trade.result.replace(/[✅🛡️❌]/g, '').trim()}</span>
+    <span class="badge ${trade.is_win ? 'win' : 'loss'}" style="margin-left:12px;">${displayModalRes}</span>
   `;
 
   document.getElementById("modalBody").innerHTML = `

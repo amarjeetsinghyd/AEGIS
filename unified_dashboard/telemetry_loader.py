@@ -637,19 +637,19 @@ def get_journal_data(force_reload: bool = False) -> Dict[str, Any]:
             is_win = True
             is_loss = False
             is_be = False
-            res_str = "✅ WIN"
-        elif opt_delta == 0 and ("BE" in res_str or "WIN" in res_str or trade_gross == 0):
+            res_str = "PROFIT"
+        elif opt_delta == 0 and ("BE" in res_str or "PROFIT" in res_str or "WIN" in res_str or trade_gross == 0):
             is_win = True
             is_loss = False
             is_be = True
-            res_str = "🛡️ BE WIN"
+            res_str = "BE PROFIT"
         elif opt_delta < 0 or trade_gross < 0:
             is_win = False
             is_loss = True
             is_be = False
-            res_str = "❌ LOSS"
+            res_str = "LOSS"
         else:
-            is_win = "WIN" in res_str
+            is_win = "PROFIT" in res_str or "WIN" in res_str
             is_loss = "LOSS" in res_str
             is_be = "BE" in res_str
 
