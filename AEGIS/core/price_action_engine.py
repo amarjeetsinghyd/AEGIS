@@ -63,6 +63,25 @@ class OHLCBar:
         return self.ts_end
 
 
+@dataclass
+class DowStructureChain:
+    """Tracks the 4-point Classical Dow Theory sequence for Pillar 1."""
+    is_valid: bool = False
+    veto_reason: str = "uninitialized"
+    # Indices in bars slice
+    idx_1: int = -1       # HH1 (for CALL) or LL1 (for PUT)
+    idx_touch1: int = -1  # HL1 (for CALL) or LH1 (for PUT) - 1st Touch (No Entry)
+    idx_2: int = -1       # HH2 (for CALL) or LL2 (for PUT)
+    idx_touch2: int = -1  # HL2 (for CALL) or LH2 (for PUT) - 2nd Touch (Entry)
+    # Price levels
+    impulse_1: float = 0.0   # HH1 or LL1 price
+    touch_1: float = 0.0     # HL1 or LH1 price
+    impulse_2: float = 0.0   # HH2 or LL2 price
+    touch_2: float = 0.0     # HL2 or LH2 price
+    pullback_bars: int = 0   # Exact candle count from HH2->HL2 or LL2->LH2
+    orderly_ratio: float = 0.0
+
+
 class PriceActionEngine:
     """
     Dedicated, end-to-end engine for real-time 1m bar aggregation, EMA tracking,
@@ -127,7 +146,11 @@ class PriceActionEngine:
         self.ema_20_1m_prev: float = 0.0
         self.ema_20_1m_slope: float = 0.0
         # Per-close 20EMA history, index-aligned with bars_1m tail (two-touch confirmation)
-        self.ema_20_history: deque[float] = deque(maxlen=10)
+        self.ema_20_history: deque[float] = deque(maxlen=max_history_bars)
+        self.ema_20_high_1m: float = 0.0
+        self.ema_20_low_1m: float = 0.0
+        self.ema_20_high_history: deque[float] = deque(maxlen=max_history_bars)
+        self.ema_20_low_history: deque[float] = deque(maxlen=max_history_bars)
 
         self.ema_50_1m: float = 0.0
         self.ema_50_1m_prev: float = 0.0
@@ -632,18 +655,24 @@ class PriceActionEngine:
             b5.volume += bar.volume
 
 
-        # 1. Update 20 EMA
+        # 1. Update 20 EMA (Close, High, Low Band)
         k20 = 2.0 / (20.0 + 1.0)
         if self.ema_20_1m <= 0:
             self.ema_20_1m = bar.close
             self.ema_20_1m_prev = bar.close
             self.ema_20_1m_slope = 0.0
+            self.ema_20_high_1m = bar.high
+            self.ema_20_low_1m = bar.low
         else:
             self.ema_20_1m_prev = self.ema_20_1m
             self.ema_20_1m = (bar.close * k20) + (self.ema_20_1m * (1.0 - k20))
             self.ema_20_1m_slope = self.ema_20_1m - self.ema_20_1m_prev
+            self.ema_20_high_1m = (bar.high * k20) + (self.ema_20_high_1m * (1.0 - k20))
+            self.ema_20_low_1m = (bar.low * k20) + (self.ema_20_low_1m * (1.0 - k20))
         # Index-aligned with bars_1m tail (appended above): enables two-touch confirmation
         self.ema_20_history.append(self.ema_20_1m)
+        self.ema_20_high_history.append(self.ema_20_high_1m)
+        self.ema_20_low_history.append(self.ema_20_low_1m)
 
         # 2. Update 50 EMA
         k50 = 2.0 / (50.0 + 1.0)
@@ -935,6 +964,259 @@ class PriceActionEngine:
     # 3. THE 3 EMPIRICALLY VERIFIED PRICE ACTION SCALPER PILLARS
     # ═══════════════════════════════════════════════════════════
 
+    def get_20_ema_band_arrays(self, n: int) -> Tuple[List[float], List[float], List[float]]:
+        """
+        Returns aligned lists of (ema_close, ema_high, ema_low) for the last n closed bars.
+        Falls back to derived band from ATR if high/low history is warming up.
+        """
+        bars = list(self.bars_1m)[-n:]
+        e_close = list(self.ema_20_history)[-n:]
+        if len(e_close) < len(bars):
+            pad_len = len(bars) - len(e_close)
+            e_close = [e_close[0] if e_close else self.ema_20_1m] * pad_len + e_close
+
+        has_hl_band = (
+            hasattr(self, "ema_20_high_history")
+            and len(self.ema_20_high_history) >= len(bars)
+            and len(self.ema_20_low_history) >= len(bars)
+        )
+        if has_hl_band:
+            e_high = list(self.ema_20_high_history)[-n:]
+            e_low = list(self.ema_20_low_history)[-n:]
+        else:
+            half_band = max(2.5, 0.35 * (self.current_atr_1m if self.current_atr_1m > 0 else 10.0))
+            e_high = [ec + half_band for ec in e_close]
+            e_low = [ec - half_band for ec in e_close]
+
+        return e_close, e_high, e_low
+
+    def _validate_dow_hl2_lh2_structure(
+        self,
+        direction: str,
+        touch2_offset: int = 0,
+        tolerance_bps: float = 1.5,
+        lookback: int = 45,
+    ) -> DowStructureChain:
+        """
+        Strict Classical Dow Theory Validator for Pillar 1:
+          - CALL requires: HH1 -> HL1 (1st touch, skipped) -> HH2 (HH2 > HH1) -> 4..12 bar orderly pullback -> HL2 (HL2 > HL1).
+          - PUT requires:  LL1 -> LH1 (1st touch, skipped) -> LL2 (LL2 < LL1) -> 4..12 bar orderly pullback -> LH2 (LH2 < LH1).
+          - Zero-Tolerance Anti-Breakout Veto: Price must never close across the opposite side of the 20 EMA Band.
+        """
+        chain = DowStructureChain()
+        n = min(lookback, len(self.bars_1m))
+        if n < 12:
+            chain.veto_reason = "insufficient_bars_for_dow_structure"
+            return chain
+
+        bars = list(self.bars_1m)[-n:]
+        e_close, e_high, e_low = self.get_20_ema_band_arrays(n)
+        atr = self.current_atr_1m if self.current_atr_1m > 0 else (bars[-1].close * 0.001)
+        tol_pts = max(1.5, bars[-1].close * (tolerance_bps / 10000.0), 0.12 * atr)
+        min_bos_pts = max(1.5, 0.15 * atr)
+        min_hl_diff_pts = max(1.0, 0.10 * atr)
+
+        idx_t2 = len(bars) - 1 - touch2_offset
+        if idx_t2 < 10:
+            chain.veto_reason = "insufficient_history_before_touch2"
+            return chain
+
+        is_call = direction.upper() in ("UP", "CALL")
+
+        # ═══════════════════════════════════════════════════════════
+        # CASE 1: CALL — UPTREND (HH1 -> HL1 -> HH2 -> HL2)
+        # ═══════════════════════════════════════════════════════════
+        if is_call:
+            # 1. Anti-Breakout Veto: Check recent 8 bars before touch2.
+            # If any bar closed below 20 EMA Low band, price is coming from below (Breakout, NOT Rejection)!
+            recent_start = max(0, idx_t2 - 8)
+            for j in range(recent_start, idx_t2 + 1):
+                if bars[j].close < (e_low[j] - tol_pts):
+                    chain.veto_reason = "breakout_from_below_veto"
+                    return chain
+
+            hl2_price = min(bars[idx_t2].low, bars[-1].low)
+
+            # 2. Find HH2: Look back up to 14 bars before idx_t2 for the highest swing peak above the band
+            search_hh2_start = max(4, idx_t2 - 14)
+            idx_hh2 = -1
+            hh2_price = -1.0
+            for j in range(search_hh2_start, idx_t2):
+                if bars[j].high > (e_high[j] + 0.30 * atr) and bars[j].close > e_high[j]:
+                    if bars[j].high >= hh2_price:
+                        hh2_price = bars[j].high
+                        idx_hh2 = j
+
+            if idx_hh2 < 4:
+                chain.veto_reason = "no_established_hh2_above_band"
+                return chain
+
+            # 3. Strict 4 to 12 Candle Retracement Check
+            pullback_bars = idx_t2 - idx_hh2
+            if pullback_bars < 4:
+                chain.veto_reason = f"noise_veto_pullback_too_short ({pullback_bars}_bars_lt_4)"
+                return chain
+            if pullback_bars > 12:
+                chain.veto_reason = f"pullback_too_long_sideways ({pullback_bars}_bars_gt_12)"
+                return chain
+
+            # 4. Verify Orderly Descending Retracement from HH2 to HL2
+            descent_steps = 0
+            for j in range(idx_hh2 + 1, idx_t2 + 1):
+                if bars[j].close < (e_low[j] - tol_pts):
+                    chain.veto_reason = "breakout_from_below_veto"
+                    return chain
+                if (bars[j].close < bars[j].open) or (bars[j].high <= bars[j - 1].high) or (bars[j].close <= bars[j - 1].close):
+                    descent_steps += 1
+
+            orderly_ratio = descent_steps / float(pullback_bars) if pullback_bars > 0 else 0.0
+            if orderly_ratio < 0.50:
+                chain.veto_reason = f"erratic_pullback_not_orderly ({orderly_ratio:.2f})"
+                return chain
+
+            if (hh2_price - hl2_price) < (0.35 * atr):
+                chain.veto_reason = "shallow_pullback_insufficient_retracement"
+                return chain
+
+            # 5. Find HL1 (First Touch of 20 EMA Band) prior to HH2
+            idx_hl1 = -1
+            hl1_price = 1e18
+            for j in range(idx_hh2 - 2, 1, -1):
+                if bars[j].close < (e_low[j] - tol_pts):
+                    break
+                tested_band = (bars[j].low <= (e_high[j] + tol_pts)) and (bars[j].close >= (e_low[j] - 0.5 * tol_pts))
+                if tested_band and bars[j].low < hl1_price:
+                    hl1_price = bars[j].low
+                    idx_hl1 = j
+
+            if idx_hl1 < 1:
+                chain.veto_reason = "first_touch_hl1_not_found_no_entry_on_hl1"
+                return chain
+
+            # 6. Structural Higher Low Rule: HL2 must be strictly higher than HL1
+            if hl2_price <= (hl1_price + min_hl_diff_pts):
+                chain.veto_reason = f"hl2_not_higher_than_hl1 (HL2={hl2_price:.1f} <= HL1={hl1_price:.1f})"
+                return chain
+
+            # 7. Find HH1 prior to HL1 and verify HH2 > HH1 (2 Higher Highs Confirmation)
+            idx_hh1 = -1
+            hh1_price = -1.0
+            for j in range(idx_hl1 - 1, -1, -1):
+                if bars[j].close < (e_low[j] - tol_pts):
+                    break
+                if bars[j].high > e_high[j] and bars[j].high > hh1_price:
+                    hh1_price = bars[j].high
+                    idx_hh1 = j
+
+            if idx_hh1 < 0:
+                chain.veto_reason = "no_prior_hh1_before_hl1"
+                return chain
+
+            if hh2_price <= (hh1_price + min_bos_pts):
+                chain.veto_reason = f"hh2_did_not_break_hh1 (HH2={hh2_price:.1f} <= HH1={hh1_price:.1f})"
+                return chain
+
+            chain.is_valid = True
+            chain.veto_reason = "dow_hl2_confirmed"
+            chain.idx_1, chain.idx_touch1, chain.idx_2, chain.idx_touch2 = idx_hh1, idx_hl1, idx_hh2, idx_t2
+            chain.impulse_1, chain.touch_1, chain.impulse_2, chain.touch_2 = hh1_price, hl1_price, hh2_price, hl2_price
+            chain.pullback_bars = pullback_bars
+            chain.orderly_ratio = round(orderly_ratio, 2)
+            return chain
+
+        # ═══════════════════════════════════════════════════════════
+        # CASE 2: PUT — DOWNTREND (LL1 -> LH1 -> LL2 -> LH2)
+        # ═══════════════════════════════════════════════════════════
+        else:
+            recent_start = max(0, idx_t2 - 8)
+            for j in range(recent_start, idx_t2 + 1):
+                if bars[j].close > (e_high[j] + tol_pts):
+                    chain.veto_reason = "breakdown_from_above_veto"
+                    return chain
+
+            lh2_price = max(bars[idx_t2].high, bars[-1].high)
+
+            search_ll2_start = max(4, idx_t2 - 14)
+            idx_ll2 = -1
+            ll2_price = 1e18
+            for j in range(search_ll2_start, idx_t2):
+                if bars[j].low < (e_low[j] - 0.30 * atr) and bars[j].close < e_low[j]:
+                    if bars[j].low <= ll2_price:
+                        ll2_price = bars[j].low
+                        idx_ll2 = j
+
+            if idx_ll2 < 4:
+                chain.veto_reason = "no_established_ll2_below_band"
+                return chain
+
+            pullback_bars = idx_t2 - idx_ll2
+            if pullback_bars < 4:
+                chain.veto_reason = f"noise_veto_pullback_too_short ({pullback_bars}_bars_lt_4)"
+                return chain
+            if pullback_bars > 12:
+                chain.veto_reason = f"pullback_too_long_sideways ({pullback_bars}_bars_gt_12)"
+                return chain
+
+            ascent_steps = 0
+            for j in range(idx_ll2 + 1, idx_t2 + 1):
+                if bars[j].close > (e_high[j] + tol_pts):
+                    chain.veto_reason = "breakdown_from_above_veto"
+                    return chain
+                if (bars[j].close > bars[j].open) or (bars[j].low >= bars[j - 1].low) or (bars[j].close >= bars[j - 1].close):
+                    ascent_steps += 1
+
+            orderly_ratio = ascent_steps / float(pullback_bars) if pullback_bars > 0 else 0.0
+            if orderly_ratio < 0.50:
+                chain.veto_reason = f"erratic_pullback_not_orderly ({orderly_ratio:.2f})"
+                return chain
+
+            if (lh2_price - ll2_price) < (0.35 * atr):
+                chain.veto_reason = "shallow_pullback_insufficient_retracement"
+                return chain
+
+            idx_lh1 = -1
+            lh1_price = -1.0
+            for j in range(idx_ll2 - 2, 1, -1):
+                if bars[j].close > (e_high[j] + tol_pts):
+                    break
+                tested_band = (bars[j].high >= (e_low[j] - tol_pts)) and (bars[j].close <= (e_high[j] + 0.5 * tol_pts))
+                if tested_band and bars[j].high > lh1_price:
+                    lh1_price = bars[j].high
+                    idx_lh1 = j
+
+            if idx_lh1 < 1:
+                chain.veto_reason = "first_touch_lh1_not_found_no_entry_on_lh1"
+                return chain
+
+            if lh2_price >= (lh1_price - min_hl_diff_pts):
+                chain.veto_reason = f"lh2_not_lower_than_lh1 (LH2={lh2_price:.1f} >= LH1={lh1_price:.1f})"
+                return chain
+
+            idx_ll1 = -1
+            ll1_price = 1e18
+            for j in range(idx_lh1 - 1, -1, -1):
+                if bars[j].close > (e_high[j] + tol_pts):
+                    break
+                if bars[j].low < e_low[j] and bars[j].low < ll1_price:
+                    ll1_price = bars[j].low
+                    idx_ll1 = j
+
+            if idx_ll1 < 0:
+                chain.veto_reason = "no_prior_ll1_before_lh1"
+                return chain
+
+            if ll2_price >= (ll1_price - min_bos_pts):
+                chain.veto_reason = f"ll2_did_not_break_ll1 (LL2={ll2_price:.1f} >= LL1={ll1_price:.1f})"
+                return chain
+
+            chain.is_valid = True
+            chain.veto_reason = "dow_lh2_confirmed"
+            chain.idx_1, chain.idx_touch1, chain.idx_2, chain.idx_touch2 = idx_ll1, idx_lh1, idx_ll2, idx_t2
+            chain.impulse_1, chain.touch_1, chain.impulse_2, chain.touch_2 = ll1_price, lh1_price, ll2_price, lh2_price
+            chain.pullback_bars = pullback_bars
+            chain.orderly_ratio = round(orderly_ratio, 2)
+            return chain
+
     def _had_prior_ema_touch(
         self,
         direction: str,
@@ -942,102 +1224,11 @@ class PriceActionEngine:
         lookback: int = 40,
         current_vwap: float = 0.0,
     ) -> bool:
-        """Flexible two-touch confirmation with same-side pause rule.
-
-        Manual-trader view: price must stay on the same side of EMA between
-        Leg 1 and retest (CALL: always above 20 EMA, PUT: always below).
-        Leg 1 can be 3, 5, 10 or 15 minutes old — pause length is flexible,
-        but side discipline is strict. Any intermediate close on the wrong
-        side breaks the structure. Minimum 2 pause bars gap.
-        Reverse order: Leg 2 triggers first, then Leg 1 searched back.
-        Leg 1 must also sit on the correct VWAP side when VWAP known.
-        """
-        n = min(lookback, len(self.bars_1m), len(self.ema_20_history))
-        if n <= 0:
-            return False
-        bars = list(self.bars_1m)[-n:]
-        emas = list(self.ema_20_history)[-n:]
-        is_put = direction.upper() in ("DOWN", "PUT")
-        # Reverse order: Leg 2 (live) first, then look back for Leg 1.
-        # Minimum 5 pause bars gap to avoid quick retest noise.
-        # Scan from newest to oldest for latest valid Leg 1.
-        for idx in range(len(bars) - 6, -1, -1):
-            pb, pema = bars[idx], emas[idx]
-            if pema <= 0:
-                continue
-            # Leg 1 must sit on correct VWAP side (falling below VWAP for PUT).
-            if current_vwap > 0:
-                if is_put and pb.high >= current_vwap:
-                    continue
-                if not is_put and pb.low <= current_vwap:
-                    continue
-            ptol = pema * (tolerance_bps / 10000.0)
-            if is_put:
-                touched = pb.high >= (pema - ptol) and pb.close <= (pema + 0.5 * ptol)
-            else:
-                touched = pb.low <= (pema + ptol) and pb.close >= (pema - 0.5 * ptol)
-            if not touched:
-                continue
-            # Same-side check for all bars AFTER this Leg 1 candidate.
-            # EMA zone rule: wick may dip into zone, but close must hold above
-            # zone low (CALL) / below zone high (PUT). Close-only discipline.
-            valid = True
-            for j in range(idx + 1, len(bars)):
-                ib, iema = bars[j], emas[j]
-                if iema <= 0:
-                    continue
-                itol = iema * (tolerance_bps / 10000.0)
-                if is_put:
-                    if ib.close > (iema + 0.5 * itol):
-                        valid = False
-                        break
-                else:
-                    if ib.close < (iema - itol):
-                        valid = False
-                        break
-            if valid:
-                return True
-        # Fallback: first lower-high / higher-low anywhere (not necessarily EMA touch).
-        # Bearish: any prior bar with higher high than the latest bar (LH1 > LH2).
-        # Bullish: any prior bar with lower low than the latest bar (HL1 < HL2).
-        # Same-side discipline still strict.
-        if len(bars) >= 2:
-            latest = bars[-1]
-            for idx in range(len(bars) - 2, -1, -1):
-                pb = bars[idx]
-                pema = emas[idx]
-                if pema <= 0:
-                    continue
-                ptol = pema * (tolerance_bps / 10000.0)
-                if is_put:
-                    if not (pb.high > latest.high and pb.close < pb.open):
-                        continue
-                    # Prior low-high must sit below EMA (entire scenario below).
-                    if pb.high >= (pema + ptol):
-                        continue
-                else:
-                    if not (pb.low < latest.low and pb.close > pb.open):
-                        continue
-                    # Prior low must sit above 20 MA (entire scenario above).
-                    if pb.low <= (pema - ptol):
-                        continue
-                valid = True
-                for j in range(idx + 1, len(bars)):
-                    ib, iema = bars[j], emas[j]
-                    if iema <= 0:
-                        continue
-                    itol = iema * (tolerance_bps / 10000.0)
-                    if is_put:
-                        if ib.close > (iema + 0.5 * itol):
-                            valid = False
-                            break
-                    else:
-                        if ib.close < (iema - itol):
-                            valid = False
-                            break
-                if valid:
-                    return True
-        return False
+        """Backward compatibility helper: checks if prior touch / Dow structure is valid."""
+        dow = self._validate_dow_hl2_lh2_structure(direction, touch2_offset=0, tolerance_bps=tolerance_bps, lookback=lookback)
+        if not dow.is_valid:
+            dow = self._validate_dow_hl2_lh2_structure(direction, touch2_offset=1, tolerance_bps=tolerance_bps, lookback=lookback)
+        return dow.is_valid
     def _check_structural_obstacle(
         self,
         direction: str,
@@ -1309,35 +1500,29 @@ class PriceActionEngine:
         current_time: float = 0.0,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
-        Pillar 1: 20 EMA Pullback Wick Rejection (User's System — #1 Performer).
-        Dual-path trigger (OR):
-          Path A (Single-Bar): closed bar T touches 20 EMA zone and itself is
-            expansion/hammer.
-          Path B (Two-Bar): prior closed bar T-1 tested 20 EMA without piercing
-            and current closed bar T is a confirming expansion (close > open,
-            body >= 40% or close above T-1 high / below T-1 low), even if T low
-            did not directly touch EMA.
-        Both paths require 2-touch macro spacing (min 5 bars from HL1) and
-        same-side discipline via _had_prior_ema_touch.
+        Pillar 1 (Re-Engineered on Classical Dow Theory):
+        Trades strictly the 2nd Pullback Touch (HL2 in Uptrend / LH2 in Downtrend)
+        into the 20 EMA High-Low Band after 2 confirmed Higher Highs (or Lower Lows)
+        and a 4-to-12 candle orderly retracement.
         """
         live_ema_20, live_slope_20_bps = self.get_live_20_ema_and_slope()
         if live_ema_20 <= 0 or self.last_price <= 0:
             return False, "no_ema20_data", {}
 
-        tol_pts = live_ema_20 * (tolerance_bps / 10000.0)
+        if len(self.bars_1m) < 12:
+            return False, "insufficient_bars", {}
+
+        bar = self.bars_1m[-1]
+        e_close_arr, e_high_arr, e_low_arr = self.get_20_ema_band_arrays(2)
+        band_high = e_high_arr[-1]
+        band_low = e_low_arr[-1]
+
+        atr = self.current_atr_1m if self.current_atr_1m > 0 else (live_ema_20 * 0.001)
+        tol_pts = max(1.5, live_ema_20 * (tolerance_bps / 10000.0), 0.12 * atr)
         buffer_pts = max(5.0, (live_ema_20 / 24000.0) * 5.0)
         max_retest_dist = max(12.0, 2.5 * buffer_pts)
 
-        # Note: 20 vs 50 EMA correlation removed per user specification to eliminate
-        # moving average lag on early swing reversals. Rejection is anchored directly to
-        # 20 EMA support/resistance, slope, and Break of Structure (BOS).
-
-        # Full-candle entries only: wait for 1-minute close, no mid-bar hop.
-        bar = self.bars_1m[-1] if self.bars_1m else None
-        if bar is None:
-            return False, "no_closed_bar", {}
-
-        # Upgrade 2: Bar Close Freshness Window (max 12.0s cutoff)
+        # 1. Bar Close Freshness Gate (12.0s max cutoff)
         if current_time > 0 and bar.ts_end > 0:
             both_epoch = (current_time > 1_000_000_000.0 and bar.ts_end > 1_000_000_000.0)
             both_synthetic = (current_time < 1_000_000_000.0 and bar.ts_end < 1_000_000_000.0)
@@ -1349,293 +1534,240 @@ class PriceActionEngine:
                         "max_allowed_s": 12.0,
                     }
 
-        # Upgrade 3: Live Price & Forming Bar Invalidation Guard
+        # Upgrade 3: Live Price & Forming Bar Invalidation Guard (Evaluated Before Slope)
         if self.last_price > 0:
             if direction.upper() in ("UP", "CALL"):
-                if self.last_price <= (live_ema_20 - 0.5 * tol_pts):
+                if self.last_price <= (band_low - 0.5 * tol_pts):
                     return False, "live_price_piercing_below_20_ema", {
                         "last_price": round(self.last_price, 2),
                         "ema_20": round(live_ema_20, 2),
+                        "band_low": round(band_low, 2),
+                        "tol_pts": round(tol_pts, 2),
                     }
-                if self._curr_1m_bar and self._curr_1m_bar.low < (live_ema_20 - 1.0 * tol_pts) and self._curr_1m_bar.close < self._curr_1m_bar.open:
-                    return False, "forming_bar_bearish_pierce", {
-                        "forming_close": round(self._curr_1m_bar.close, 2),
-                        "forming_open": round(self._curr_1m_bar.open, 2),
-                        "ema_20": round(live_ema_20, 2),
-                    }
-            elif direction.upper() in ("DOWN", "PUT"):
-                if self.last_price >= (live_ema_20 + 0.5 * tol_pts):
+            else:
+                if self.last_price >= (band_high + 0.5 * tol_pts):
                     return False, "live_price_piercing_above_20_ema", {
                         "last_price": round(self.last_price, 2),
                         "ema_20": round(live_ema_20, 2),
-                    }
-                if self._curr_1m_bar and self._curr_1m_bar.high > (live_ema_20 + 1.0 * tol_pts) and self._curr_1m_bar.close > self._curr_1m_bar.open:
-                    return False, "forming_bar_bullish_pierce", {
-                        "forming_close": round(self._curr_1m_bar.close, 2),
-                        "forming_open": round(self._curr_1m_bar.open, 2),
-                        "ema_20": round(live_ema_20, 2),
+                        "band_high": round(band_high, 2),
+                        "tol_pts": round(tol_pts, 2),
                     }
 
-        if direction.upper() in ("DOWN", "PUT"):
-            # Pierce/slope gates hold for BOTH paths (current close must hold).
-            if bar.close >= (live_ema_20 + 0.5 * tol_pts):
-                return False, "pierced_above_20_ema", {}
-            if live_slope_20_bps > 0.10:
-                return False, "20_ema_slope_bullish", {}
+        total_range = bar.high - bar.low
+        if total_range < (0.30 * atr):
+            return False, "tiny_range_noise", {}
 
-            total_range = bar.high - bar.low
-            if total_range <= 0:
-                return False, "zero_range", {}
-            # Minimum range filter on current bar T (both paths need real body).
-            _atr_ref = self.current_atr_1m if self.current_atr_1m > 0 else (live_ema_20 * 0.001)
-            if total_range < (0.30 * _atr_ref):
-                return False, "tiny_range_noise", {}
-            body = abs(bar.close - bar.open)
-            upper_wick = bar.high - max(bar.open, bar.close)
-            lower_wick = min(bar.open, bar.close) - bar.low
-            wick_ratio = upper_wick / total_range
-            lower_wick_ratio = lower_wick / total_range
-            close_edge = (bar.high - bar.close) / total_range
+        body = abs(bar.close - bar.open)
+        lower_wick = min(bar.open, bar.close) - bar.low
+        upper_wick = bar.high - max(bar.open, bar.close)
+        lower_wick_ratio = lower_wick / total_range if total_range > 0 else 0.0
+        upper_wick_ratio = upper_wick / total_range if total_range > 0 else 0.0
 
-            # Anti-chasing extension cap: Bar T must not have already plunged too far below 20 EMA.
-            curr_not_overextended = (live_ema_20 - bar.close) <= max_retest_dist
-
-            # Refined is_bearish_expansion:
-            # Must be a red candle (bar.close < bar.open), body >= total_range * 0.45,
-            # and closing strong near the low (close_edge >= 0.65 and lower_wick_ratio <= 0.15).
-            is_bearish_expansion = (
-                (bar.close < bar.open)
-                and (body >= total_range * 0.45)
-                and (close_edge >= 0.65)
-                and (lower_wick_ratio <= 0.15)
-            )
-
-            # Refined is_pin_bar:
-            # Red/Doji Shooting Star (bar.close <= bar.open):
-            #   wick_ratio >= min_wick_ratio (0.33), close_edge >= 0.60, lower_wick_ratio <= 0.15,
-            #   and upper_wick >= 1.5 * lower_wick.
-            # Green Shooting Star (bar.close > bar.open):
-            #   Requires massive upper tail: wick_ratio >= 0.50, close_edge >= 0.55,
-            #   and tiny lower wick: lower_wick_ratio <= 0.15.
-            if bar.close <= bar.open:
-                is_pin_bar = (
-                    (wick_ratio >= min_wick_ratio)
-                    and (close_edge >= 0.60)
-                    and (lower_wick_ratio <= 0.15)
-                    and (upper_wick >= 1.5 * lower_wick)
-                )
-            else:
-                is_pin_bar = (
-                    (wick_ratio >= 0.50)
-                    and (close_edge >= 0.55)
-                    and (lower_wick_ratio <= 0.15)
-                )
-
-            # Path A (Single-Bar): T itself tests EMA and is expansion/pin.
-            touched_A = bar.high >= (live_ema_20 - tol_pts)
-            signal_A = touched_A and (is_bearish_expansion or is_pin_bar) and curr_not_overextended
-
-            # Path B (Two-Bar): T-1 tested EMA without piercing; T confirms bounce
-            # even if T high did not retest EMA (capped by max_retest_dist).
-            signal_B = False
-            prev_B: Optional[OHLCBar] = None
-            if len(self.bars_1m) >= 2:
-                prev_B = self.bars_1m[-2]
-                prev_touched = prev_B.high >= (live_ema_20 - tol_pts)
-                prev_held = prev_B.close <= (live_ema_20 + 0.5 * tol_pts)
-                curr_held = bar.close <= (live_ema_20 + 0.5 * tol_pts)
-                curr_expansion = (
-                    (bar.close < bar.open)
-                    and ((body > total_range * 0.40) or (bar.close < prev_B.low))
-                    and (lower_wick_ratio <= 0.18)
-                )
-                signal_B = bool(prev_touched and prev_held and curr_held and curr_expansion and curr_not_overextended)
-
-            if signal_A or signal_B:
-                # Both paths strictly maintain 2-touch macro spacing + same-side.
-                if not self._had_prior_ema_touch("PUT", current_vwap=current_vwap):
-                    return False, "single_touch_no_confirmation", {}
-
-                # ── Structural Obstacle Shield (HVG + Multi-Touch Support Floor) ───
-                ok_struct, r_struct, det_struct = self._check_structural_obstacle("PUT", bar.close)
-                if not ok_struct:
-                    return False, r_struct, det_struct
-                runway_mode = "immediate_runway"
-                # ─────────────────────────────────────────────────────────
-
-                # ── Trend Exhaustion Filter (Ascending Higher Lows) ──────
-                exhausted, exh_reason, exh_details = self.check_pivot_exhaustion("PUT")
-                if exhausted:
-                    return False, f"trend_exhaustion ({exh_reason})", exh_details
-
-                if signal_A:
-                    sig_type = "bearish_expansion" if is_bearish_expansion else "pin_bar_rejection"
-                else:
-                    sig_type = "two_bar_retest_bearish_expansion"
-                sl_price = round(bar.high + buffer_pts, 2)
-                details = {
-                    "pa_setup_name": "20_ema_rejection",
-                    "pillar": 1,
-                    "ema_20": round(live_ema_20, 2),
-                    "bar_open": round(bar.open, 2),
-                    "bar_high": round(bar.high, 2),
-                    "bar_low": round(bar.low, 2),
-                    "bar_close": round(bar.close, 2),
-                    "ema_20_slope_bps": round(live_slope_20_bps, 2),
-                    "total_range": round(total_range, 2),
-                    "body": round(body, 2),
-                    "upper_wick": round(upper_wick, 2),
-                    "lower_wick": round(lower_wick, 2),
-                    "wick_ratio": round(wick_ratio, 3),
-                    "lower_wick_ratio": round(lower_wick_ratio, 3),
-                    "close_edge": round(close_edge, 3),
-                    "rejection_type": sig_type,
-                    "confirmation_path": "single_bar" if signal_A else "two_bar",
-                    "runway_state": runway_mode,
-                    "sl_price": sl_price,
-                    "buffer_pts": round(buffer_pts, 2),
-                }
-                return True, f"20_ema_put_rejection ({sig_type})", details
-            # Preserve legacy reasons: no touch anywhere => did_not_test.
-            prev_touched_any = False
-            if len(self.bars_1m) >= 2:
-                try:
-                    prev_touched_any = self.bars_1m[-2].high >= (live_ema_20 - tol_pts)
-                except Exception:
-                    prev_touched_any = False
-            if not touched_A and not prev_touched_any:
-                return False, "did_not_test_20_ema", {}
-            return False, "neither_bearish_expansion_nor_pin_bar", {}
-
-        elif direction.upper() in ("UP", "CALL"):
-            # Pierce/slope gates hold for BOTH paths (current close must hold).
-            if bar.close <= (live_ema_20 - 0.5 * tol_pts):
-                return False, "pierced_below_20_ema", {}
+        # ═══════════════════════════════════════════════════════════
+        # CALL EVALUATION (HL2 Green Rejection from 20 EMA Band)
+        # ═══════════════════════════════════════════════════════════
+        if direction.upper() in ("UP", "CALL"):
+            if current_vwap > 0 and bar.close <= current_vwap:
+                return False, "below_vwap", {}
             if live_slope_20_bps < -0.10:
                 return False, "20_ema_slope_bearish", {}
 
-            total_range = bar.high - bar.low
-            if total_range <= 0:
-                return False, "zero_range", {}
-            # Minimum range filter on current bar T (both paths need real body).
-            _atr_ref = self.current_atr_1m if self.current_atr_1m > 0 else (live_ema_20 * 0.001)
-            if total_range < (0.30 * _atr_ref):
-                return False, "tiny_range_noise", {}
-            body = abs(bar.close - bar.open)
-            lower_wick = min(bar.open, bar.close) - bar.low
-            upper_wick = bar.high - max(bar.open, bar.close)
-            wick_ratio = lower_wick / total_range
-            upper_wick_ratio = upper_wick / total_range
-            close_edge = (bar.close - bar.low) / total_range
-
-            # Anti-chasing extension cap: Bar T must not have already surged too far above 20 EMA.
-            curr_not_overextended = (bar.close - live_ema_20) <= max_retest_dist
-
-            # Refined is_bullish_expansion:
-            # Must be a green candle (bar.close > bar.open), body >= total_range * 0.45,
-            # and closing strong near the high (close_edge >= 0.65 and upper_wick_ratio <= 0.15).
-            is_bullish_expansion = (
-                (bar.close > bar.open)
-                and (body >= total_range * 0.45)
-                and (close_edge >= 0.65)
-                and (upper_wick_ratio <= 0.15)
-            )
-
-            # Refined is_hammer (No more red spinning tops!):
-            # Green/Doji Hammer (bar.close >= bar.open):
-            #   wick_ratio >= min_wick_ratio (0.33), close_edge >= 0.60, upper_wick_ratio <= 0.15,
-            #   and lower wick must clearly dominate upper wick: lower_wick >= 1.5 * upper_wick.
-            # Red Pin-Bar (bar.close < bar.open):
-            #   If slightly red, only a bullish pin-bar if lower tail is massive:
-            #   wick_ratio >= 0.50, close_edge >= 0.55, and upper_wick_ratio <= 0.15.
+            close_edge = (bar.close - bar.low) / total_range if total_range > 0 else 0.0
+            is_hammer = False
+            is_bullish_expansion = False
             if bar.close >= bar.open:
                 is_hammer = (
-                    (wick_ratio >= min_wick_ratio)
+                    (lower_wick_ratio >= min_wick_ratio)
                     and (close_edge >= 0.60)
                     and (upper_wick_ratio <= 0.15)
                     and (lower_wick >= 1.5 * upper_wick)
                 )
+                is_bullish_expansion = (
+                    (body >= 0.40 * total_range)
+                    and (upper_wick_ratio <= 0.20)
+                    and (close_edge >= 0.60)
+                )
             else:
                 is_hammer = (
-                    (wick_ratio >= 0.50)
+                    (lower_wick_ratio >= 0.50)
                     and (close_edge >= 0.55)
                     and (upper_wick_ratio <= 0.15)
                 )
 
-            # Path A (Single-Bar): T itself tests EMA and is expansion/hammer.
-            touched_A = bar.low <= (live_ema_20 + tol_pts)
-            signal_A = touched_A and (is_bullish_expansion or is_hammer) and curr_not_overextended
+            is_green_rejection = is_hammer or is_bullish_expansion
+            if not is_green_rejection:
+                return False, "not_valid_green_rejection_candle", {}
+            if bar.close < (band_low - 0.5 * tol_pts) or (bar.close - band_high) > max_retest_dist:
+                return False, "retest_distance_out_of_bounds", {}
 
-            # Path B (Two-Bar): T-1 tested EMA without piercing; T confirms bounce
-            # even if T low did not retest EMA (capped by max_retest_dist).
-            signal_B = False
-            if len(self.bars_1m) >= 2:
-                prev_B = self.bars_1m[-2]
-                prev_touched = prev_B.low <= (live_ema_20 + tol_pts)
-                prev_held = prev_B.close >= (live_ema_20 - 0.5 * tol_pts)
-                curr_held = bar.close >= (live_ema_20 - 0.5 * tol_pts)
-                curr_expansion = (
-                    (bar.close > bar.open)
-                    and ((body > total_range * 0.40) or (bar.close > prev_B.high))
-                    and (upper_wick_ratio <= 0.18)
+            # Check Band Touch: Path A (Bar T touched 20 EMA) or Path B (Bar T-1 red pullback touched EMA, Bar T green confirm)
+            touched_T = (bar.low <= (live_ema_20 + tol_pts)) and (bar.close >= (band_low - 0.5 * tol_pts))
+            prev_bar = self.bars_1m[-2] if len(self.bars_1m) >= 2 else None
+            prev_ema = e_close_arr[-2] if len(e_close_arr) >= 2 else live_ema_20
+            touched_T1 = False
+            if prev_bar and len(e_high_arr) >= 2:
+                touched_T1 = (
+                    (prev_bar.low <= (prev_ema + tol_pts))
+                    and (prev_bar.close >= (e_low_arr[-2] - 0.5 * tol_pts))
+                    and (bar.close > prev_bar.high or body >= 0.45 * total_range)
                 )
-                signal_B = bool(prev_touched and prev_held and curr_held and curr_expansion and curr_not_overextended)
 
-            if signal_A or signal_B:
-                # Both paths strictly maintain 2-touch macro spacing + same-side.
-                if not self._had_prior_ema_touch("CALL", current_vwap=current_vwap):
-                    return False, "single_touch_no_confirmation", {}
-
-                # ── Structural Obstacle Shield (HVG + Multi-Touch Resistance Ceiling) ───
-                ok_struct, r_struct, det_struct = self._check_structural_obstacle("CALL", bar.close)
-                if not ok_struct:
-                    return False, r_struct, det_struct
-                runway_mode = "immediate_runway"
-                # ─────────────────────────────────────────────────────────
-
-                # ── Trend Exhaustion Filter (Descending Lower Highs) ─────
-                exhausted, exh_reason, exh_details = self.check_pivot_exhaustion("CALL")
-                if exhausted:
-                    return False, f"trend_exhaustion ({exh_reason})", exh_details
-
-                if signal_A:
-                    sig_type = "bullish_expansion" if is_bullish_expansion else "hammer_rejection"
-                else:
-                    sig_type = "two_bar_retest_bullish_expansion"
-                sl_price = round(bar.low - buffer_pts, 2)
-                details = {
-                    "pa_setup_name": "20_ema_rejection",
-                    "pillar": 1,
-                    "ema_20": round(live_ema_20, 2),
-                    "bar_open": round(bar.open, 2),
-                    "bar_high": round(bar.high, 2),
-                    "bar_low": round(bar.low, 2),
-                    "bar_close": round(bar.close, 2),
-                    "ema_20_slope_bps": round(live_slope_20_bps, 2),
-                    "total_range": round(total_range, 2),
-                    "body": round(body, 2),
-                    "lower_wick": round(lower_wick, 2),
-                    "upper_wick": round(upper_wick, 2),
-                    "wick_ratio": round(wick_ratio, 3),
-                    "upper_wick_ratio": round(upper_wick_ratio, 3),
-                    "close_edge": round(close_edge, 3),
-                    "rejection_type": sig_type,
-                    "confirmation_path": "single_bar" if signal_A else "two_bar",
-                    "runway_state": runway_mode,
-                    "sl_price": sl_price,
-                    "buffer_pts": round(buffer_pts, 2),
-                }
-                return True, f"20_ema_call_rejection ({sig_type})", details
-            # Preserve legacy reasons: no touch anywhere => did_not_test.
-            prev_touched_any = False
-            if len(self.bars_1m) >= 2:
-                try:
-                    prev_touched_any = self.bars_1m[-2].low <= (live_ema_20 + tol_pts)
-                except Exception:
-                    prev_touched_any = False
-            if not touched_A and not prev_touched_any:
+            if not (touched_T or touched_T1):
                 return False, "did_not_test_20_ema", {}
-            return False, "neither_bullish_expansion_nor_hammer", {}
+
+            # Validate Full Dow Theory Sequence (HH1 -> HL1 -> HH2 -> 4..12 bar pullback -> HL2)
+            dow = self._validate_dow_hl2_lh2_structure("CALL", touch2_offset=0)
+            if not dow.is_valid and touched_T1:
+                dow = self._validate_dow_hl2_lh2_structure("CALL", touch2_offset=1)
+
+            if not dow.is_valid:
+                v_reason = dow.veto_reason
+                if v_reason in (
+                    "first_touch_hl1_not_found_no_entry_on_hl1",
+                    "no_established_hh2_above_band",
+                    "no_prior_hh1_before_hl1",
+                ) or v_reason.startswith("noise_veto_pullback_too_short"):
+                    v_reason = "single_touch_no_confirmation"
+                return False, v_reason, {"dow_veto": dow.veto_reason}
+
+            # Structural Obstacle Shield
+            ok_struct, r_struct, det_struct = self._check_structural_obstacle("CALL", bar.close)
+            if not ok_struct:
+                return False, r_struct, det_struct
+
+            if not touched_T and touched_T1:
+                sig_type = "two_bar_retest_bullish_expansion"
+                conf_path = "two_bar"
+            else:
+                sig_type = "hammer_rejection" if is_hammer else "bullish_expansion"
+                conf_path = "single_bar"
+
+            sl_price = round(min(bar.low, dow.touch_2) - buffer_pts, 2)
+            details = {
+                "pa_setup_name": "20_ema_rejection",
+                "pillar": 1,
+                "rejection_type": sig_type,
+                "confirmation_path": conf_path,
+                "dow_structure": "dow_hl2_confirmed",
+                "ema_20": round(live_ema_20, 2),
+                "ema_20_band_high": round(band_high, 2),
+                "ema_20_band_low": round(band_low, 2),
+                "hh1": round(dow.impulse_1, 2),
+                "hl1": round(dow.touch_1, 2),
+                "hh2": round(dow.impulse_2, 2),
+                "hl2": round(dow.touch_2, 2),
+                "pullback_bars": dow.pullback_bars,
+                "orderly_ratio": dow.orderly_ratio,
+                "bar_open": round(bar.open, 2),
+                "bar_high": round(bar.high, 2),
+                "bar_low": round(bar.low, 2),
+                "bar_close": round(bar.close, 2),
+                "sl_price": sl_price,
+                "buffer_pts": round(buffer_pts, 2),
+            }
+            return True, f"20_ema_call_hl2_rejection ({sig_type})", details
+
+        # ═══════════════════════════════════════════════════════════
+        # PUT EVALUATION (LH2 Red Rejection from 20 EMA Band)
+        # ═══════════════════════════════════════════════════════════
+        elif direction.upper() in ("DOWN", "PUT"):
+            if current_vwap > 0 and bar.close >= current_vwap:
+                return False, "above_vwap", {}
+            if live_slope_20_bps > 0.10:
+                return False, "20_ema_slope_bullish", {}
+
+            close_edge = (bar.high - bar.close) / total_range if total_range > 0 else 0.0
+            is_shooting_star = False
+            is_bearish_expansion = False
+            if bar.close <= bar.open:
+                is_shooting_star = (
+                    (upper_wick_ratio >= min_wick_ratio)
+                    and (close_edge >= 0.60)
+                    and (lower_wick_ratio <= 0.15)
+                    and (upper_wick >= 1.5 * lower_wick)
+                )
+                is_bearish_expansion = (
+                    (body >= 0.40 * total_range)
+                    and (lower_wick_ratio <= 0.20)
+                    and (close_edge >= 0.60)
+                )
+            else:
+                is_shooting_star = (
+                    (upper_wick_ratio >= 0.50)
+                    and (close_edge >= 0.55)
+                    and (lower_wick_ratio <= 0.15)
+                )
+
+            is_red_rejection = is_shooting_star or is_bearish_expansion
+            if not is_red_rejection:
+                return False, "not_valid_red_rejection_candle", {}
+            if bar.close > (band_high + 0.5 * tol_pts) or (band_low - bar.close) > max_retest_dist:
+                return False, "retest_distance_out_of_bounds", {}
+
+            touched_T = (bar.high >= (live_ema_20 - tol_pts)) and (bar.close <= (band_high + 0.5 * tol_pts))
+            prev_bar = self.bars_1m[-2] if len(self.bars_1m) >= 2 else None
+            prev_ema = e_close_arr[-2] if len(e_close_arr) >= 2 else live_ema_20
+            touched_T1 = False
+            if prev_bar and len(e_high_arr) >= 2:
+                touched_T1 = (
+                    (prev_bar.high >= (prev_ema - tol_pts))
+                    and (prev_bar.close <= (e_high_arr[-2] + 0.5 * tol_pts))
+                    and (bar.close < prev_bar.low or body >= 0.45 * total_range)
+                )
+
+            if not (touched_T or touched_T1):
+                return False, "did_not_test_20_ema", {}
+
+            # Validate Full Dow Theory Sequence (LL1 -> LH1 -> LL2 -> 4..12 bar pullback -> LH2)
+            dow = self._validate_dow_hl2_lh2_structure("PUT", touch2_offset=0)
+            if not dow.is_valid and touched_T1:
+                dow = self._validate_dow_hl2_lh2_structure("PUT", touch2_offset=1)
+
+            if not dow.is_valid:
+                v_reason = dow.veto_reason
+                if v_reason in (
+                    "first_touch_lh1_not_found_no_entry_on_lh1",
+                    "no_established_ll2_below_band",
+                    "no_prior_ll1_before_lh1",
+                ) or v_reason.startswith("noise_veto_pullback_too_short"):
+                    v_reason = "single_touch_no_confirmation"
+                return False, v_reason, {"dow_veto": dow.veto_reason}
+
+            ok_struct, r_struct, det_struct = self._check_structural_obstacle("PUT", bar.close)
+            if not ok_struct:
+                return False, r_struct, det_struct
+
+            if not touched_T and touched_T1:
+                sig_type = "two_bar_retest_bearish_expansion"
+                conf_path = "two_bar"
+            else:
+                sig_type = "pin_bar_rejection" if is_shooting_star else "bearish_expansion"
+                conf_path = "single_bar"
+
+            sl_price = round(max(bar.high, dow.touch_2) + buffer_pts, 2)
+            details = {
+                "pa_setup_name": "20_ema_rejection",
+                "pillar": 1,
+                "rejection_type": sig_type,
+                "confirmation_path": conf_path,
+                "dow_structure": "dow_lh2_confirmed",
+                "ema_20": round(live_ema_20, 2),
+                "ema_20_band_high": round(band_high, 2),
+                "ema_20_band_low": round(band_low, 2),
+                "ll1": round(dow.impulse_1, 2),
+                "lh1": round(dow.touch_1, 2),
+                "ll2": round(dow.impulse_2, 2),
+                "lh2": round(dow.touch_2, 2),
+                "pullback_bars": dow.pullback_bars,
+                "orderly_ratio": dow.orderly_ratio,
+                "bar_open": round(bar.open, 2),
+                "bar_high": round(bar.high, 2),
+                "bar_low": round(bar.low, 2),
+                "bar_close": round(bar.close, 2),
+                "sl_price": sl_price,
+                "buffer_pts": round(buffer_pts, 2),
+            }
+            return True, f"20_ema_put_lh2_rejection ({sig_type})", details
 
         return False, "unknown_direction", {}
 

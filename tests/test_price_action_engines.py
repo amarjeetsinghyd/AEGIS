@@ -700,14 +700,22 @@ class TestWatertightPriceActionIntegration:
         ok, reason, metrics = engine.chop_gate.get_regime_state(now)
         assert ok is False  # Confirmed: RegimeChopGate is actively vetoing normal trades!
 
-        # Setup PriceActionEngine with an active Pillar 1 (20 EMA Hammer rejection)
+        # Setup PriceActionEngine with an active Pillar 1 (20 EMA Hammer rejection on valid Dow 2-touch)
         pa_engine = PriceActionEngine()
         for i in range(25):
-            pa_engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 24000.0 + i * 0.5, 24002.0 + i * 0.5, 23998.0 + i * 0.5, 24000.0 + i * 0.5))
+            pa_engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 24000.0 + i * 1.0, 24002.0 + i * 1.0, 23998.0 + i * 1.0, 24000.0 + i * 1.0))
 
         live_ema_20, _ = pa_engine.get_live_20_ema_and_slope()
-        pa_engine.last_price = live_ema_20 + 3.0
-        hammer = OHLCBar(1500, 1560, live_ema_20 + 2.0, live_ema_20 + 4.0, live_ema_20 - 0.5, live_ema_20 + 3.5)
+        # Touch 1 (HL1)
+        pa_engine._on_1m_bar_close(OHLCBar(1500.0, 1560.0, live_ema_20 + 1.5, live_ema_20 + 2.0, live_ema_20 - 0.1, live_ema_20 + 1.0))
+        live_ema_20, _ = pa_engine.get_live_20_ema_and_slope()
+        # 6-bar orderly pullback
+        for k in range(6):
+            pa_engine._on_1m_bar_close(OHLCBar(1560.0 + k * 60, 1620.0 + k * 60, live_ema_20 + 2.5, live_ema_20 + 3.5, live_ema_20 + 1.5, live_ema_20 + 2.5))
+
+        live_ema_20, _ = pa_engine.get_live_20_ema_and_slope()
+        pa_engine.last_price = live_ema_20 + 4.0
+        hammer = OHLCBar(2000.0, 2060.0, live_ema_20 + 3.0, live_ema_20 + 5.0, live_ema_20 - 0.5, live_ema_20 + 4.5)
         pa_engine._on_1m_bar_close(hammer)
         pa_engine._curr_1m_bar = hammer
         engine.price_action_engine = pa_engine
@@ -907,12 +915,21 @@ class TestRefinedPriceActionFilters:
     def test_20_ema_rejection_works_without_50_ema_lag(self):
         """Verifies that 20 EMA rejection triggers on valid 20 EMA test/rejection without being blocked by 50 EMA lag."""
         engine = PriceActionEngine()
-        for i in range(50):
-            engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 24000.0, 24001.0, 23999.0, 24000.0))
+        for i in range(25):
+            engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 24000.0 + i * 1.0, 24002.0 + i * 1.0, 23998.0 + i * 1.0, 24000.0 + i * 1.0))
 
-        engine.last_price = 24000.0
+        live_ema_20, _ = engine.get_live_20_ema_and_slope()
+        # Touch 1 (HL1)
+        engine._on_1m_bar_close(OHLCBar(1500.0, 1560.0, live_ema_20 + 1.5, live_ema_20 + 2.0, live_ema_20 - 0.1, live_ema_20 + 1.0))
+        live_ema_20, _ = engine.get_live_20_ema_and_slope()
+        # 6-bar orderly pullback
+        for k in range(6):
+            engine._on_1m_bar_close(OHLCBar(1560.0 + k * 60, 1620.0 + k * 60, live_ema_20 + 2.5, live_ema_20 + 3.5, live_ema_20 + 1.5, live_ema_20 + 2.5))
+
+        live_ema_20, _ = engine.get_live_20_ema_and_slope()
+        engine.last_price = live_ema_20 + 4.0
         # Force a retest candle with genuine hammer rejection off 20 EMA
-        test_bar = OHLCBar(3000.0, 3060.0, 24000.0, 24001.1, 23999.1, 24001.0)
+        test_bar = OHLCBar(2000.0, 2060.0, live_ema_20 + 3.0, live_ema_20 + 5.0, live_ema_20 - 0.5, live_ema_20 + 4.5)
         engine._on_1m_bar_close(test_bar)
 
         ok, reason, details = engine.check_20_ema_rejection("UP")
