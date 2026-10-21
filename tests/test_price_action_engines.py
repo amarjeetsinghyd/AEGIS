@@ -1309,3 +1309,61 @@ def test_price_action_engine_full_session_capacity_375_bars():
     # Day Low calculated from intraday prior bars must still reflect the morning Day Low!
     day_low = min(b.low for b in list(engine.bars_1m)[:-1])
     assert day_low == 74300.0
+
+
+def test_dynamic_sr_level_registry_and_historical_breakout():
+    """
+    Verifies that PriceActionEngine dynamically registers intraday Support & Resistance levels,
+    maintains them across the session, and triggers Pillar 4 when a historical support (e.g. formed 30 bars ago)
+    is decisively broken downwards.
+    """
+    engine = PriceActionEngine()
+    engine.current_atr_1m = 40.0
+
+    # 1. Bar 0 to 5: Form an initial support trough at 74,230.0 (Bar 2 has low=74,230.0)
+    engine._on_1m_bar_close(OHLCBar(0, 60, 74300.0, 74310.0, 74270.0, 74280.0, volume=100.0))
+    engine._on_1m_bar_close(OHLCBar(60, 120, 74280.0, 74290.0, 74230.0, 74240.0, volume=100.0))
+    engine._on_1m_bar_close(OHLCBar(120, 180, 74240.0, 74350.0, 74240.0, 74340.0, volume=100.0))
+
+    # Support at 74,230 should now be registered!
+    supports = [l for l in engine.session_levels if l.level_type == "SUPPORT"]
+    assert len(supports) >= 1
+    assert any(abs(s.price - 74230.0) < 2.0 for s in supports)
+    s_target = [s for s in supports if abs(s.price - 74230.0) < 2.0][0]
+    assert s_target.is_broken is False
+
+    # 2. Add 25 consolidation bars hovering between 74,260 and 74,320 (30 minutes elapse)
+    for i in range(3, 28):
+        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74280.0, 74310.0, 74260.0, 74290.0, volume=100.0))
+
+    # Support at 74,230 must still remain intact and unbroken!
+    assert s_target.is_broken is False
+
+    # 3. Bar 28: Decisive breakdown candle slicing through 74,230
+    # Opens at 74,235 (near support), closes at 74,205 (below support by 25 pts), solid red body
+    breakdown_bar = OHLCBar(28 * 60, 29 * 60, 74235.0, 74238.0, 74200.0, 74205.0, volume=300.0)
+    engine._on_1m_bar_close(breakdown_bar)
+    engine.last_price = 74205.0
+
+    # Ensure 5m trend aligns bearish
+    engine.bars_5m[-1].open = 74300.0
+    engine.bars_5m[-1].close = 74205.0
+
+    ok, reason, details = engine.check_topological_prominence_breakout("DOWN", current_vwap=74350.0)
+    assert ok is True
+    assert reason == "prominence_hub_breakout_down"
+    assert details["level_source"] == "sr_registry"
+    assert abs(details["hub_price"] - 74230.0) < 2.0
+    assert details["anchor_age_bars"] >= 25
+
+    # The support level must now be marked as broken!
+    assert s_target.is_broken is True
+
+    # 4. A subsequent candle cannot re-trigger on this already-broken support
+    subsequent_bar = OHLCBar(29 * 60, 30 * 60, 74205.0, 74210.0, 74180.0, 74185.0, volume=300.0)
+    engine._on_1m_bar_close(subsequent_bar)
+    engine.last_price = 74185.0
+    # Because 74,230 is now broken, it won't re-trigger from sr_registry
+    cand_unbroken = [l for l in engine.session_levels if l.level_type == "SUPPORT" and not l.is_broken and l.price >= 74200.0]
+    assert len(cand_unbroken) == 0
+

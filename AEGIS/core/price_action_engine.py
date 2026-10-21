@@ -88,6 +88,19 @@ class DowStructureChain:
     pb_counter_flow: float = 0.0
 
 
+@dataclass
+class StructuralLevel:
+    """Represents an intraday Support or Resistance level identified by topological prominence or multi-touch."""
+    level_type: str        # "SUPPORT" or "RESISTANCE"
+    price: float           # Price level
+    ts_created: float      # Timestamp when established
+    prominence: float      # Prominence score (|depth| / ATR)
+    bar_idx: int           # Index in bars_1m where formed
+    touch_count: int = 1   # Number of times price tested this level
+    is_broken: bool = False
+    ts_broken: float = 0.0
+
+
 class PriceActionEngine:
     """
     Dedicated, end-to-end engine for real-time 1m bar aggregation, EMA tracking,
@@ -175,6 +188,9 @@ class PriceActionEngine:
         self.current_vwap: float = 0.0
         self._current_vwap_day: int = -1
 
+        # ─── Dynamic Session S/R Level Registry (Pillar 4 Multi-Bar Memory) ───
+        self.session_levels: List[StructuralLevel] = []
+        self._levels_day: int = -1
         # ─── Daily Structural Levels (PDH / PDL / PDC) ───
         self.pdh: float = 0.0
         self.pdl: float = 0.0
@@ -781,6 +797,72 @@ class PriceActionEngine:
                 )
             except Exception:
                 pass
+
+        # 5. Dynamic Session S/R Level Registry Update
+        self._update_structural_levels(bar)
+
+    def _update_structural_levels(self, bar: OHLCBar) -> None:
+        """
+        Dynamically discovers, registers, and tracks intraday Support & Resistance levels.
+        Maintains an active session diary of structural peaks and troughs.
+        """
+        curr_day = int(bar.ts_start // 86400) if bar.ts_start > 0 else self._current_vwap_day
+        if self._levels_day != curr_day:
+            self.session_levels.clear()
+            self._levels_day = curr_day
+
+        if len(self.bars_1m) < 3:
+            return
+
+        cand = self.bars_1m[-2]
+        prev = self.bars_1m[-3]
+        curr = bar
+        atr = self.current_atr_1m if self.current_atr_1m > 0 else (cand.close * 0.001)
+        tol = max(0.25 * atr, cand.high * 0.0003)
+
+        # 1. Swing High / Resistance Peak Detection
+        if cand.high >= prev.high and cand.high > curr.high:
+            depth = cand.high - min(prev.low, curr.low)
+            if depth >= 0.15 * atr:
+                matched = False
+                for lvl in self.session_levels:
+                    if lvl.level_type == "RESISTANCE" and not lvl.is_broken and abs(lvl.price - cand.high) <= tol:
+                        lvl.touch_count += 1
+                        lvl.price = max(lvl.price, cand.high)
+                        matched = True
+                        break
+                if not matched:
+                    self.session_levels.append(
+                        StructuralLevel(
+                            level_type="RESISTANCE",
+                            price=round(cand.high, 2),
+                            ts_created=cand.ts_start,
+                            prominence=round(depth / max(atr, 1e-4), 2),
+                            bar_idx=len(self.bars_1m) - 2,
+                        )
+                    )
+
+        # 2. Swing Low / Support Trough Detection
+        if cand.low <= prev.low and cand.low < curr.low:
+            depth = max(prev.high, curr.high) - cand.low
+            if depth >= 0.15 * atr:
+                matched = False
+                for lvl in self.session_levels:
+                    if lvl.level_type == "SUPPORT" and not lvl.is_broken and abs(lvl.price - cand.low) <= tol:
+                        lvl.touch_count += 1
+                        lvl.price = min(lvl.price, cand.low)
+                        matched = True
+                        break
+                if not matched:
+                    self.session_levels.append(
+                        StructuralLevel(
+                            level_type="SUPPORT",
+                            price=round(cand.low, 2),
+                            ts_created=cand.ts_start,
+                            prominence=round(depth / max(atr, 1e-4), 2),
+                            bar_idx=len(self.bars_1m) - 2,
+                        )
+                    )
 
     # ═══════════════════════════════════════════════════════════
     # 2. ZERO-LAG IN-FLIGHT EMA & DYNAMIC INDICATOR GETTERS
@@ -2797,6 +2879,154 @@ class PriceActionEngine:
                         "max_allowed_s": 15.0,
                     }
 
+        is_bullish = direction.upper() in ("UP", "CALL")
+        is_bearish = direction.upper() in ("DOWN", "PUT")
+        ref_spot = self.last_price if self.last_price > 0 else bar.close
+        buffer_pts = max(5.0, (ref_spot / 24000.0) * 5.0)
+        _atr_ref = self.current_atr_1m if self.current_atr_1m > 0 else (ref_spot * 0.001)
+        min_hub_clearance = max(2.0, (ref_spot / 24000.0) * 2.0, 0.08 * _atr_ref)
+
+        # 5m Structural Alignment Gate
+        trend_5m_bullish = True
+        trend_5m_bearish = True
+        if self.bars_5m:
+            bar_5m = self.bars_5m[-1]
+            trend_5m_bullish = bar_5m.close >= bar_5m.open
+            trend_5m_bearish = bar_5m.close <= bar_5m.open
+
+        # Volume Gate: Volume Ratio VR_t vs 60m median volume
+        vols_60 = [float(getattr(b, "volume", 0.0) or 0.0) for b in list(self.bars_1m)[-60:]]
+        med_vol = float(np.median(vols_60)) if vols_60 else 1.0
+        curr_vol = float(getattr(bar, "volume", 0.0) or 0.0)
+        vr_t = curr_vol / med_vol if med_vol > 0 else 1.0
+
+        total_range = max(bar.high - bar.low, 0.1)
+        body = abs(bar.close - bar.open)
+        body_ratio = body / total_range
+        upper_wick = bar.high - max(bar.open, bar.close)
+        lower_wick = min(bar.open, bar.close) - bar.low
+        upper_wick_ratio = upper_wick / total_range
+        lower_wick_ratio = lower_wick / total_range
+        close_edge_call = (bar.close - bar.low) / total_range
+        close_edge_put = (bar.high - bar.close) / total_range
+
+        # ─── Priority 1: Dynamic Session S/R Level Registry Breakout ───
+        if is_bearish and trend_5m_bearish:
+            cand_supports = [
+                lvl for lvl in self.session_levels
+                if lvl.level_type == "SUPPORT"
+                and not lvl.is_broken
+                and lvl.prominence >= 1.25
+                and lvl.bar_idx < (len(self.bars_1m) - 2)
+            ]
+            for s_lvl in cand_supports:
+                displacement = s_lvl.price - bar.close
+                bar_range = bar.high - bar.low
+                origin_dist = abs(bar.open - s_lvl.price)
+                if (
+                    bar.close <= (s_lvl.price - min_hub_clearance)
+                    and origin_dist <= (0.35 * _atr_ref)
+                    and bar.close < bar.open
+                    and body_ratio >= 0.35
+                    and close_edge_put >= 0.60
+                    and lower_wick_ratio <= 0.20
+                    and bar_range <= (1.35 * _atr_ref)
+                    and displacement <= (1.25 * _atr_ref)
+                    and vr_t >= 1.20
+                ):
+                    if current_vwap > 0 and bar.close > current_vwap:
+                        continue
+
+                    # Macro Runway Guard (Day Extreme Clearance)
+                    ok_struct, r_struct, det_struct = self._check_structural_obstacle(
+                        "PUT", bar.close, check_day_extremes=True
+                    )
+                    if not ok_struct:
+                        return False, f"structural_obstacle_{r_struct}", det_struct
+
+                    s_lvl.is_broken = True
+                    s_lvl.ts_broken = bar.ts_end
+                    sl_price = round(s_lvl.price + buffer_pts, 2)
+                    return True, "prominence_hub_breakout_down", {
+                        "pa_setup_name": "topological_prominence_breakout",
+                        "pillar": 4,
+                        "hub_price": s_lvl.price,
+                        "min_hub_clearance": round(min_hub_clearance, 2),
+                        "pi_hat": s_lvl.prominence,
+                        "vr_t": vr_t,
+                        "breakout_direction": "DOWN",
+                        "anchor_age_bars": len(self.bars_1m) - 1 - s_lvl.bar_idx,
+                        "anchor_touch_count": s_lvl.touch_count,
+                        "level_source": "sr_registry",
+                        "bar_open": round(bar.open, 2),
+                        "bar_close": round(bar.close, 2),
+                        "bar_low": round(bar.low, 2),
+                        "bar_high": round(bar.high, 2),
+                        "body_ratio": round(body_ratio, 3),
+                        "lower_wick_ratio": round(lower_wick_ratio, 3),
+                        "close_edge": round(close_edge_put, 3),
+                        "sl_price": sl_price,
+                        "buffer_pts": round(buffer_pts, 2),
+                    }
+
+        elif is_bullish and trend_5m_bullish:
+            cand_resistances = [
+                lvl for lvl in self.session_levels
+                if lvl.level_type == "RESISTANCE"
+                and not lvl.is_broken
+                and lvl.prominence >= 1.25
+                and lvl.bar_idx < (len(self.bars_1m) - 2)
+            ]
+            for r_lvl in cand_resistances:
+                displacement = bar.close - r_lvl.price
+                bar_range = bar.high - bar.low
+                origin_dist = abs(bar.open - r_lvl.price)
+                if (
+                    bar.close >= (r_lvl.price + min_hub_clearance)
+                    and origin_dist <= (0.35 * _atr_ref)
+                    and bar.close > bar.open
+                    and body_ratio >= 0.35
+                    and close_edge_call >= 0.60
+                    and upper_wick_ratio <= 0.20
+                    and bar_range <= (1.35 * _atr_ref)
+                    and displacement <= (1.25 * _atr_ref)
+                    and vr_t >= 1.20
+                ):
+                    if current_vwap > 0 and bar.close < current_vwap:
+                        continue
+
+                    ok_struct, r_struct, det_struct = self._check_structural_obstacle(
+                        "CALL", bar.close, check_day_extremes=True
+                    )
+                    if not ok_struct:
+                        return False, f"structural_obstacle_{r_struct}", det_struct
+
+                    r_lvl.is_broken = True
+                    r_lvl.ts_broken = bar.ts_end
+                    sl_price = round(r_lvl.price - buffer_pts, 2)
+                    return True, "prominence_hub_breakout_up", {
+                        "pa_setup_name": "topological_prominence_breakout",
+                        "pillar": 4,
+                        "hub_price": r_lvl.price,
+                        "min_hub_clearance": round(min_hub_clearance, 2),
+                        "pi_hat": r_lvl.prominence,
+                        "vr_t": vr_t,
+                        "breakout_direction": "UP",
+                        "anchor_age_bars": len(self.bars_1m) - 1 - r_lvl.bar_idx,
+                        "anchor_touch_count": r_lvl.touch_count,
+                        "level_source": "sr_registry",
+                        "bar_open": round(bar.open, 2),
+                        "bar_close": round(bar.close, 2),
+                        "bar_low": round(bar.low, 2),
+                        "bar_high": round(bar.high, 2),
+                        "body_ratio": round(body_ratio, 3),
+                        "upper_wick_ratio": round(upper_wick_ratio, 3),
+                        "close_edge": round(close_edge_call, 3),
+                        "sl_price": sl_price,
+                        "buffer_pts": round(buffer_pts, 2),
+                    }
+
+        # ─── Priority 2: Fallback to FastMonotonicStack (T-2 Hub) ───
         prices_window = np.array([b.close for b in list(self.bars_1m)[-60:]], dtype=np.float64)
         if len(prices_window) < 5:
             return False, "insufficient_window", {}
@@ -2813,25 +3043,10 @@ class PriceActionEngine:
         if pi_hat < 1.75:
             return False, f"insufficient_prominence_{pi_hat:.2f}", {}
 
-        # Volume Gate: Volume Ratio VR_t >= 1.4 vs 60m median volume
-        vols_60 = [float(getattr(b, "volume", 0.0) or 0.0) for b in list(self.bars_1m)[-60:]]
-        med_vol = float(np.median(vols_60)) if vols_60 else 1.0
-        curr_vol = float(getattr(bar, "volume", 0.0) or 0.0)
-        vr_t = curr_vol / med_vol if med_vol > 0 else 1.0
         if vr_t < 1.4:
             return False, f"volume_ratio_gate_failed_{vr_t:.2f}", {}
 
-        # 5m Structural Alignment Gate
-        trend_5m_bullish = True
-        trend_5m_bearish = True
-        if self.bars_5m:
-            bar_5m = self.bars_5m[-1]
-            trend_5m_bullish = bar_5m.close >= bar_5m.open
-            trend_5m_bearish = bar_5m.close <= bar_5m.open
-
         hub_price = float(prices_window[hub_idx])
-        is_bullish = direction.upper() in ("UP", "CALL")
-        is_bearish = direction.upper() in ("DOWN", "PUT")
 
         # Live Spot Sanity Guard
         if self.last_price > 0:
@@ -2845,21 +3060,6 @@ class PriceActionEngine:
                     "last_price": round(self.last_price, 2),
                     "hub_price": round(hub_price, 2),
                 }
-
-        ref_spot = self.last_price if self.last_price > 0 else hub_price
-        buffer_pts = max(5.0, (ref_spot / 24000.0) * 5.0)
-        _atr_ref = self.current_atr_1m if self.current_atr_1m > 0 else (ref_spot * 0.001)
-        min_hub_clearance = max(2.0, (ref_spot / 24000.0) * 2.0, 0.08 * _atr_ref)
-
-        total_range = max(bar.high - bar.low, 0.1)
-        body = abs(bar.close - bar.open)
-        body_ratio = body / total_range
-        upper_wick = bar.high - max(bar.open, bar.close)
-        lower_wick = min(bar.open, bar.close) - bar.low
-        upper_wick_ratio = upper_wick / total_range
-        lower_wick_ratio = lower_wick / total_range
-        close_edge_call = (bar.close - bar.low) / total_range
-        close_edge_put = (bar.high - bar.close) / total_range
 
         if is_bullish and trend_5m_bullish:
             # 1. Anti-Exhaustion & Origin Validation:
