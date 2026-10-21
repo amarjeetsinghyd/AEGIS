@@ -110,6 +110,9 @@ class StructuralLevel:
     opt_total_vol: float = 0.0     # Total Option volume across ATM window
     opt_pcr: float = 1.0           # Put / Call volume ratio
     vr_anchor: float = 1.0         # Volume ratio vs 60m median volume at creation
+    net_delta_flow: float = 0.0    # Directional Flow alias
+    pcr_at_level: float = 1.0      # PCR at level alias
+    vol_ratio_at_level: float = 1.0 # VR at level alias
 
 
 class PriceActionEngine:
@@ -937,9 +940,12 @@ class PriceActionEngine:
                         lvl.put_sell_vol += cand_ps
                         lvl.opt_total_vol += cand_opt_vol
                         lvl.opt_delta_flow = round(lvl.call_buy_vol - lvl.put_buy_vol, 1)
+                        lvl.net_delta_flow = lvl.opt_delta_flow
                         tot_c = lvl.call_buy_vol + lvl.call_sell_vol
                         tot_p = lvl.put_buy_vol + lvl.put_sell_vol
                         lvl.opt_pcr = round(tot_p / max(tot_c, 1.0), 2)
+                        lvl.pcr_at_level = lvl.opt_pcr
+                        lvl.vol_ratio_at_level = round(lvl.volume / max(med_vol, 1.0), 2)
                         retest_boost = 0.35 + (0.15 if vr >= 1.20 else 0.0)
                         lvl.prominence = round(lvl.prominence + retest_boost, 2)
                         lvl.price = max(lvl.price, cand.high)
@@ -966,6 +972,9 @@ class PriceActionEngine:
                             opt_total_vol=cand_opt_vol,
                             opt_pcr=round(cand_pcr, 2),
                             vr_anchor=round(vr, 2),
+                            net_delta_flow=cand_delta,
+                            pcr_at_level=round(cand_pcr, 2),
+                            vol_ratio_at_level=round(vr, 2),
                         )
                     )
 
@@ -984,9 +993,12 @@ class PriceActionEngine:
                         lvl.put_sell_vol += cand_ps
                         lvl.opt_total_vol += cand_opt_vol
                         lvl.opt_delta_flow = round(lvl.call_buy_vol - lvl.put_buy_vol, 1)
+                        lvl.net_delta_flow = lvl.opt_delta_flow
                         tot_c = lvl.call_buy_vol + lvl.call_sell_vol
                         tot_p = lvl.put_buy_vol + lvl.put_sell_vol
                         lvl.opt_pcr = round(tot_p / max(tot_c, 1.0), 2)
+                        lvl.pcr_at_level = lvl.opt_pcr
+                        lvl.vol_ratio_at_level = round(lvl.volume / max(med_vol, 1.0), 2)
                         retest_boost = 0.35 + (0.15 if vr >= 1.20 else 0.0)
                         lvl.prominence = round(lvl.prominence + retest_boost, 2)
                         lvl.price = min(lvl.price, cand.low)
@@ -1013,6 +1025,9 @@ class PriceActionEngine:
                             opt_total_vol=cand_opt_vol,
                             opt_pcr=round(cand_pcr, 2),
                             vr_anchor=round(vr, 2),
+                            net_delta_flow=cand_delta,
+                            pcr_at_level=round(cand_pcr, 2),
+                            vol_ratio_at_level=round(vr, 2),
                         )
                     )
 
@@ -1037,6 +1052,9 @@ class PriceActionEngine:
                 "put_sell_vol": round(lvl.put_sell_vol, 1),
                 "opt_delta_flow": round(lvl.opt_delta_flow, 1),
                 "opt_pcr": round(lvl.opt_pcr, 2),
+                "net_delta_flow": round(lvl.net_delta_flow, 1),
+                "pcr_at_level": round(lvl.pcr_at_level, 2),
+                "vol_ratio_at_level": round(lvl.vol_ratio_at_level, 2),
             })
         return snapshot
 
@@ -1436,6 +1454,10 @@ class PriceActionEngine:
                     chain.veto_reason = f"entry_volume_too_thin (entry={entry_vol:.0f} < 0.70*pb={pb_avg_vol:.0f})"
                     return chain
 
+            if imp_directional_flow > 0 and pb_counter_flow > 1.15 * imp_directional_flow:
+                chain.veto_reason = "wyckoff_pullback_counter_flow_too_heavy"
+                return chain
+
             chain.is_valid = True
             chain.veto_reason = "dow_hl2_confirmed"
             chain.idx_1, chain.idx_touch1, chain.idx_2, chain.idx_touch2 = idx_hh1, idx_hl1, idx_hh2, idx_t2
@@ -1570,6 +1592,10 @@ class PriceActionEngine:
                 if entry_vol < 0.70 * pb_avg_vol:
                     chain.veto_reason = f"entry_volume_too_thin (entry={entry_vol:.0f} < 0.70*pb={pb_avg_vol:.0f})"
                     return chain
+
+            if imp_directional_flow > 0 and pb_counter_flow > 1.15 * imp_directional_flow:
+                chain.veto_reason = "wyckoff_pullback_counter_flow_too_heavy"
+                return chain
 
             chain.is_valid = True
             chain.veto_reason = "dow_lh2_confirmed"
@@ -1954,6 +1980,142 @@ class PriceActionEngine:
 
         return False, "unknown_direction", {}
 
+    def _evaluate_wyckoff_pillar_flow(
+        self,
+        pillar: int,
+        direction: str,
+        bar: Optional[OHLCBar] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Regime-Aware, Pillar-Specific Wyckoff & Institutional Option Flow Delta Gate.
+        
+        Evaluates Order Flow Footprint (Call Buy, Call Sell, Put Buy, Put Sell, Net Delta)
+        specifically tailored to each Pillar's market phase.
+
+        CRITICAL BACKWARD-COMPATIBILITY:
+        Whenever bar.opt_total_vol <= 0 (synthetic bars / offline tests without option ticks),
+        neutral bypass is granted so tests without option data pass cleanly.
+        """
+        if bar is None:
+            return True, "no_bar_bypass", {}
+
+        extra = extra or {}
+        vols_60 = [float(getattr(b, "volume", 0.0) or 0.0) for b in list(self.bars_1m)[-60:]]
+        med_vol = float(np.median(vols_60)) if vols_60 else 1.0
+        bar_vol = float(getattr(bar, "volume", 0.0) or 0.0)
+        vr_t = bar_vol / max(med_vol, 1.0) if med_vol > 0 else 1.0
+
+        opt_vol = float(getattr(bar, "opt_total_vol", 0.0) or 0.0)
+        if opt_vol <= 0.0:
+            # Synthetic / test bar bypass
+            return True, "opt_flow_synthetic_bypass", {"vr_t": round(vr_t, 2)}
+
+        cb = float(getattr(bar, "call_buy_vol", 0.0) or 0.0)
+        cs = float(getattr(bar, "call_sell_vol", 0.0) or 0.0)
+        pb = float(getattr(bar, "put_buy_vol", 0.0) or 0.0)
+        ps = float(getattr(bar, "put_sell_vol", 0.0) or 0.0)
+
+        bull_flow = cb + ps
+        bear_flow = pb + cs
+        net_inst_delta = bull_flow - bear_flow
+        bull_ratio = bull_flow / max(bear_flow, 1.0)
+        bear_ratio = bear_flow / max(bull_flow, 1.0)
+        is_call = direction.upper() in ("UP", "CALL")
+
+        flow_metrics = {
+            "bull_flow": round(bull_flow, 1),
+            "bear_flow": round(bear_flow, 1),
+            "net_inst_delta": round(net_inst_delta, 1),
+            "bull_ratio": round(bull_ratio, 2),
+            "bear_ratio": round(bear_ratio, 2),
+            "vr_t": round(vr_t, 2),
+            "call_buy_vol": round(cb, 1),
+            "call_sell_vol": round(cs, 1),
+            "put_buy_vol": round(pb, 1),
+            "put_sell_vol": round(ps, 1),
+        }
+
+        # ─── PILLAR 1: 20 EMA Rejection (Wyckoff Pullback & Re-accumulation/Distribution) ───
+        if pillar == 1:
+            is_wick_rejection = bool(extra.get("is_wick_rejection", False))
+            if is_call:
+                req_ratio = 0.85 if is_wick_rejection else 1.05
+                if bull_ratio < req_ratio:
+                    return False, "wyckoff_p1_bearish_delta_divergence", {
+                        **flow_metrics,
+                        "required_bull_ratio": req_ratio,
+                        "is_wick_rejection": is_wick_rejection,
+                    }
+            else:
+                req_ratio = 0.85 if is_wick_rejection else 1.05
+                if bear_ratio < req_ratio:
+                    return False, "wyckoff_p1_bullish_delta_divergence", {
+                        **flow_metrics,
+                        "required_bear_ratio": req_ratio,
+                        "is_wick_rejection": is_wick_rejection,
+                    }
+
+        # ─── PILLAR 2: Micro-Sweep Reclaim (Wyckoff Spring / Upthrust Absorption) ───
+        elif pillar == 2:
+            if is_call:
+                # CALL Spring: Veto if heavy opposing supply (bear_ratio >= 1.15) OR high volume with weak buyers & low put writing
+                put_sell_pct = ps / max(opt_vol, 1.0)
+                if bear_ratio >= 1.15 or (vr_t >= 1.20 and bull_ratio < 0.95 and put_sell_pct < 0.30):
+                    return False, "wyckoff_p2_failed_spring_heavy_supply", {
+                        **flow_metrics,
+                        "put_sell_pct": round(put_sell_pct, 3),
+                        "verdict": "FAILED_SPRING_SUPPLY_OVERWHELMED",
+                    }
+            else:
+                # PUT Upthrust: Veto if heavy opposing demand (bull_ratio >= 1.15) OR high volume with weak sellers & low call writing
+                call_sell_pct = cs / max(opt_vol, 1.0)
+                if bull_ratio >= 1.15 or (vr_t >= 1.20 and bear_ratio < 0.95 and call_sell_pct < 0.30):
+                    return False, "wyckoff_p2_failed_upthrust_heavy_demand", {
+                        **flow_metrics,
+                        "call_sell_pct": round(call_sell_pct, 3),
+                        "verdict": "FAILED_UPTHRUST_DEMAND_OVERWHELMED",
+                    }
+
+        # ─── PILLAR 3: Volatility Squeeze Breakout (Wyckoff Initiative SOS / SOW) ───
+        elif pillar == 3:
+            if is_call:
+                if bull_ratio < 1.15 or cb < pb:
+                    return False, "wyckoff_p3_call_negative_delta_trap", {
+                        **flow_metrics,
+                        "required_bull_ratio": 1.15,
+                        "verdict": "BULL_TRAP_NEGATIVE_DELTA",
+                    }
+            else:
+                if bear_ratio < 1.15 or pb < cb:
+                    return False, "wyckoff_p3_put_positive_delta_trap", {
+                        **flow_metrics,
+                        "required_bear_ratio": 1.15,
+                        "verdict": "BEAR_TRAP_POSITIVE_DELTA",
+                    }
+
+        # ─── PILLAR 4: Prominence & S/R Registry Breakout (Wyckoff Effort vs Result & Stopping Volume) ───
+        elif pillar == 4:
+            if is_call:
+                # CALL Breakout requires genuine BullFlow dominance (bull_ratio >= 1.18)
+                if bear_flow > bull_flow or bull_ratio < 1.18:
+                    return False, "wyckoff_p4_stopping_volume_bearish_supply", {
+                        **flow_metrics,
+                        "required_bull_ratio": 1.18,
+                        "verdict": "STOPPING_VOLUME_BEARISH_SUPPLY_ABSORPTION",
+                    }
+            else:
+                # PUT Breakdown requires genuine BearFlow dominance (bear_ratio >= 1.18)
+                # If bull_flow > bear_flow (e.g. Put Writing dominance +1.29M like 21 Oct 09:56), veto immediately!
+                if bull_flow > bear_flow or bear_ratio < 1.18:
+                    return False, "wyckoff_p4_stopping_volume_bullish_absorption", {
+                        **flow_metrics,
+                        "required_bear_ratio": 1.18,
+                        "verdict": "STOPPING_VOLUME_BULLISH_PUT_WRITING_ABSORPTION",
+                    }
+
+        return True, "wyckoff_flow_confirmed", flow_metrics
+
     def check_20_ema_rejection(
         self,
         direction: str,
@@ -2109,6 +2271,16 @@ class PriceActionEngine:
                 sig_type = "hammer_rejection" if is_hammer else "bullish_expansion"
                 conf_path = "single_bar"
 
+            # Wyckoff Institutional Option Flow Delta Gate
+            ok_wflow, r_wflow, det_wflow = self._evaluate_wyckoff_pillar_flow(
+                pillar=1,
+                direction="CALL",
+                bar=bar,
+                extra={"is_wick_rejection": is_hammer},
+            )
+            if not ok_wflow:
+                return False, r_wflow, det_wflow
+
             sl_price = round(min(bar.low, dow.touch_2) - buffer_pts, 2)
             details = {
                 "pa_setup_name": "20_ema_rejection",
@@ -2138,6 +2310,7 @@ class PriceActionEngine:
                 "sl_price": sl_price,
                 "buffer_pts": round(buffer_pts, 2),
             }
+            details.update(det_wflow)
             return True, f"20_ema_call_hl2_rejection ({sig_type})", details
 
         # ═══════════════════════════════════════════════════════════
@@ -2222,6 +2395,16 @@ class PriceActionEngine:
                 sig_type = "pin_bar_rejection" if is_shooting_star else "bearish_expansion"
                 conf_path = "single_bar"
 
+            # Wyckoff Institutional Option Flow Delta Gate
+            ok_wflow, r_wflow, det_wflow = self._evaluate_wyckoff_pillar_flow(
+                pillar=1,
+                direction="PUT",
+                bar=bar,
+                extra={"is_wick_rejection": is_shooting_star},
+            )
+            if not ok_wflow:
+                return False, r_wflow, det_wflow
+
             sl_price = round(max(bar.high, dow.touch_2) + buffer_pts, 2)
             details = {
                 "pa_setup_name": "20_ema_rejection",
@@ -2251,6 +2434,7 @@ class PriceActionEngine:
                 "sl_price": sl_price,
                 "buffer_pts": round(buffer_pts, 2),
             }
+            details.update(det_wflow)
             return True, f"20_ema_put_lh2_rejection ({sig_type})", details
 
         return False, "unknown_direction", {}
@@ -2555,6 +2739,15 @@ class PriceActionEngine:
                 if not ok_struct:
                     return False, f"structural_obstacle_{r_struct}", det_struct
 
+                # Wyckoff Institutional Option Flow Delta Gate (Spring Absorption)
+                ok_wflow, r_wflow, det_wflow = self._evaluate_wyckoff_pillar_flow(
+                    pillar=2,
+                    direction="CALL",
+                    bar=bar,
+                )
+                if not ok_wflow:
+                    return False, r_wflow, det_wflow
+
                 sl_price = round(bar.low - buffer_pts, 2)
                 details = {
                     "pa_setup_name": "micro_sweep_reclaim",
@@ -2573,6 +2766,7 @@ class PriceActionEngine:
                     "sl_price": sl_price,
                     "buffer_pts": round(buffer_pts, 2),
                 }
+                details.update(det_wflow)
                 return True, "micro_sweep_call_reclaim", details
             return False, "sweep_structure_not_met", {}
 
@@ -2611,6 +2805,15 @@ class PriceActionEngine:
                 if not ok_struct:
                     return False, f"structural_obstacle_{r_struct}", det_struct
 
+                # Wyckoff Institutional Option Flow Delta Gate (Upthrust Absorption)
+                ok_wflow, r_wflow, det_wflow = self._evaluate_wyckoff_pillar_flow(
+                    pillar=2,
+                    direction="PUT",
+                    bar=bar,
+                )
+                if not ok_wflow:
+                    return False, r_wflow, det_wflow
+
                 sl_price = round(bar.high + buffer_pts, 2)
                 details = {
                     "pa_setup_name": "micro_sweep_reclaim",
@@ -2627,6 +2830,7 @@ class PriceActionEngine:
                     "sl_price": sl_price,
                     "buffer_pts": round(buffer_pts, 2),
                 }
+                details.update(det_wflow)
                 return True, "micro_sweep_put_reclaim", details
             return False, "sweep_structure_not_met", {}
 
@@ -2677,6 +2881,20 @@ class PriceActionEngine:
         # Squeeze compression check (dynamically normalized to ATR)
         if squeeze_range > (1.25 * atr):
             return False, "not_in_squeeze", {}
+
+        # Wyckoff Box Volume Expansion Gate
+        box_vols = [float(getattr(b, "volume", 0.0) or 0.0) for b in recent_bars]
+        box_avg_vol = (sum(box_vols) / len(box_vols)) if box_vols else 1.0
+        vols_60 = [float(getattr(b, "volume", 0.0) or 0.0) for b in list(self.bars_1m)[-60:]]
+        med_vol = float(np.median(vols_60)) if vols_60 else 1.0
+        vr_t = float(bar.volume) / med_vol if med_vol > 0 else 1.0
+        if bar.volume > 10.0 and box_avg_vol > 10.0:
+            if not (bar.volume >= 1.15 * box_avg_vol or vr_t >= 1.15):
+                return False, "wyckoff_p3_low_volume_squeeze_breakout", {
+                    "bar_volume": round(bar.volume, 1),
+                    "box_avg_vol": round(box_avg_vol, 1),
+                    "vr_t": round(vr_t, 2),
+                }
 
         # Live Spot Sanity Guard
         if self.last_price > 0:
@@ -2730,6 +2948,15 @@ class PriceActionEngine:
                 if not ok_struct:
                     return False, f"structural_obstacle_{r_struct}", det_struct
 
+                # Wyckoff Institutional Option Flow Delta Gate (Initiative SOW)
+                ok_wflow, r_wflow, det_wflow = self._evaluate_wyckoff_pillar_flow(
+                    pillar=3,
+                    direction="PUT",
+                    bar=bar,
+                )
+                if not ok_wflow:
+                    return False, r_wflow, det_wflow
+
                 sl_price = round(box_high + buffer_pts, 2)
                 details = {
                     "pa_setup_name": "volatility_squeeze_breakout",
@@ -2749,6 +2976,7 @@ class PriceActionEngine:
                     "sl_price": sl_price,
                     "buffer_pts": round(buffer_pts, 2),
                 }
+                details.update(det_wflow)
                 return True, "volatility_squeeze_downside_breakout", details
             return False, "no_downside_breakout", {}
 
@@ -2791,6 +3019,15 @@ class PriceActionEngine:
                 if not ok_struct:
                     return False, f"structural_obstacle_{r_struct}", det_struct
 
+                # Wyckoff Institutional Option Flow Delta Gate (Initiative SOS)
+                ok_wflow, r_wflow, det_wflow = self._evaluate_wyckoff_pillar_flow(
+                    pillar=3,
+                    direction="CALL",
+                    bar=bar,
+                )
+                if not ok_wflow:
+                    return False, r_wflow, det_wflow
+
                 sl_price = round(box_low - buffer_pts, 2)
                 details = {
                     "pa_setup_name": "volatility_squeeze_breakout",
@@ -2810,6 +3047,7 @@ class PriceActionEngine:
                     "sl_price": sl_price,
                     "buffer_pts": round(buffer_pts, 2),
                 }
+                details.update(det_wflow)
                 return True, "volatility_squeeze_upside_breakout", details
             return False, "no_upside_breakout", {}
 
@@ -3151,7 +3389,17 @@ class PriceActionEngine:
                     s_lvl.ts_broken = bar.ts_end
                     sl_price = round(s_lvl.price + buffer_pts, 2)
                     age_bars = (self._total_bars_seen - s_lvl.seq_idx) if self._total_bars_seen >= s_lvl.seq_idx else (len(self.bars_1m) - 1 - s_lvl.bar_idx)
-                    return True, "prominence_hub_breakout_down", {
+
+                    # Wyckoff Effort vs Result & Stopping Volume Shield
+                    ok_wflow, r_wflow, det_wflow = self._evaluate_wyckoff_pillar_flow(
+                        pillar=4,
+                        direction="PUT",
+                        bar=bar,
+                    )
+                    if not ok_wflow:
+                        return False, r_wflow, det_wflow
+
+                    details = {
                         "pa_setup_name": "topological_prominence_breakout",
                         "pillar": 4,
                         "hub_price": s_lvl.price,
@@ -3178,6 +3426,8 @@ class PriceActionEngine:
                         "sl_price": sl_price,
                         "buffer_pts": round(buffer_pts, 2),
                     }
+                    details.update(det_wflow)
+                    return True, "prominence_hub_breakout_down", details
 
         elif is_bullish and trend_5m_bullish:
             cand_resistances = [
@@ -3216,7 +3466,17 @@ class PriceActionEngine:
                     r_lvl.ts_broken = bar.ts_end
                     sl_price = round(r_lvl.price - buffer_pts, 2)
                     age_bars = (self._total_bars_seen - r_lvl.seq_idx) if self._total_bars_seen >= r_lvl.seq_idx else (len(self.bars_1m) - 1 - r_lvl.bar_idx)
-                    return True, "prominence_hub_breakout_up", {
+
+                    # Wyckoff Effort vs Result & Stopping Volume Shield
+                    ok_wflow, r_wflow, det_wflow = self._evaluate_wyckoff_pillar_flow(
+                        pillar=4,
+                        direction="CALL",
+                        bar=bar,
+                    )
+                    if not ok_wflow:
+                        return False, r_wflow, det_wflow
+
+                    details = {
                         "pa_setup_name": "topological_prominence_breakout",
                         "pillar": 4,
                         "hub_price": r_lvl.price,
@@ -3243,6 +3503,8 @@ class PriceActionEngine:
                         "sl_price": sl_price,
                         "buffer_pts": round(buffer_pts, 2),
                     }
+                    details.update(det_wflow)
+                    return True, "prominence_hub_breakout_up", details
 
         # ─── Priority 2: Fallback to FastMonotonicStack (T-2 Hub) ───
         prices_window = np.array([b.close for b in list(self.bars_1m)[-60:]], dtype=np.float64)
@@ -3323,8 +3585,17 @@ class PriceActionEngine:
                 if not ok_struct:
                     return False, f"structural_obstacle_{r_struct}", det_struct
 
+                # Wyckoff Effort vs Result & Stopping Volume Shield
+                ok_wflow, r_wflow, det_wflow = self._evaluate_wyckoff_pillar_flow(
+                    pillar=4,
+                    direction="CALL",
+                    bar=bar,
+                )
+                if not ok_wflow:
+                    return False, r_wflow, det_wflow
+
                 sl_price = round(bar.low - buffer_pts, 2)
-                return True, "prominence_hub_breakout_up", {
+                details = {
                     "pa_setup_name": "topological_prominence_breakout",
                     "pillar": 4,
                     "hub_price": hub_price,
@@ -3342,6 +3613,8 @@ class PriceActionEngine:
                     "sl_price": sl_price,
                     "buffer_pts": round(buffer_pts, 2),
                 }
+                details.update(det_wflow)
+                return True, "prominence_hub_breakout_up", details
 
         if is_bearish and trend_5m_bearish:
             # 1. Anti-Exhaustion & Origin Validation:
@@ -3387,8 +3660,17 @@ class PriceActionEngine:
                 if not ok_struct:
                     return False, f"structural_obstacle_{r_struct}", det_struct
 
+                # Wyckoff Effort vs Result & Stopping Volume Shield
+                ok_wflow, r_wflow, det_wflow = self._evaluate_wyckoff_pillar_flow(
+                    pillar=4,
+                    direction="PUT",
+                    bar=bar,
+                )
+                if not ok_wflow:
+                    return False, r_wflow, det_wflow
+
                 sl_price = round(bar.high + buffer_pts, 2)
-                return True, "prominence_hub_breakout_down", {
+                details = {
                     "pa_setup_name": "topological_prominence_breakout",
                     "pillar": 4,
                     "hub_price": hub_price,
@@ -3406,6 +3688,8 @@ class PriceActionEngine:
                     "sl_price": sl_price,
                     "buffer_pts": round(buffer_pts, 2),
                 }
+                details.update(det_wflow)
+                return True, "prominence_hub_breakout_down", details
 
         return False, "no_breakout_against_hub", {}
 
@@ -3437,6 +3721,16 @@ class PriceActionEngine:
         vol_sma = self.get_volume_sma(10)
         b_vol = float(getattr(b, "volume", 1.0) or 1.0)
         vol_ratio = (b_vol / vol_sma) if vol_sma > 0 else 1.0
+        cb = float(getattr(b, "call_buy_vol", 0.0) or 0.0)
+        cs = float(getattr(b, "call_sell_vol", 0.0) or 0.0)
+        pb = float(getattr(b, "put_buy_vol", 0.0) or 0.0)
+        ps = float(getattr(b, "put_sell_vol", 0.0) or 0.0)
+        opt_vol = float(getattr(b, "opt_total_vol", 0.0) or (cb + cs + pb + ps))
+        opt_delta = float(getattr(b, "opt_delta_flow", 0.0) or (cb - pb))
+        opt_pcr = float(getattr(b, "opt_pcr", 1.0) or 1.0)
+        bull_flow = cb + ps
+        bear_flow = pb + cs
+
         return {
             "bar_open": round(b.open, 2),
             "bar_high": round(b.high, 2),
@@ -3451,6 +3745,15 @@ class PriceActionEngine:
             "range_atr": round(range_atr, 2),
             "vol_sma10": round(vol_sma, 2),
             "vol_ratio": round(vol_ratio, 2),
+            "call_buy_vol": round(cb, 1),
+            "call_sell_vol": round(cs, 1),
+            "put_buy_vol": round(pb, 1),
+            "put_sell_vol": round(ps, 1),
+            "opt_total_vol": round(opt_vol, 1),
+            "opt_delta_flow": round(opt_delta, 1),
+            "opt_pcr": round(opt_pcr, 2),
+            "bull_flow": round(bull_flow, 1),
+            "bear_flow": round(bear_flow, 1),
         }
 
     def _enrich_details(self, details: Dict[str, Any]) -> Dict[str, Any]:

@@ -1602,6 +1602,9 @@ def test_argon_last_mile_spot_hygiene_gate_abort_and_pass():
     sig_q = queue.Queue()
     em = AegisExecutionManager(broker, data_fetcher, aegis_engine, sig_q)
     em.trade_context = None
+    em.trades_today = 0
+    em._consec_losses = 0
+    em.daily_pnl = 0.0
     em.has_open_trade = MagicMock(return_value=False)
     em.can_enter = MagicMock(return_value=True)
     em.capital_engine = MagicMock()

@@ -1498,4 +1498,154 @@ def test_sr_registry_volume_and_order_flow_prominence_boost():
     assert details["anchor_vr"] >= 2.5
 
 
+def test_pillar4_wyckoff_stopping_volume_trap_blocked():
+    """
+    Verifies that the 21 Oct 09:56 Stopping Volume Trap is strictly blocked:
+    A high-volume red candle (VR=1.57x) breaking below support, but having positive net
+    bullish delta (Put Writing PutSell > PutBuy, BullFlow > BearFlow by +1.29M) is
+    STRICTLY VETOED by wyckoff_p4_stopping_volume_bullish_absorption!
+    """
+    engine = PriceActionEngine(max_history_bars=400)
+    engine.current_atr_1m = 40.0
+
+    # 1. Register a Support at 74,323.0
+    engine._on_1m_bar_close(OHLCBar(0, 60, 74380.0, 74390.0, 74350.0, 74360.0, volume=100.0))
+    engine._on_1m_bar_close(OHLCBar(60, 120, 74360.0, 74370.0, 74323.0, 74330.0, volume=100.0))
+    engine._on_1m_bar_close(OHLCBar(120, 180, 74330.0, 74450.0, 74330.0, 74440.0, volume=100.0))
+
+    supports = [l for l in engine.session_levels if l.level_type == "SUPPORT" and abs(l.price - 74323.0) < 2.0]
+    assert len(supports) == 1
+    s_lvl = supports[0]
+
+    # Add 15 consolidation bars hovering around 74,350 - 74,400
+    for i in range(3, 18):
+        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74360.0, 74380.0, 74340.0, 74370.0, volume=100.0))
+
+    # 2. Replay the exact 09:56 candle:
+    # High volume (157.0 vs 100.0 median = 1.57x), big red body, closes at 74,310 (below 74,323 support).
+    # BUT order flow is Net Bullish by +1.29M:
+    # CallBuy=1576520, CallSell=1276620, PutBuy=1738740, PutSell=2730220
+    # BullFlow = 1576520 + 2730220 = 4,306,740
+    # BearFlow = 1738740 + 1276620 = 3,015,360
+    # Net Bullish Delta = +1,291,380!
+    stopping_vol_bar = OHLCBar(
+        18 * 60, 19 * 60, 74330.0, 74335.0, 74305.0, 74310.0,
+        volume=157.0,
+        call_buy_vol=1576520.0,
+        call_sell_vol=1276620.0,
+        put_buy_vol=1738740.0,
+        put_sell_vol=2730220.0,
+    )
+    engine._on_1m_bar_close(stopping_vol_bar)
+    engine.last_price = 74310.0
+    engine.bars_5m[-1].open = 74360.0
+    engine.bars_5m[-1].close = 74310.0
+
+    # MUST BE VETOED!
+    ok, reason, details = engine.check_topological_prominence_breakout("DOWN", current_vwap=74400.0)
+    assert ok is False
+    assert reason == "wyckoff_p4_stopping_volume_bullish_absorption"
+    assert details["verdict"] == "STOPPING_VOLUME_BULLISH_PUT_WRITING_ABSORPTION"
+    assert details["net_inst_delta"] > 1_000_000.0
+
+    # 3. Now verify that when genuine institutional selling occurs (BearFlow >= 1.18 * BullFlow), it triggers!
+    engine_gen = PriceActionEngine(max_history_bars=400)
+    engine_gen.current_atr_1m = 40.0
+    engine_gen._on_1m_bar_close(OHLCBar(0, 60, 74380.0, 74390.0, 74350.0, 74360.0, volume=100.0))
+    engine_gen._on_1m_bar_close(OHLCBar(60, 120, 74360.0, 74370.0, 74323.0, 74330.0, volume=100.0))
+    engine_gen._on_1m_bar_close(OHLCBar(120, 180, 74330.0, 74450.0, 74330.0, 74440.0, volume=100.0))
+    for i in range(3, 18):
+        engine_gen._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74360.0, 74380.0, 74340.0, 74370.0, volume=100.0))
+
+    genuine_bear_bar = OHLCBar(
+        18 * 60, 19 * 60, 74330.0, 74335.0, 74300.0, 74305.0,
+        volume=250.0,
+        call_buy_vol=500000.0,
+        call_sell_vol=1500000.0,
+        put_buy_vol=3500000.0,
+        put_sell_vol=600000.0,
+    )
+    engine_gen._on_1m_bar_close(genuine_bear_bar)
+    engine_gen.last_price = 74305.0
+    engine_gen.bars_5m[-1].close = 74305.0
+
+    ok_gen, reason_gen, details_gen = engine_gen.check_topological_prominence_breakout("DOWN", current_vwap=74400.0)
+    assert ok_gen is True
+    assert reason_gen == "prominence_hub_breakout_down"
+    assert details_gen["bear_ratio"] >= 1.18
+
+
+def test_wyckoff_flow_gates_across_all_pillars():
+    """
+    Verifies that Pillar 1, 2, and 3 properly enforce Wyckoff Order Flow Delta gates.
+    """
+    # 1. Pillar 2 (Micro-Sweep Reclaim):
+    # Form 5-bar swing low at 74,200.0
+    engine_p2_a = PriceActionEngine()
+    engine_p2_a.current_atr_1m = 40.0
+    for i in range(5):
+        engine_p2_a._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74250.0, 74260.0, 74200.0 + i * 5.0, 74240.0, volume=100.0))
+
+    # Candle dips to 74,185 (sweeping 74,200) and closes at 74,215 with lower wick >= 35% of range.
+    # Total range = 74220 - 74185 = 35. lower_wick = 74205 - 74185 = 20 (20/35 = 57% >= 35%).
+    # Case A: Heavy opposing bear supply (PutBuy 2000 vs CallBuy 500, bear_ratio >= 1.15) -> VETO!
+    failed_spring_bar = OHLCBar(
+        5 * 60, 6 * 60, 74205.0, 74220.0, 74185.0, 74215.0,
+        volume=250.0,
+        call_buy_vol=500.0,
+        call_sell_vol=200.0,
+        put_buy_vol=2000.0,
+        put_sell_vol=100.0,
+    )
+    engine_p2_a._on_1m_bar_close(failed_spring_bar)
+    engine_p2_a.last_price = 74215.0
+    ok, reason, details = engine_p2_a.check_micro_sweep_reclaim("CALL", current_vwap=0.0)
+    assert ok is False
+    assert reason == "wyckoff_p2_failed_spring_heavy_supply"
+
+    # Case B: Spring with institutional absorption (PutSell 1500, CallBuy 1000) -> PASS!
+    engine_p2_b = PriceActionEngine()
+    engine_p2_b.current_atr_1m = 40.0
+    for i in range(5):
+        engine_p2_b._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74250.0, 74260.0, 74200.0 + i * 5.0, 74240.0, volume=100.0))
+
+    spring_absorption_bar = OHLCBar(
+        5 * 60, 6 * 60, 74205.0, 74220.0, 74185.0, 74215.0,
+        volume=250.0,
+        call_buy_vol=1000.0,
+        call_sell_vol=200.0,
+        put_buy_vol=300.0,
+        put_sell_vol=1500.0,
+    )
+    engine_p2_b._on_1m_bar_close(spring_absorption_bar)
+    engine_p2_b.last_price = 74215.0
+    ok_abs, reason_abs, details_abs = engine_p2_b.check_micro_sweep_reclaim("CALL", current_vwap=0.0)
+    assert ok_abs is True
+    assert reason_abs == "micro_sweep_call_reclaim"
+    assert details_abs["bull_ratio"] >= 1.0
+
+    # 2. Pillar 3 (Volatility Squeeze Breakout):
+    engine_p3 = PriceActionEngine()
+    engine_p3.current_atr_1m = 40.0
+    for i in range(25):
+        engine_p3._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74300.0, 74310.0, 74290.0, 74305.0, volume=100.0))
+
+    # Trigger bar with opposing bear delta (bear_ratio >= 1.15) should be vetoed
+    opposing_p3_bar = OHLCBar(
+        25 * 60, 26 * 60, 74305.0, 74350.0, 74300.0, 74345.0,
+        volume=300.0,
+        call_buy_vol=500.0,
+        call_sell_vol=2500.0,
+        put_buy_vol=3000.0,
+        put_sell_vol=200.0,
+    )
+    engine_p3._on_1m_bar_close(opposing_p3_bar)
+    engine_p3.last_price = 74345.0
+    engine_p3.squeeze_on = True
+    ok_p3, reason_p3, _ = engine_p3.check_volatility_squeeze_breakout("CALL", current_vwap=74300.0)
+    assert ok_p3 is False
+    assert reason_p3 == "wyckoff_p3_call_negative_delta_trap"
+
+
+
 
