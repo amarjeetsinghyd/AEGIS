@@ -96,6 +96,7 @@ class StructuralLevel:
     ts_created: float      # Timestamp when established
     prominence: float      # Prominence score (|depth| / ATR)
     bar_idx: int           # Index in bars_1m where formed
+    seq_idx: int = 0       # Monotonic sequential bar counter
     touch_count: int = 1   # Number of times price tested this level
     is_broken: bool = False
     ts_broken: float = 0.0
@@ -191,6 +192,7 @@ class PriceActionEngine:
         # ─── Dynamic Session S/R Level Registry (Pillar 4 Multi-Bar Memory) ───
         self.session_levels: List[StructuralLevel] = []
         self._levels_day: int = -1
+        self._total_bars_seen: int = 0
         # ─── Daily Structural Levels (PDH / PDL / PDC) ───
         self.pdh: float = 0.0
         self.pdl: float = 0.0
@@ -619,6 +621,7 @@ class PriceActionEngine:
 
     def _on_1m_bar_close(self, bar: OHLCBar) -> None:
         """Processes a finalized 1-minute bar and updates EMAs and ATR."""
+        self._total_bars_seen += 1
         # Attach in-flight 1-minute Option Flow directly to the candle
         cb = self._opt_flow_1m["call_buy_vol"]
         cs = self._opt_flow_1m["call_sell_vol"]
@@ -810,6 +813,58 @@ class PriceActionEngine:
         if self._levels_day != curr_day:
             self.session_levels.clear()
             self._levels_day = curr_day
+            # Re-seed daily macro anchors (PDH / PDL) for the new session
+            if self.pdh > 0:
+                self.session_levels.append(
+                    StructuralLevel(
+                        level_type="RESISTANCE",
+                        price=round(self.pdh, 2),
+                        ts_created=bar.ts_start,
+                        prominence=2.5,
+                        bar_idx=0,
+                        seq_idx=0,
+                        touch_count=2,
+                    )
+                )
+            if self.pdl > 0:
+                self.session_levels.append(
+                    StructuralLevel(
+                        level_type="SUPPORT",
+                        price=round(self.pdl, 2),
+                        ts_created=bar.ts_start,
+                        prominence=2.5,
+                        bar_idx=0,
+                        seq_idx=0,
+                        touch_count=2,
+                    )
+                )
+
+        atr = self.current_atr_1m if self.current_atr_1m > 0 else (bar.close * 0.001)
+
+        # 1. Unconditional Break Invalidation for completed historical bars
+        # Any level formed before cand_hist that cand_hist broke through is marked is_broken = True
+        if len(self.bars_1m) >= 2:
+            cand_hist = self.bars_1m[-2]
+            for lvl in self.session_levels:
+                if not lvl.is_broken and lvl.ts_created < cand_hist.ts_start:
+                    if lvl.level_type == "SUPPORT" and cand_hist.close < (lvl.price - 0.20 * atr):
+                        lvl.is_broken = True
+                        lvl.ts_broken = cand_hist.ts_end
+                    elif lvl.level_type == "RESISTANCE" and cand_hist.close > (lvl.price + 0.20 * atr):
+                        lvl.is_broken = True
+                        lvl.ts_broken = cand_hist.ts_end
+
+        # 2. Dynamic Post-Excursion Prominence Update for active unbroken levels
+        for lvl in self.session_levels:
+            if not lvl.is_broken:
+                if lvl.level_type == "SUPPORT":
+                    excursion = (bar.high - lvl.price) / max(atr, 1e-4)
+                    if excursion > lvl.prominence:
+                        lvl.prominence = round(excursion, 2)
+                elif lvl.level_type == "RESISTANCE":
+                    excursion = (lvl.price - bar.low) / max(atr, 1e-4)
+                    if excursion > lvl.prominence:
+                        lvl.prominence = round(excursion, 2)
 
         if len(self.bars_1m) < 3:
             return
@@ -817,17 +872,24 @@ class PriceActionEngine:
         cand = self.bars_1m[-2]
         prev = self.bars_1m[-3]
         curr = bar
-        atr = self.current_atr_1m if self.current_atr_1m > 0 else (cand.close * 0.001)
         tol = max(0.25 * atr, cand.high * 0.0003)
 
-        # 1. Swing High / Resistance Peak Detection
+        # Multi-bar swing depth calculation (looking back up to 5 bars before cand)
+        window_left = list(self.bars_1m)[-7:-2] if len(self.bars_1m) >= 7 else list(self.bars_1m)[:-2]
+        ref_lows = [b.low for b in window_left] + [curr.low]
+        ref_highs = [b.high for b in window_left] + [curr.high]
+        depth_high = cand.high - (min(ref_lows) if ref_lows else min(prev.low, curr.low))
+        depth_low = (max(ref_highs) if ref_highs else max(prev.high, curr.high)) - cand.low
+
+        # 3. Swing High / Resistance Peak Detection
         if cand.high >= prev.high and cand.high > curr.high:
-            depth = cand.high - min(prev.low, curr.low)
+            depth = depth_high
             if depth >= 0.15 * atr:
                 matched = False
                 for lvl in self.session_levels:
                     if lvl.level_type == "RESISTANCE" and not lvl.is_broken and abs(lvl.price - cand.high) <= tol:
                         lvl.touch_count += 1
+                        lvl.prominence = round(lvl.prominence + 0.35, 2)
                         lvl.price = max(lvl.price, cand.high)
                         matched = True
                         break
@@ -839,17 +901,19 @@ class PriceActionEngine:
                             ts_created=cand.ts_start,
                             prominence=round(depth / max(atr, 1e-4), 2),
                             bar_idx=len(self.bars_1m) - 2,
+                            seq_idx=max(0, self._total_bars_seen - 2),
                         )
                     )
 
-        # 2. Swing Low / Support Trough Detection
+        # 4. Swing Low / Support Trough Detection
         if cand.low <= prev.low and cand.low < curr.low:
-            depth = max(prev.high, curr.high) - cand.low
+            depth = depth_low
             if depth >= 0.15 * atr:
                 matched = False
                 for lvl in self.session_levels:
                     if lvl.level_type == "SUPPORT" and not lvl.is_broken and abs(lvl.price - cand.low) <= tol:
                         lvl.touch_count += 1
+                        lvl.prominence = round(lvl.prominence + 0.35, 2)
                         lvl.price = min(lvl.price, cand.low)
                         matched = True
                         break
@@ -861,8 +925,25 @@ class PriceActionEngine:
                             ts_created=cand.ts_start,
                             prominence=round(depth / max(atr, 1e-4), 2),
                             bar_idx=len(self.bars_1m) - 2,
+                            seq_idx=max(0, self._total_bars_seen - 2),
                         )
                     )
+
+    def get_active_sr_registry_snapshot(self) -> List[Dict[str, Any]]:
+        """Returns active and recently broken S/R levels for telemetry and dashboard rendering."""
+        snapshot = []
+        for lvl in self.session_levels:
+            snapshot.append({
+                "type": lvl.level_type,
+                "price": lvl.price,
+                "prominence": lvl.prominence,
+                "touch_count": lvl.touch_count,
+                "is_broken": lvl.is_broken,
+                "ts_created": lvl.ts_created,
+                "ts_broken": lvl.ts_broken,
+                "seq_idx": lvl.seq_idx,
+            })
+        return snapshot
 
     # ═══════════════════════════════════════════════════════════
     # 2. ZERO-LAG IN-FLIGHT EMA & DYNAMIC INDICATOR GETTERS
@@ -1001,8 +1082,34 @@ class PriceActionEngine:
         """Seeds Previous Day High (PDH), Previous Day Low (PDL), and Previous Day Close (PDC)."""
         if pdh > 0:
             self.pdh = float(pdh)
+            # Register PDH as macro RESISTANCE anchor in S/R registry
+            if not any(l.level_type == "RESISTANCE" and abs(l.price - self.pdh) < 2.0 for l in self.session_levels):
+                self.session_levels.append(
+                    StructuralLevel(
+                        level_type="RESISTANCE",
+                        price=round(self.pdh, 2),
+                        ts_created=0.0,
+                        prominence=2.5,
+                        bar_idx=0,
+                        seq_idx=0,
+                        touch_count=2,
+                    )
+                )
         if pdl > 0:
             self.pdl = float(pdl)
+            # Register PDL as macro SUPPORT anchor in S/R registry
+            if not any(l.level_type == "SUPPORT" and abs(l.price - self.pdl) < 2.0 for l in self.session_levels):
+                self.session_levels.append(
+                    StructuralLevel(
+                        level_type="SUPPORT",
+                        price=round(self.pdl, 2),
+                        ts_created=0.0,
+                        prominence=2.5,
+                        bar_idx=0,
+                        seq_idx=0,
+                        touch_count=2,
+                    )
+                )
         if pdc > 0:
             self.pdc = float(pdc)
         logger.info(
@@ -2917,8 +3024,9 @@ class PriceActionEngine:
                 if lvl.level_type == "SUPPORT"
                 and not lvl.is_broken
                 and lvl.prominence >= 1.25
-                and lvl.bar_idx < (len(self.bars_1m) - 2)
+                and ((self._total_bars_seen - lvl.seq_idx) >= 3 or (bar.ts_start - lvl.ts_created) >= 180.0)
             ]
+            cand_supports.sort(key=lambda lvl: (lvl.touch_count * 0.5 + lvl.prominence), reverse=True)
             for s_lvl in cand_supports:
                 displacement = s_lvl.price - bar.close
                 bar_range = bar.high - bar.low
@@ -2928,8 +3036,8 @@ class PriceActionEngine:
                     and origin_dist <= (0.35 * _atr_ref)
                     and bar.close < bar.open
                     and body_ratio >= 0.35
-                    and close_edge_put >= 0.60
-                    and lower_wick_ratio <= 0.20
+                    and close_edge_put >= 0.68
+                    and lower_wick_ratio <= 0.18
                     and bar_range <= (1.35 * _atr_ref)
                     and displacement <= (1.25 * _atr_ref)
                     and vr_t >= 1.20
@@ -2937,9 +3045,9 @@ class PriceActionEngine:
                     if current_vwap > 0 and bar.close > current_vwap:
                         continue
 
-                    # Macro Runway Guard (Day Extreme Clearance)
+                    # Macro Runway Guard (Day Extreme Clearance + ignore self-broken level)
                     ok_struct, r_struct, det_struct = self._check_structural_obstacle(
-                        "PUT", bar.close, check_day_extremes=True
+                        "PUT", bar.close, ignore_pivots_above=(s_lvl.price - 0.10 * _atr_ref), check_day_extremes=True
                     )
                     if not ok_struct:
                         return False, f"structural_obstacle_{r_struct}", det_struct
@@ -2947,6 +3055,7 @@ class PriceActionEngine:
                     s_lvl.is_broken = True
                     s_lvl.ts_broken = bar.ts_end
                     sl_price = round(s_lvl.price + buffer_pts, 2)
+                    age_bars = (self._total_bars_seen - s_lvl.seq_idx) if self._total_bars_seen >= s_lvl.seq_idx else (len(self.bars_1m) - 1 - s_lvl.bar_idx)
                     return True, "prominence_hub_breakout_down", {
                         "pa_setup_name": "topological_prominence_breakout",
                         "pillar": 4,
@@ -2955,7 +3064,7 @@ class PriceActionEngine:
                         "pi_hat": s_lvl.prominence,
                         "vr_t": vr_t,
                         "breakout_direction": "DOWN",
-                        "anchor_age_bars": len(self.bars_1m) - 1 - s_lvl.bar_idx,
+                        "anchor_age_bars": age_bars,
                         "anchor_touch_count": s_lvl.touch_count,
                         "level_source": "sr_registry",
                         "bar_open": round(bar.open, 2),
@@ -2975,8 +3084,9 @@ class PriceActionEngine:
                 if lvl.level_type == "RESISTANCE"
                 and not lvl.is_broken
                 and lvl.prominence >= 1.25
-                and lvl.bar_idx < (len(self.bars_1m) - 2)
+                and ((self._total_bars_seen - lvl.seq_idx) >= 3 or (bar.ts_start - lvl.ts_created) >= 180.0)
             ]
+            cand_resistances.sort(key=lambda lvl: (lvl.touch_count * 0.5 + lvl.prominence), reverse=True)
             for r_lvl in cand_resistances:
                 displacement = bar.close - r_lvl.price
                 bar_range = bar.high - bar.low
@@ -2986,8 +3096,8 @@ class PriceActionEngine:
                     and origin_dist <= (0.35 * _atr_ref)
                     and bar.close > bar.open
                     and body_ratio >= 0.35
-                    and close_edge_call >= 0.60
-                    and upper_wick_ratio <= 0.20
+                    and close_edge_call >= 0.68
+                    and upper_wick_ratio <= 0.18
                     and bar_range <= (1.35 * _atr_ref)
                     and displacement <= (1.25 * _atr_ref)
                     and vr_t >= 1.20
@@ -2996,7 +3106,7 @@ class PriceActionEngine:
                         continue
 
                     ok_struct, r_struct, det_struct = self._check_structural_obstacle(
-                        "CALL", bar.close, check_day_extremes=True
+                        "CALL", bar.close, ignore_pivots_below=(r_lvl.price + 0.10 * _atr_ref), check_day_extremes=True
                     )
                     if not ok_struct:
                         return False, f"structural_obstacle_{r_struct}", det_struct
@@ -3004,6 +3114,7 @@ class PriceActionEngine:
                     r_lvl.is_broken = True
                     r_lvl.ts_broken = bar.ts_end
                     sl_price = round(r_lvl.price - buffer_pts, 2)
+                    age_bars = (self._total_bars_seen - r_lvl.seq_idx) if self._total_bars_seen >= r_lvl.seq_idx else (len(self.bars_1m) - 1 - r_lvl.bar_idx)
                     return True, "prominence_hub_breakout_up", {
                         "pa_setup_name": "topological_prominence_breakout",
                         "pillar": 4,
@@ -3012,7 +3123,7 @@ class PriceActionEngine:
                         "pi_hat": r_lvl.prominence,
                         "vr_t": vr_t,
                         "breakout_direction": "UP",
-                        "anchor_age_bars": len(self.bars_1m) - 1 - r_lvl.bar_idx,
+                        "anchor_age_bars": age_bars,
                         "anchor_touch_count": r_lvl.touch_count,
                         "level_source": "sr_registry",
                         "bar_open": round(bar.open, 2),

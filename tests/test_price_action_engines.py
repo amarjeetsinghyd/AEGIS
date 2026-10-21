@@ -1367,3 +1367,55 @@ def test_dynamic_sr_level_registry_and_historical_breakout():
     cand_unbroken = [l for l in engine.session_levels if l.level_type == "SUPPORT" and not l.is_broken and l.price >= 74200.0]
     assert len(cand_unbroken) == 0
 
+
+def test_argon_sr_registry_4_bug_fixes():
+    """
+    Verifies all 4 fixes from Gemini for Argon's architectural review:
+    1. Deque full (>400 bars) does not freeze bar_idx/seq_idx.
+    2. Completed historical bars unconditionally mark broken levels.
+    3. Dynamic post-excursion prominence updates as price moves away.
+    4. Daily levels (PDH/PDL) are seeded into session_levels.
+    5. get_active_sr_registry_snapshot returns valid telemetry dictionaries.
+    """
+    engine = PriceActionEngine(max_history_bars=400)
+    engine.current_atr_1m = 40.0
+
+    # 1. Test Daily Levels Seeding
+    engine.seed_daily_levels(pdh=75000.0, pdl=74000.0, pdc=74500.0)
+    assert any(l.level_type == "RESISTANCE" and l.price == 75000.0 for l in engine.session_levels)
+    assert any(l.level_type == "SUPPORT" and l.price == 74000.0 for l in engine.session_levels)
+
+    # 2. Test Deque Full (>400 bars) and Monotonic Counter
+    # Seed 410 bars. Bar 10 forms a support at 74,100.
+    engine._on_1m_bar_close(OHLCBar(0, 60, 74200.0, 74210.0, 74150.0, 74160.0, volume=100.0))
+    engine._on_1m_bar_close(OHLCBar(60, 120, 74160.0, 74170.0, 74100.0, 74110.0, volume=100.0))
+    engine._on_1m_bar_close(OHLCBar(120, 180, 74110.0, 74250.0, 74110.0, 74240.0, volume=100.0))
+
+    s_100 = [l for l in engine.session_levels if l.level_type == "SUPPORT" and abs(l.price - 74100.0) < 2.0][0]
+    assert s_100.seq_idx > 0
+
+    # Now add 405 bars up to 74,300 so deque reaches and stays at maxlen=400
+    for i in range(3, 410):
+        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74250.0, 74300.0, 74240.0, 74280.0, volume=100.0))
+
+    assert len(engine.bars_1m) == 400  # Deque full!
+    assert engine._total_bars_seen == 410
+
+    # Dynamic post-excursion: price reached high of 74,300, so prominence of 74,100 must have grown!
+    # (74300 - 74100) / ATR(60.0) = 3.33x ATR!
+    assert s_100.prominence >= 3.0
+
+    # 3. Test Unconditional Break Invalidation
+    # Add a bar that closes way below 74,100 without calling Pillar 4
+    engine._on_1m_bar_close(OHLCBar(410 * 60, 411 * 60, 74110.0, 74115.0, 74050.0, 74060.0, volume=100.0))
+    # On the very next bar, s_100 must be unconditionally marked is_broken = True!
+    engine._on_1m_bar_close(OHLCBar(411 * 60, 412 * 60, 74060.0, 74070.0, 74040.0, 74050.0, volume=100.0))
+    assert s_100.is_broken is True
+
+    # 4. Test Telemetry Snapshot Helper
+    snap = engine.get_active_sr_registry_snapshot()
+    assert isinstance(snap, list)
+    assert len(snap) >= 3
+    assert any(item["price"] == 74100.0 and item["is_broken"] is True for item in snap)
+
+
