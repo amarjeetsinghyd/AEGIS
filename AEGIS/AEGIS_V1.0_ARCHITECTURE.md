@@ -1,11 +1,11 @@
-# AEGIS — Autonomous Execution & Gamma Imbalance System
+# AEGIS — Autonomous Execution & Gamma Imbalance System (Version 1.0 Production Locked)
 
 **Architecture Authority — Code-Grounded Definitive Specification**  
 **Version:** Production 1.0 (v1.0 Production Locked — Wyckoff Volume & Order Flow Delta Engine + Auction Market Volume Profile Engine + Standalone CatBoost ML Paper Trader + P4 0-D Prominence Hub Breakout + P1-P4 Quadrinity + Composite Conviction Dynamic Ladder + 100% Shadow ML + Strict 1-Lot Maker TP — Live)  
 **Status:** ACTIVE · PM2 `aegis-bot` · `AEGIS/aegis_main.py:87`  
 **Host:** Oracle Cloud `opc@137.23.41.38` · `ecosystem.config.js:3` · `cwd=/home/opc`  
 **Instruments:** NIFTY (Mon [1 DTE], Tue [0 DTE], Fri [4 DTE], NFO, strike step 50, lot 65) · SENSEX (Wed [1 DTE], Thu [0 DTE], BFO, strike step 100, lot 20)  
-**Supersedes:** Prior V3.9 / V3.8 specifications and legacy ASTRA / AEGIS documentation.
+**Supersedes:** Prior V3.9 / V3.8 specifications, AEGIS_V3_ARCHITECTURE.md, and legacy ASTRA / AEGIS documentation.
 
 ---
 
@@ -195,6 +195,7 @@ All active non-archive modules within `AEGIS/` mapped with exact lines, responsi
 | `AEGIS/core/signal_state_machine.py` | Centralized 45s-aligned signal lifecycle FSM (OBSERVE $\to$ PRIMED $\to$ FIRED) | `SignalStateMachine`, `update_trigger()` |
 | `AEGIS/core/option_quality.py` | Option contract tradability filter (spread, top-5 depth, premium limits) | `OptionQualityEngine`, `qualify_option()` |
 | `AEGIS/core/entry_quality_engine.py` | Unified Entry Quality Score (EQS) composite calculator | `EntryQualityEngine`, `compute_eqs()` |
+| `AEGIS/core/shadow_boundary_observer.py` | **Autonomous Shadow Boundary Observer**: Zero-capital empirical paper-trader tracking First-Touch Pain Zone and 200 EMA rejections on OTM 5 strikes with 30s/60s/300s telemetry | `ShadowBoundaryObserver`, `on_1m_bar_close()`, `on_option_tick()` |
 | `AEGIS/config/settings.py` | Configuration binding for AEGIS runtime (`DATA_DIR=AEGIS/data`, `LOGS_DIR=AEGIS/logs`) | `get_runtime_paths("aegis")` |
 
 ---
@@ -287,12 +288,17 @@ Passively models the continuous price-volume distribution (inspired by the Maxwe
 
 All price action setups are evaluated on finalized 1-minute bars (`price_action_engine.py`):
 
-### 1. Pillar 1: 20 EMA Pullback & Momentum Rejection (`20_ema_rejection`)
-- **Trend Filter**: 20 EMA slope aligned with direction.
-- **Retest Zone**: Candle tests 20 EMA zone within scale-invariant tolerance ($1.5\text{ bps}$).
-- **Candlestick Rejection**: Lower wick $\ge 30\%$ (CALL) or upper wick $\ge 30\%$ (PUT), closing away from 20 EMA.
-- **Two-Touch Confirmation**: Scans up to 40 bars back for Leg 1 with minimum 5 pause bars gap.
-- **Same-Side Discipline**: All intermediate closes must stay on correct side of 20 EMA.
+### 1. Pillar 1: Classical Dow Theory 20 EMA Retracement Engine (`20_ema_rejection`)
+- **Trend Age & Filter**: Trend Age $\ge 10$ bars continuously on the active side of the 20 EMA Band. 20 EMA slope aligned with trade direction.
+- **Zero-Tolerance Anti-Breakout Veto (`breakout_from_below_veto`)**: Price must never have closed across the opposite side of the 20 EMA Band in the preceding 10 bars. Eliminates false breakouts from below.
+- **Dow Structure Progression ($HH_1 \rightarrow HL_1 \rightarrow HH_2 \rightarrow HL_2$)**:
+  - $HL_1$ (1st Touch): Strictly skipped (never trade 1st touch).
+  - $HH_2$ (BOS): Confirmed higher high ($HH_2 > HH_1 + \min(1.5, 0.15\times\text{ATR})$).
+  - Orderly Retracement: 5 to 10 candles orderly cooling off ($Descent \ge 60\%$) down to 20 EMA Band with volume dry-up ($VDR \le 1.15$).
+  - $HL_2$ (2nd Touch): Retests 20 EMA High-Low Band with $HL_2 > HL_1$.
+- **Candlestick Rejection**: Lower wick $\ge 33\%$ (Hammer) or Bullish Expansion body $\ge 40\%$, closing away from 20 EMA Band.
+- **Live Piercing Invalidation Guard**: Forming price cannot pierce below 20 EMA Low Band during entry evaluation.
+- **12s Bar Freshness Gate**: Entry window cutoff at $\le 12.0$s after bar open.
 
 ### 2. Pillar 2: Liquidity Sweep & Reclaim (`micro_sweep_reclaim`)
 - **5-Bar Extreme Sweep**: Price dips below previous 5-bar swing low (CALL) or above swing high (PUT).

@@ -2097,20 +2097,20 @@ class PriceActionEngine:
         # ─── PILLAR 4: Prominence & S/R Registry Breakout (Wyckoff Effort vs Result & Stopping Volume) ───
         elif pillar == 4:
             if is_call:
-                # CALL Breakout requires genuine BullFlow dominance (bull_ratio >= 1.18)
-                if bear_flow > bull_flow or bull_ratio < 1.18:
+                # CALL Breakout requires genuine BullFlow dominance (bull_ratio >= 1.12)
+                if bear_flow > bull_flow or bull_ratio < 1.12:
                     return False, "wyckoff_p4_stopping_volume_bearish_supply", {
                         **flow_metrics,
-                        "required_bull_ratio": 1.18,
+                        "required_bull_ratio": 1.12,
                         "verdict": "STOPPING_VOLUME_BEARISH_SUPPLY_ABSORPTION",
                     }
             else:
-                # PUT Breakdown requires genuine BearFlow dominance (bear_ratio >= 1.18)
+                # PUT Breakdown requires genuine BearFlow dominance (bear_ratio >= 1.12)
                 # If bull_flow > bear_flow (e.g. Put Writing dominance +1.29M like 21 Oct 09:56), veto immediately!
-                if bull_flow > bear_flow or bear_ratio < 1.18:
+                if bull_flow > bear_flow or bear_ratio < 1.12:
                     return False, "wyckoff_p4_stopping_volume_bullish_absorption", {
                         **flow_metrics,
-                        "required_bear_ratio": 1.18,
+                        "required_bear_ratio": 1.12,
                         "verdict": "STOPPING_VOLUME_BULLISH_PUT_WRITING_ABSORPTION",
                     }
 

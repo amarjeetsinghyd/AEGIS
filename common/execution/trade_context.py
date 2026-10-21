@@ -98,6 +98,14 @@ class TradeContext:
         self.recovery_checks = 0
         self.flow_exit_armed = False
 
+        # Spot Excursion Tracking (Spot MFE / MAE in points and timestamps)
+        self.spot_peak_mfe_pts: float = 0.0
+        self.spot_peak_mae_pts: float = 0.0
+        self.spot_time_to_mfe_sec: float = 0.0
+        self.spot_time_to_mae_sec: float = 0.0
+        self.spot_at_mfe: float = float(index_entry) if index_entry else 0.0
+        self.spot_at_mae: float = float(index_entry) if index_entry else 0.0
+
     def add_leg(self, leg: TradeLeg):
         self.legs.append(leg)
 
@@ -118,6 +126,12 @@ class TradeContext:
             "signal_type": self.signal_type,
             "strategy": self.strategy,
             "index_entry": self.index_entry,
+            "spot_peak_mfe_pts": self.spot_peak_mfe_pts,
+            "spot_peak_mae_pts": self.spot_peak_mae_pts,
+            "spot_time_to_mfe_sec": self.spot_time_to_mfe_sec,
+            "spot_time_to_mae_sec": self.spot_time_to_mae_sec,
+            "spot_at_mfe": self.spot_at_mfe,
+            "spot_at_mae": self.spot_at_mae,
             "status": self.status,
             "entry_time": self.entry_time.isoformat() if self.entry_time else None,
             "exit_time": self.exit_time.isoformat() if self.exit_time else None,

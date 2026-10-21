@@ -1,5 +1,34 @@
 # Changelog
 
+## [Unreleased] - 2026-10-16 (Dow Theory HL2 Strict Retracement Engine, Anti-Breakout Vetoes & ShadowBoundaryObserver)
+
+### Added
+- **Pillar 1 Classical Dow Theory HL2 Re-engineering (`AEGIS/core/price_action_engine.py`)**:
+  - Re-architected `_validate_dow_hl2_lh2_structure()` to enforce the strict 5-phase Classical Dow Theory retracement lifecycle for 20 EMA trades:
+    - **Established Uptrend Requirement**: Trend Age $\ge 10$ bars above the 20 EMA Band.
+    - **Swing 1 ($HH_1 \rightarrow HL_1$)**: Impulse to $HH_1$ followed by first pullback touch $HL_1$ into 20 EMA Band (Strictly Skipped — no entry on 1st touch).
+    - **Swing 2 ($HH_2$ BOS)**: Break of Structure confirming higher high ($HH_2 > HH_1 + \min(1.5, 0.15\times \text{ATR})$).
+    - **Orderly Retracement**: 5 to 10 candles orderly retracement ($Descent \ge 60\%$) down to 20 EMA Band with institutional volume dry-up ($VDR \le 1.15$).
+    - **Touch 2 ($HL_2$)**: Higher Low ($HL_2 > HL_1$) testing the 20 EMA Band with a confirmed Green Rejection Candle (Hammer or Bullish Expansion).
+- **Zero-Tolerance Anti-Breakout Veto (`breakout_from_below_veto`)**:
+  - Price must never have closed across the opposite side of the 20 EMA Band in the preceding 10 bars. Permanently eliminates "breakouts from below" masquerading as bullish pullbacks.
+- **Live Price Piercing Invalidation Guard (`live_price_piercing_below_20_ema` / `live_price_piercing_above_20_ema`)**:
+  - Live forming tick cannot pierce across the 20 EMA opposite band during entry evaluation, immunizing entries against intra-candle breakdown.
+- **12.0s Bar Close Freshness Window (`stale_bar_entry_window_expired`)**:
+  - Enforces execution within the first 12 seconds of candle formation, preventing stale momentum fills.
+- **New `ShadowBoundaryObserver` Module (`AEGIS/core/shadow_boundary_observer.py`)**:
+  - Deployed autonomous shadow paper trading engine tracking First-Touch Pain Zone and 200 EMA rejections on OTM 5 strikes with empirical 30s, 60s, and 300s MFE/MAE telemetry.
+  - Seamlessly wired into `AEGIS/aegis_gamma_engine.py` utilizing live shared indicator feeds (zero duplicate computation).
+  - 3 unit tests added in `tests/test_shadow_boundary_observer.py` (100% green).
+- **L2 Archiver Cross-Strike Forensic Audit (`scripts/audit_cross_strike_mfe_1311.py`)**:
+  - Analyzed 12,290 ticks across 29 distinct CALL strikes (from 22400 to 23800 CE) for Trade #37.
+  - Discovered Delta Elasticity Sweet Spot at OTM 4-5 (+2.96% MFE) and proved underlying spot move (+3.5 pts) was too shallow for +4% TP.
+- **Trade Ledger & Journal Reconciliation (`docs/AEGIS_TRADE_JOURNAL.csv`, `docs/TRADE_JOURNAL.md`, `docs/AEGIS_TRADE_JOURNAL.xlsx`)**:
+  - Synchronized Trades 25 through 37 (covering 09 Oct through 16 Oct 2026), bringing total recorded institutional trades to 37.
+
+### Tests
+- Full test suite `python -m pytest tests/ -q`: 282+ tests passing 100% green.
+
 ## [Unreleased] - 2026-10-15 (AEGIS v1.0 Production: 4-Pillar Human Geometry, Telemetry Integrity & 3-Tier Exit Pricing)
 
 ### Added

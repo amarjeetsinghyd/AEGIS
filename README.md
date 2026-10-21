@@ -13,7 +13,7 @@ Autonomous day-trading stack on Oracle Cloud, fronted by Shoonya (NorenApi).
 | [`AGENTS.md`](AGENTS.md) | **Start here.** Standing instructions for any AI/human touching this repo. |
 | [`SYSTEM_ARCHITECTURE.md`](SYSTEM_ARCHITECTURE.md) | Cross-engine map (VPS, PM2, Shoonya, `common/`, dashboard); links into each engine's harness doc. |
 | [`ARGUS/AGENTIC HARNESS DOCUMENT v3.5.md`](ARGUS/AGENTIC%20HARNESS%20DOCUMENT%20v3.5.md) | Engine 1 authoritative spec. |
-| [`AEGIS/AEGIS_V3_ARCHITECTURE.md`](AEGIS/AEGIS_V3_ARCHITECTURE.md) | Engine 2 authoritative spec (V3.9). |
+| [`AEGIS/AEGIS_V1.0_ARCHITECTURE.md`](AEGIS/AEGIS_V1.0_ARCHITECTURE.md) | AEGIS Engine authoritative spec (v1.0 Production Locked). |
 | [`SYSTEM_GENESIS_AND_EVOLUTION.md`](SYSTEM_GENESIS_AND_EVOLUTION.md) | The journey: from ₹1.5k manual trading to autonomous topological quant engine. |
 | [`CHANGELOG.md`](CHANGELOG.md) | Change history and version logs. |
 

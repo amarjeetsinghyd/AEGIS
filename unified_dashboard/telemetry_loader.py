@@ -763,7 +763,12 @@ def get_journal_data(force_reload: bool = False) -> Dict[str, Any]:
                 "latency_ms": m_telem.get("entry_latency_ms", 2500.0),
                 "peak_mfe_pct": m_telem.get("peak_mfe_pct", opt_pct),
                 "peak_mae_pct": m_telem.get("peak_mae_pct", -0.5),
+                "time_to_peak_mfe_sec": m_telem.get("time_to_peak_mfe_sec", m_attr.get("time_to_peak_mfe_sec", 0.0)),
                 "spot_move_pts": m_telem.get("spot_move_pts", idx_pts),
+                "spot_peak_mfe_pts": m_telem.get("spot_peak_mfe_pts", m_attr.get("spot_peak_mfe_pts", abs(idx_pts) if is_win else 0.0)),
+                "spot_peak_mae_pts": m_telem.get("spot_peak_mae_pts", m_attr.get("spot_peak_mae_pts", -abs(idx_pts) if is_loss else 0.0)),
+                "spot_time_to_mfe_sec": m_telem.get("spot_time_to_mfe_sec", m_attr.get("spot_time_to_mfe_sec", 0.0)),
+                "spot_time_to_mfe_ms": m_telem.get("spot_time_to_mfe_ms", m_attr.get("spot_time_to_mfe_ms", 0)),
             }
         else:
             forensics = {
@@ -773,7 +778,13 @@ def get_journal_data(force_reload: bool = False) -> Dict[str, Any]:
                 "wyckoff": {"vdr": 1.15, "ofi": 1500000 if trade_type == "CALL" else -1500000, "verdict": "CONFIRMED"},
                 "peak_mfe_pct": opt_pct,
                 "peak_mae_pct": -0.9 if is_win else -3.5,
+                "time_to_peak_mfe_sec": 0.0,
                 "latency_ms": 2800.0,
+                "spot_move_pts": idx_pts,
+                "spot_peak_mfe_pts": abs(idx_pts) if is_win else 0.0,
+                "spot_peak_mae_pts": -abs(idx_pts) if is_loss else 0.0,
+                "spot_time_to_mfe_sec": 0.0,
+                "spot_time_to_mfe_ms": 0,
             }
 
         # Runner what-if simulation / extraction
@@ -880,6 +891,10 @@ def get_journal_data(force_reload: bool = False) -> Dict[str, Any]:
             "index_entry": idx_entry,
             "index_exit": idx_exit,
             "index_pts": idx_pts,
+            "spot_peak_mfe_pts": forensics.get("spot_peak_mfe_pts", 0.0),
+            "spot_peak_mae_pts": forensics.get("spot_peak_mae_pts", 0.0),
+            "spot_time_to_mfe_sec": forensics.get("spot_time_to_mfe_sec", 0.0),
+            "spot_time_to_mfe_ms": forensics.get("spot_time_to_mfe_ms", 0),
             "pnl_rs": pnl,
             "gross_pnl_rs": round(trade_gross, 2),
             "brokerage_rs": round(trade_brokerage, 2),

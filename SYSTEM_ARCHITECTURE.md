@@ -31,7 +31,7 @@ engine's own authoritative harness document.
 
 | # | Engine | PM2 process | Entry | State | Harness document (authoritative) |
 |---|---|---|---|---|---|
-| 1 | **AEGIS** — **A**utonomous **E**xecution & **G**amma **I**mbalance **S**ystem (Nifty/Sensex 0DTE Options) | `aegis-bot` | `AEGIS/aegis_main.py` | **PRIMARY ACTIVE** (Core Focus) | [`AEGIS/AEGIS_V3_ARCHITECTURE.md`](AEGIS/AEGIS_V3_ARCHITECTURE.md) |
+| 1 | **AEGIS** — **A**utonomous **E**xecution & **G**amma **I**mbalance **S**ystem (Nifty/Sensex 0DTE Options) | `aegis-bot` | `AEGIS/aegis_main.py` | **PRIMARY ACTIVE** (Core Focus) | [`AEGIS/AEGIS_V1.0_ARCHITECTURE.md`](AEGIS/AEGIS_V1.0_ARCHITECTURE.md) |
 | 2 | **ARGUS** — **A**lgorithmic **R**eal-time **G**ranular **U**ltra-microstructure **S**calper (Nifty 100 cash) | `argus` | `ARGUS/main.py` | Secondary / Deprioritized | [`ARGUS/AGENTIC HARNESS DOCUMENT v3.5.md`](ARGUS/AGENTIC%20HARNESS%20DOCUMENT%20v3.5.md) |
 | ~~3~~ | ~~Kronos Bot~~ | — | — | **DECOMMISSIONED** — see §5 | (historical only — do not revive) |
 
@@ -54,7 +54,7 @@ engine's harness document — it overrides everything here for that engine.**
 - **Standalone CatBoost Paper Trader & 100% Shadow ML:** Real-time ML flow evaluation in risk-free virtual execution loop.
 - **Volume Profile & Auction Market Theory Engine:** Real-time Spot POC, 70% Value Area (VAH/VAL), and Low-Volume Node (LVN) frictionless air pockets.
 - **Adaptive Stepped Exits & Permanent Target Discipline:** -12% disaster floor $\to$ Step 1 (-3% SL @ +3.0% peak) $\to$ Step 2 (0.0% cost-shield @ +3.5% peak) $\to$ Step 3 (0.8% near-target lock) $\to$ Strict +4.0% Maker TP (₹0.05 tick rounded; never greed 5%–6%) $\to$ 15:08:00 CAS force-flatten.
-- **Full Architecture Authority:** [`AEGIS/AEGIS_V3_ARCHITECTURE.md`](AEGIS/AEGIS_V3_ARCHITECTURE.md) (Production Version 1.0 Locked).
+- **Full Architecture Authority:** [`AEGIS/AEGIS_V1.0_ARCHITECTURE.md`](AEGIS/AEGIS_V1.0_ARCHITECTURE.md) (Production Version 1.0 Locked).
 
 ### 2.2 Engine 2 (Secondary / Deprioritized) — ARGUS (Algorithmic Real-Time Granular Ultra-Microstructure Scalper v4.0)
 Zero-copy `ParsedTick` (`__slots__`), per-symbol object pool, unified

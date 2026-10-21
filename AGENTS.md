@@ -49,9 +49,9 @@ the `common/` shared branches alone and ask. Never add new kronos code.**
 ## ACTIVE ENGINES (Priority Order)
 
 1. **`AEGIS/`** (and `astra_bot/`) — **PRIMARY ACTIVE ENGINE (Core Focus)** — **AEGIS** (**A**utonomous **E**xecution & **G**amma **I**mbalance **S**ystem) — options strategy bot (Production Version 1.0 / v1.0 Locked).
-   Architecture authority: `AEGIS/AEGIS_V3_ARCHITECTURE.md` (Production Version 1.0 Locked).
+   Architecture authority: `AEGIS/AEGIS_V1.0_ARCHITECTURE.md` (Production Version 1.0 Locked).
    - **Primary Focus**: All current development, telemetry review, and trading logic verification center on AEGIS.
-   - **Architecture & Rules**: Conform all edits to `AEGIS/AEGIS_V3_ARCHITECTURE.md` (Macro Price Action Primary Trigger across 4 Pillars [P1 20 EMA Pullback, P2 Liquidity Sweep & Reclaim, P3 Volatility Squeeze Breakout, P4 0-D Prominence Hub Breakout], Parallel Wyckoff Volume & Order Flow Delta Gate, Continuous Composite Conviction Scoring with >=80.0 threshold, Strict 1-Lot Maker TP at +4.0%, 100% Shadow ML & Standalone CatBoost Paper Trader, Volume Profile & Auction Market Theory Engine, Pain Zone Band (v1.0 Production), Pre-Trade Abort Slot Rollback, and 15:08:00 IST CAS Force Flatten).
+   - **Architecture & Rules**: Conform all edits to `AEGIS/AEGIS_V1.0_ARCHITECTURE.md` (Macro Price Action Primary Trigger across 4 Pillars [P1 20 EMA Pullback, P2 Liquidity Sweep & Reclaim, P3 Volatility Squeeze Breakout, P4 0-D Prominence Hub Breakout], Parallel Wyckoff Volume & Order Flow Delta Gate, Continuous Composite Conviction Scoring with >=80.0 threshold, Strict 1-Lot Maker TP at +4.0%, 100% Shadow ML & Standalone CatBoost Paper Trader, Volume Profile & Auction Market Theory Engine, Pain Zone Band (v1.0 Production), Pre-Trade Abort Slot Rollback, and 15:08:00 IST CAS Force Flatten).
    - **Testing / Consistency Phase**: Currently in consistency testing / validation mode. We are validating pipeline health, signal consistency, Wyckoff delta harmony, and telemetry without topping up paper/live funds.
 2. **`ARGUS/`** — **ARGUS** (**A**lgorithmic **R**eal-time **G**ranular **U**ltra-microstructure **S**calper) — HFT microstructure equities engine.
    - **Status**: **SECONDARY / DEPRIORITIZED (Ignore for now)**. We are NOT focusing on ARGUS at this stage. Treat as secondary/dormant unless explicitly directed.
