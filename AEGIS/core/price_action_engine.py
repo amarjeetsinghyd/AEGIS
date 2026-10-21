@@ -1313,13 +1313,91 @@ class PriceActionEngine:
         if not dow.is_valid:
             dow = self._validate_dow_hl2_lh2_structure(direction, touch2_offset=1, tolerance_bps=tolerance_bps, lookback=lookback)
         return dow.is_valid
+    def _check_day_extreme_runway(
+        self,
+        direction: str,
+        current_price: float,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Scale-Invariant Macro Runway & Day Extreme Clearance Rule for Breakout Pillars (P3 & P4).
+        Enforces:
+        1. True Structural Expansion: If at or breaking Day Extreme, must decisively clear it:
+           - PUT: Close <= Day_Low - min_clearance
+           - CALL: Close >= Day_High + min_clearance
+        2. Internal Breakout Runway: If breaking an internal box/hub before Day Extreme, must have open runway:
+           - min_runway_pts = max(1.25 * ATR_{1m}, 0.0008 * Spot)
+           - PUT: Close - Day_Low >= min_runway_pts
+           - CALL: Day_High - Close >= min_runway_pts
+        """
+        if self.current_atr_1m <= 0 or current_price <= 0:
+            return True, "clear", {}
+
+        if len(self.bars_1m) < 4:
+            return True, "clear_insufficient_bars", {}
+
+        curr_bar = self.bars_1m[-1]
+        curr_day = int(curr_bar.ts_start // 86400) if curr_bar else self._current_vwap_day
+        intraday_prior_bars = [
+            b for b in list(self.bars_1m)[:-1]
+            if (curr_day <= 0 or int(b.ts_start // 86400) == curr_day)
+        ]
+        if not intraday_prior_bars and len(self.bars_1m) >= 2:
+            intraday_prior_bars = list(self.bars_1m)[:-1]
+
+        if not intraday_prior_bars or len(intraday_prior_bars) < 3:
+            return True, "clear_insufficient_prior_bars", {}
+
+        day_high = max(b.high for b in intraday_prior_bars)
+        day_low = min(b.low for b in intraday_prior_bars)
+        min_runway_pts = max(1.25 * self.current_atr_1m, 0.0008 * current_price)
+        min_clearance = max(2.0, (current_price / 24000.0) * 2.0, 0.08 * self.current_atr_1m)
+
+        if direction.upper() in ("DOWN", "PUT"):
+            if current_price > day_low:
+                dist_to_day_low = current_price - day_low
+                if dist_to_day_low < min_runway_pts:
+                    return False, "insufficient_runway_to_day_low", {
+                        "day_low": round(day_low, 2),
+                        "room_pts": round(dist_to_day_low, 2),
+                        "threshold_pts": round(min_runway_pts, 2),
+                        "atr_1m": round(self.current_atr_1m, 2),
+                    }
+            elif current_price > (day_low - min_clearance):
+                return False, "insufficient_day_low_clearance", {
+                    "day_low": round(day_low, 2),
+                    "clearance_pts": round(day_low - current_price, 2),
+                    "req_clearance_pts": round(min_clearance, 2),
+                    "atr_1m": round(self.current_atr_1m, 2),
+                }
+
+        elif direction.upper() in ("UP", "CALL"):
+            if current_price < day_high:
+                dist_to_day_high = day_high - current_price
+                if dist_to_day_high < min_runway_pts:
+                    return False, "insufficient_runway_to_day_high", {
+                        "day_high": round(day_high, 2),
+                        "room_pts": round(dist_to_day_high, 2),
+                        "threshold_pts": round(min_runway_pts, 2),
+                        "atr_1m": round(self.current_atr_1m, 2),
+                    }
+            elif current_price < (day_high + min_clearance):
+                return False, "insufficient_day_high_clearance", {
+                    "day_high": round(day_high, 2),
+                    "clearance_pts": round(current_price - day_high, 2),
+                    "req_clearance_pts": round(min_clearance, 2),
+                    "atr_1m": round(self.current_atr_1m, 2),
+                }
+
+        return True, "clear_day_extreme_runway", {}
+
     def _check_structural_obstacle(
         self,
         direction: str,
         current_price: float,
-        lookback: int = 30,
+        lookback: int = 120,
         ignore_pivots_below: Optional[float] = None,
         ignore_pivots_above: Optional[float] = None,
+        check_day_extremes: bool = False,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
         Structural Obstacle Shield (HVG Topological Anchors + Multi-Touch Horizontal Clusters).
@@ -1388,6 +1466,12 @@ class PriceActionEngine:
                             "threshold_pts": round(hurdle_pts, 2),
                             "atr_1m": round(self.current_atr_1m, 2),
                         }
+
+        # 3. Macro Runway & Day Extreme Clearance Rule (Breakout Setups)
+        if check_day_extremes:
+            ok_de, r_de, det_de = self._check_day_extreme_runway(direction, current_price)
+            if not ok_de:
+                return False, r_de, det_de
 
         return True, "clear_of_structural_obstacles", {}
 
@@ -2355,6 +2439,13 @@ class PriceActionEngine:
                         "lower_wick_ratio": round(lower_wick_ratio, 3),
                     }
 
+                # Structural Obstacle Shield (HVG Topological Anchors + Day Extreme Runway)
+                ok_struct, r_struct, det_struct = self._check_structural_obstacle(
+                    "PUT", bar.close, check_day_extremes=True
+                )
+                if not ok_struct:
+                    return False, f"structural_obstacle_{r_struct}", det_struct
+
                 sl_price = round(box_high + buffer_pts, 2)
                 details = {
                     "pa_setup_name": "volatility_squeeze_breakout",
@@ -2408,6 +2499,13 @@ class PriceActionEngine:
                         "close_edge": round(close_edge_call, 3),
                         "upper_wick_ratio": round(upper_wick_ratio, 3),
                     }
+
+                # Structural Obstacle Shield (HVG Topological Anchors + Day Extreme Runway)
+                ok_struct, r_struct, det_struct = self._check_structural_obstacle(
+                    "CALL", bar.close, check_day_extremes=True
+                )
+                if not ok_struct:
+                    return False, f"structural_obstacle_{r_struct}", det_struct
 
                 sl_price = round(box_low - buffer_pts, 2)
                 details = {
@@ -2764,17 +2862,49 @@ class PriceActionEngine:
         close_edge_put = (bar.high - bar.close) / total_range
 
         if is_bullish and trend_5m_bullish:
+            # 1. Anti-Exhaustion & Origin Validation:
+            bar_range = bar.high - bar.low
+            if bar_range > (1.35 * _atr_ref):
+                return False, "exhausted_breakout_candle_range", {
+                    "bar_range": round(bar_range, 2),
+                    "max_allowed_range": round(1.35 * _atr_ref, 2),
+                    "atr_ref": round(_atr_ref, 2),
+                }
+
+            displacement = abs(bar.close - hub_price)
+            if displacement > (1.25 * _atr_ref):
+                return False, "overextended_from_hub", {
+                    "displacement": round(displacement, 2),
+                    "max_allowed": round(1.25 * _atr_ref, 2),
+                    "atr_ref": round(_atr_ref, 2),
+                }
+
+            if bar.open > (hub_price + 0.25 * _atr_ref):
+                return False, "bar_opened_too_far_above_hub", {
+                    "bar_open": round(bar.open, 2),
+                    "hub_price": round(hub_price, 2),
+                    "threshold": round(hub_price + 0.25 * _atr_ref, 2),
+                }
+
             # Enforce solid breakout candle anatomy (No shooting stars / inverted hammer traps):
             is_solid_breakout = (
                 bar.close >= (hub_price + min_hub_clearance)
                 and bar.close > bar.open
                 and body_ratio >= 0.35
-                and close_edge_call >= 0.55
+                and close_edge_call >= 0.70
                 and upper_wick_ratio <= 0.20
             )
             if is_solid_breakout:
                 if current_vwap > 0 and bar.close < current_vwap:
                     return False, "counter_to_vwap", {}
+
+                # Structural Obstacle Shield (HVG Topological Anchors + Day Extreme Runway)
+                ok_struct, r_struct, det_struct = self._check_structural_obstacle(
+                    "CALL", bar.close, check_day_extremes=True
+                )
+                if not ok_struct:
+                    return False, f"structural_obstacle_{r_struct}", det_struct
+
                 sl_price = round(bar.low - buffer_pts, 2)
                 return True, "prominence_hub_breakout_up", {
                     "pa_setup_name": "topological_prominence_breakout",
@@ -2796,17 +2926,49 @@ class PriceActionEngine:
                 }
 
         if is_bearish and trend_5m_bearish:
+            # 1. Anti-Exhaustion & Origin Validation:
+            bar_range = bar.high - bar.low
+            if bar_range > (1.35 * _atr_ref):
+                return False, "exhausted_breakout_candle_range", {
+                    "bar_range": round(bar_range, 2),
+                    "max_allowed_range": round(1.35 * _atr_ref, 2),
+                    "atr_ref": round(_atr_ref, 2),
+                }
+
+            displacement = abs(bar.close - hub_price)
+            if displacement > (1.25 * _atr_ref):
+                return False, "overextended_from_hub", {
+                    "displacement": round(displacement, 2),
+                    "max_allowed": round(1.25 * _atr_ref, 2),
+                    "atr_ref": round(_atr_ref, 2),
+                }
+
+            if bar.open < (hub_price - 0.25 * _atr_ref):
+                return False, "bar_opened_too_far_below_hub", {
+                    "bar_open": round(bar.open, 2),
+                    "hub_price": round(hub_price, 2),
+                    "threshold": round(hub_price - 0.25 * _atr_ref, 2),
+                }
+
             # Enforce solid breakout candle anatomy (No hammer / bullish bounce traps):
             is_solid_breakout = (
                 bar.close <= (hub_price - min_hub_clearance)
                 and bar.close < bar.open
                 and body_ratio >= 0.35
-                and close_edge_put >= 0.55
+                and close_edge_put >= 0.70
                 and lower_wick_ratio <= 0.20
             )
             if is_solid_breakout:
                 if current_vwap > 0 and bar.close > current_vwap:
                     return False, "counter_to_vwap", {}
+
+                # Structural Obstacle Shield (HVG Topological Anchors + Day Extreme Runway)
+                ok_struct, r_struct, det_struct = self._check_structural_obstacle(
+                    "PUT", bar.close, check_day_extremes=True
+                )
+                if not ok_struct:
+                    return False, f"structural_obstacle_{r_struct}", det_struct
+
                 sl_price = round(bar.high + buffer_pts, 2)
                 return True, "prominence_hub_breakout_down", {
                     "pa_setup_name": "topological_prominence_breakout",

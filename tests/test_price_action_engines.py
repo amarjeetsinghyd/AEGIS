@@ -1168,3 +1168,118 @@ def test_flow_symmetry_diagnostic_and_and_gate_warmup():
 
 
 
+
+
+def test_argon_p4_prominence_anti_exhaustion_and_origin_caps():
+    """
+    Verifies Gemini for Argon Pillar 4 anti-exhaustion and origin caps:
+    1. Bar range <= 1.35x ATR
+    2. Hub displacement <= 1.25x ATR
+    3. Bar open origin constraint (within 0.25x ATR of hub)
+    4. Close edge >= 0.70
+    """
+    from unittest.mock import MagicMock
+    engine = PriceActionEngine()
+    engine.prominence_stack = MagicMock()
+    engine.prominence_stack.compute_prominence.return_value = 2.5
+
+    for i in range(60):
+        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74400.0, 74410.0, 74390.0, 74400.0, volume=100.0))
+
+    # Test 1: Gigantic bar range (> 1.35x ATR) -> Rejected as exhausted
+    huge_bar = OHLCBar(3600, 3660, 74400.0, 74440.0, 74365.0, 74370.0, volume=200.0)
+    engine._on_1m_bar_close(huge_bar)
+    engine.last_price = 74370.0
+    ok, reason, details = engine.check_topological_prominence_breakout("DOWN", current_vwap=74500.0)
+    assert ok is False
+    assert reason == "exhausted_breakout_candle_range"
+
+    # Test 2: Overextended displacement from hub (> 1.25x ATR)
+    engine2 = PriceActionEngine()
+    engine2.prominence_stack = MagicMock()
+    engine2.prominence_stack.compute_prominence.return_value = 2.5
+    for i in range(58):
+        engine2._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74400.0, 74415.0, 74385.0, 74400.0, volume=100.0))
+    # Hub at T-1 with close = 74430.0
+    engine2._on_1m_bar_close(OHLCBar(3540, 3600, 74440.0, 74440.0, 74425.0, 74430.0, volume=100.0))
+    # Breakout bar range = 40 pts (<= 1.35 * ATR), but displacement from hub = 60 pts (> 1.25 * ATR)
+    overext_bar = OHLCBar(3600, 3660, 74410.0, 74410.0, 74370.0, 74370.0, volume=200.0)
+    engine2._on_1m_bar_close(overext_bar)
+    engine2.last_price = 74370.0
+    engine2.bars_5m[-1].open = 74450.0
+    engine2.bars_5m[-1].close = 74420.0
+    ok2, reason2, details2 = engine2.check_topological_prominence_breakout("DOWN", current_vwap=74500.0)
+    assert ok2 is False
+    assert reason2 == "overextended_from_hub"
+
+
+def test_argon_p4_day_low_runway_veto_and_breakout_pass():
+    """
+    Verifies Macro Runway & Day Extreme Clearance Rule:
+    - Trade #2 (09:56 candle): Close is only 35.7 pts above Day Low (< 1.25x ATR) -> VETOED!
+    - True breakdown below Day Low -> PASSES!
+    """
+    from unittest.mock import MagicMock
+    engine = PriceActionEngine()
+    engine.prominence_stack = MagicMock()
+    engine.prominence_stack.compute_prominence.return_value = 2.5
+
+    morning_day_low = 74323.0
+    engine._on_1m_bar_close(OHLCBar(0, 60, 74350.0, 74360.0, morning_day_low, 74340.0, volume=100.0))
+    for i in range(1, 58):
+        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74400.0, 74415.0, 74385.0, 74400.0, volume=100.0))
+
+    # Hub at 74388
+    engine._on_1m_bar_close(OHLCBar(3480, 3540, 74388.0, 74395.0, 74380.0, 74388.0, volume=100.0))
+    engine._on_1m_bar_close(OHLCBar(3540, 3600, 74388.0, 74390.0, 74380.0, 74385.0, volume=100.0))
+
+    # Setup Bar: closes at 74,358.0 (Distance to Day Low = 35.0 pts < 62.5 pts runway!)
+    setup_bar = OHLCBar(3600, 3660, 74385.0, 74385.0, 74355.0, 74358.0, volume=250.0)
+    engine._on_1m_bar_close(setup_bar)
+    engine.last_price = 74358.0
+
+    ok, reason, details = engine.check_topological_prominence_breakout("DOWN", current_vwap=74500.0)
+    assert ok is False
+    assert "insufficient_runway_to_day_low" in reason
+    assert details["room_pts"] == 35.0
+
+    # True Breakdown Bar: Closes decisively below Day Low
+    engine3 = PriceActionEngine()
+    engine3._on_1m_bar_close(OHLCBar(0, 60, 74350.0, 74360.0, morning_day_low, 74340.0, volume=100.0))
+    for i in range(1, 58):
+        engine3._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74380.0, 74390.0, 74360.0, 74370.0, volume=100.0))
+    engine3._on_1m_bar_close(OHLCBar(3480, 3540, 74360.0, 74370.0, 74340.0, 74350.0, volume=100.0))
+    engine3._on_1m_bar_close(OHLCBar(3540, 3600, 74350.0, 74355.0, 74330.0, 74335.0, volume=100.0))
+    true_breakdown_bar = OHLCBar(3600, 3660, 74335.0, 74335.0, 74305.0, 74310.0, volume=250.0)
+    engine3._on_1m_bar_close(true_breakdown_bar)
+    engine3.last_price = 74310.0
+
+    ok_bd, reason_bd, details_bd = engine3._check_day_extreme_runway("DOWN", true_breakdown_bar.close)
+    assert ok_bd is True
+    assert reason_bd == "clear_day_extreme_runway"
+
+
+def test_argon_p3_day_high_runway_veto_and_breakout_pass():
+    """
+    Verifies Pillar 3 Volatility Squeeze respect for Day High Runway:
+    - Box breakout into Day High without runway -> VETOED!
+    """
+    engine = PriceActionEngine()
+    engine.current_atr_1m = 20.0
+
+    day_high = 24050.0
+    engine._on_1m_bar_close(OHLCBar(0, 60, 24000.0, day_high, 23990.0, 24010.0))
+    for i in range(1, 25):
+        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 24000.0, 24015.0, 23995.0, 24010.0))
+
+    for i in range(4):
+        engine._on_1m_bar_close(OHLCBar((25 + i) * 60, (26 + i) * 60, 24012.0, 24025.0, 24010.0, 24020.0))
+
+    squeeze_bo_bar = OHLCBar(1800, 1860, 24020.0, 24036.0, 24018.0, 24035.0)
+    engine._on_1m_bar_close(squeeze_bo_bar)
+    engine.last_price = squeeze_bo_bar.close
+
+    ok, reason, details = engine.check_volatility_squeeze_breakout("UP", current_vwap=24000.0)
+    assert ok is False
+    assert "insufficient_runway_to_day_high" in reason
+    assert details["room_pts"] == 15.0

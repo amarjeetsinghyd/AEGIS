@@ -69,9 +69,17 @@ BREAKEVEN_NOISE_MULT = 2.5              # Move must exceed 2.5x noise floor to a
 BREAKEVEN_TIME_SEC = 60.0               # Minimum hold time (60s) or spot confirmation for BE
 BREAKEVEN_LOCK_BUFFER_RS = 0.50         # Minimum green lock buffer (₹0.50)
 RUNNER_ARM_NOISE_MULT = 3.0             # Arm Runner when peak gain >= 3.0x noise floor (or +15%)
-RUNNER_TRAIL_RATIO = 0.20               # Dynamic trail 20% of peak gain
-EMERGENCY_MAX_SL_PCT = 0.35             # Emergency hard cap: max -35% SL
-RESTING_TP_LIMIT_PCT = 0.040            # Fast 4.0% Scalp Take-Profit (Maker Limit order)
+RESTING_TP_LIMIT_PCT = 0.040            # Fast 4.0% Scalp Take-Profit (Maker Limit order for Mon-Thu 0DTE/1DTE)
+FRIDAY_TP_LIMIT_PCT = float(os.environ.get("AEGIS_FRIDAY_TP_PCT", "0.030"))  # Friday 4 DTE adaptive 3.0% TP (1% discount for missing gamma)
+
+
+def get_adaptive_target_profit_pct(now: Optional[datetime] = None) -> float:
+    """Return adaptive TP limit %: 3.0% on Friday (4 DTE, missing gamma), 4.0% on Mon-Thu (0 DTE / 1 DTE)."""
+    dt = now or datetime.now()
+    if dt.weekday() == 4:
+        return FRIDAY_TP_LIMIT_PCT
+    return float(os.environ.get("AEGIS_RESTING_TP_PCT", str(RESTING_TP_LIMIT_PCT)))
+
 
 # ─── Scale-Invariant Normalized Metrics (Basis Points & ATR Multiples) ───
 DEFAULT_SPOT_SL_BPS = 6.5               # 6.5 bps of spot (0.065% ~15.5 pts NIFTY, ~52 pts SENSEX)
@@ -80,9 +88,17 @@ BREAKEVEN_SPOT_CONFIRM_BPS = 3.5        # 3.5 bps of spot (~8.3 pts NIFTY, ~28 p
 BREAKEVEN_SPOT_ATR_MULT = 0.5           # 0.5x 1-minute ATR
 DELTA_MIN_SPOT_BPS = 1.25               # 1.25 bps minimum spot move for empirical delta (~3 pts NIFTY, ~10 pts SENSEX)
 
+# ─── Universal Price Action Structural Invalidation Constants (Scale-Invariant) ───
+MIN_STRUCTURAL_BAR_RANGE_BPS = float(os.environ.get("AEGIS_MIN_STRUCTURAL_RANGE_BPS", "2.0"))   # 2.0 bps (0.02% ~4.6 pts NIFTY, ~14.7 pts SENSEX) hurdle against thin candles/dojis
+MIN_STRUCTURAL_BAR_RANGE_ATR_MULT = 0.30                                                       # 0.30x 1m ATR regime floor
+STRUCTURAL_SL_BUFFER_BPS = float(os.environ.get("AEGIS_STRUCTURAL_SL_BUFFER_BPS", "0.5"))     # 0.5 bps (~1.15 pts NIFTY, ~3.9 pts SENSEX) sub-tick breathing cushion
+STRUCTURAL_SL_BUFFER_ATR_MULT = 0.10                                                           # 0.10x 1m ATR regime cushion
+
 # Legacy fallbacks maintained for external callers/tests
 TARGET_PROFIT_PCT = RESTING_TP_LIMIT_PCT
 STOP_LOSS_PCT = 0.050
+RUNNER_TRAIL_RATIO = 0.020
+EMERGENCY_MAX_SL_PCT = 0.35
 
 # ─── AEGIS V4.1 Stepped Risk Compression + Cost-Shield + Near-Target Engine ───
 # Scale-Invariant Normalized Percentage Model (strictly %, no fixed paise)
@@ -553,6 +569,54 @@ class AegisExecutionManager:
                 except Exception as e:
                     logger.debug(f"[AegisEM] Live ask in-memory resolution: {e}")
 
+            # Last-Mile Pre-Trade Spot Direction Hygiene Gate
+            # Guards against post-candle reversal / dead-cat bounce during 2-6s order dispatch latency
+            tb_engine = getattr(self.aegis_engine, "time_bar_engine", None) if self.aegis_engine else None
+            live_atr_1m = float(metrics.get("atr_1m", 0.0) or getattr(tb_engine, "current_atr_1m", 0.0) or 0.0)
+            live_spot = float(getattr(self.aegis_engine, "last_spot", 0.0) or 0.0)
+            if live_spot <= 0.0:
+                live_spot = self._get_current_spot()
+            if live_atr_1m <= 0.0 and live_spot > 0:
+                live_atr_1m = live_spot * 0.0008
+
+            sig_bar_close = float(metrics.get("bar_close", 0.0) or signal.get("spot") or 0.0)
+            sig_bar_high = float(metrics.get("bar_high", 0.0) or 0.0)
+            sig_bar_low = float(metrics.get("bar_low", 0.0) or 0.0)
+            sig_bar_range = (sig_bar_high - sig_bar_low) if (sig_bar_high > sig_bar_low) else live_atr_1m
+
+            if live_spot > 0.0 and sig_bar_close > 0.0 and live_atr_1m > 0.0:
+                noise_buf = max(0.12 * live_atr_1m, 0.00015 * live_spot)
+                retrace_limit = 0.20 * sig_bar_range
+                spot_delta_3s = 0.0
+                if self.aegis_engine and hasattr(self.aegis_engine, "get_spot_drift"):
+                    spot_delta_3s = self.aegis_engine.get_spot_drift(time.time(), 3.0)
+
+                if signal_type == "PUT":
+                    is_noise_blown = live_spot > (sig_bar_close + noise_buf)
+                    is_retrace_reversing = (live_spot > (sig_bar_close + retrace_limit)) and (spot_delta_3s > 0.0)
+                    if is_noise_blown or is_retrace_reversing:
+                        abort_reason = "NOISE_BUFFER_EXCEEDED" if is_noise_blown else "ADVERSE_RETRACE_VELOCITY"
+                        logger.warning(
+                            f"[AegisEM] Entry aborted by Last-Mile Spot Hygiene Gate ({abort_reason}): "
+                            f"PUT sig_close={sig_bar_close:.2f}, live_spot={live_spot:.2f} "
+                            f"(diff={live_spot - sig_bar_close:+.2f} pts, noise_buf={noise_buf:.2f}, delta_3s={spot_delta_3s:+.2f} pts)"
+                        )
+                        self._rollback_slot()
+                        return
+
+                elif signal_type == "CALL":
+                    is_noise_blown = live_spot < (sig_bar_close - noise_buf)
+                    is_retrace_reversing = (live_spot < (sig_bar_close - retrace_limit)) and (spot_delta_3s < 0.0)
+                    if is_noise_blown or is_retrace_reversing:
+                        abort_reason = "NOISE_BUFFER_EXCEEDED" if is_noise_blown else "ADVERSE_RETRACE_VELOCITY"
+                        logger.warning(
+                            f"[AegisEM] Entry aborted by Last-Mile Spot Hygiene Gate ({abort_reason}): "
+                            f"CALL sig_close={sig_bar_close:.2f}, live_spot={live_spot:.2f} "
+                            f"(diff={live_spot - sig_bar_close:+.2f} pts, noise_buf={noise_buf:.2f}, delta_3s={spot_delta_3s:+.2f} pts)"
+                        )
+                        self._rollback_slot()
+                        return
+
             # Execute entry
             signal_ts = float(signal.get("timestamp") or metrics.get("impulse_timestamp") or time.time())
             with self.trade_lock:
@@ -638,6 +702,7 @@ class AegisExecutionManager:
                     self.trade_context.spot_sl_price = dp["spot_sl_price"]
                     self.trade_context.candle_high = dp["candle_high"]
                     self.trade_context.candle_low = dp["candle_low"]
+                    self.trade_context.trailing_spot_sl = dp["candle_low"] if signal_type == "CALL" else dp["candle_high"]
                     self.trade_context.is_50ema_pullback = dp["is_50ema_pullback"]
                     self.trade_context.is_price_action_setup = dp["is_price_action_setup"]
                     self.trade_context.pa_setup_name = dp["pa_setup_name"]
@@ -661,8 +726,8 @@ class AegisExecutionManager:
             self.tp_order_id = None
             self._trade_quote_history.clear()
 
-            # Place fast scalp resting limit TP (Constant 4.0% Maker limit target)
-            rec_tp = RESTING_TP_LIMIT_PCT
+            # Place fast scalp resting limit TP (Adaptive: 3.0% Friday 4 DTE, 4.0% Mon-Thu 0DTE/1DTE)
+            rec_tp = get_adaptive_target_profit_pct()
             self._place_initial_take_profit(leg, params, target_pct=rec_tp)
         finally:
             self._is_entering = False
@@ -674,10 +739,14 @@ class AegisExecutionManager:
             f"Basis: {basis_pts_val:+.1f}pts ({basis_bps_val:+.1f}bps) | Fut: {fut_px:.1f}"
         )
 
+    def get_adaptive_target_profit_pct(self, now: Optional[datetime] = None) -> float:
+        return get_adaptive_target_profit_pct(now)
+
     def _place_initial_take_profit(self, leg: TradeLeg, params: dict, target_pct: Optional[float] = None):
-        """Resting DAY limit target (Fast 4.0% Scalp Target)."""
-        eff_tp_pct = target_pct if (target_pct is not None and target_pct > 0.0) else RESTING_TP_LIMIT_PCT
-        tp_price = get_smart_maker_tp_price(leg.entry_price, target_pct=eff_tp_pct, min_acceptable_pct=0.0385)
+        """Resting DAY limit target (Adaptive Scalp Target: 3.0% Friday, 4.0% Mon-Thu)."""
+        eff_tp_pct = target_pct if (target_pct is not None and target_pct > 0.0) else get_adaptive_target_profit_pct()
+        min_acceptable_pct = round(eff_tp_pct - 0.0015, 4) if eff_tp_pct < 0.035 else 0.0385
+        tp_price = get_smart_maker_tp_price(leg.entry_price, target_pct=eff_tp_pct, min_acceptable_pct=min_acceptable_pct)
         leg.tp_price = tp_price
         leg.initial_tp_pct = eff_tp_pct
         leg.highest_price = leg.entry_price
@@ -902,6 +971,27 @@ class AegisExecutionManager:
             # Record in rolling trade history
             self._trade_quote_history.append((now_ts, curr_spot, leg.current_price, live_bid, live_ask))
 
+        # Update spot excursion metrics (Spot MFE & Spot MAE tracking)
+        entry_spot = float(getattr(context, "index_entry", 0.0) or 0.0)
+        curr_spot_val = float(curr_spot) if curr_spot > 0 else self._get_current_spot()
+        hold_sec_now = (now - context.entry_time).total_seconds() if context.entry_time else 0.0
+        if entry_spot > 0 and curr_spot_val > 0:
+            sig_type = getattr(context, "signal_type", "CALL")
+            # Signed excursion in spot points relative to trade direction:
+            # Positive = Favorable (Index rose for CALL, or Index fell for PUT)
+            # Negative = Adverse (Index fell for CALL, or Index rose for PUT)
+            spot_excursion = (curr_spot_val - entry_spot) if sig_type == "CALL" else (entry_spot - curr_spot_val)
+
+            if spot_excursion > getattr(context, "spot_peak_mfe_pts", 0.0):
+                context.spot_peak_mfe_pts = round(spot_excursion, 2)
+                context.spot_time_to_mfe_sec = round(hold_sec_now, 3)
+                context.spot_at_mfe = round(curr_spot_val, 2)
+
+            if spot_excursion < getattr(context, "spot_peak_mae_pts", 0.0):
+                context.spot_peak_mae_pts = round(spot_excursion, 2)
+                context.spot_time_to_mae_sec = round(hold_sec_now, 3)
+                context.spot_at_mae = round(curr_spot_val, 2)
+
         # 0. Check if resting TP order was ALREADY filled at the broker!
         if self.tp_order_id and not str(self.tp_order_id).startswith("PAPER_"):
             api = getattr(self.broker, "_api", None)
@@ -1092,16 +1182,118 @@ class AegisExecutionManager:
                 c_high = float(last_bar.high)
                 context.candle_high = c_high
 
-        # Universal Rule: ALL 4 Pillars exit ONLY on Entry Candle Low/High Invalidation
+        # 3A.1 Universal Normalized Structural Invalidation Metrics (Basis Points & ATR Multiples)
+        # Scale-Invariant Hurdle against thin candles/dojis & sub-tick wick breathing room
+        base_range_hurdle = ref_spot * (MIN_STRUCTURAL_BAR_RANGE_BPS / 10000.0)
+        min_bar_range_pts = max(base_range_hurdle, MIN_STRUCTURAL_BAR_RANGE_ATR_MULT * atr_1m) if atr_1m > 0 else base_range_hurdle
+
+        base_wick_cushion = ref_spot * (STRUCTURAL_SL_BUFFER_BPS / 10000.0)
+        wick_cushion_pts = max(base_wick_cushion, STRUCTURAL_SL_BUFFER_ATR_MULT * atr_1m) if atr_1m > 0 else base_wick_cushion
+
+        # Apply Normalized Cushion to First Candle (Signal Candle Low/High)
+        if context.signal_type == "CALL":
+            initial_sl = (c_low - wick_cushion_pts) if c_low > 0 else 0.0
+            effective_sl = initial_sl
+        else:
+            initial_sl = (c_high + wick_cushion_pts) if c_high > 0 else 0.0
+            effective_sl = initial_sl
+
+        trailing_sl = float(getattr(context, "trailing_spot_sl", 0.0) or 0.0)
+        if trailing_sl > 0:
+            if context.signal_type == "CALL":
+                effective_sl = max(effective_sl, trailing_sl)
+            elif context.signal_type == "PUT":
+                effective_sl = min(effective_sl, trailing_sl) if effective_sl > 0 else trailing_sl
+
+        entry_time = getattr(context, "entry_time", None)
+        entry_ts = float(
+            (getattr(context, "decision_payload", {}) or {}).get("fill_timestamp", 0.0)
+            or (entry_time.timestamp() if entry_time else 0.0)
+        )
+
+        if is_pillar_trade and tb_engine and getattr(tb_engine, "bars_1m", None) and entry_ts > 0:
+            for b in tb_engine.bars_1m:
+                b_end = getattr(b, "ts_end", getattr(b, "timestamp", 0.0))
+                b_start = getattr(b, "ts_start", b_end - 60.0)
+                if b_end > entry_ts:
+                    # 1. Option A: Check Minimum Structural Range Hurdle (Thin Candle / Doji filter)
+                    bar_range = float(b.high - b.low)
+                    if bar_range < min_bar_range_pts:
+                        logger.debug(
+                            f"[AegisEM] Skipping thin candle for structural trail: "
+                            f"range {bar_range:.1f}pts < min {min_bar_range_pts:.1f}pts ({MIN_STRUCTURAL_BAR_RANGE_BPS}bps)"
+                        )
+                        continue
+
+                    # 2. Option C: Bar passed structural hurdle -> trail with normalized wick cushion
+                    is_entry_bar = (b_start <= entry_ts <= b_end)
+                    if context.signal_type == "CALL":
+                        cand_sl = float(b.low - wick_cushion_pts)
+                        favorable_progress = (b.close >= b.open or b.close > context.index_entry or (c_high > 0 and b.high > c_high))
+                        if is_entry_bar and b.low > 0:
+                            if favorable_progress and cand_sl > effective_sl:
+                                effective_sl = cand_sl
+                                context.trailing_spot_sl = effective_sl
+                                context.entry_candle_low = b.low
+                                if not getattr(context, "_entry_candle_low_trailed", False):
+                                    logger.info(
+                                        f"[AegisEM] Entry candle closed (Range {bar_range:.1f}pts >= {min_bar_range_pts:.1f}pts): "
+                                        f"Trailed CALL structural SL {initial_sl:.1f} -> {effective_sl:.1f} "
+                                        f"(Low {b.low:.1f} - cushion {wick_cushion_pts:.1f}pts, +{effective_sl - initial_sl:.1f} pts)"
+                                    )
+                                    context._entry_candle_low_trailed = True
+                        elif (not is_entry_bar) and b.low > 0:
+                            if favorable_progress and cand_sl > effective_sl:
+                                old_sl = effective_sl
+                                effective_sl = cand_sl
+                                context.trailing_spot_sl = effective_sl
+                                logger.info(
+                                    f"[AegisEM] Subsequent bar closed (Range {bar_range:.1f}pts): Trailed CALL structural SL "
+                                    f"{old_sl:.1f} -> {effective_sl:.1f} (+{effective_sl - old_sl:.1f} pts)"
+                                )
+                    elif context.signal_type == "PUT":
+                        cand_sl = float(b.high + wick_cushion_pts)
+                        favorable_progress = (b.close <= b.open or b.close < context.index_entry or (c_low > 0 and b.low < c_low))
+                        if is_entry_bar and b.high > 0:
+                            if favorable_progress and (effective_sl <= 0 or cand_sl < effective_sl):
+                                effective_sl = cand_sl
+                                context.trailing_spot_sl = effective_sl
+                                context.entry_candle_high = b.high
+                                if not getattr(context, "_entry_candle_high_trailed", False):
+                                    logger.info(
+                                        f"[AegisEM] Entry candle closed (Range {bar_range:.1f}pts >= {min_bar_range_pts:.1f}pts): "
+                                        f"Trailed PUT structural SL {initial_sl:.1f} -> {effective_sl:.1f} "
+                                        f"(High {b.high:.1f} + cushion {wick_cushion_pts:.1f}pts, {effective_sl - initial_sl:.1f} pts)"
+                                    )
+                                    context._entry_candle_high_trailed = True
+                        elif (not is_entry_bar) and b.high > 0:
+                            if favorable_progress and (effective_sl <= 0 or cand_sl < effective_sl):
+                                old_sl = effective_sl
+                                effective_sl = cand_sl
+                                context.trailing_spot_sl = effective_sl
+                                logger.info(
+                                    f"[AegisEM] Subsequent bar closed (Range {bar_range:.1f}pts): Trailed PUT structural SL "
+                                    f"{old_sl:.1f} -> {effective_sl:.1f} ({effective_sl - old_sl:.1f} pts)"
+                                )
+
+        # Universal Rule: ALL 4 Pillars exit on Entry Candle / Structural Trailing Low/High Invalidation
         if is_pillar_trade and curr_spot > 0:
-            if context.signal_type == "CALL" and c_low > 0 and curr_spot <= c_low:
+            if context.signal_type == "CALL" and effective_sl > 0 and curr_spot <= effective_sl:
+                if c_low > 0 and effective_sl > initial_sl:
+                    sl_desc = f"Candle Low {effective_sl:.1f} [Trailed with cushion {wick_cushion_pts:.1f}pts from {c_low:.1f}]"
+                else:
+                    sl_desc = f"Candle Low {effective_sl:.1f} [Initial {c_low:.1f} - cushion {wick_cushion_pts:.1f}pts]"
                 self._close_all_legs(
-                    f"{pillar_label} Entry Candle Low Broken SL (Spot {curr_spot:.1f} <= Candle Low {c_low:.1f})"
+                    f"{pillar_label} Entry Candle Low Broken SL (Spot {curr_spot:.1f} <= {sl_desc})"
                 )
                 return
-            elif context.signal_type == "PUT" and c_high > 0 and curr_spot >= c_high:
+            elif context.signal_type == "PUT" and effective_sl > 0 and curr_spot >= effective_sl:
+                if c_high > 0 and effective_sl < initial_sl:
+                    sl_desc = f"Candle High {effective_sl:.1f} [Trailed with cushion {wick_cushion_pts:.1f}pts from {c_high:.1f}]"
+                else:
+                    sl_desc = f"Candle High {effective_sl:.1f} [Initial {c_high:.1f} + cushion {wick_cushion_pts:.1f}pts]"
                 self._close_all_legs(
-                    f"{pillar_label} Entry Candle High Broken SL (Spot {curr_spot:.1f} >= Candle High {c_high:.1f})"
+                    f"{pillar_label} Entry Candle High Broken SL (Spot {curr_spot:.1f} >= {sl_desc})"
                 )
                 return
 
@@ -1202,16 +1394,24 @@ class AegisExecutionManager:
 
             # ─── Point 4: Stepped Risk Compression + Cost-Shield + Near-Target Engine (V4.1) ───
             # Scale-Invariant Normalized Percentage Model (strictly % normalized, no fixed paise!)
+            init_tp = float(getattr(leg, "initial_tp_pct", RESTING_TP_LIMIT_PCT) or RESTING_TP_LIMIT_PCT)
+            is_reduced_tp = init_tp <= 0.032  # Friday 4 DTE (3.0% TP) or lowered target mode
+
+            near_target_trigger = 0.024 if is_reduced_tp else NEAR_TARGET_TRIGGER_PCT
+            near_target_tolerance = 0.005 if is_reduced_tp else NEAR_TARGET_PULLBACK_TOLERANCE
+            step2_trigger = 0.025 if is_reduced_tp else STEP2_TRIGGER_PCT
+            step1_trigger = 0.020 if is_reduced_tp else STEP1_TRIGGER_PCT
+
             peak_bid = getattr(leg, "highest_bid", effective_bid)
             peak_bid_gain = max(peak_gain_rs, peak_bid - leg.entry_price)
             peak_pnl_frac = peak_bid_gain / leg.entry_price if leg.entry_price > 0 else 0.0
             cur_pnl_frac = cur_pnl_rs / leg.entry_price if leg.entry_price > 0 else 0.0
             peak_bid_frac = (peak_bid - leg.entry_price) / leg.entry_price if leg.entry_price > 0 else 0.0
 
-            # 1. Near-Target Profit Lock (Peak Bid >= +3.5%, exits on >= 0.8% pullback from peak bid)
-            if peak_bid_frac >= NEAR_TARGET_TRIGGER_PCT:
+            # 1. Near-Target Profit Lock (Peak Bid >= near_target_trigger, exits on pullback from peak bid)
+            if peak_bid_frac >= near_target_trigger:
                 pullback_frac = peak_bid_frac - cur_pnl_frac
-                if pullback_frac >= NEAR_TARGET_PULLBACK_TOLERANCE:
+                if pullback_frac >= near_target_tolerance:
                     self._close_all_legs(
                         f"Near-Target Profit Lock (+{cur_pnl_pct:.1f}% @ {effective_bid:.2f} | Peak was +{peak_pnl_pct:.1f}%)"
                     )
@@ -1221,8 +1421,8 @@ class AegisExecutionManager:
             dynamic_sl_price = None
             dynamic_sl_reason = ""
 
-            if peak_pnl_frac >= STEP2_TRIGGER_PCT or getattr(leg, "breakeven_locked", False):
-                # Step 2: Peak reached >= +3.0% -> Cost-Shield Scratch Active (SL = Entry Price / 0.0%)
+            if peak_pnl_frac >= step2_trigger or getattr(leg, "breakeven_locked", False):
+                # Step 2: Peak reached >= step2_trigger (+3.5% normal, +2.5% Friday) -> Cost-Shield Scratch Active (SL = Entry Price / 0.0%)
                 if not getattr(leg, "breakeven_locked", False):
                     leg.breakeven_locked = True
                     logger.info(
@@ -1234,13 +1434,13 @@ class AegisExecutionManager:
                     f"Cost-Shield Scratch Exit (Breakeven Guard 0.0% @ {effective_bid:.2f} | "
                     f"Peak was +{peak_pnl_pct:.1f}% | Loss Prevented!)"
                 )
-            elif peak_pnl_frac >= STEP1_TRIGGER_PCT or getattr(leg, "step1_sl_armed", False):
-                # Step 1: Peak reached >= +2.0% -> Stepped Safety Net Active (SL tightened from -12% to -3.0%)
+            elif peak_pnl_frac >= step1_trigger or getattr(leg, "step1_sl_armed", False):
+                # Step 1: Peak reached >= step1_trigger (+3.0% normal, +2.0% Friday) -> Stepped Safety Net Active (SL tightened from -12% to -3.0%)
                 if not getattr(leg, "step1_sl_armed", False):
                     leg.step1_sl_armed = True
                     logger.info(
                         f"🛡️ [AegisEM] Stepped Safety Net Armed: {leg.symbol} peak +{peak_pnl_pct:.1f}% -> "
-                        f"SL tightened to -3.0% (₹{_round_tick(leg.entry_price * (1.0 + STEP1_SL_PCT)):.2f}, 5% cushion)"
+                        f"SL tightened to -3.0% (₹{_round_tick(leg.entry_price * (1.0 + STEP1_SL_PCT)):.2f}, wide breathing room)"
                     )
                 dynamic_sl_price = _round_tick(leg.entry_price * (1.0 + STEP1_SL_PCT))  # -3.0%
                 dynamic_sl_reason = (
@@ -1729,6 +1929,18 @@ class AegisExecutionManager:
         spot_delta_pts = round(exit_spot - entry_spot, 2) if (entry_spot > 0 and exit_spot > 0) else 0.0
         spot_delta_bps = round((spot_delta_pts / entry_spot) * 10000.0, 2) if entry_spot > 0 else 0.0
 
+        # Spot MFE / MAE metrics
+        spot_peak_mfe_pts = float(getattr(context, "spot_peak_mfe_pts", 0.0) or 0.0)
+        spot_peak_mae_pts = float(getattr(context, "spot_peak_mae_pts", 0.0) or 0.0)
+        spot_time_to_mfe_sec = round(float(getattr(context, "spot_time_to_mfe_sec", 0.0) or 0.0), 3)
+        spot_time_to_mfe_ms = int(spot_time_to_mfe_sec * 1000)
+        spot_time_to_mae_sec = round(float(getattr(context, "spot_time_to_mae_sec", 0.0) or 0.0), 3)
+        spot_time_to_mae_ms = int(spot_time_to_mae_sec * 1000)
+        spot_peak_mfe_bps = round((spot_peak_mfe_pts / entry_spot) * 10000.0, 2) if entry_spot > 0 else 0.0
+        spot_peak_mae_bps = round((spot_peak_mae_pts / entry_spot) * 10000.0, 2) if entry_spot > 0 else 0.0
+        spot_at_mfe = float(getattr(context, "spot_at_mfe", 0.0) or entry_spot)
+        spot_at_mae = float(getattr(context, "spot_at_mae", 0.0) or entry_spot)
+
         entry_fut_px = float(dp.get("futures_price", 0.0) or 0.0)
         exit_fut_px = float(getattr(self.aegis_engine, "last_futures_price", 0.0) if self.aegis_engine else 0.0)
         fut_delta_pts = round(exit_fut_px - entry_fut_px, 2) if (entry_fut_px > 0 and exit_fut_px > 0) else 0.0
@@ -1789,7 +2001,8 @@ class AegisExecutionManager:
             f"{outcome} {sig_type} on {sym_str} ({duration_sec}s) | "
             f"Gross: ₹{gross_pnl:+.2f} ({pnl_pct:+.1f}%) | Brokerage: ₹{brokerage:.2f} | Taxes: ₹{taxes:.2f} | Total Charges: ₹{total_charges:.2f} | Net: ₹{net_pnl:+.2f} | "
             f"Exit: {reason} | "
-            f"MFE: {peak_mfe_pct:+.1f}% (+₹{peak_mfe_rs:.2f} @ {time_to_peak_mfe_sec}s), MAE: {peak_mae_pct:.1f}% | "
+            f"Opt MFE: {peak_mfe_pct:+.1f}% (+₹{peak_mfe_rs:.2f} @ {time_to_peak_mfe_sec}s), Opt MAE: {peak_mae_pct:.1f}% | "
+            f"Spot MFE: {spot_peak_mfe_pts:+.1f}pts ({spot_peak_mfe_bps:+.1f}bps @ {spot_time_to_mfe_sec}s), Spot MAE: {spot_peak_mae_pts:+.1f}pts ({spot_peak_mae_bps:+.1f}bps) | "
             f"Spot Δ: {spot_delta_pts:+.1f}pts ({spot_delta_bps:+.1f}bps), Fut Δ: {fut_delta_pts:+.1f}pts (Basis: {basis_pts_entry:+.1f}pts | {fut_corr}) | "
             f"Lat: {entry_latency_ms:.0f}ms, VolBurstAge: {vol_burst_age_sec}s, EQS: {eqs_score:.1f}"
         )
@@ -1811,6 +2024,16 @@ class AegisExecutionManager:
             "time_to_peak_mfe_sec": time_to_peak_mfe_sec,
             "peak_mae_pct": peak_mae_pct,
             "peak_mae_rs": peak_mae_rs,
+            "spot_peak_mfe_pts": spot_peak_mfe_pts,
+            "spot_peak_mfe_bps": spot_peak_mfe_bps,
+            "spot_time_to_mfe_sec": spot_time_to_mfe_sec,
+            "spot_time_to_mfe_ms": spot_time_to_mfe_ms,
+            "spot_peak_mae_pts": spot_peak_mae_pts,
+            "spot_peak_mae_bps": spot_peak_mae_bps,
+            "spot_time_to_mae_sec": spot_time_to_mae_sec,
+            "spot_time_to_mae_ms": spot_time_to_mae_ms,
+            "spot_at_mfe": spot_at_mfe,
+            "spot_at_mae": spot_at_mae,
             "spot_move_pts": spot_delta_pts,
             "spot_move_bps": spot_delta_bps,
             "futures_move_pts": fut_delta_pts,
@@ -1834,6 +2057,16 @@ class AegisExecutionManager:
             "entry_spot": entry_spot,
             "exit_spot": exit_spot,
             "spot_move_pts": spot_delta_pts,
+            "spot_peak_mfe_pts": spot_peak_mfe_pts,
+            "spot_peak_mfe_bps": spot_peak_mfe_bps,
+            "spot_time_to_mfe_sec": spot_time_to_mfe_sec,
+            "spot_time_to_mfe_ms": spot_time_to_mfe_ms,
+            "spot_peak_mae_pts": spot_peak_mae_pts,
+            "spot_peak_mae_bps": spot_peak_mae_bps,
+            "spot_time_to_mae_sec": spot_time_to_mae_sec,
+            "spot_time_to_mae_ms": spot_time_to_mae_ms,
+            "spot_at_mfe": spot_at_mfe,
+            "spot_at_mae": spot_at_mae,
             "entry_futures": entry_fut_px,
             "exit_futures": exit_fut_px,
             "futures_move_pts": fut_delta_pts,
@@ -1865,6 +2098,10 @@ class AegisExecutionManager:
             "total_charges": total_charges,
             "net_pl": net_pnl,
             "net_pnl": net_pnl,
+            "spot_peak_mfe_pts": spot_peak_mfe_pts,
+            "spot_peak_mae_pts": spot_peak_mae_pts,
+            "spot_time_to_mfe_sec": spot_time_to_mfe_sec,
+            "spot_time_to_mfe_ms": spot_time_to_mfe_ms,
             "daily_total_pnl": round(self.daily_pnl, 2),
             "daily_gross_pnl": round(self.daily_gross_pnl, 2),
             "daily_charges": round(self.daily_charges, 2),
@@ -1917,6 +2154,17 @@ class AegisExecutionManager:
                 "strategy": "AEGIS_GAMMA_BURST",
                 "entry_time": self.trade_context.entry_time.isoformat() if self.trade_context.entry_time else None,
                 "index_entry": self.trade_context.index_entry,
+                "spot_peak_mfe_pts": getattr(self.trade_context, "spot_peak_mfe_pts", 0.0),
+                "spot_peak_mae_pts": getattr(self.trade_context, "spot_peak_mae_pts", 0.0),
+                "spot_time_to_mfe_sec": getattr(self.trade_context, "spot_time_to_mfe_sec", 0.0),
+                "spot_time_to_mae_sec": getattr(self.trade_context, "spot_time_to_mae_sec", 0.0),
+                "spot_at_mfe": getattr(self.trade_context, "spot_at_mfe", self.trade_context.index_entry),
+                "spot_at_mae": getattr(self.trade_context, "spot_at_mae", self.trade_context.index_entry),
+                "trailing_spot_sl": getattr(self.trade_context, "trailing_spot_sl", 0.0),
+                "candle_low": getattr(self.trade_context, "candle_low", 0.0),
+                "candle_high": getattr(self.trade_context, "candle_high", 0.0),
+                "pillar": getattr(self.trade_context, "pillar", 0),
+                "pa_setup_name": getattr(self.trade_context, "pa_setup_name", ""),
                 "tp_order_id": self.tp_order_id,
                 "last_tp_order_id": self.last_tp_order_id,
                 "legs": [
@@ -1958,6 +2206,17 @@ class AegisExecutionManager:
                 strategy="AEGIS_GAMMA_BURST",
                 index_entry=float(data.get("index_entry") or 0),
             )
+            self.trade_context.spot_peak_mfe_pts = float(data.get("spot_peak_mfe_pts", 0.0) or 0.0)
+            self.trade_context.spot_peak_mae_pts = float(data.get("spot_peak_mae_pts", 0.0) or 0.0)
+            self.trade_context.spot_time_to_mfe_sec = float(data.get("spot_time_to_mfe_sec", 0.0) or 0.0)
+            self.trade_context.spot_time_to_mae_sec = float(data.get("spot_time_to_mae_sec", 0.0) or 0.0)
+            self.trade_context.spot_at_mfe = float(data.get("spot_at_mfe", 0.0) or self.trade_context.index_entry)
+            self.trade_context.spot_at_mae = float(data.get("spot_at_mae", 0.0) or self.trade_context.index_entry)
+            self.trade_context.trailing_spot_sl = float(data.get("trailing_spot_sl", 0.0) or 0.0)
+            self.trade_context.candle_low = float(data.get("candle_low", 0.0) or 0.0)
+            self.trade_context.candle_high = float(data.get("candle_high", 0.0) or 0.0)
+            self.trade_context.pillar = int(data.get("pillar", 0) or 0)
+            self.trade_context.pa_setup_name = str(data.get("pa_setup_name", "") or "")
             if data.get("entry_time"):
                 entry_dt = datetime.fromisoformat(data["entry_time"])
                 age_sec = (datetime.now() - entry_dt).total_seconds()

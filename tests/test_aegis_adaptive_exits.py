@@ -25,6 +25,8 @@ from AEGIS.aegis_execution_manager import (
     RUNNER_ARM_NOISE_MULT,
     RUNNER_TRAIL_RATIO,
     RESTING_TP_LIMIT_PCT,
+    FRIDAY_TP_LIMIT_PCT,
+    get_adaptive_target_profit_pct,
     DEFAULT_SPOT_SL_BPS,
     BREAKEVEN_SPOT_CONFIRM_BPS,
     DELTA_MIN_SPOT_BPS,
@@ -794,8 +796,8 @@ def test_pillar4_entry_candle_low_high_sl():
     em._manage_open_trade()
     assert len(em.exit_reasons) == 0
 
-    # Spot breaks below candle low (72390 <= 72392.5) -> structural exit triggers
-    em.data_fetcher._spot = 72390.0
+    # Spot breaks below candle low + cushion (72388.0 <= 72388.9) -> structural exit triggers
+    em.data_fetcher._spot = 72388.0
     em._manage_open_trade()
     assert len(em.exit_reasons) == 1
     assert "Pillar 4 Entry Candle Low Broken SL" in em.exit_reasons[0]
@@ -812,8 +814,8 @@ def test_pillar4_entry_candle_low_high_sl():
     em2._manage_open_trade()
     assert len(em2.exit_reasons) == 0
 
-    # Spot breaks above candle high (72422 >= 72420.0) -> structural exit triggers
-    em2.data_fetcher._spot = 72422.0
+    # Spot breaks above candle high + cushion (72424.0 >= 72423.6) -> structural exit triggers
+    em2.data_fetcher._spot = 72424.0
     em2._manage_open_trade()
     assert len(em2.exit_reasons) == 1
     assert "Pillar 4 Entry Candle High Broken SL" in em2.exit_reasons[0]
@@ -951,8 +953,8 @@ def test_pillar2_entry_candle_invalidation_and_no_9ema_choke():
     em._manage_open_trade()
     assert len(em.exit_reasons) == 0, "Pillar 2 was prematurely choked by 9-EMA!"
 
-    # Step 2: Spot breaks below Entry Candle Low (74864.0 <= 74865.0) -> Pure PA SL triggers!
-    em.data_fetcher._spot = 74864.0
+    # Step 2: Spot breaks below Entry Candle Low + Cushion (74860.0 <= 74861.26) -> Pure PA SL triggers!
+    em.data_fetcher._spot = 74860.0
     em._manage_open_trade()
     assert len(em.exit_reasons) == 1
     assert "Pillar 2 Entry Candle Low Broken SL" in em.exit_reasons[0]
@@ -999,8 +1001,8 @@ def test_pillar1_entry_candle_invalidation_and_no_9ema_choke():
     em._manage_open_trade()
     assert len(em.exit_reasons) == 0, "Pillar 1 was prematurely choked by 9-EMA!"
 
-    # Step 2: Spot breaks below Entry Candle Low (74864.0 <= 74865.0) -> Pure PA SL triggers!
-    em.data_fetcher._spot = 74864.0
+    # Step 2: Spot breaks below Entry Candle Low + Cushion (74860.0 <= 74861.26) -> Pure PA SL triggers!
+    em.data_fetcher._spot = 74860.0
     em._manage_open_trade()
     assert len(em.exit_reasons) == 1
     assert "Pillar 1 Entry Candle Low Broken SL" in em.exit_reasons[0]
@@ -1047,8 +1049,8 @@ def test_pillar3_entry_candle_invalidation_and_no_9ema_choke():
     em._manage_open_trade()
     assert len(em.exit_reasons) == 0, "Pillar 3 was prematurely choked by 9-EMA!"
 
-    # Step 2: Spot breaks below Entry Candle Low (74864.0 <= 74865.0) -> Pure PA SL triggers!
-    em.data_fetcher._spot = 74864.0
+    # Step 2: Spot breaks below Entry Candle Low + Cushion (74860.0 <= 74861.26) -> Pure PA SL triggers!
+    em.data_fetcher._spot = 74860.0
     em._manage_open_trade()
     assert len(em.exit_reasons) == 1
     assert "Pillar 3 Entry Candle Low Broken SL" in em.exit_reasons[0]
@@ -1157,6 +1159,407 @@ def test_atomic_modify_fallback_on_error():
     assert leg.status == "CLOSED"
 
 
+def test_trailing_structural_sl_on_entry_bar_close():
+    """Verify that once the entry candle closes, the structural SL trails to the entry candle's low."""
+    from AEGIS.core.time_bar_engine import OHLCBar
+    em, ctx, leg = create_test_manager(entry_price=14.0, spot_entry=23122.0, signal_type="CALL")
+    t_signal = datetime.now() - timedelta(seconds=90)
+    t_entry = t_signal + timedelta(seconds=65)  # 5s into the entry bar
+    ctx.entry_time = t_entry
+    ctx.pillar = 4
+    ctx.pa_setup_name = "hvg_bos_breakout"
+    ctx.candle_low = 23111.55  # Signal candle low
+    ctx.candle_high = 23117.85
+
+    class MockTBEngine:
+        def __init__(self):
+            self.bars_1m = [
+                # Signal Bar (closed before entry)
+                OHLCBar(
+                    ts_start=t_signal.timestamp(),
+                    ts_end=t_signal.timestamp() + 60.0,
+                    open=23115.70,
+                    high=23117.85,
+                    low=23111.55,
+                    close=23117.50,
+                )
+            ]
+
+    em.aegis_engine.time_bar_engine = MockTBEngine()
+
+    # Step 1: During entry bar, spot drops to 23,114.0 (above signal candle low 23,111.55) -> Trade stays open
+    em.data_fetcher._spot = 23114.0
+    em.broker.market_data_provider._quote = {"ltp": 13.50, "bp1": 13.50, "sp1": 13.60, "sq1": 500, "bq1": 500}
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 0
+
+    # Step 2: Entry bar closes with Low = 23,115.95, High = 23,122.55
+    entry_bar = OHLCBar(
+        ts_start=t_signal.timestamp() + 60.0,
+        ts_end=t_signal.timestamp() + 120.0,
+        open=23118.50,
+        high=23122.55,
+        low=23115.95,
+        close=23122.30,
+    )
+    em.aegis_engine.time_bar_engine.bars_1m.append(entry_bar)
+
+    # Step 3: Next tick spot drops to 23,114.0.
+    # 23,114.0 is > 23,111.55 (signal candle low), BUT <= 23,114.8 (entry candle low 23,115.95 - cushion 1.15)!
+    # Structural trailing exit MUST fire!
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 1
+    assert "Pillar 4 Entry Candle Low Broken SL" in em.exit_reasons[0]
+    assert "23114.8" in em.exit_reasons[0]
+    assert "Trailed with cushion" in em.exit_reasons[0]
+
+
+def test_trailing_structural_sl_put():
+    """Verify that for PUT trades, once the entry candle closes, structural SL trails down to entry candle's high + cushion."""
+    from AEGIS.core.time_bar_engine import OHLCBar
+    em, ctx, leg = create_test_manager(entry_price=18.0, spot_entry=23100.0, signal_type="PUT")
+    t_signal = datetime.now() - timedelta(seconds=90)
+    t_entry = t_signal + timedelta(seconds=65)
+    ctx.entry_time = t_entry
+    ctx.pillar = 1
+    ctx.pa_setup_name = "20_ema_rejection"
+    ctx.candle_low = 23090.0
+    ctx.candle_high = 23120.0  # Signal candle high
+
+    class MockTBEngine:
+        def __init__(self):
+            self.bars_1m = [
+                # Signal bar
+                OHLCBar(
+                    ts_start=t_signal.timestamp(),
+                    ts_end=t_signal.timestamp() + 60.0,
+                    open=23110.0,
+                    high=23120.0,
+                    low=23090.0,
+                    close=23095.0,
+                )
+            ]
+
+    em.aegis_engine.time_bar_engine = MockTBEngine()
+
+    # Step 1: During entry bar, spot rallies to 23,112.0 (below signal high + cushion) -> Stays open
+    em.data_fetcher._spot = 23112.0
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 0
+
+    # Step 2: Entry bar closes with High = 23,108.0 (lower high than signal bar 23,120.0)
+    entry_bar = OHLCBar(
+        ts_start=t_signal.timestamp() + 60.0,
+        ts_end=t_signal.timestamp() + 120.0,
+        open=23095.0,
+        high=23108.0,
+        low=23085.0,
+        close=23088.0,
+    )
+    em.aegis_engine.time_bar_engine.bars_1m.append(entry_bar)
+
+    # Step 3: Spot rallies to 23,110.0 (above trailed high 23,108.0 + cushion 1.15 = 23,109.15)
+    # Structural trailing exit MUST fire!
+    em.data_fetcher._spot = 23110.0
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 1
+    assert "Pillar 1 Entry Candle High Broken SL" in em.exit_reasons[0]
+    assert "23109.2" in em.exit_reasons[0]
+    assert "Trailed with cushion" in em.exit_reasons[0]
+
+
+def test_trade37_forensic_replication():
+    """Forensic verification: Trade #37 on 16 Oct exits early on entry candle low breakdown rather than 300s timeout."""
+    from AEGIS.core.time_bar_engine import OHLCBar
+    em, ctx, leg = create_test_manager(entry_price=14.05, spot_entry=23122.30, signal_type="CALL")
+    t0 = datetime.now() - timedelta(seconds=140)  # ~2.3 minutes ago (well within 300s time ceiling)
+    ctx.entry_time = t0 + timedelta(seconds=65)  # 13:11:05
+    ctx.pillar = 4
+    ctx.pa_setup_name = "hvg_bos_breakout"
+    ctx.candle_low = 23111.55  # 13:10 Signal Candle Low
+    ctx.candle_high = 23117.85
+
+    class MockTBEngine:
+        def __init__(self):
+            self.bars_1m = [
+                # 13:10 Signal Bar
+                OHLCBar(ts_start=t0.timestamp(), ts_end=t0.timestamp() + 60.0,
+                        open=23115.70, high=23117.85, low=23111.55, close=23117.50),
+                # 13:11 Entry Bar (closed at 13:12:00)
+                OHLCBar(ts_start=t0.timestamp() + 60.0, ts_end=t0.timestamp() + 120.0,
+                        open=23118.50, high=23122.55, low=23115.95, close=23122.30),
+            ]
+
+    em.aegis_engine.time_bar_engine = MockTBEngine()
+
+    # At 13:13:20, spot fell to 23,112.85 (breaking entry bar low 23,115.95 - cushion 1.15 = 23,114.80)
+    em.data_fetcher._spot = 23112.85
+    em.broker.market_data_provider._quote = {"ltp": 13.00, "bp1": 13.00, "sp1": 13.10}
+    em._manage_open_trade()
+
+    # In old code: would NOT exit (23,112.85 > 23,111.55) and hold until 300s decay down to ₹10.95 (-8.4%)
+    # In new code: exits cleanly on Entry Candle Low break at ~₹13.00 (-4.1%)
+    assert len(em.exit_reasons) == 1
+    assert "Pillar 4 Entry Candle Low Broken SL" in em.exit_reasons[0]
+    assert "23114.8" in em.exit_reasons[0]
+
+
+def test_thin_candle_bypass_and_cushion_protection():
+    """Verify that thin candles (< 1.5 bps hurdle) are skipped for trailing,
+    and micro-wicks within the cushion buffer do not prematurely stop out the trade."""
+    from AEGIS.core.time_bar_engine import OHLCBar
+    em, ctx, leg = create_test_manager(entry_price=20.0, spot_entry=23988.0, signal_type="CALL")
+    t0 = datetime.now() - timedelta(seconds=150)
+    ctx.entry_time = t0 + timedelta(seconds=65)
+    ctx.pillar = 2
+    ctx.pa_setup_name = "micro_sweep_reclaim"
+    ctx.candle_low = 23980.0  # Signal candle low
+    ctx.candle_high = 23995.0
+
+    class MockTBEngine:
+        def __init__(self):
+            self.bars_1m = [
+                # Signal Bar
+                OHLCBar(ts_start=t0.timestamp(), ts_end=t0.timestamp() + 60.0,
+                        open=23985.0, high=23995.0, low=23980.0, close=23992.0),
+            ]
+
+    em.aegis_engine.time_bar_engine = MockTBEngine()
+
+    # 1. First Candle Cushion Test:
+    # Cushion = 24000 * 0.00005 = 1.2 pts. Initial SL = 23980.0 - 1.2 = 23978.8.
+    # Micro-wick to 23979.5 (0.5 pts below signal low 23980.0, but inside cushion):
+    em.data_fetcher._spot = 23979.5
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 0, "Micro-wick inside first candle cushion prematurely stopped out!"
+
+    # 2. Thin Candle (Option A) Test:
+    # Entry candle forms as a very thin doji (Range = 2.0 pts < 3.6 pts hurdle [1.5 bps])
+    thin_bar = OHLCBar(
+        ts_start=t0.timestamp() + 60.0,
+        ts_end=t0.timestamp() + 120.0,
+        open=23995.0,
+        high=23996.0,
+        low=23994.0,  # Range = 2.0 pts
+        close=23995.5,
+    )
+    em.aegis_engine.time_bar_engine.bars_1m.append(thin_bar)
+    em.data_fetcher._spot = 23990.0
+    em._manage_open_trade()
+    # Structural SL should NOT trail to thin candle (which would be 23994.0 - 1.2 = 23992.8)!
+    # If it had trailed, spot 23990.0 would have stopped out!
+    assert len(em.exit_reasons) == 0, "Thin candle was improperly trailed!"
+
+    # 3. Genuine Expansion Candle Test:
+    # Next bar is a strong expansion candle (Range = 12.0 pts >= 3.6 pts)
+    expansion_bar = OHLCBar(
+        ts_start=t0.timestamp() + 120.0,
+        ts_end=t0.timestamp() + 180.0,
+        open=23995.0,
+        high=24007.0,
+        low=23995.0,
+        close=24005.0,
+    )
+    em.aegis_engine.time_bar_engine.bars_1m.append(expansion_bar)
+    em.data_fetcher._spot = 24000.0
+    em._manage_open_trade()
+    # Now structural SL trails to expansion_bar.low (23995.0) - cushion (~1.2) = 23993.8
+    assert round(getattr(ctx, "trailing_spot_sl", 0.0), 1) == 23993.8
+
+    # Spot dips below trailed structural SL (23993.0 <= 23993.8) -> Exits cleanly!
+    em.data_fetcher._spot = 23993.0
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 1
+    assert "Pillar 2 Entry Candle Low Broken SL" in em.exit_reasons[0]
+    assert "23993.8" in em.exit_reasons[0]
+
+
+def test_ratchet_only_rule_never_loosens_sl():
+    """Verify Ratchet-Only Rule:
+    If a candle has range >= hurdle and green close, but its low is lower than current SL,
+    the stop loss MUST NEVER loosen (drop)."""
+    from AEGIS.core.time_bar_engine import OHLCBar
+    em, ctx, leg = create_test_manager(entry_price=25.0, spot_entry=24000.0, signal_type="CALL")
+    t0 = datetime.now() - timedelta(seconds=180)
+    ctx.entry_time = t0 + timedelta(seconds=65)
+    ctx.pillar = 1
+    ctx.pa_setup_name = "20_ema_rejection"
+    ctx.candle_low = 23990.0  # Signal candle low
+    ctx.candle_high = 24005.0
+
+    class MockTBEngine:
+        def __init__(self):
+            self.bars_1m = [
+                # Signal Bar
+                OHLCBar(ts_start=t0.timestamp(), ts_end=t0.timestamp() + 60.0,
+                        open=23995.0, high=24005.0, low=23990.0, close=24002.0),
+                # T+1 Entry Bar (High 24015.0, Low 23998.0, Close 24012.0) -> Solid bar (Range 17 pts)
+                OHLCBar(ts_start=t0.timestamp() + 60.0, ts_end=t0.timestamp() + 120.0,
+                        open=24003.0, high=24015.0, low=23998.0, close=24012.0),
+            ]
+
+    em.aegis_engine.time_bar_engine = MockTBEngine()
+
+    # Step 1: Manage trade after T+1. Cushion = 24000 * 0.00005 = 1.2 pts.
+    # Trailed SL becomes 23998.0 - 1.2 = 23996.8
+    em.data_fetcher._spot = 24010.0
+    em._manage_open_trade()
+    assert round(getattr(ctx, "trailing_spot_sl", 0.0), 1) == 23996.8
+
+    # Step 2: T+2 forms a wide candle (Range 8 pts >= 4.8 pts hurdle), but with a deeper wick/low (Low = 23994.0, Close = 24002.0).
+    # Its candidate SL would be 23994.0 - 1.2 = 23992.8, which is LOWER than 23996.8!
+    deep_bar = OHLCBar(
+        ts_start=t0.timestamp() + 120.0,
+        ts_end=t0.timestamp() + 180.0,
+        open=24000.0,
+        high=24008.0,
+        low=23994.0,
+        close=24002.0,
+    )
+    em.aegis_engine.time_bar_engine.bars_1m.append(deep_bar)
+    em.data_fetcher._spot = 24005.0
+    em._manage_open_trade()
+
+    # Ratchet Guard: SL MUST stay at 23996.8 and NOT loosen to 23992.8!
+    assert round(getattr(ctx, "trailing_spot_sl", 0.0), 1) == 23996.8, "SL improperly loosened/dropped on deeper low!"
+
+
+def test_multi_bar_continuous_trailing_t1_t2_t3():
+    """Verify that Bar-by-Bar Trailing SL runs continuously across every subsequent bar (T+1, T+2, T+3...)
+    until the trade exits."""
+    from AEGIS.core.time_bar_engine import OHLCBar
+    em, ctx, leg = create_test_manager(entry_price=30.0, spot_entry=24000.0, signal_type="CALL")
+    t0 = datetime.now() - timedelta(seconds=240)
+    ctx.entry_time = t0 + timedelta(seconds=65)
+    ctx.pillar = 3
+    ctx.pa_setup_name = "volatility_squeeze_breakout"
+    ctx.candle_low = 23985.0
+    ctx.candle_high = 24000.0
+
+    class MockTBEngine:
+        def __init__(self):
+            self.bars_1m = [
+                # T: Signal Bar
+                OHLCBar(ts_start=t0.timestamp(), ts_end=t0.timestamp() + 60.0,
+                        open=23990.0, high=24000.0, low=23985.0, close=23998.0),
+                # T+1: Entry Bar (Low 23995.0, High 24010.0, Close 24008.0)
+                OHLCBar(ts_start=t0.timestamp() + 60.0, ts_end=t0.timestamp() + 120.0,
+                        open=23999.0, high=24010.0, low=23995.0, close=24008.0),
+            ]
+
+    em.aegis_engine.time_bar_engine = MockTBEngine()
+
+    # 1. T+1 closed -> SL trails to 23995.0 - 1.2 = 23993.8
+    em.data_fetcher._spot = 24007.0
+    em._manage_open_trade()
+    assert round(getattr(ctx, "trailing_spot_sl", 0.0), 1) == 23993.8
+
+    # 2. T+2 closes (Low 24002.0, High 24018.0, Close 24015.0) -> SL trails to 24002.0 - 1.2 = 24000.8
+    bar_t2 = OHLCBar(
+        ts_start=t0.timestamp() + 120.0,
+        ts_end=t0.timestamp() + 180.0,
+        open=24008.0,
+        high=24018.0,
+        low=24002.0,
+        close=24015.0,
+    )
+    em.aegis_engine.time_bar_engine.bars_1m.append(bar_t2)
+    em.data_fetcher._spot = 24014.0
+    em._manage_open_trade()
+    assert round(getattr(ctx, "trailing_spot_sl", 0.0), 1) == 24000.8
+
+    # 3. T+3 closes (Low 24010.0, High 24025.0, Close 24020.0) -> SL trails to 24010.0 - 1.2 = 24008.8
+    bar_t3 = OHLCBar(
+        ts_start=t0.timestamp() + 180.0,
+        ts_end=t0.timestamp() + 240.0,
+        open=24015.0,
+        high=24025.0,
+        low=24010.0,
+        close=24020.0,
+    )
+    em.aegis_engine.time_bar_engine.bars_1m.append(bar_t3)
+    em.data_fetcher._spot = 24019.0
+    em._manage_open_trade()
+    assert round(getattr(ctx, "trailing_spot_sl", 0.0), 1) == 24008.8
+
+    # 4. T+4 breakdowns below T+3 low (Spot 24007.0 <= 24008.8) -> Exits at profit/cost-shield on structural breakdown!
+    em.data_fetcher._spot = 24007.0
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 1
+    assert "Pillar 3 Entry Candle Low Broken SL" in em.exit_reasons[0]
+    assert "24008.8" in em.exit_reasons[0]
+
+
+def test_friday_adaptive_target_profit_and_near_target_lock():
+    """
+    Verifies Friday 4 DTE adaptive 3.0% TP and Near-Target Profit Lock (+2.4% trigger, 0.5% tolerance).
+    """
+    # 1. Test get_adaptive_target_profit_pct() returns 0.030 on Friday, 0.040 on Mon-Thu
+    dt_friday = datetime(2026, 10, 16, 13, 10, 0)  # weekday == 4 (Friday)
+    dt_thursday = datetime(2026, 10, 15, 13, 10, 0)  # weekday == 3 (Thursday)
+    assert get_adaptive_target_profit_pct(dt_friday) == 0.030
+    assert get_adaptive_target_profit_pct(dt_thursday) == 0.040
+
+    # 2. Test manager with Friday 3.0% TP setup
+    em, context, leg = create_test_manager(entry_price=11.90, spot_entry=23115.0, signal_type="PUT")
+    params = em.get_instrument_params()
+    em._place_initial_take_profit(leg, params, target_pct=0.030)
+    assert leg.initial_tp_pct == 0.030
+    # Entry 11.90 * 1.03 = 12.257 -> floored tick 12.25 (+2.94% >= +2.85%)
+    assert leg.tp_price == 12.25
+
+    # 3. Near-Target Lock on Friday (+2.4% trigger, 0.5% pullback tolerance)
+    # Price rises to 12.20 (gain: +0.30 / 11.90 = +2.52% >= +2.4%)
+    em.broker.market_data_provider._quote = {"ltp": 12.20, "bp1": 12.20, "sp1": 12.25}
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 0  # Still open at peak
+
+    # Now bid pulls back by 0.6% to 12.10 (cur gain: +1.68%, pullback = 2.52% - 1.68% = 0.84% >= 0.5%)
+    em.broker.market_data_provider._quote = {"ltp": 12.10, "bp1": 12.10, "sp1": 12.15}
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 1
+    assert "Near-Target Profit Lock" in em.exit_reasons[0]
+
+
+def test_spot_mfe_and_mae_tick_tracking():
+    """
+    Verifies that Spot MFE and Spot MAE are accurately tracked in index points
+    with millisecond float timestamps across ticks for both CALL and PUT trades.
+    """
+    # Test CALL trade: Entry spot = 23120.0
+    em, context, leg = create_test_manager(entry_price=20.00, spot_entry=23120.0, signal_type="CALL")
+    assert context.spot_peak_mfe_pts == 0.0
+    assert context.spot_peak_mae_pts == 0.0
+
+    # Tick 1: Spot rises to 23126.50 (+6.5 pts favorable)
+    em.data_fetcher._spot = 23126.50
+    em._manage_open_trade()
+    assert round(context.spot_peak_mfe_pts, 2) == 6.50
+    assert round(context.spot_at_mfe, 2) == 23126.50
+    assert context.spot_time_to_mfe_sec >= 0.0
+
+    # Tick 2: Spot dips to 23117.20 (-2.8 pts adverse against CALL entry)
+    em.data_fetcher._spot = 23117.20
+    em._manage_open_trade()
+    assert round(context.spot_peak_mfe_pts, 2) == 6.50  # Peak MFE preserved
+    assert round(context.spot_peak_mae_pts, 2) == -2.80  # MAE tracked
+    assert round(context.spot_at_mae, 2) == 23117.20
+
+    # Test PUT trade: Entry spot = 23120.0
+    em_put, context_put, leg_put = create_test_manager(entry_price=20.00, spot_entry=23120.0, signal_type="PUT")
+
+    # Tick 1: Spot drops to 23114.50 (+5.5 pts favorable for PUT)
+    em_put.data_fetcher._spot = 23114.50
+    em_put._manage_open_trade()
+    assert round(context_put.spot_peak_mfe_pts, 2) == 5.50
+    assert round(context_put.spot_at_mfe, 2) == 23114.50
+
+    # Tick 2: Spot jumps to 23123.80 (-3.8 pts adverse against PUT entry)
+    em_put.data_fetcher._spot = 23123.80
+    em_put._manage_open_trade()
+    assert round(context_put.spot_peak_mfe_pts, 2) == 5.50  # Peak MFE preserved
+    assert round(context_put.spot_peak_mae_pts, 2) == -3.80  # MAE tracked
+    assert round(context_put.spot_at_mae, 2) == 23123.80
 
 
 
@@ -1165,3 +1568,79 @@ def test_atomic_modify_fallback_on_error():
 
 
 
+
+
+
+
+
+
+
+def test_argon_last_mile_spot_hygiene_gate_abort_and_pass():
+    """
+    Verifies AegisExecutionManager Last-Mile Pre-Trade Spot Hygiene Gate:
+    1. For PUT: If spot bounces above signal_bar_close + noise_buf, entry is aborted and slot rolled back.
+    2. For CALL: If spot dumps below signal_bar_close - noise_buf, entry is aborted and slot rolled back.
+    3. Aligned trades proceed normally without abort.
+    """
+    from unittest.mock import MagicMock, patch
+    import queue
+    from AEGIS.aegis_execution_manager import AegisExecutionManager
+
+    broker = MagicMock()
+    data_fetcher = MagicMock()
+    data_fetcher.get_active_instrument.return_value = ("SENSEX", "BFO")
+    data_fetcher.get_weekly_option_tokens.return_value = [
+        {"symbol": "SENSEX26OCT74300PE", "token": "1001", "strike": 74300.0, "type": "PE", "side": 1}
+    ]
+    data_fetcher.get_index_ltp.return_value = 74380.0
+
+    aegis_engine = MagicMock()
+    aegis_engine.last_spot = 74380.0
+    aegis_engine.get_spot_drift.return_value = 15.0  # +15 pts positive 3s velocity
+    aegis_engine.slot_policy = MagicMock()
+
+    sig_q = queue.Queue()
+    em = AegisExecutionManager(broker, data_fetcher, aegis_engine, sig_q)
+    em.trade_context = None
+    em.has_open_trade = MagicMock(return_value=False)
+    em.can_enter = MagicMock(return_value=True)
+    em.capital_engine = MagicMock()
+    em.capital_engine.get_available_funds.return_value = 5000.0
+
+    with patch("AEGIS.aegis_execution_manager.StrikeSelector.select_strikes") as mock_select:
+        mock_select.return_value = [
+            ({"symbol": "SENSEX26OCT74300PE", "token": "1001", "strike": 74300.0}, 1, 30.0)
+        ]
+        # Simulate Trade #2 PUT signal with signal_bar_close = 74358.87
+        put_signal = {
+            "type": "GAMMA_BURST_ENTRY",
+            "signal": "DOWN",
+            "conviction": 85.0,
+            "spot": 74358.87,
+            "sym": "SENSEX",
+            "metrics": {
+                "pa_setup_name": "topological_prominence_breakout",
+                "bar_close": 74358.87,
+                "bar_high": 74415.75,
+                "bar_low": 74353.36,
+                "atr_1m": 52.0,
+            },
+        }
+
+        # Case 1: Adverse bounce (live_spot = 74380.0 > 74358.87 + 11.15 noise_buf) -> ABORTED!
+        em._process_aegis_signal(put_signal)
+        assert em.trade_context is None
+        aegis_engine.slot_policy.rollback_admission.assert_called_once()
+
+        # Case 2: Aligned momentum (live_spot = 74355.0 <= 74358.87, delta_3s = -5.0) -> PROCEEDS!
+        aegis_engine.slot_policy.rollback_admission.reset_mock()
+        aegis_engine.last_spot = 74355.0
+        aegis_engine.get_spot_drift.return_value = -5.0
+        em.order_lifecycle = MagicMock()
+        em.order_lifecycle.execute_entry.return_value = True
+
+        em._process_aegis_signal(put_signal)
+        assert em.trade_context is not None
+        assert em.trade_context.signal_type == "PUT"
+        em.order_lifecycle.execute_entry.assert_called_once()
+        aegis_engine.slot_policy.rollback_admission.assert_not_called()
