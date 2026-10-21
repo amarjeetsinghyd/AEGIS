@@ -97,12 +97,12 @@ class PriceActionEngine:
     def __init__(
         self,
         strike_step: float = 50.0,
-        max_history_bars: int = 120,
+        max_history_bars: int = 400,
         atr_period: int = 14,
         lot_size: Optional[float] = None,
     ):
         self.strike_step = strike_step
-        self.max_history_bars = max_history_bars
+        self.max_history_bars = int(os.getenv("AEGIS_MAX_HISTORY_BARS", str(max_history_bars)))
         self.atr_period = atr_period
 
         # Adaptive lot size (SENSEX=20, NIFTY=65)
@@ -116,7 +116,7 @@ class PriceActionEngine:
         # ─── 1-Minute and 5-Minute Bar Building State ───
         self._curr_1m_bar: Optional[OHLCBar] = None
         self._curr_1m_bucket: int = -1
-        self.bars_1m: deque[OHLCBar] = deque(maxlen=max_history_bars)
+        self.bars_1m: deque[OHLCBar] = deque(maxlen=self.max_history_bars)
         self._curr_5m_bar: Optional[OHLCBar] = None
         self.bars_5m: deque[OHLCBar] = deque(maxlen=200)
 
@@ -152,11 +152,11 @@ class PriceActionEngine:
         self.ema_20_1m_prev: float = 0.0
         self.ema_20_1m_slope: float = 0.0
         # Per-close 20EMA history, index-aligned with bars_1m tail (two-touch confirmation)
-        self.ema_20_history: deque[float] = deque(maxlen=max_history_bars)
+        self.ema_20_history: deque[float] = deque(maxlen=self.max_history_bars)
         self.ema_20_high_1m: float = 0.0
         self.ema_20_low_1m: float = 0.0
-        self.ema_20_high_history: deque[float] = deque(maxlen=max_history_bars)
-        self.ema_20_low_history: deque[float] = deque(maxlen=max_history_bars)
+        self.ema_20_high_history: deque[float] = deque(maxlen=self.max_history_bars)
+        self.ema_20_low_history: deque[float] = deque(maxlen=self.max_history_bars)
 
         self.ema_50_1m: float = 0.0
         self.ema_50_1m_prev: float = 0.0

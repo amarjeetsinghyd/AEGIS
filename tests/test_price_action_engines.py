@@ -1283,3 +1283,29 @@ def test_argon_p3_day_high_runway_veto_and_breakout_pass():
     assert ok is False
     assert "insufficient_runway_to_day_high" in reason
     assert details["room_pts"] == 15.0
+
+
+def test_price_action_engine_full_session_capacity_375_bars():
+    """
+    Verifies that PriceActionEngine retains at least 375 1m bars (a full Indian trading session 09:15-15:30)
+    without evicting early morning opening bars / Day High / Day Low.
+    """
+    engine = PriceActionEngine()
+    assert engine.max_history_bars >= 400
+    assert engine.bars_1m.maxlen >= 400
+    assert engine.ema_20_history.maxlen >= 400
+
+    # Seed 375 consecutive 1m bars across a full session
+    # Bar 0 (09:15) establishes morning Day Low at 74,300.0
+    engine._on_1m_bar_close(OHLCBar(0, 60, 74320.0, 74330.0, 74300.0, 74310.0))
+    for i in range(1, 375):
+        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74400.0, 74410.0, 74390.0, 74400.0))
+
+    # All 375 bars must be preserved in memory
+    assert len(engine.bars_1m) == 375
+    # The first bar (09:15 AM) must still be present as bars_1m[0]!
+    assert engine.bars_1m[0].low == 74300.0
+
+    # Day Low calculated from intraday prior bars must still reflect the morning Day Low!
+    day_low = min(b.low for b in list(engine.bars_1m)[:-1])
+    assert day_low == 74300.0

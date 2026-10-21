@@ -13,6 +13,7 @@ Architecture:
 
 from __future__ import annotations
 import math
+import os
 from collections import deque
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
@@ -44,24 +45,24 @@ class TimeBarEngine:
         ema_period: int = 9,
         atr_period: int = 14,
         atr_baseline_bars: int = 30,  # 30-min baseline
-        max_history_bars: int = 100,
+        max_history_bars: int = 400,
         slope_veto_bps: float = 2.0,   # Q-4: scale-invariant EMA-slope veto (bps, normalized by last_price)
     ):
         self.ema_period = ema_period
         self.atr_period = atr_period
         self.atr_baseline_bars = atr_baseline_bars
-        self.max_history_bars = max_history_bars
+        self.max_history_bars = int(os.getenv("AEGIS_MAX_HISTORY_BARS", str(max_history_bars)))
         self.slope_veto_bps = slope_veto_bps
 
         # 1-Minute Bar Building State
         self._curr_1m_bar: Optional[OHLCBar] = None
         self._curr_1m_bucket: int = -1
-        self.bars_1m: deque[OHLCBar] = deque(maxlen=max_history_bars)
+        self.bars_1m: deque[OHLCBar] = deque(maxlen=self.max_history_bars)
 
         # 3-Minute Bar Building State
         self._curr_3m_bar: Optional[OHLCBar] = None
         self._curr_3m_bucket: int = -1
-        self.bars_3m: deque[OHLCBar] = deque(maxlen=max_history_bars)
+        self.bars_3m: deque[OHLCBar] = deque(maxlen=self.max_history_bars)
 
         # EMA State
         self.ema_1m: float = 0.0
