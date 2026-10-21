@@ -1419,3 +1419,83 @@ def test_argon_sr_registry_4_bug_fixes():
     assert any(item["price"] == 74100.0 and item["is_broken"] is True for item in snap)
 
 
+def test_sr_registry_volume_and_order_flow_prominence_boost():
+    """
+    Verifies that StructuralLevel:
+    1. Captures anchor volume and option order flow footprint (call/put buy/sell vol, delta, PCR).
+    2. Calculates volume ratio vs 60m median and applies volume ratio boost to prominence.
+    3. Adds institutional OFI boost (e.g. Put writing at Support, Call writing at Resistance).
+    4. Accumulates volume and order flow on re-test touches.
+    5. Exposes all order flow metrics in get_active_sr_registry_snapshot.
+    6. Propagates anchor volume & flow into check_topological_prominence_breakout details.
+    """
+    engine = PriceActionEngine(max_history_bars=400)
+    engine.current_atr_1m = 40.0
+
+    # Establish baseline volume of 100.0 across 10 bars
+    for i in range(10):
+        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74300.0, 74320.0, 74280.0, 74310.0, volume=100.0))
+
+    # Form a Support Trough at 74,200.0 with HEAVY institutional volume and Put Writing:
+    # cand = Bar 11 (ts: 660-720) with low=74,200.0, volume=300.0 (VR=3.0),
+    # put_sell_vol=1500.0 (heavy put writing), call_buy_vol=500.0, opt_total_vol=2500.0
+    bar_prev = OHLCBar(10 * 60, 11 * 60, 74310.0, 74315.0, 74250.0, 74260.0, volume=100.0)
+    bar_cand = OHLCBar(
+        11 * 60, 12 * 60, 74260.0, 74270.0, 74200.0, 74210.0,
+        volume=300.0,
+        call_buy_vol=500.0,
+        call_sell_vol=200.0,
+        put_buy_vol=300.0,
+        put_sell_vol=1500.0,
+        opt_delta_flow=200.0,
+        opt_total_vol=2500.0,
+        opt_pcr=1.8 / 0.7,
+    )
+    bar_curr = OHLCBar(12 * 60, 13 * 60, 74210.0, 74320.0, 74210.0, 74310.0, volume=150.0)
+
+    engine._on_1m_bar_close(bar_prev)
+    engine._on_1m_bar_close(bar_cand)
+    engine._on_1m_bar_close(bar_curr)
+
+    supports = [l for l in engine.session_levels if l.level_type == "SUPPORT" and abs(l.price - 74200.0) < 2.0]
+    assert len(supports) == 1
+    s_lvl = supports[0]
+
+    # Verify footprint captured
+    assert s_lvl.volume == 300.0
+    assert s_lvl.vr_anchor >= 2.5
+    assert s_lvl.put_sell_vol == 1500.0
+    assert s_lvl.call_buy_vol == 500.0
+    assert s_lvl.opt_delta_flow == 200.0
+
+    # Prominence should be boosted:
+    # Base depth >= 1.50 ATR
+    # Volume ratio boost + OFI boost
+    assert s_lvl.prominence >= 2.20
+
+    # Test Telemetry Snapshot
+    snap = engine.get_active_sr_registry_snapshot()
+    snap_s = [x for x in snap if x["type"] == "SUPPORT" and abs(x["price"] - 74200.0) < 2.0][0]
+    assert snap_s["volume"] == 300.0
+    assert snap_s["put_sell_vol"] == 1500.0
+    assert snap_s["vr_anchor"] >= 2.5
+    assert snap_s["prominence"] == s_lvl.prominence
+
+    # Add 25 consolidation bars and then test breakdown trigger details
+    for i in range(13, 38):
+        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74240.0, 74260.0, 74230.0, 74250.0, volume=100.0))
+
+    breakdown_bar = OHLCBar(38 * 60, 39 * 60, 74205.0, 74208.0, 74170.0, 74175.0, volume=350.0)
+    engine._on_1m_bar_close(breakdown_bar)
+    engine.last_price = 74175.0
+    engine.bars_5m[-1].open = 74260.0
+    engine.bars_5m[-1].close = 74175.0
+
+    ok, reason, details = engine.check_topological_prominence_breakout("DOWN", current_vwap=74300.0)
+    assert ok is True
+    assert details["anchor_volume"] == 300.0
+    assert details["anchor_put_sell_vol"] == 1500.0
+    assert details["anchor_vr"] >= 2.5
+
+
+

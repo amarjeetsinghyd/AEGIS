@@ -94,12 +94,22 @@ class StructuralLevel:
     level_type: str        # "SUPPORT" or "RESISTANCE"
     price: float           # Price level
     ts_created: float      # Timestamp when established
-    prominence: float      # Prominence score (|depth| / ATR)
+    prominence: float      # Prominence score (|depth| / ATR + volume boost)
     bar_idx: int           # Index in bars_1m where formed
     seq_idx: int = 0       # Monotonic sequential bar counter
     touch_count: int = 1   # Number of times price tested this level
     is_broken: bool = False
     ts_broken: float = 0.0
+    # ─── Volume & Order Flow Footprint at Anchor / Retests ───
+    volume: float = 0.0            # Underlying / bar traded volume at anchor
+    call_buy_vol: float = 0.0      # Aggressive Call Buying (lifted at ask)
+    call_sell_vol: float = 0.0     # Call Writing / Liquidation (hit at bid)
+    put_buy_vol: float = 0.0       # Aggressive Put Buying (lifted at ask)
+    put_sell_vol: float = 0.0      # Put Writing / Liquidation (hit at bid)
+    opt_delta_flow: float = 0.0    # Directional Flow: call_buy_vol - put_buy_vol
+    opt_total_vol: float = 0.0     # Total Option volume across ATM window
+    opt_pcr: float = 1.0           # Put / Call volume ratio
+    vr_anchor: float = 1.0         # Volume ratio vs 60m median volume at creation
 
 
 class PriceActionEngine:
@@ -622,20 +632,31 @@ class PriceActionEngine:
     def _on_1m_bar_close(self, bar: OHLCBar) -> None:
         """Processes a finalized 1-minute bar and updates EMAs and ATR."""
         self._total_bars_seen += 1
-        # Attach in-flight 1-minute Option Flow directly to the candle
-        cb = self._opt_flow_1m["call_buy_vol"]
-        cs = self._opt_flow_1m["call_sell_vol"]
-        pb = self._opt_flow_1m["put_buy_vol"]
-        ps = self._opt_flow_1m["put_sell_vol"]
-        bar.call_buy_vol = cb
-        bar.call_sell_vol = cs
-        bar.put_buy_vol = pb
-        bar.put_sell_vol = ps
-        bar.opt_delta_flow = cb - pb
-        bar.opt_total_vol = cb + cs + pb + ps
-        if bar.opt_total_vol > 0:
-            bar.volume = bar.opt_total_vol
-        bar.opt_pcr = round((pb + ps) / max(cb + cs, 1.0), 3)
+        # Attach in-flight 1-minute Option Flow directly to the candle if active
+        opt_in_flight_vol = (
+            self._opt_flow_1m["call_buy_vol"]
+            + self._opt_flow_1m["call_sell_vol"]
+            + self._opt_flow_1m["put_buy_vol"]
+            + self._opt_flow_1m["put_sell_vol"]
+        )
+        if opt_in_flight_vol > 0:
+            cb = self._opt_flow_1m["call_buy_vol"]
+            cs = self._opt_flow_1m["call_sell_vol"]
+            pb = self._opt_flow_1m["put_buy_vol"]
+            ps = self._opt_flow_1m["put_sell_vol"]
+            bar.call_buy_vol = cb
+            bar.call_sell_vol = cs
+            bar.put_buy_vol = pb
+            bar.put_sell_vol = ps
+            bar.opt_delta_flow = cb - pb
+            bar.opt_total_vol = cb + cs + pb + ps
+            if bar.opt_total_vol > 0:
+                bar.volume = bar.opt_total_vol
+            bar.opt_pcr = round((pb + ps) / max(cb + cs, 1.0), 3)
+        elif bar.opt_total_vol <= 0 and (bar.call_buy_vol > 0 or bar.put_buy_vol > 0 or bar.call_sell_vol > 0 or bar.put_sell_vol > 0):
+            bar.opt_delta_flow = bar.call_buy_vol - bar.put_buy_vol
+            bar.opt_total_vol = bar.call_buy_vol + bar.call_sell_vol + bar.put_buy_vol + bar.put_sell_vol
+            bar.opt_pcr = round((bar.put_buy_vol + bar.put_sell_vol) / max(bar.call_buy_vol + bar.call_sell_vol, 1.0), 3)
 
         # Reset accumulator for the next 1-minute bucket
         self._opt_flow_1m = {
@@ -881,6 +902,26 @@ class PriceActionEngine:
         depth_high = cand.high - (min(ref_lows) if ref_lows else min(prev.low, curr.low))
         depth_low = (max(ref_highs) if ref_highs else max(prev.high, curr.high)) - cand.low
 
+        # ─── Anchor Volume & Order Flow Footprint ───
+        cand_vol = float(getattr(cand, "volume", 0.0) or 0.0)
+        cand_cb = float(getattr(cand, "call_buy_vol", 0.0) or 0.0)
+        cand_cs = float(getattr(cand, "call_sell_vol", 0.0) or 0.0)
+        cand_pb = float(getattr(cand, "put_buy_vol", 0.0) or 0.0)
+        cand_ps = float(getattr(cand, "put_sell_vol", 0.0) or 0.0)
+        cand_delta = float(getattr(cand, "opt_delta_flow", 0.0) or (cand_cb - cand_pb))
+        cand_opt_vol = float(getattr(cand, "opt_total_vol", 0.0) or (cand_cb + cand_cs + cand_pb + cand_ps))
+        total_calls = cand_cb + cand_cs
+        total_puts = cand_pb + cand_ps
+        cand_pcr = float(getattr(cand, "opt_pcr", 1.0) or 1.0)
+        if cand_pcr <= 0 and total_calls > 0:
+            cand_pcr = total_puts / total_calls
+
+        # 60m Median Volume for Scale-Invariant Volume Ratio (VR)
+        vols_60 = [float(getattr(b, "volume", 0.0) or 0.0) for b in list(self.bars_1m)[-60:]]
+        med_vol = float(np.median(vols_60)) if vols_60 else 1.0
+        vr = cand_vol / max(med_vol, 1.0) if med_vol > 0 else 1.0
+        vol_ratio_boost = 0.30 * min(2.5, max(0.0, vr - 1.0))
+
         # 3. Swing High / Resistance Peak Detection
         if cand.high >= prev.high and cand.high > curr.high:
             depth = depth_high
@@ -889,19 +930,42 @@ class PriceActionEngine:
                 for lvl in self.session_levels:
                     if lvl.level_type == "RESISTANCE" and not lvl.is_broken and abs(lvl.price - cand.high) <= tol:
                         lvl.touch_count += 1
-                        lvl.prominence = round(lvl.prominence + 0.35, 2)
+                        lvl.volume += cand_vol
+                        lvl.call_buy_vol += cand_cb
+                        lvl.call_sell_vol += cand_cs
+                        lvl.put_buy_vol += cand_pb
+                        lvl.put_sell_vol += cand_ps
+                        lvl.opt_total_vol += cand_opt_vol
+                        lvl.opt_delta_flow = round(lvl.call_buy_vol - lvl.put_buy_vol, 1)
+                        tot_c = lvl.call_buy_vol + lvl.call_sell_vol
+                        tot_p = lvl.put_buy_vol + lvl.put_sell_vol
+                        lvl.opt_pcr = round(tot_p / max(tot_c, 1.0), 2)
+                        retest_boost = 0.35 + (0.15 if vr >= 1.20 else 0.0)
+                        lvl.prominence = round(lvl.prominence + retest_boost, 2)
                         lvl.price = max(lvl.price, cand.high)
                         matched = True
                         break
                 if not matched:
+                    # Institutional Resistance OFI boost: Call writing or negative delta absorption
+                    res_ofi_boost = 0.20 if (cand_opt_vol > 0 and (cand_cs > cand_cb or cand_delta < 0)) else 0.0
+                    total_prom = round((depth / max(atr, 1e-4)) + vol_ratio_boost + res_ofi_boost, 2)
                     self.session_levels.append(
                         StructuralLevel(
                             level_type="RESISTANCE",
                             price=round(cand.high, 2),
                             ts_created=cand.ts_start,
-                            prominence=round(depth / max(atr, 1e-4), 2),
+                            prominence=total_prom,
                             bar_idx=len(self.bars_1m) - 2,
                             seq_idx=max(0, self._total_bars_seen - 2),
+                            volume=cand_vol,
+                            call_buy_vol=cand_cb,
+                            call_sell_vol=cand_cs,
+                            put_buy_vol=cand_pb,
+                            put_sell_vol=cand_ps,
+                            opt_delta_flow=cand_delta,
+                            opt_total_vol=cand_opt_vol,
+                            opt_pcr=round(cand_pcr, 2),
+                            vr_anchor=round(vr, 2),
                         )
                     )
 
@@ -913,19 +977,42 @@ class PriceActionEngine:
                 for lvl in self.session_levels:
                     if lvl.level_type == "SUPPORT" and not lvl.is_broken and abs(lvl.price - cand.low) <= tol:
                         lvl.touch_count += 1
-                        lvl.prominence = round(lvl.prominence + 0.35, 2)
+                        lvl.volume += cand_vol
+                        lvl.call_buy_vol += cand_cb
+                        lvl.call_sell_vol += cand_cs
+                        lvl.put_buy_vol += cand_pb
+                        lvl.put_sell_vol += cand_ps
+                        lvl.opt_total_vol += cand_opt_vol
+                        lvl.opt_delta_flow = round(lvl.call_buy_vol - lvl.put_buy_vol, 1)
+                        tot_c = lvl.call_buy_vol + lvl.call_sell_vol
+                        tot_p = lvl.put_buy_vol + lvl.put_sell_vol
+                        lvl.opt_pcr = round(tot_p / max(tot_c, 1.0), 2)
+                        retest_boost = 0.35 + (0.15 if vr >= 1.20 else 0.0)
+                        lvl.prominence = round(lvl.prominence + retest_boost, 2)
                         lvl.price = min(lvl.price, cand.low)
                         matched = True
                         break
                 if not matched:
+                    # Institutional Support OFI boost: Put writing or positive delta absorption
+                    sup_ofi_boost = 0.20 if (cand_opt_vol > 0 and (cand_ps > cand_pb or cand_delta > 0)) else 0.0
+                    total_prom = round((depth / max(atr, 1e-4)) + vol_ratio_boost + sup_ofi_boost, 2)
                     self.session_levels.append(
                         StructuralLevel(
                             level_type="SUPPORT",
                             price=round(cand.low, 2),
                             ts_created=cand.ts_start,
-                            prominence=round(depth / max(atr, 1e-4), 2),
+                            prominence=total_prom,
                             bar_idx=len(self.bars_1m) - 2,
                             seq_idx=max(0, self._total_bars_seen - 2),
+                            volume=cand_vol,
+                            call_buy_vol=cand_cb,
+                            call_sell_vol=cand_cs,
+                            put_buy_vol=cand_pb,
+                            put_sell_vol=cand_ps,
+                            opt_delta_flow=cand_delta,
+                            opt_total_vol=cand_opt_vol,
+                            opt_pcr=round(cand_pcr, 2),
+                            vr_anchor=round(vr, 2),
                         )
                     )
 
@@ -942,6 +1029,14 @@ class PriceActionEngine:
                 "ts_created": lvl.ts_created,
                 "ts_broken": lvl.ts_broken,
                 "seq_idx": lvl.seq_idx,
+                "volume": round(lvl.volume, 1),
+                "vr_anchor": round(lvl.vr_anchor, 2),
+                "call_buy_vol": round(lvl.call_buy_vol, 1),
+                "call_sell_vol": round(lvl.call_sell_vol, 1),
+                "put_buy_vol": round(lvl.put_buy_vol, 1),
+                "put_sell_vol": round(lvl.put_sell_vol, 1),
+                "opt_delta_flow": round(lvl.opt_delta_flow, 1),
+                "opt_pcr": round(lvl.opt_pcr, 2),
             })
         return snapshot
 
@@ -3066,6 +3161,12 @@ class PriceActionEngine:
                         "breakout_direction": "DOWN",
                         "anchor_age_bars": age_bars,
                         "anchor_touch_count": s_lvl.touch_count,
+                        "anchor_volume": round(s_lvl.volume, 1),
+                        "anchor_vr": round(s_lvl.vr_anchor, 2),
+                        "anchor_delta_flow": round(s_lvl.opt_delta_flow, 1),
+                        "anchor_pcr": round(s_lvl.opt_pcr, 2),
+                        "anchor_call_sell_vol": round(s_lvl.call_sell_vol, 1),
+                        "anchor_put_sell_vol": round(s_lvl.put_sell_vol, 1),
                         "level_source": "sr_registry",
                         "bar_open": round(bar.open, 2),
                         "bar_close": round(bar.close, 2),
@@ -3125,6 +3226,12 @@ class PriceActionEngine:
                         "breakout_direction": "UP",
                         "anchor_age_bars": age_bars,
                         "anchor_touch_count": r_lvl.touch_count,
+                        "anchor_volume": round(r_lvl.volume, 1),
+                        "anchor_vr": round(r_lvl.vr_anchor, 2),
+                        "anchor_delta_flow": round(r_lvl.opt_delta_flow, 1),
+                        "anchor_pcr": round(r_lvl.opt_pcr, 2),
+                        "anchor_call_sell_vol": round(r_lvl.call_sell_vol, 1),
+                        "anchor_put_sell_vol": round(r_lvl.put_sell_vol, 1),
                         "level_source": "sr_registry",
                         "bar_open": round(bar.open, 2),
                         "bar_close": round(bar.close, 2),
