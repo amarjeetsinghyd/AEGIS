@@ -259,7 +259,7 @@ class ShoonyaOrderLifecycle(OrderLifecycle):
                     avg_prc = limit_price
                     # Adaptive Micro-Poll: [0.05, 0.10, 0.15, 0.25, 0.45]s
                     # Zero hard-sleep: returns in ~50ms on instant marketable limit fills!
-                    delays = [0.05, 0.10, 0.15, 0.25, 0.45]
+                    delays = [0.05, 0.10, 0.15, 0.20, 0.25]
                     for d in delays:
                         time.sleep(d)
                         history = api.single_order_history(orderno=ordno)
@@ -270,32 +270,25 @@ class ShoonyaOrderLifecycle(OrderLifecycle):
                                 avg_prc = float(history[0].get("avgprc", limit_price))
                                 break
                             elif status in ["REJECTED", "CANCELLED"]:
-                                logger.warning(f"[ShoonyaOrderLifecycle] Entry order {ordno} {status}")
-                                break
+                                logger.warning(f"[ShoonyaOrderLifecycle] Entry order {ordno} {status} by broker. Immediate abort (no chase).")
+                                return False
                     
                     if fill_confirmed:
                         leg.current_price = avg_prc
                         leg.entry_price = avg_prc
                         logger.info(f"[ShoonyaOrderLifecycle] ✅ Entry FILLED @ Avg Price: {avg_prc:.2f} (Order: {ordno})")
                     else:
-                        logger.warning(f"[ShoonyaOrderLifecycle] ⚠️ Entry order {ordno} not filled within 3 seconds. Modifying to LTP + 1% to chase...")
-                        if hasattr(api, "modify_order"):
-                            new_price = round(limit_price * 1.01, 2)
-                            api.modify_order(exchange=exch_seg, tradingsymbol=leg.symbol, orderno=ordno, newquantity=qty, newprice_type="LMT", newprice=f"{new_price:.2f}")
-                            time.sleep(1.5)
-                            history = api.single_order_history(orderno=ordno)
-                            if history and isinstance(history, list) and history[0].get("status") in ["FILLED", "COMPLETE"]:
-                                avg_prc = float(history[0].get("avgprc", new_price))
-                                leg.current_price = avg_prc
-                                leg.entry_price = avg_prc
-                                logger.info(f"[ShoonyaOrderLifecycle] ✅ Chased Entry FILLED @ Avg Price: {avg_prc:.2f} (Order: {ordno})")
-                            else:
-                                logger.error(f"[ShoonyaOrderLifecycle] 🚨 Chased Entry failed to fill. Cancelling entry to prevent staleness.")
-                                if hasattr(api, "cancel_order"):
-                                    api.cancel_order(orderno=ordno)
-                                return False
-                        else:
-                            return False
+                        # One-Shot Clean Entry Rule: Zero chasing. Cancel immediately on 0.75s timeout!
+                        logger.warning(
+                            f"[ShoonyaOrderLifecycle] ⏱️ Entry order {ordno} unfilled after 0.75s timeout. "
+                            f"Cancelling immediately to prevent stale entry / adverse slippage (Zero Chase Rule)."
+                        )
+                        if hasattr(api, "cancel_order"):
+                            try:
+                                api.cancel_order(orderno=ordno)
+                            except Exception as e_c:
+                                logger.warning(f"[ShoonyaOrderLifecycle] Failed to cancel unfilled order {ordno}: {e_c}")
+                        return False
                 else:
                     leg.entry_price = limit_price
                     logger.warning("[ShoonyaOrderLifecycle] API doesn't support order history. Using limit_price as entry.")

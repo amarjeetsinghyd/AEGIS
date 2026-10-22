@@ -316,6 +316,21 @@ class AegisExecutionManager:
         if sp and hasattr(sp, "rollback_admission"):
             sp.rollback_admission()
 
+    def _drain_signal_queue(self, reason: str = "") -> int:
+        """Purges all pending/stale signals from the queue to prevent stale multi-strike cascading."""
+        drained = 0
+        if not hasattr(self, "signal_queue") or self.signal_queue is None:
+            return 0
+        while not self.signal_queue.empty():
+            try:
+                self.signal_queue.get_nowait()
+                drained += 1
+            except Exception:
+                break
+        if drained > 0:
+            logger.info(f"[AegisEM] 🧹 Drained {drained} stale signals from queue ({reason})")
+        return drained
+
     def get_instrument_params(self) -> dict:
         name, _ = self.data_fetcher.get_active_instrument()
         if name == "SENSEX":
@@ -495,6 +510,19 @@ class AegisExecutionManager:
         if sig_type != "GAMMA_BURST_ENTRY":
             return
 
+        # Signal Staleness Guard (Zero-stale rule: reject any signal older than 1.5s)
+        signal_ts = float(signal.get("timestamp", 0.0) or 0.0)
+        if signal_ts > 0:
+            sig_age = time.time() - signal_ts
+            if sig_age > 1.5:
+                logger.warning(
+                    f"[AegisEM] ⏱️ Dropped stale signal for {signal.get('sym')} "
+                    f"(Age: {sig_age:.2f}s > 1.5s freshness threshold)"
+                )
+                self._drain_signal_queue(reason="stale_signal_cascade")
+                self._rollback_slot()
+                return
+
         now = datetime.now()
         
         # Daily reset
@@ -570,6 +598,7 @@ class AegisExecutionManager:
             if self.has_open_trade():
                 logger.warning("[AegisEM] Entry blocked — trade already open")
                 self._rollback_slot()
+                self._drain_signal_queue(reason="trade_already_open")
                 return
             self._is_entering = True
 
@@ -779,9 +808,10 @@ class AegisExecutionManager:
                 
                 try:
                     if not self.order_lifecycle.execute_entry(leg, live_ask=live_ask or ltp):
-                        logger.error(f"[AegisEM] Entry order rejected for {symbol}")
+                        logger.error(f"[AegisEM] Entry order rejected/unfilled for {symbol} — aborting and purging queue")
                         self.trade_context = None
                         self._rollback_slot()
+                        self._drain_signal_queue(reason="entry_rejected_or_unfilled")
                         return
                     
                     fill_ts = time.time()
@@ -874,6 +904,7 @@ class AegisExecutionManager:
             self._place_initial_take_profit(leg, params, target_pct=rec_tp)
         finally:
             self._is_entering = False
+        self._drain_signal_queue(reason="trade_opened_successfully")
         self._save_active_context()
         
         logger.info(
