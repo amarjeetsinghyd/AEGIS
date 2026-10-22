@@ -120,12 +120,11 @@ Shared library: `common/` (broker / execution / market / ipc / runtime / config 
 ---
 
 ## CODING DISCIPLINE (applies to all active Python)
-- Run `python -m pytest tests\ -q` before declaring work done. **The suite must be
-  100% green.** As of 2026-08-16 the suite is fully green with Kronos decommissioned:
-  the obsolete ``test_kronos_settings_use_kronos_package_paths`` test has been removed and the
-  shared-library kronos branches in `common/` are kept as dormant fallbacks. If you ever
-  see a kronos-related failure reappear, delete or trim the offending kronos reference —
-  do NOT re-add kronos code to make it pass.
+- **Pytest Execution Governance (Smart, Targeted, and Frugal)**:
+  - **NEVER run pytest for non-engine tasks**: Do NOT run pytest when editing documentation (`.md`), writing or running analysis scripts (`scratch/`, `scripts/`), modifying data/JSON files, editing UI/HTML artifacts, or answering user questions/inspecting logs. Running tests for these wastes user time and burns tokens unnecessarily.
+  - **Single-Module Edits $\implies$ Targeted Tests ONLY**: If you edit a single module, run ONLY its corresponding test file (e.g., `python -m pytest tests/test_shadow_boundary_observer.py -q`). It finishes in 2 seconds. Do NOT run the entire suite.
+  - **Full Test Suite (`python -m pytest tests\ -q`) $\implies$ Core Multi-Module Changes ONLY**: Run the full suite only when refactoring shared core infrastructure (`common/execution/`, `common/market/`), modifying multi-module interfaces, or before a major production deployment.
+  - **Suite Cleanliness**: The test suite must remain green when tests are appropriately run. As of 2026-08-16, Kronos is decommissioned; the obsolete `test_kronos_settings_use_kronos_package_paths` has been removed and shared-library fallback branches in `common/` are dormant. If a kronos-related test failure ever appears, remove the obsolete reference—do NOT revive Kronos code.
 - Hot-path modules (`value_engine.py`, `tick_compiler.py`, `on_tick` handlers) must not
   import `pandas`/`scipy`/`sklearn`. Heavy libs are allowed only off-hot-path
   (e.g. `l2_archiver.py` 15-min flush).
