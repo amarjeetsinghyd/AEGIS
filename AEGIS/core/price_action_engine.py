@@ -224,6 +224,13 @@ class PriceActionEngine:
         # ─── ML Gatekeeper Flow Recorder Reference ───
         self.ml_gatekeeper: Any = None
 
+        # ─── Intra-Bar Mode A & Mode B High-Precision Execution State ───
+        self._mode_b_up_ticks: int = 0
+        self._mode_b_down_ticks: int = 0
+        self._mode_a_armed_setups: Dict[str, Dict[str, Any]] = {}
+        self._mode_a_last_trigger_bar_idx: Dict[str, int] = {}
+        self._mode_b_last_trigger_bar_idx: Dict[str, int] = {}
+
     @property
     def current_bar(self) -> Optional[OHLCBar]:
         """Returns the in-flight 1-minute OHLC bar if building."""
@@ -869,6 +876,9 @@ class PriceActionEngine:
         # 5. Dynamic Session S/R Level Registry Update
         self._update_structural_levels(bar)
 
+        # 6. Mode A Boundary Rejection Arming (Pain Zone & 200 EMA)
+        self._evaluate_mode_a_arming(bar)
+
     def _update_structural_levels(self, bar: OHLCBar) -> None:
         """
         Dynamically discovers, registers, and tracks intraday Support & Resistance levels.
@@ -962,7 +972,11 @@ class PriceActionEngine:
 
         # 60m Median Volume for Scale-Invariant Volume Ratio (VR)
         vols_60 = [float(getattr(b, "volume", 0.0) or 0.0) for b in list(self.bars_1m)[-60:]]
-        med_vol = float(np.median(vols_60)) if vols_60 else 1.0
+        if vols_60:
+            s_v = sorted(vols_60)
+            med_vol = float(s_v[len(s_v)//2])
+        else:
+            med_vol = 1.0
         vr = cand_vol / max(med_vol, 1.0) if med_vol > 0 else 1.0
         vol_ratio_boost = 0.30 * min(2.5, max(0.0, vr - 1.0))
 
@@ -2084,7 +2098,11 @@ class PriceActionEngine:
 
         extra = extra or {}
         vols_60 = [float(getattr(b, "volume", 0.0) or 0.0) for b in list(self.bars_1m)[-60:]]
-        med_vol = float(np.median(vols_60)) if vols_60 else 1.0
+        if vols_60:
+            s_v = sorted(vols_60)
+            med_vol = float(s_v[len(s_v)//2])
+        else:
+            med_vol = 1.0
         bar_vol = float(getattr(bar, "volume", 0.0) or 0.0)
         vr_t = bar_vol / max(med_vol, 1.0) if med_vol > 0 else 1.0
 
@@ -2968,7 +2986,11 @@ class PriceActionEngine:
         box_vols = [float(getattr(b, "volume", 0.0) or 0.0) for b in recent_bars]
         box_avg_vol = (sum(box_vols) / len(box_vols)) if box_vols else 1.0
         vols_60 = [float(getattr(b, "volume", 0.0) or 0.0) for b in list(self.bars_1m)[-60:]]
-        med_vol = float(np.median(vols_60)) if vols_60 else 1.0
+        if vols_60:
+            s_v = sorted(vols_60)
+            med_vol = float(s_v[len(s_v)//2])
+        else:
+            med_vol = 1.0
         vr_t = float(bar.volume) / med_vol if med_vol > 0 else 1.0
         if bar.volume > 10.0 and box_avg_vol > 10.0:
             if not (bar.volume >= 1.15 * box_avg_vol or vr_t >= 1.15):
@@ -3450,7 +3472,11 @@ class PriceActionEngine:
 
         # Volume Gate: Volume Ratio VR_t vs 60m median volume
         vols_60 = [float(getattr(b, "volume", 0.0) or 0.0) for b in list(self.bars_1m)[-60:]]
-        med_vol = float(np.median(vols_60)) if vols_60 else 1.0
+        if vols_60:
+            s_v = sorted(vols_60)
+            med_vol = float(s_v[len(s_v)//2])
+        else:
+            med_vol = 1.0
         curr_vol = float(getattr(bar, "volume", 0.0) or 0.0)
         vr_t = curr_vol / med_vol if med_vol > 0 else 1.0
 
@@ -3879,6 +3905,252 @@ class PriceActionEngine:
                 details[k] = v
         return details
 
+    def _evaluate_mode_a_arming(self, bar: OHLCBar) -> None:
+        """Evaluates boundary rejection on latest closed 1m candle and arms Mode A."""
+        if len(self.bars_1m) < 20:
+            return
+        bar_idx = len(self.bars_1m) - 1
+        atr = self.current_atr_1m if self.current_atr_1m > 0 else 10.0
+        c_range = max(bar.high - bar.low, 0.5)
+        lower_wick = min(bar.open, bar.close) - bar.low
+        upper_wick = bar.high - max(bar.open, bar.close)
+        lower_wick_ratio = lower_wick / c_range
+        upper_wick_ratio = upper_wick / c_range
+
+        pz = self.get_pain_zone_vwaps()
+        pz_top = float(pz.get("zone_top", 0.0) or 0.0)
+        pz_bot = float(pz.get("zone_bottom", 0.0) or 0.0)
+
+        boundaries_to_check = []
+        if pz_top > 0 and pz_bot > 0:
+            boundaries_to_check.append(("PAIN_ZONE_BAND", pz_top, pz_bot))
+        if getattr(self, "ema_200_1m", 0.0) > 0:
+            boundaries_to_check.append(("EMA_200_BAND", self.ema_200_1m + 0.25 * atr, self.ema_200_1m - 0.25 * atr))
+
+        for b_name, b_top, b_bottom in boundaries_to_check:
+            last_idx = self._mode_a_last_trigger_bar_idx.get(b_name, -100)
+            if (bar_idx - last_idx) < 3:
+                continue
+
+            # CALL Support Rejection Check
+            call_touch = (bar.low <= b_top + 0.35 * atr) and (bar.close >= b_bottom - 0.25 * atr)
+            call_rej = (lower_wick_ratio >= 0.20) or (bar.close > bar.open)
+            if call_touch and call_rej and self._check_wyckoff_harmony("UP", bar):
+                self._mode_a_armed_setups[b_name] = {
+                    "direction": "UP",
+                    "anchor_high": bar.high,
+                    "anchor_low": bar.low,
+                    "armed_bar_idx": bar_idx,
+                    "armed_ts": self.last_ts,
+                }
+                self._mode_a_last_trigger_bar_idx[b_name] = bar_idx
+                logger.info(f"[PriceActionEngine] [MODE_A_ARMED] {b_name} CALL Rejection Armed | AnchorHigh: {bar.high:.2f}")
+                continue
+
+            # PUT Resistance Rejection Check
+            put_touch = (bar.high >= b_bottom - 0.35 * atr) and (bar.close <= b_top + 0.25 * atr)
+            put_rej = (upper_wick_ratio >= 0.20) or (bar.close < bar.open)
+            if put_touch and put_rej and self._check_wyckoff_harmony("DOWN", bar):
+                self._mode_a_armed_setups[b_name] = {
+                    "direction": "DOWN",
+                    "anchor_high": bar.high,
+                    "anchor_low": bar.low,
+                    "armed_bar_idx": bar_idx,
+                    "armed_ts": self.last_ts,
+                }
+                self._mode_a_last_trigger_bar_idx[b_name] = bar_idx
+                logger.info(f"[PriceActionEngine] [MODE_A_ARMED] {b_name} PUT Rejection Armed | AnchorLow: {bar.low:.2f}")
+
+    def _check_wyckoff_harmony(self, direction: str, bar: Any) -> bool:
+        """Verifies institutional order flow delta harmony (no opposing liquidation dump)."""
+        cb = float(getattr(bar, "call_buy_vol", 0.0) or 0.0)
+        pb = float(getattr(bar, "put_buy_vol", 0.0) or 0.0)
+        if cb > 1000.0 or pb > 1000.0:
+            if direction == "UP" and pb > 2.5 * max(cb, 1.0):
+                return False
+            elif direction == "DOWN" and cb > 2.5 * max(pb, 1.0):
+                return False
+        return True
+
+    def check_mode_a_pierce(
+        self,
+        direction: str,
+        external_vwap: float = 0.0,
+        current_time: float = 0.0,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Mode A: Live In-Flight Intra-Bar Piercing Trigger on Armed Setups.
+        Active during T:00s - T:20s of Bar N+1.
+        """
+        if not self._mode_a_armed_setups:
+            return False, "no_mode_a_armed", {}
+
+        now_sec = current_time if current_time > 0 else self.last_ts
+        sec_in_min = int(now_sec % 60)
+        atr = self.current_atr_1m if self.current_atr_1m > 0 else 10.0
+        spot = self.last_price
+
+        pz = self.get_pain_zone_vwaps()
+        pz_top = float(pz.get("zone_top", 0.0) or 0.0)
+        pz_bot = float(pz.get("zone_bottom", 0.0) or 0.0)
+
+        for b_name, setup in list(self._mode_a_armed_setups.items()):
+            s_dir = setup.get("direction", "")
+            if s_dir != direction:
+                continue
+
+            anchor_h = setup.get("anchor_high", 0.0)
+            anchor_l = setup.get("anchor_low", 0.0)
+
+            # 1. Priority Window: Disarm after 20s if not pierced
+            if sec_in_min > 20:
+                del self._mode_a_armed_setups[b_name]
+                continue
+
+            # 2. Auto-Flip Disarm Rule: If new candle reverses across opposite boundary by 0.15*ATR
+            if s_dir == "UP" and pz_bot > 0 and spot <= (pz_bot - 0.15 * atr):
+                del self._mode_a_armed_setups[b_name]
+                logger.info(f"[PriceActionEngine] Mode A {b_name} CALL Disarmed: Reversed across lower boundary")
+                continue
+            elif s_dir == "DOWN" and pz_top > 0 and spot >= (pz_top + 0.15 * atr):
+                del self._mode_a_armed_setups[b_name]
+                logger.info(f"[PriceActionEngine] Mode A {b_name} PUT Disarmed: Reversed across upper boundary")
+                continue
+
+            # 3. Piercing Trigger
+            triggered = False
+            if s_dir == "UP" and spot >= anchor_h:
+                triggered = True
+            elif s_dir == "DOWN" and spot <= anchor_l:
+                triggered = True
+
+            if triggered:
+                del self._mode_a_armed_setups[b_name]
+                logger.info(f"[PriceActionEngine] [MODE_A_PIERCE] {b_name} {direction} Triggered at spot={spot:.2f} (T+{sec_in_min}s)")
+                return True, "mode_a_boundary_pierce", {
+                    "pillar": 1,
+                    "pa_setup_name": "mode_a_boundary_pierce",
+                    "boundary": b_name,
+                    "boundary_level": round(pz_top if direction == "UP" else pz_bot, 2),
+                    "sl_price": round(anchor_l - 0.10 * atr if direction == "UP" else anchor_h + 0.10 * atr, 2),
+                    "trigger_sec": sec_in_min,
+                    "bar_high": anchor_h,
+                    "bar_low": anchor_l,
+                    "entry_bar_bucket": int(now_sec // 60),
+                }
+
+        return False, "no_mode_a_trigger", {}
+
+    def check_mode_b_breakthrough(
+        self,
+        direction: str,
+        external_vwap: float = 0.0,
+        current_time: float = 0.0,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Mode B: Live In-Flight Intra-Bar Breakthrough Surge.
+        Triggers when an active forming 1-minute candle breaks through the Pain Zone
+        with strong directional expansion mid-bar between T:08s and T:48s.
+        """
+        now_sec = current_time if current_time > 0 else self.last_ts
+        sec_in_min = int(now_sec % 60)
+        if not (8 <= sec_in_min <= 48):
+            return False, "outside_mode_b_window", {}
+
+        curr_bar = self._curr_1m_bar
+        if curr_bar is None or curr_bar.tick_count < 6 or self.current_atr_1m <= 0:
+            return False, "insufficient_ticks_or_atr", {}
+
+        atr = self.current_atr_1m
+        spot = self.last_price
+        curr_rng = curr_bar.high - curr_bar.low
+
+        # 1. Sweet-Spot Range Filter: never trigger on tiny noise (<0.35x ATR) or climax (>1.20x ATR)
+        if curr_rng < (0.35 * atr) or curr_rng > (1.20 * atr):
+            return False, "range_outside_sweet_spot", {}
+
+        # 2. Time-Normalized In-Flight Volume Velocity (>= 1.30x expected pace)
+        vols_60 = [float(getattr(b, "volume", 0.0) or 0.0) for b in list(self.bars_1m)[-60:]]
+        if vols_60:
+            s_v = sorted(vols_60)
+            med_vol = float(s_v[len(s_v)//2])
+        else:
+            med_vol = 1.0
+        expected_vol_so_far = max(1.0, med_vol * (float(sec_in_min) / 60.0))
+        if (curr_bar.volume / expected_vol_so_far) < 1.30:
+            return False, "volume_velocity_sub_threshold", {}
+
+        # 3. Wyckoff Aggressive Option Flow Dominance
+        cb = float(self._opt_flow_1m.get("call_buy_vol", 0.0))
+        cs = float(self._opt_flow_1m.get("call_sell_vol", 0.0))
+        pb = float(self._opt_flow_1m.get("put_buy_vol", 0.0))
+        ps = float(self._opt_flow_1m.get("put_sell_vol", 0.0))
+        bull_flow = cb + ps
+        bear_flow = pb + cs
+
+        pz = self.get_pain_zone_vwaps()
+        pz_top = float(pz.get("zone_top", 0.0) or 0.0)
+        pz_bot = float(pz.get("zone_bottom", 0.0) or 0.0)
+        if pz_top <= 0 or pz_bot <= 0:
+            return False, "pain_zone_uninitialized", {}
+
+        bar_idx = len(self.bars_1m)
+        last_trig = self._mode_b_last_trigger_bar_idx.get("PAIN_ZONE_BREAKTHROUGH", -100)
+        if (bar_idx - last_trig) < 3:
+            return False, "cooldown_active", {}
+
+        # 4. Bullish Breakthrough Surge (CALL)
+        if direction == "UP":
+            if curr_bar.open <= pz_top and spot >= (pz_top + 0.15 * atr):
+                body_ratio = (spot - curr_bar.open) / max(curr_rng, 0.1)
+                upper_wick = curr_bar.high - spot
+                if body_ratio >= 0.65 and upper_wick <= (0.05 * atr):
+                    if (bull_flow + bear_flow <= 0) or (bull_flow >= 1.30 * bear_flow and cb > cs):
+                        self._mode_b_up_ticks = getattr(self, "_mode_b_up_ticks", 0) + 1
+                        if self._mode_b_up_ticks >= 2:
+                            self._mode_b_up_ticks = 0
+                            self._mode_b_last_trigger_bar_idx["PAIN_ZONE_BREAKTHROUGH"] = bar_idx
+                            logger.info(f"[PriceActionEngine] [MODE_B_BREAKTHROUGH] CALL Triggered at spot={spot:.2f} > pz_top={pz_top:.2f} (T+{sec_in_min}s)")
+                            return True, "mode_b_inflight_breakthrough", {
+                                "pillar": 4,
+                                "pa_setup_name": "mode_b_inflight_breakthrough",
+                                "boundary_level": round(pz_top, 2),
+                                "sl_price": round(min(pz_bot, curr_bar.low) - 0.10 * atr, 2),
+                                "trigger_sec": sec_in_min,
+                                "bar_high": round(curr_bar.high, 2),
+                                "bar_low": round(curr_bar.low, 2),
+                                "entry_bar_bucket": int(now_sec // 60),
+                            }
+                        return False, "awaiting_second_tick", {}
+            self._mode_b_up_ticks = 0
+
+        # 5. Bearish Breakthrough Surge (PUT)
+        elif direction == "DOWN":
+            if curr_bar.open >= pz_bot and spot <= (pz_bot - 0.15 * atr):
+                body_ratio = (curr_bar.open - spot) / max(curr_rng, 0.1)
+                lower_wick = spot - curr_bar.low
+                if body_ratio >= 0.65 and lower_wick <= (0.05 * atr):
+                    if (bull_flow + bear_flow <= 0) or (bear_flow >= 1.30 * bull_flow and pb > ps):
+                        self._mode_b_down_ticks = getattr(self, "_mode_b_down_ticks", 0) + 1
+                        if self._mode_b_down_ticks >= 2:
+                            self._mode_b_down_ticks = 0
+                            self._mode_b_last_trigger_bar_idx["PAIN_ZONE_BREAKTHROUGH"] = bar_idx
+                            logger.info(f"[PriceActionEngine] [MODE_B_BREAKTHROUGH] PUT Triggered at spot={spot:.2f} < pz_bot={pz_bot:.2f} (T+{sec_in_min}s)")
+                            return True, "mode_b_inflight_breakthrough", {
+                                "pillar": 4,
+                                "pa_setup_name": "mode_b_inflight_breakthrough",
+                                "boundary_level": round(pz_bot, 2),
+                                "sl_price": round(max(pz_top, curr_bar.high) + 0.10 * atr, 2),
+                                "trigger_sec": sec_in_min,
+                                "bar_high": round(curr_bar.high, 2),
+                                "bar_low": round(curr_bar.low, 2),
+                                "entry_bar_bucket": int(now_sec // 60),
+                            }
+                        return False, "awaiting_second_tick", {}
+            self._mode_b_down_ticks = 0
+
+        return False, "no_mode_b_trigger", {}
+
     def evaluate_setup(
         self,
         direction: str,
@@ -3899,6 +4171,19 @@ class PriceActionEngine:
             (is_triggered, setup_name, details_dict)
         """
         eff_vwap = external_vwap if external_vwap > 0 else self.current_vwap
+
+        # ─── Priority Intra-Bar Triggers (Mode A Pierce & Mode B Breakthrough) ───
+        ok_mb, reason_mb, details_mb = self.check_mode_b_breakthrough(direction, eff_vwap, current_time=current_time)
+        if ok_mb:
+            details_mb["pain_zone_score"] = 0.0
+            details_mb["pain_zone_reason"] = "mode_b_breakthrough"
+            return True, "mode_b_inflight_breakthrough", self._enrich_details(details_mb)
+
+        ok_ma, reason_ma, details_ma = self.check_mode_a_pierce(direction, eff_vwap, current_time=current_time)
+        if ok_ma:
+            details_ma["pain_zone_score"] = 0.0
+            details_ma["pain_zone_reason"] = "mode_a_pierce"
+            return True, "mode_a_boundary_pierce", self._enrich_details(details_ma)
 
         # Pillar 1: 20 EMA Pullback Rejection (Double-Touch)
         # V4.1: second-place Pain Zone removed — absolute band veto at tick top is single source.

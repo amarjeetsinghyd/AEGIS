@@ -82,7 +82,7 @@ class ShadowBoundaryObserver:
 
     def __init__(
         self,
-        price_action_engine: Any,
+        price_action_engine: Any = None,
         wyckoff_engine: Any = None,
         strike_step: float = 50.0,
         log_dir: Optional[str] = None,
@@ -105,6 +105,8 @@ class ShadowBoundaryObserver:
         # boundary_name -> {'direction': 'UP'/'DOWN', 'anchor_high': float, 'anchor_low': float, 'armed_bar_idx': int, 'ts': float}
         self.armed_setups: Dict[str, Dict[str, Any]] = {}
         self.last_trigger_bar_idx: Dict[str, int] = {}
+        self._mode_b_up_ticks: int = 0
+        self._mode_b_down_ticks: int = 0
         
         # References populated by AegisGammaEngine
         self.option_cache: Dict[str, float] = {}
@@ -235,22 +237,42 @@ class ShadowBoundaryObserver:
         self._evaluate_boundary_arming(spot, now_sec)
 
     def _check_inflight_piercing(self, spot: float, now_sec: float) -> None:
-        """Fires Mode A In-Flight Entry when live tick pierces anchor price."""
+        """
+        Fires Mode A In-Flight Entry when live tick pierces anchor price.
+        Active during T:00s - T:20s of Bar N+1.
+        """
         if not self.armed_setups:
             return
-            
+
+        sec_in_min = int(now_sec % 60)
+        atr = getattr(self.pa_engine, "current_atr_1m", 10.0) or 10.0
+        pz_top, pz_bot = self._get_pain_zone_levels(atr)
+
         for b_name in list(self.armed_setups.keys()):
             armed = self.armed_setups[b_name]
             direction = armed["direction"]
             anchor_h = armed["anchor_high"]
             anchor_l = armed["anchor_low"]
-            
+
+            # 1. Priority Window: Disarm after 20s if not pierced
+            if sec_in_min > 20:
+                del self.armed_setups[b_name]
+                continue
+
+            # 2. Auto-Flip Disarm Rule: If new candle reverses across opposite boundary by 0.15*ATR
+            if direction == "UP" and pz_bot > 0 and spot <= (pz_bot - 0.15 * atr):
+                del self.armed_setups[b_name]
+                continue
+            elif direction == "DOWN" and pz_top > 0 and spot >= (pz_top + 0.15 * atr):
+                del self.armed_setups[b_name]
+                continue
+
             triggered = False
-            if direction == "UP" and spot > anchor_h:
+            if direction == "UP" and spot >= anchor_h:
                 triggered = True
-            elif direction == "DOWN" and spot < anchor_l:
+            elif direction == "DOWN" and spot <= anchor_l:
                 triggered = True
-                
+
             if triggered:
                 # Fire Shadow Trade!
                 del self.armed_setups[b_name]
@@ -258,24 +280,40 @@ class ShadowBoundaryObserver:
 
     def _check_inflight_breakthrough(self, spot: float, now_sec: float) -> None:
         """
-        Mode B: Live In-Flight Intra-Bar Breakthrough Surge.
+        Mode B: Live In-Flight Intra-Bar Breakthrough Surge with 4-Point Trap Filter.
         Triggers when an active forming 1-minute candle breaks through the Pain Zone or 200 EMA
-        with strong directional expansion mid-bar.
+        with strong directional expansion mid-bar between T:08s and T:48s.
         """
         if self.pa_engine is None:
             return
         curr_bar = getattr(self.pa_engine, "_curr_1m_bar", None)
-        if curr_bar is None or curr_bar.tick_count < 5:
+        if curr_bar is None or curr_bar.tick_count < 6:
             return
 
         sec_in_min = int(now_sec % 60)
-        # Active intra-bar expansion window (between 8s and 52s)
-        if not (8 <= sec_in_min <= 52):
+        # Active intra-bar expansion window (between 8s and 48s)
+        if not (8 <= sec_in_min <= 48):
             return
 
         atr = getattr(self.pa_engine, "current_atr_1m", 10.0) or 10.0
         if atr <= 0:
             atr = 10.0
+
+        curr_rng = curr_bar.high - curr_bar.low
+        # 1. Sweet-Spot Range Filter: never trigger on tiny noise (<0.35x ATR) or climax (>1.20x ATR)
+        if curr_rng < (0.35 * atr) or curr_rng > (1.20 * atr):
+            return
+
+        # 2. Time-Normalized Volume Velocity (>= 1.30x expected pace)
+        vols_60 = [float(getattr(b, "volume", 0.0) or 0.0) for b in list(self.pa_engine.bars_1m)[-60:]]
+        if vols_60:
+            s_v = sorted(vols_60)
+            med_vol = float(s_v[len(s_v)//2])
+        else:
+            med_vol = 1.0
+        expected_vol = max(1.0, med_vol * (float(sec_in_min) / 60.0))
+        if (curr_bar.volume / expected_vol) < 1.30:
+            return
 
         bar_idx = len(self.pa_engine.bars_1m)
 
@@ -284,19 +322,37 @@ class ShadowBoundaryObserver:
         if pz_top > 0 and pz_bot > 0:
             last_trig = self.last_trigger_bar_idx.get("PAIN_ZONE_BREAKTHROUGH", -100)
             if (bar_idx - last_trig) >= 3:
-                # Bullish Breakthrough: Open was <= pz_top, live spot surges above pz_top + 0.15 * atr
+                # Bullish Breakthrough: Open <= pz_top, live spot >= pz_top + 0.15*atr
                 if curr_bar.open <= pz_top and spot >= (pz_top + 0.15 * atr):
-                    if self._check_wyckoff_harmony("UP", curr_bar):
-                        self.last_trigger_bar_idx["PAIN_ZONE_BREAKTHROUGH"] = bar_idx
-                        logger.info(f"[SHADOW_INTRABAR_SURGE] PAIN_ZONE_BREAKTHROUGH CALL | Spot: {spot:.2f} > Top: {pz_top:.2f} at T+{sec_in_min}s")
-                        self._open_shadow_trade("PAIN_ZONE_BREAKTHROUGH", "UP", spot, curr_bar.high, curr_bar.low, now_sec)
+                    body_ratio = (spot - curr_bar.open) / max(curr_rng, 0.1)
+                    upper_wick = curr_bar.high - spot
+                    if body_ratio >= 0.65 and upper_wick <= (0.05 * atr):
+                        if self._check_wyckoff_harmony("UP", curr_bar):
+                            self._mode_b_pz_up_ticks = getattr(self, "_mode_b_pz_up_ticks", 0) + 1
+                            if self._mode_b_pz_up_ticks >= 2:
+                                self._mode_b_pz_up_ticks = 0
+                                self.last_trigger_bar_idx["PAIN_ZONE_BREAKTHROUGH"] = bar_idx
+                                logger.info(f"[SHADOW_INTRABAR_SURGE] PAIN_ZONE_BREAKTHROUGH CALL | Spot: {spot:.2f} > Top: {pz_top:.2f} at T+{sec_in_min}s")
+                                self._open_shadow_trade("PAIN_ZONE_BREAKTHROUGH", "UP", spot, curr_bar.high, curr_bar.low, now_sec)
+                                return
+                else:
+                    self._mode_b_pz_up_ticks = 0
 
-                # Bearish Breakthrough: Open was >= pz_bot, live spot drops below pz_bot - 0.15 * atr
-                elif curr_bar.open >= pz_bot and spot <= (pz_bot - 0.15 * atr):
-                    if self._check_wyckoff_harmony("DOWN", curr_bar):
-                        self.last_trigger_bar_idx["PAIN_ZONE_BREAKTHROUGH"] = bar_idx
-                        logger.info(f"[SHADOW_INTRABAR_SURGE] PAIN_ZONE_BREAKTHROUGH PUT | Spot: {spot:.2f} < Bot: {pz_bot:.2f} at T+{sec_in_min}s")
-                        self._open_shadow_trade("PAIN_ZONE_BREAKTHROUGH", "DOWN", spot, curr_bar.high, curr_bar.low, now_sec)
+                # Bearish Breakthrough: Open >= pz_bot, live spot <= pz_bot - 0.15*atr
+                if curr_bar.open >= pz_bot and spot <= (pz_bot - 0.15 * atr):
+                    body_ratio = (curr_bar.open - spot) / max(curr_rng, 0.1)
+                    lower_wick = spot - curr_bar.low
+                    if body_ratio >= 0.65 and lower_wick <= (0.05 * atr):
+                        if self._check_wyckoff_harmony("DOWN", curr_bar):
+                            self._mode_b_pz_down_ticks = getattr(self, "_mode_b_pz_down_ticks", 0) + 1
+                            if self._mode_b_pz_down_ticks >= 2:
+                                self._mode_b_pz_down_ticks = 0
+                                self.last_trigger_bar_idx["PAIN_ZONE_BREAKTHROUGH"] = bar_idx
+                                logger.info(f"[SHADOW_INTRABAR_SURGE] PAIN_ZONE_BREAKTHROUGH PUT | Spot: {spot:.2f} < Bot: {pz_bot:.2f} at T+{sec_in_min}s")
+                                self._open_shadow_trade("PAIN_ZONE_BREAKTHROUGH", "DOWN", spot, curr_bar.high, curr_bar.low, now_sec)
+                                return
+                else:
+                    self._mode_b_pz_down_ticks = 0
 
         # 2. 200 EMA Breakthrough
         ema200 = float(getattr(self.pa_engine, "ema_200_1m", 0.0) or 0.0)
@@ -305,17 +361,35 @@ class ShadowBoundaryObserver:
             if (bar_idx - last_trig_ema) >= 3:
                 # Bullish cross above 200 EMA
                 if curr_bar.open <= ema200 and spot >= (ema200 + 0.15 * atr):
-                    if self._check_wyckoff_harmony("UP", curr_bar):
-                        self.last_trigger_bar_idx["EMA_200_BREAKTHROUGH"] = bar_idx
-                        logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_200_BREAKTHROUGH CALL | Spot: {spot:.2f} > EMA200: {ema200:.2f} at T+{sec_in_min}s")
-                        self._open_shadow_trade("EMA_200_BREAKTHROUGH", "UP", spot, curr_bar.high, curr_bar.low, now_sec)
+                    body_ratio = (spot - curr_bar.open) / max(curr_rng, 0.1)
+                    upper_wick = curr_bar.high - spot
+                    if body_ratio >= 0.65 and upper_wick <= (0.05 * atr):
+                        if self._check_wyckoff_harmony("UP", curr_bar):
+                            self._mode_b_ema_up_ticks = getattr(self, "_mode_b_ema_up_ticks", 0) + 1
+                            if self._mode_b_ema_up_ticks >= 2:
+                                self._mode_b_ema_up_ticks = 0
+                                self.last_trigger_bar_idx["EMA_200_BREAKTHROUGH"] = bar_idx
+                                logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_200_BREAKTHROUGH CALL | Spot: {spot:.2f} > EMA200: {ema200:.2f} at T+{sec_in_min}s")
+                                self._open_shadow_trade("EMA_200_BREAKTHROUGH", "UP", spot, curr_bar.high, curr_bar.low, now_sec)
+                                return
+                else:
+                    self._mode_b_ema_up_ticks = 0
 
                 # Bearish cross below 200 EMA
-                elif curr_bar.open >= ema200 and spot <= (ema200 - 0.15 * atr):
-                    if self._check_wyckoff_harmony("DOWN", curr_bar):
-                        self.last_trigger_bar_idx["EMA_200_BREAKTHROUGH"] = bar_idx
-                        logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_200_BREAKTHROUGH PUT | Spot: {spot:.2f} < EMA200: {ema200:.2f} at T+{sec_in_min}s")
-                        self._open_shadow_trade("EMA_200_BREAKTHROUGH", "DOWN", spot, curr_bar.high, curr_bar.low, now_sec)
+                if curr_bar.open >= ema200 and spot <= (ema200 - 0.15 * atr):
+                    body_ratio = (curr_bar.open - spot) / max(curr_rng, 0.1)
+                    lower_wick = spot - curr_bar.low
+                    if body_ratio >= 0.65 and lower_wick <= (0.05 * atr):
+                        if self._check_wyckoff_harmony("DOWN", curr_bar):
+                            self._mode_b_ema_down_ticks = getattr(self, "_mode_b_ema_down_ticks", 0) + 1
+                            if self._mode_b_ema_down_ticks >= 2:
+                                self._mode_b_ema_down_ticks = 0
+                                self.last_trigger_bar_idx["EMA_200_BREAKTHROUGH"] = bar_idx
+                                logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_200_BREAKTHROUGH PUT | Spot: {spot:.2f} < EMA200: {ema200:.2f} at T+{sec_in_min}s")
+                                self._open_shadow_trade("EMA_200_BREAKTHROUGH", "DOWN", spot, curr_bar.high, curr_bar.low, now_sec)
+                                return
+                else:
+                    self._mode_b_ema_down_ticks = 0
 
     def _evaluate_boundary_arming(self, spot: float, now_sec: float) -> None:
         """Evaluates boundary rejection on latest closed 1m candle and arms Mode A."""

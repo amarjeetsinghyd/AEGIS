@@ -349,74 +349,74 @@ class AegisExecutionManager:
             "exchange": "NFO",
         }
 
-    def _prestage_strikes_at_t50(self, now_epoch: float) -> None:
-        """Pre-resolves CALL and PUT option strikes at T:48s-T:58s of every minute to eliminate selection latency."""
-        sec_in_min = int(now_epoch % 60)
-        if not (48 <= sec_in_min <= 58):
-            return
-        curr_bucket = int(now_epoch // 60)
-        if not hasattr(self, "_prestaged_cache"):
-            self._prestaged_cache = {
-                "minute_bucket": -1,
-                "ts": 0.0,
-                "spot": 0.0,
-                "params": None,
-                "CALL": None,
-                "PUT": None,
-            }
-        if self._prestaged_cache.get("minute_bucket") == curr_bucket:
-            return
+    def _refresh_hot_strikes_cache(self, now_epoch: float) -> None:
+        """
+        Event-driven rolling 5-second strike pre-stager.
+        Ensures CALL and PUT option contracts are pre-resolved in memory so that
+        any intra-bar signal (Mode A at T+02s or Mode B at T+26s) resolves strikes in <1ms.
+        """
         if self.has_open_trade() or self.trades_today >= MAX_TRADES_PER_DAY:
             return
+        spot_price = float(getattr(self.aegis_engine, "last_spot", 0.0) or 0.0)
+        if spot_price <= 0.0:
+            spot_price = self._get_current_spot()
+        if spot_price <= 0.0:
+            return
 
-        try:
-            spot_price = float(getattr(self.aegis_engine, "last_spot", 0.0) or 0.0)
-            if spot_price <= 0.0:
-                spot_price = self._get_current_spot()
-            if spot_price <= 0.0:
+        cache = getattr(self, "_hot_strikes_cache", None)
+        if cache is not None:
+            age = now_epoch - cache.get("ts", 0.0)
+            spot_drift = abs(spot_price - cache.get("spot", 0.0))
+            if age < 5.0 and spot_drift < 15.0:
                 return
 
-            params = self.get_instrument_params()
-            weekly_opts = self.data_fetcher.get_weekly_option_tokens()
-            funds = self.capital_engine.get_available_funds()
-            mdp = getattr(self.broker, "market_data_provider", None)
-
-            c_alloc = StrikeSelector.select_strikes(
-                signal_type="CALL",
-                index_price=spot_price,
-                index_name=params["index_name"],
-                weekly_opts=weekly_opts,
-                option_cache=self._option_cache,
-                available_funds=funds,
-                lot_size=params["lot_size"],
-                market_data_provider=mdp,
-                premium_min=params.get("premium_min"),
-                premium_max=params.get("premium_max"),
+        params = self.get_instrument_params()
+        if not getattr(self, "_cached_weekly_opts", None):
+            self._cached_weekly_opts = (
+                self.data_fetcher.get_weekly_option_tokens()
+                if hasattr(self.data_fetcher, "get_weekly_option_tokens")
+                else None
             )
-            p_alloc = StrikeSelector.select_strikes(
-                signal_type="PUT",
-                index_price=spot_price,
-                index_name=params["index_name"],
-                weekly_opts=weekly_opts,
-                option_cache=self._option_cache,
-                available_funds=funds,
-                lot_size=params["lot_size"],
-                market_data_provider=mdp,
-                premium_min=params.get("premium_min"),
-                premium_max=params.get("premium_max"),
-            )
+        avail_funds = self.capital_engine.get_available_funds()
+        mdp = getattr(self.broker, "market_data_provider", None)
 
-            self._prestaged_cache = {
-                "minute_bucket": curr_bucket,
-                "ts": now_epoch,
-                "spot": spot_price,
-                "params": params,
-                "CALL": c_alloc[0] if c_alloc else None,
-                "PUT": p_alloc[0] if p_alloc else None,
-            }
-            logger.debug(f"[AegisEM] T:50 Pre-staged strikes at spot={spot_price:.2f} (bucket={curr_bucket})")
-        except Exception as e:
-            logger.debug(f"[AegisEM] Error prestaging strikes: {e}")
+        c_alloc = StrikeSelector.select_strikes(
+            signal_type="CALL",
+            index_price=spot_price,
+            index_name=params["index_name"],
+            weekly_opts=self._cached_weekly_opts,
+            option_cache=self._option_cache,
+            available_funds=avail_funds,
+            lot_size=params["lot_size"],
+            market_data_provider=mdp,
+            premium_min=params.get("premium_min"),
+            premium_max=params.get("premium_max"),
+        )
+        p_alloc = StrikeSelector.select_strikes(
+            signal_type="PUT",
+            index_price=spot_price,
+            index_name=params["index_name"],
+            weekly_opts=self._cached_weekly_opts,
+            option_cache=self._option_cache,
+            available_funds=avail_funds,
+            lot_size=params["lot_size"],
+            market_data_provider=mdp,
+            premium_min=params.get("premium_min"),
+            premium_max=params.get("premium_max"),
+        )
+
+        self._hot_strikes_cache = {
+            "ts": now_epoch,
+            "spot": spot_price,
+            "params": params,
+            "CALL": c_alloc[0] if c_alloc else None,
+            "PUT": p_alloc[0] if p_alloc else None,
+        }
+        self._prestaged_cache = self._hot_strikes_cache
+
+    def _prestage_strikes_at_t50(self, now_epoch: float) -> None:
+        """Backwards-compatible wrapper routing to rolling 5s hot strike cache."""
+        self._refresh_hot_strikes_cache(now_epoch)
 
     # ─── Main Loop ───
     def start(self):
@@ -449,7 +449,7 @@ class AegisExecutionManager:
                     self.last_trade_date = today_d
 
                 # Pre-stage strikes at T:48-T:58 of each minute
-                self._prestage_strikes_at_t50(time.time())
+                self._refresh_hot_strikes_cache(time.time())
 
                 # 1. Process AEGIS signals (non-blocking fast poll with 50ms timeout)
                 try:
@@ -624,17 +624,17 @@ class AegisExecutionManager:
             if spot_price <= 0.0:
                 spot_price = self._get_current_spot()
 
-            prestaged = getattr(self, "_prestaged_cache", None) or {}
-            cached = prestaged.get(signal_type)
+            hot_cache = getattr(self, "_hot_strikes_cache", None) or getattr(self, "_prestaged_cache", None) or {}
+            cached = hot_cache.get(signal_type)
             if (
                 cached
-                and (now_epoch - prestaged.get("ts", 0.0) <= 20.0)
-                and abs(spot_price - prestaged.get("spot", 0.0)) <= 40.0
+                and (now_epoch - hot_cache.get("ts", 0.0) <= 20.0)
+                and abs(spot_price - hot_cache.get("spot", 0.0)) <= 40.0
             ):
                 opt_row, raw_quantity, ltp = cached
-                logger.info(f"[AegisEM] Using PRE-STAGED strike for {signal_type}: {opt_row['symbol']} (latency eliminated)")
+                logger.info(f"[AegisEM] Using PRE-STAGED/HOT strike for {signal_type}: {opt_row['symbol']} (latency <1ms)")
             else:
-                weekly_opts = self.data_fetcher.get_weekly_option_tokens() if hasattr(self.data_fetcher, "get_weekly_option_tokens") else None
+                weekly_opts = getattr(self, "_cached_weekly_opts", None) or (self.data_fetcher.get_weekly_option_tokens() if hasattr(self.data_fetcher, "get_weekly_option_tokens") else None)
                 allocations = StrikeSelector.select_strikes(
                     signal_type=signal_type,
                     index_price=spot_price,
@@ -859,6 +859,8 @@ class AegisExecutionManager:
                         "is_price_action_setup": bool(metrics.get("is_price_action_setup", False)),
                         "pillar": int(metrics.get("pillar", 0) or 0),
                         "pa_setup_name": str(metrics.get("pa_setup_name", "")),
+                        "boundary_level": float(metrics.get("boundary_level", 0.0) or 0.0),
+                        "entry_bar_bucket": int(metrics.get("entry_bar_bucket", 0) or int(now_epoch // 60)),
                         "rejection_type": metrics.get("rejection_type", "none"),
                         "spot_sl_price": float(metrics.get("sl_price", 0.0) or 0.0),
                         "candle_high": float(metrics.get("bar_high", 0.0) or 0.0),
@@ -880,6 +882,8 @@ class AegisExecutionManager:
                     self.trade_context.is_price_action_setup = dp["is_price_action_setup"]
                     self.trade_context.pa_setup_name = dp["pa_setup_name"]
                     self.trade_context.pillar = dp["pillar"]
+                    self.trade_context.boundary_level = dp["boundary_level"]
+                    self.trade_context.entry_bar_bucket = dp["entry_bar_bucket"]
                     self.trade_context.add_leg(leg)
 
                     logger.info(
@@ -1310,6 +1314,29 @@ class AegisExecutionManager:
                     else:
                         self._close_all_legs(f"5-Min Hard Time Stop ({int(hold_sec)}s)")
                     return
+
+        # ─── Mode B Bar-Close Escape Check (Scratch exit if candle closes back inside boundary) ───
+        pa_name_lower = str(getattr(context, "pa_setup_name", "") or "").lower()
+        if "mode_b" in pa_name_lower or "breakthrough" in pa_name_lower:
+            b_level = float(getattr(context, "boundary_level", 0.0) or 0.0)
+            entry_bucket = getattr(context, "entry_bar_bucket", None)
+            tb_eng = getattr(self.aegis_engine, "time_bar_engine", None) if self.aegis_engine else None
+            if entry_bucket is not None and b_level > 0 and tb_eng and getattr(tb_eng, "bars_1m", None):
+                curr_bucket = int(now_ts // 60)
+                if curr_bucket > entry_bucket:
+                    last_closed_bar = tb_eng.bars_1m[-1]
+                    if context.signal_type == "CALL" and last_closed_bar.close <= b_level:
+                        logger.info(
+                            f"[AegisEM] Mode B Failed Breakthrough Bar-Close Escape: Candle closed at {last_closed_bar.close:.2f} <= boundary {b_level:.2f} -> Scratch Exit"
+                        )
+                        self._close_all_legs("MODE_B_FAILED_CLOSE_ESCAPE")
+                        return
+                    elif context.signal_type == "PUT" and last_closed_bar.close >= b_level:
+                        logger.info(
+                            f"[AegisEM] Mode B Failed Breakthrough Bar-Close Escape: Candle closed at {last_closed_bar.close:.2f} >= boundary {b_level:.2f} -> Scratch Exit"
+                        )
+                        self._close_all_legs("MODE_B_FAILED_CLOSE_ESCAPE")
+                        return
 
         # 3. Spot Adverse Movement SL (Normalized Basis Points + 1m ATR regime expansion)
         tb_engine = getattr(self.aegis_engine, "time_bar_engine", None) if self.aegis_engine else None
