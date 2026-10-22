@@ -1647,5 +1647,161 @@ def test_wyckoff_flow_gates_across_all_pillars():
     assert reason_p3 == "wyckoff_p3_call_negative_delta_trap"
 
 
+def test_pillar3_climax_exhaustion_cap_and_box_displacement():
+    """
+    UPGRADE 3: Pillar 3 Climax Exhaustion Cap & Box Displacement Veto.
+    Prevents chasing blowout / climax bars (> 1.35x ATR) or bars overextended from the box (> 1.20x ATR).
+    """
+    # 1. Climax Candle Range Veto (> 1.35x ATR)
+    engine = PriceActionEngine()
+    engine.current_atr_1m = 40.0
+    for i in range(25):
+        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74300.0, 74315.0, 74295.0, 74305.0, volume=100.0))
+
+    # Box is ~74315 high to ~74295 low (range 20.0). ATR is ~20.0.
+    # An 80-pt giant candle (like 22 Oct 09:50) far exceeds 1.35 * ATR (27 pts)!
+    climax_bar = OHLCBar(
+        25 * 60, 26 * 60, 74305.0, 74385.0, 74305.0, 74380.0,
+        volume=300.0,
+        call_buy_vol=2000.0,
+        call_sell_vol=200.0,
+        put_buy_vol=100.0,
+        put_sell_vol=1000.0,
+    )
+    engine._on_1m_bar_close(climax_bar)
+    engine.last_price = 74380.0
+    engine.squeeze_on = True
+
+    ok, reason, details = engine.check_volatility_squeeze_breakout("CALL", current_vwap=74300.0)
+    assert ok is False
+    assert reason == "exhausted_squeeze_breakout_candle_range"
+    assert details["bar_range"] == 80.0
+
+    # 2. Box Displacement Veto (> 1.20x ATR beyond box_high)
+    # Candle range itself is moderate (25 pts <= 1.35 * ATR), but opened and closed way outside the box
+    engine_disp = PriceActionEngine()
+    engine_disp.current_atr_1m = 40.0
+    for i in range(25):
+        engine_disp._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74300.0, 74310.0, 74290.0, 74305.0, volume=100.0))
+
+    atr_val = engine_disp.current_atr_1m
+    displaced_bar = OHLCBar(
+        25 * 60, 26 * 60, 74340.0, 74355.0, 74338.0, 74350.0,
+        volume=300.0,
+        call_buy_vol=2000.0,
+        call_sell_vol=200.0,
+        put_buy_vol=100.0,
+        put_sell_vol=1000.0,
+    )
+    engine_disp._on_1m_bar_close(displaced_bar)
+    engine_disp.last_price = 74350.0
+    engine_disp.squeeze_on = True
+
+    ok_d, reason_d, details_d = engine_disp.check_volatility_squeeze_breakout("CALL", current_vwap=74300.0)
+    assert ok_d is False
+    assert reason_d == "overextended_from_squeeze_box"
+
+
+def test_freak_preopen_settlement_spike_filtered_in_levels_and_runway():
+    """
+    UPGRADE 4: Fix 09:15 Freak Settlement Spike Masking 09:16 Resistance.
+    Verifies:
+    1. 09:15 settlement tick (near-zero range, huge outlier) is ignored, allowing 09:16 high to register as Resistance.
+    2. _check_day_extreme_runway filters out the freak tick when calculating day_high and day_low.
+    """
+    engine = PriceActionEngine()
+    engine.current_atr_1m = 40.0
+
+    # Bar 0 (09:15 freak pre-open settlement tick: high=74400, low=74400, range=0, 1000 pts above market)
+    engine._on_1m_bar_close(OHLCBar(0, 60, 74400.0, 74400.0, 74400.0, 74400.0, volume=10.0))
+    # Bar 1 (09:16 real opening candle: open 73400, high 73423, low 73380, close 73410)
+    engine._on_1m_bar_close(OHLCBar(60, 120, 73400.0, 73423.0, 73380.0, 73410.0, volume=150.0))
+    # Bar 2 (09:17 subsequent candle: high 73405 < 73423, confirming 09:16 as Swing High!)
+    engine._on_1m_bar_close(OHLCBar(120, 180, 73410.0, 73405.0, 73370.0, 73380.0, volume=120.0))
+
+    # Resistance at 73,423.0 MUST be registered!
+    resistances = [l for l in engine.session_levels if l.level_type == "RESISTANCE"]
+    assert len(resistances) >= 1
+    assert any(abs(r.price - 73423.0) < 2.0 for r in resistances)
+
+    # _check_day_extreme_runway must NOT treat 74,400 as day_high
+    engine.last_price = 73415.0
+    engine.current_atr_1m = 40.0
+    # Add another bar to have >= 3 intraday prior bars
+    engine._on_1m_bar_close(OHLCBar(180, 240, 73380.0, 73415.0, 73375.0, 73415.0, volume=100.0))
+    ok, reason, details = engine._check_day_extreme_runway("CALL", 73415.0)
+    # Day high should be 73423.0, NOT 74400.0!
+    # With day_high = 73423.0 and current_price = 73415.0, room to day high is only 8 pts (< 1.25x ATR of 50 pts) -> Insufficient runway!
+    assert ok is False
+    assert reason == "insufficient_runway_to_day_high"
+    assert details["day_high"] == 73423.0
+
+
+def test_t50_intrabar_candidate_evaluation():
+    """
+    UPGRADE 5: T:50s Intra-Bar Early Entry Engine (evaluate_t50_intrabar_candidate).
+    Verifies time window, range sweet-spot, body ratio, opposing wick, and delta ratio.
+    """
+    engine = PriceActionEngine()
+    engine.current_atr_1m = 40.0
+    engine.current_vwap = 73400.0
+
+    # 1. Outside time window (e.g. sec=25) -> VETO
+    ok, reason, _ = engine.evaluate_t50_intrabar_candidate("CALL", current_time=60025.0)
+    assert ok is False
+    assert reason == "outside_t50_window"
+
+    # Set up in-flight 1m bar at T:52s (epoch % 60 = 52)
+    t52_epoch = 60052.0
+    # Add completed prior bars to seed history
+    for i in range(10):
+        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 73400.0, 73415.0, 73390.0, 73405.0, volume=100.0))
+
+    # In-flight bar: Open=73405, High=73428, Low=73404, Close=73427.
+    # ATR is ~25 pts from the 10 prior bars.
+    # Range = 24 pts (0.45 * 25 = 11.25 <= 24 <= 1.15 * 25 = 28.75) -> In sweet-spot!
+    # Body = 22 pts -> Body ratio = 22/24 = 91.6% >= 72%!
+    # Upper wick = 73428 - 73427 = 1 pt -> Wick ratio = 1/24 = 4.1% <= 12%!
+    engine._curr_1m_bar = OHLCBar(
+        ts_start=60000.0,
+        ts_end=60060.0,
+        open=73405.0,
+        high=73428.0,
+        low=73404.0,
+        close=73427.0,
+        tick_count=20,
+    )
+    engine.last_price = 73427.0
+    engine._opt_flow_1m = {
+        "call_buy_vol": 1500.0,
+        "call_sell_vol": 200.0,
+        "put_buy_vol": 300.0,
+        "put_sell_vol": 500.0,
+    }
+
+    # Should PASS in SHADOW mode!
+    ok, reason, details = engine.evaluate_t50_intrabar_candidate("CALL", current_time=t52_epoch)
+    assert ok is True, f"Failed with reason: {reason}, details: {details}"
+    assert reason == "t50_intrabar_candidate_confirmed"
+    assert details["is_shadow"] is True
+    assert details["body_ratio"] >= 0.72
+    assert details["opposing_wick_ratio"] <= 0.12
+
+    # 2. Test Range Underdeveloped (< 0.45 * ATR)
+    engine._curr_1m_bar.high = 73410.0  # Range = 6 pts < 11.25 pts
+    engine._curr_1m_bar.close = 73409.0
+    ok_small, reason_small, _ = engine.evaluate_t50_intrabar_candidate("CALL", current_time=t52_epoch)
+    assert ok_small is False
+    assert reason_small == "intrabar_range_underdeveloped"
+
+    # 3. Test Range Overextended / Exhaustion (> 1.15 * ATR)
+    engine._curr_1m_bar.high = 73445.0  # Range = 41 pts > 28.75 pts
+    engine._curr_1m_bar.close = 73443.0
+    ok_giant, reason_giant, _ = engine.evaluate_t50_intrabar_candidate("CALL", current_time=t52_epoch)
+    assert ok_giant is False
+    assert reason_giant == "intrabar_range_overextended_exhaustion"
+
+
+
 
 

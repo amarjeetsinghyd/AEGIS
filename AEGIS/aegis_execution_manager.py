@@ -200,6 +200,16 @@ class AegisExecutionManager:
         self._load_daily_pnl()
         self._load_trades_today()
 
+        # Pre-staged strike cache (eliminates 6-11s selection latency at T:00)
+        self._prestaged_cache: Dict[str, Any] = {
+            "minute_bucket": -1,
+            "ts": 0.0,
+            "spot": 0.0,
+            "params": None,
+            "CALL": None,
+            "PUT": None,
+        }
+
         # Main loop polling
         self._running = False
         self._main_thread: Optional[threading.Thread] = None
@@ -324,6 +334,75 @@ class AegisExecutionManager:
             "exchange": "NFO",
         }
 
+    def _prestage_strikes_at_t50(self, now_epoch: float) -> None:
+        """Pre-resolves CALL and PUT option strikes at T:48s-T:58s of every minute to eliminate selection latency."""
+        sec_in_min = int(now_epoch % 60)
+        if not (48 <= sec_in_min <= 58):
+            return
+        curr_bucket = int(now_epoch // 60)
+        if not hasattr(self, "_prestaged_cache"):
+            self._prestaged_cache = {
+                "minute_bucket": -1,
+                "ts": 0.0,
+                "spot": 0.0,
+                "params": None,
+                "CALL": None,
+                "PUT": None,
+            }
+        if self._prestaged_cache.get("minute_bucket") == curr_bucket:
+            return
+        if self.has_open_trade() or self.trades_today >= MAX_TRADES_PER_DAY:
+            return
+
+        try:
+            spot_price = float(getattr(self.aegis_engine, "last_spot", 0.0) or 0.0)
+            if spot_price <= 0.0:
+                spot_price = self._get_current_spot()
+            if spot_price <= 0.0:
+                return
+
+            params = self.get_instrument_params()
+            weekly_opts = self.data_fetcher.get_weekly_option_tokens()
+            funds = self.capital_engine.get_available_funds()
+            mdp = getattr(self.broker, "market_data_provider", None)
+
+            c_alloc = StrikeSelector.select_strikes(
+                signal_type="CALL",
+                index_price=spot_price,
+                index_name=params["index_name"],
+                weekly_opts=weekly_opts,
+                option_cache=self._option_cache,
+                available_funds=funds,
+                lot_size=params["lot_size"],
+                market_data_provider=mdp,
+                premium_min=params.get("premium_min"),
+                premium_max=params.get("premium_max"),
+            )
+            p_alloc = StrikeSelector.select_strikes(
+                signal_type="PUT",
+                index_price=spot_price,
+                index_name=params["index_name"],
+                weekly_opts=weekly_opts,
+                option_cache=self._option_cache,
+                available_funds=funds,
+                lot_size=params["lot_size"],
+                market_data_provider=mdp,
+                premium_min=params.get("premium_min"),
+                premium_max=params.get("premium_max"),
+            )
+
+            self._prestaged_cache = {
+                "minute_bucket": curr_bucket,
+                "ts": now_epoch,
+                "spot": spot_price,
+                "params": params,
+                "CALL": c_alloc[0] if c_alloc else None,
+                "PUT": p_alloc[0] if p_alloc else None,
+            }
+            logger.debug(f"[AegisEM] T:50 Pre-staged strikes at spot={spot_price:.2f} (bucket={curr_bucket})")
+        except Exception as e:
+            logger.debug(f"[AegisEM] Error prestaging strikes: {e}")
+
     # ─── Main Loop ───
     def start(self):
         """Start the execution manager's main processing loop."""
@@ -353,6 +432,9 @@ class AegisExecutionManager:
                     self.daily_charges = 0.0
                     self.daily_net_pnl = 0.0
                     self.last_trade_date = today_d
+
+                # Pre-stage strikes at T:48-T:58 of each minute
+                self._prestage_strikes_at_t50(time.time())
 
                 # 1. Process AEGIS signals (non-blocking fast poll with 50ms timeout)
                 try:
@@ -504,35 +586,45 @@ class AegisExecutionManager:
             metrics = signal.get("metrics", {})
 
             params = self.get_instrument_params()
-            weekly_opts = self.data_fetcher.get_weekly_option_tokens()
-            
+
             # Map signal direction to option type
             signal_type = "CALL" if direction == "UP" else "PUT"
-            
+
             # Retrieve actual underlying index spot price
             spot_price = float(signal.get("spot") or getattr(self.aegis_engine, "last_spot", 0.0) or 0.0)
             if spot_price <= 0.0:
                 spot_price = self._get_current_spot()
-            
-            allocations = StrikeSelector.select_strikes(
-                signal_type=signal_type,
-                index_price=spot_price,
-                index_name=params["index_name"],
-                weekly_opts=weekly_opts,
-                option_cache=self._option_cache,
-                available_funds=self.capital_engine.get_available_funds(),
-                lot_size=params["lot_size"],
-                market_data_provider=getattr(self.broker, "market_data_provider", None),
-                premium_min=params.get("premium_min"),
-                premium_max=params.get("premium_max"),
-            )
-            
-            if not allocations:
-                logger.warning(f"[AegisEM] No affordable strike for {signal_type}")
-                self._rollback_slot()
-                return
 
-            opt_row, raw_quantity, ltp = allocations[0]
+            prestaged = getattr(self, "_prestaged_cache", None) or {}
+            cached = prestaged.get(signal_type)
+            if (
+                cached
+                and (now_epoch - prestaged.get("ts", 0.0) <= 20.0)
+                and abs(spot_price - prestaged.get("spot", 0.0)) <= 40.0
+            ):
+                opt_row, raw_quantity, ltp = cached
+                logger.info(f"[AegisEM] Using PRE-STAGED strike for {signal_type}: {opt_row['symbol']} (latency eliminated)")
+            else:
+                weekly_opts = self.data_fetcher.get_weekly_option_tokens() if hasattr(self.data_fetcher, "get_weekly_option_tokens") else None
+                allocations = StrikeSelector.select_strikes(
+                    signal_type=signal_type,
+                    index_price=spot_price,
+                    index_name=params["index_name"],
+                    weekly_opts=weekly_opts,
+                    option_cache=self._option_cache,
+                    available_funds=self.capital_engine.get_available_funds(),
+                    lot_size=params["lot_size"],
+                    market_data_provider=getattr(self.broker, "market_data_provider", None),
+                    premium_min=params.get("premium_min"),
+                    premium_max=params.get("premium_max"),
+                )
+
+                if not allocations:
+                    logger.warning(f"[AegisEM] No affordable strike for {signal_type}")
+                    self._rollback_slot()
+                    return
+
+                opt_row, raw_quantity, ltp = allocations[0]
             symbol = opt_row["symbol"]
             token_str = str(opt_row["token"])
 
@@ -569,10 +661,11 @@ class AegisExecutionManager:
                 except Exception as e:
                     logger.debug(f"[AegisEM] Live ask in-memory resolution: {e}")
 
-            # Last-Mile Pre-Trade Spot Direction Hygiene Gate
-            # Guards against post-candle reversal / dead-cat bounce during 2-6s order dispatch latency
+            # Last-Mile Pre-Trade Spot & In-Flight Continuation Gate
+            # Guards against post-candle reversal / dead-cat bounce / adverse fill during order dispatch latency
             tb_engine = getattr(self.aegis_engine, "time_bar_engine", None) if self.aegis_engine else None
-            live_atr_1m = float(metrics.get("atr_1m", 0.0) or getattr(tb_engine, "current_atr_1m", 0.0) or 0.0)
+            pa_engine = getattr(self.aegis_engine, "price_action_engine", None) if self.aegis_engine else None
+            live_atr_1m = float(metrics.get("atr_1m", 0.0) or getattr(tb_engine, "current_atr_1m", 0.0) or getattr(pa_engine, "current_atr_1m", 0.0) or 0.0)
             live_spot = float(getattr(self.aegis_engine, "last_spot", 0.0) or 0.0)
             if live_spot <= 0.0:
                 live_spot = self._get_current_spot()
@@ -586,20 +679,58 @@ class AegisExecutionManager:
 
             if live_spot > 0.0 and sig_bar_close > 0.0 and live_atr_1m > 0.0:
                 noise_buf = max(0.12 * live_atr_1m, 0.00015 * live_spot)
-                retrace_limit = 0.20 * sig_bar_range
+                retrace_limit = min(0.20 * sig_bar_range, 0.25 * live_atr_1m)  # Capped by 0.25 ATR so giant bars don't loosen
+                max_peak_drawdown = max(0.18 * live_atr_1m, 0.00012 * live_spot)
+
                 spot_delta_3s = 0.0
                 if self.aegis_engine and hasattr(self.aegis_engine, "get_spot_drift"):
                     spot_delta_3s = self.aegis_engine.get_spot_drift(time.time(), 3.0)
 
+                # In-flight candle check (mock-safe)
+                curr_bar = getattr(tb_engine, "current_bar", None) or getattr(tb_engine, "_curr_1m_bar", None)
+                if curr_bar is None and pa_engine:
+                    curr_bar = getattr(pa_engine, "current_bar", None) or getattr(pa_engine, "_curr_1m_bar", None)
+
+                curr_bar_low = getattr(curr_bar, "low", None)
+                post_sig_trough = min(float(curr_bar_low), sig_bar_close) if isinstance(curr_bar_low, (int, float)) else sig_bar_close
+
+                curr_bar_high = getattr(curr_bar, "high", None)
+                post_sig_peak = max(float(curr_bar_high), sig_bar_close) if isinstance(curr_bar_high, (int, float)) else sig_bar_close
+
+                curr_bar_open = getattr(curr_bar, "open", None)
+                curr_open = float(curr_bar_open) if isinstance(curr_bar_open, (int, float)) else 0.0
+
+                # In-flight order flow delta check (mock-safe)
+                if_flow = {}
+                if pa_engine and hasattr(pa_engine, "get_in_flight_opt_flow"):
+                    res = pa_engine.get_in_flight_opt_flow()
+                    if isinstance(res, dict):
+                        if_flow = res
+                if_bull = float(if_flow.get("bullish_vol", 0.0))
+                if_bear = float(if_flow.get("bearish_vol", 0.0))
+                total_if_vol = float(if_flow.get("total_vol", 0.0))
+
                 if signal_type == "PUT":
                     is_noise_blown = live_spot > (sig_bar_close + noise_buf)
                     is_retrace_reversing = (live_spot > (sig_bar_close + retrace_limit)) and (spot_delta_3s > 0.0)
-                    if is_noise_blown or is_retrace_reversing:
-                        abort_reason = "NOISE_BUFFER_EXCEEDED" if is_noise_blown else "ADVERSE_RETRACE_VELOCITY"
+
+                    is_peak_drawdown = (live_spot - post_sig_trough) > max_peak_drawdown
+                    is_bar_opposite_color = (curr_open > 0.0 and live_spot > (curr_open + 0.10 * live_atr_1m))
+                    is_delta_reversed = (total_if_vol >= 500.0 and if_bull > (1.25 * max(if_bear, 1.0)))
+
+                    if is_noise_blown or is_retrace_reversing or is_peak_drawdown or is_bar_opposite_color or is_delta_reversed:
+                        abort_reason = (
+                            "NOISE_BUFFER_EXCEEDED" if is_noise_blown else
+                            "ADVERSE_RETRACE_VELOCITY" if is_retrace_reversing else
+                            "PEAK_DRAWDOWN_EXCEEDED" if is_peak_drawdown else
+                            "OPPOSITE_BAR_COLOR_THRESHOLD" if is_bar_opposite_color else
+                            "IN_FLIGHT_DELTA_REVERSED"
+                        )
                         logger.warning(
-                            f"[AegisEM] Entry aborted by Last-Mile Spot Hygiene Gate ({abort_reason}): "
-                            f"PUT sig_close={sig_bar_close:.2f}, live_spot={live_spot:.2f} "
-                            f"(diff={live_spot - sig_bar_close:+.2f} pts, noise_buf={noise_buf:.2f}, delta_3s={spot_delta_3s:+.2f} pts)"
+                            f"[AegisEM] Entry aborted by Last-Mile Spot & In-Flight Continuation Gate ({abort_reason}): "
+                            f"PUT sig_close={sig_bar_close:.2f}, live_spot={live_spot:.2f}, trough={post_sig_trough:.2f} "
+                            f"(drawdown={live_spot - post_sig_trough:+.2f} pts, max_dd={max_peak_drawdown:.2f}, noise_buf={noise_buf:.2f}, delta_3s={spot_delta_3s:+.2f} pts, "
+                            f"if_bull={if_bull:.0f}, if_bear={if_bear:.0f})"
                         )
                         self._rollback_slot()
                         return
@@ -607,12 +738,24 @@ class AegisExecutionManager:
                 elif signal_type == "CALL":
                     is_noise_blown = live_spot < (sig_bar_close - noise_buf)
                     is_retrace_reversing = (live_spot < (sig_bar_close - retrace_limit)) and (spot_delta_3s < 0.0)
-                    if is_noise_blown or is_retrace_reversing:
-                        abort_reason = "NOISE_BUFFER_EXCEEDED" if is_noise_blown else "ADVERSE_RETRACE_VELOCITY"
+
+                    is_peak_drawdown = (post_sig_peak - live_spot) > max_peak_drawdown
+                    is_bar_opposite_color = (curr_open > 0.0 and live_spot < (curr_open - 0.10 * live_atr_1m))
+                    is_delta_reversed = (total_if_vol >= 500.0 and if_bear > (1.25 * max(if_bull, 1.0)))
+
+                    if is_noise_blown or is_retrace_reversing or is_peak_drawdown or is_bar_opposite_color or is_delta_reversed:
+                        abort_reason = (
+                            "NOISE_BUFFER_EXCEEDED" if is_noise_blown else
+                            "ADVERSE_RETRACE_VELOCITY" if is_retrace_reversing else
+                            "PEAK_DRAWDOWN_EXCEEDED" if is_peak_drawdown else
+                            "OPPOSITE_BAR_COLOR_THRESHOLD" if is_bar_opposite_color else
+                            "IN_FLIGHT_DELTA_REVERSED"
+                        )
                         logger.warning(
-                            f"[AegisEM] Entry aborted by Last-Mile Spot Hygiene Gate ({abort_reason}): "
-                            f"CALL sig_close={sig_bar_close:.2f}, live_spot={live_spot:.2f} "
-                            f"(diff={live_spot - sig_bar_close:+.2f} pts, noise_buf={noise_buf:.2f}, delta_3s={spot_delta_3s:+.2f} pts)"
+                            f"[AegisEM] Entry aborted by Last-Mile Spot & In-Flight Continuation Gate ({abort_reason}): "
+                            f"CALL sig_close={sig_bar_close:.2f}, live_spot={live_spot:.2f}, peak={post_sig_peak:.2f} "
+                            f"(drawdown={post_sig_peak - live_spot:+.2f} pts, max_dd={max_peak_drawdown:.2f}, noise_buf={noise_buf:.2f}, delta_3s={spot_delta_3s:+.2f} pts, "
+                            f"if_bull={if_bull:.0f}, if_bear={if_bear:.0f})"
                         )
                         self._rollback_slot()
                         return

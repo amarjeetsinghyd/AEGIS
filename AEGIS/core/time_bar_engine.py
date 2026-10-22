@@ -95,6 +95,11 @@ class TimeBarEngine:
         self.last_price: float = 0.0
         self.last_ts: float = 0.0
 
+    @property
+    def current_bar(self) -> Optional[OHLCBar]:
+        """Returns the in-flight 1-minute OHLC bar if building."""
+        return self._curr_1m_bar
+
     def update_tick(self, price: float, ts_sec: float) -> Tuple[bool, bool]:
         """
         Updates the engine with a new underlying spot/future tick.

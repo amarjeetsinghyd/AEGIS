@@ -79,6 +79,7 @@ def create_test_manager(entry_price=19.30, spot_entry=23700.0, signal_type="PUT"
     em.trade_lock = threading.Lock()
     em._trade_quote_history = deque(maxlen=60)
     em._option_cache = {}
+    em._prestaged_cache = {}
     em.strike_cooldowns = {}
     em.last_trade_exit_time = 0.0
     em.last_trade_loss = False
@@ -1647,3 +1648,126 @@ def test_argon_last_mile_spot_hygiene_gate_abort_and_pass():
         assert em.trade_context.signal_type == "PUT"
         em.order_lifecycle.execute_entry.assert_called_once()
         aegis_engine.slot_policy.rollback_admission.assert_not_called()
+
+
+def test_t50_strike_pre_staging_cache_and_fast_lookup():
+    """
+    UPGRADE 1: T:50s Pre-Close Strike Pre-Staging in AegisExecutionManager.
+    Verifies that strikes pre-staged at T:48-T:58 are consumed instantly by _process_aegis_signal.
+    """
+    from unittest.mock import MagicMock, patch
+    em, ctx, leg = create_test_manager(entry_price=100.0, spot_entry=73400.0, signal_type="CALL")
+    em.trade_context = None
+    em.trades_today = 0
+    em.can_enter = lambda now: True
+
+    # Pre-stage cache populated at T:50s
+    t50_epoch = 1700000050.0  # 50s into the minute
+    cached_opt_row = {"symbol": "SENSEX74400CE", "token": "2001", "strike": 74400.0}
+    em._prestaged_cache = {
+        "minute_bucket": int(t50_epoch // 60),
+        "ts": t50_epoch,
+        "spot": 73400.0,
+        "params": em.get_instrument_params(),
+        "CALL": (cached_opt_row, 1, 28.5),
+        "PUT": None,
+    }
+
+    # Signal arrives at T:01 of the new minute (5s later, spot identical)
+    signal = {
+        "type": "GAMMA_BURST_ENTRY",
+        "signal": "UP",
+        "conviction": 85.0,
+        "spot": 73405.0,  # moved only 5 pts <= 40 pts
+        "metrics": {"atr_1m": 45.0, "bar_close": 73405.0, "pa_setup_name": "volatility_squeeze_breakout"},
+    }
+
+    with patch("common.execution.strike_selector.StrikeSelector.select_strikes") as mock_select:
+        em.order_lifecycle = MagicMock()
+        em.order_lifecycle.execute_entry.return_value = True
+        with patch("time.time", return_value=t50_epoch + 5.0):
+            em._process_aegis_signal(signal)
+
+        # StrikeSelector.select_strikes should NOT have been called because pre-staged cache was used!
+        mock_select.assert_not_called()
+        assert em.trade_context is not None
+        assert em.trade_context.signal_type == "CALL"
+
+
+def test_last_mile_in_flight_continuation_and_drawdown_gate():
+    """
+    UPGRADE 2: Last-Mile Pre-Trade Spot & In-Flight Continuation Gate.
+    Verifies:
+    1. Peak Drawdown Abortion: New candle spiked up then dumped > 0.18 * ATR from peak.
+    2. Opposite Bar Color Abortion: New candle trades below open - 0.10 * ATR.
+    3. In-Flight Delta Reversal: Order flow flipped to > 1.25x opposing volume.
+    """
+    from unittest.mock import MagicMock
+    from AEGIS.core.time_bar_engine import OHLCBar
+    em, ctx, leg = create_test_manager(entry_price=100.0, spot_entry=73400.0, signal_type="CALL")
+    em.trade_context = None
+    em.trades_today = 0
+    em.can_enter = lambda now: True
+
+    aegis_engine = MagicMock()
+    aegis_engine.last_spot = 73403.0  # Dumped to 73403
+    aegis_engine.get_spot_drift.return_value = -3.0
+    aegis_engine.slot_policy = MagicMock()
+    em.aegis_engine = aegis_engine
+
+    call_signal = {
+        "type": "GAMMA_BURST_ENTRY",
+        "signal": "UP",
+        "conviction": 85.0,
+        "spot": 73410.0,
+        "metrics": {
+            "atr_1m": 40.0,
+            "bar_close": 73410.0,
+            "bar_high": 73415.0,
+            "bar_low": 73385.0,
+            "pa_setup_name": "volatility_squeeze_breakout",
+        },
+    }
+
+    # 1. Peak Drawdown Abortion:
+    # New bar opened at 73410, spiked to 73425, then dumped to 73403.
+    # Peak = 73425, live_spot = 73403. Drawdown = 22 pts > max_peak_drawdown (0.18 * 40 = 7.2 pts)!
+    in_flight_bar = OHLCBar(0, 60, 73410.0, 73425.0, 73400.0, 73403.0, volume=50.0)
+    tb_engine = MagicMock()
+    tb_engine.current_bar = in_flight_bar
+    tb_engine.current_atr_1m = 40.0
+    aegis_engine.time_bar_engine = tb_engine
+
+    em._prestaged_cache = {}
+    import pandas as pd
+    weekly_df = pd.DataFrame([{"strike": 74400.0, "option_type": "CE", "token": "2001", "symbol": "SENSEX74400CE"}])
+    em.data_fetcher.get_active_instrument = lambda: ("SENSEX", "SENSEX")
+    em.data_fetcher.get_weekly_option_tokens = lambda: weekly_df
+    em._option_cache = {"2001": 28.5}
+
+    em._process_aegis_signal(call_signal)
+    assert em.trade_context is None
+    aegis_engine.slot_policy.rollback_admission.assert_called_once()
+
+    # 2. In-flight Delta Reversal Abortion:
+    # Spot is good, but order flow has 2500 PutBuy vs 500 CallBuy (> 1.25x opposing)
+    aegis_engine.slot_policy.rollback_admission.reset_mock()
+    aegis_engine.last_spot = 73420.0  # Spot fine
+    in_flight_bar.high = 73422.0
+    in_flight_bar.low = 73410.0
+    in_flight_bar.close = 73420.0
+    in_flight_bar.open = 73412.0  # Green bar
+
+    pa_engine = MagicMock()
+    pa_engine.current_bar = in_flight_bar
+    pa_engine.get_in_flight_opt_flow.return_value = {
+        "bullish_vol": 500.0,
+        "bearish_vol": 2500.0,
+        "total_vol": 3000.0,
+    }
+    aegis_engine.price_action_engine = pa_engine
+
+    em._process_aegis_signal(call_signal)
+    assert em.trade_context is None
+    aegis_engine.slot_policy.rollback_admission.assert_called_once()
+

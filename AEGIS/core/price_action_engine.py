@@ -219,6 +219,30 @@ class PriceActionEngine:
         # ─── ML Gatekeeper Flow Recorder Reference ───
         self.ml_gatekeeper: Any = None
 
+    @property
+    def current_bar(self) -> Optional[OHLCBar]:
+        """Returns the in-flight 1-minute OHLC bar if building."""
+        return self._curr_1m_bar
+
+    def get_in_flight_opt_flow(self) -> Dict[str, float]:
+        """Returns the current in-flight 1-minute accumulated option flow."""
+        cb = float(self._opt_flow_1m.get("call_buy_vol", 0.0))
+        cs = float(self._opt_flow_1m.get("call_sell_vol", 0.0))
+        pb = float(self._opt_flow_1m.get("put_buy_vol", 0.0))
+        ps = float(self._opt_flow_1m.get("put_sell_vol", 0.0))
+        bull = cb + ps
+        bear = pb + cs
+        return {
+            "call_buy_vol": cb,
+            "call_sell_vol": cs,
+            "put_buy_vol": pb,
+            "put_sell_vol": ps,
+            "bullish_vol": bull,
+            "bearish_vol": bear,
+            "total_vol": bull + bear,
+            "net_delta": bull - bear,
+        }
+
     # ═══════════════════════════════════════════════════════════
     # 1. REAL-TIME TICK AGGREGATION & INDICATOR UPDATES
     # ═══════════════════════════════════════════════════════════
@@ -925,8 +949,17 @@ class PriceActionEngine:
         vr = cand_vol / max(med_vol, 1.0) if med_vol > 0 else 1.0
         vol_ratio_boost = 0.30 * min(2.5, max(0.0, vr - 1.0))
 
+        # Check if prev bar was a freak 09:15 opening settlement spike
+        ref_atr = atr if atr > 0 else (cand.high * 0.001)
+        is_prev_freak_open = (
+            (prev.high - prev.low <= 5.0)
+            and (abs(prev.high - cand.high) > (1.5 * ref_atr) or abs(prev.low - cand.low) > (1.5 * ref_atr))
+        )
+        is_swing_high = (cand.high >= prev.high and cand.high > curr.high) or (is_prev_freak_open and cand.high > curr.high)
+        is_swing_low = (cand.low <= prev.low and cand.low < curr.low) or (is_prev_freak_open and cand.low < curr.low)
+
         # 3. Swing High / Resistance Peak Detection
-        if cand.high >= prev.high and cand.high > curr.high:
+        if is_swing_high:
             depth = depth_high
             if depth >= 0.15 * atr:
                 matched = False
@@ -979,7 +1012,7 @@ class PriceActionEngine:
                     )
 
         # 4. Swing Low / Support Trough Detection
-        if cand.low <= prev.low and cand.low < curr.low:
+        if is_swing_low:
             depth = depth_low
             if depth >= 0.15 * atr:
                 matched = False
@@ -1657,8 +1690,23 @@ class PriceActionEngine:
         if not intraday_prior_bars or len(intraday_prior_bars) < 3:
             return True, "clear_insufficient_prior_bars", {}
 
-        day_high = max(b.high for b in intraday_prior_bars)
-        day_low = min(b.low for b in intraday_prior_bars)
+        # Filter out 09:15 freak pre-open settlement tick when calculating day extremes
+        ref_atr = self.current_atr_1m if self.current_atr_1m > 0 else (current_price * 0.001)
+        valid_prior_bars = []
+        for idx, b in enumerate(intraday_prior_bars):
+            if idx == 0 and len(intraday_prior_bars) > 1:
+                next_b = intraday_prior_bars[1]
+                is_freak = (
+                    (b.high - b.low <= 5.0)
+                    and (abs(b.high - next_b.high) > (1.5 * ref_atr) or abs(b.low - next_b.low) > (1.5 * ref_atr))
+                )
+                if is_freak:
+                    continue
+            valid_prior_bars.append(b)
+
+        bars_for_extremes = valid_prior_bars if valid_prior_bars else intraday_prior_bars
+        day_high = max(b.high for b in bars_for_extremes)
+        day_low = min(b.low for b in bars_for_extremes)
         min_runway_pts = max(1.25 * self.current_atr_1m, 0.0008 * current_price)
         min_clearance = max(2.0, (current_price / 24000.0) * 2.0, 0.08 * self.current_atr_1m)
 
@@ -2926,6 +2974,31 @@ class PriceActionEngine:
 
             # Downside breakout: must clear box_low by at least min_box_clearance
             if bar.close <= (box_low - min_box_clearance):
+                # Wyckoff Institutional Option Flow Delta Gate (Initiative SOW)
+                ok_wflow, r_wflow, det_wflow = self._evaluate_wyckoff_pillar_flow(
+                    pillar=3,
+                    direction="PUT",
+                    bar=bar,
+                )
+                if not ok_wflow:
+                    return False, r_wflow, det_wflow
+
+                # Climax Exhaustion Cap: Breakout candle cannot be an overextended blowout bar
+                if bar_range > (1.35 * atr):
+                    return False, "exhausted_squeeze_breakout_candle_range", {
+                        "bar_range": round(bar_range, 2),
+                        "atr": round(atr, 2),
+                        "max_allowed": round(1.35 * atr, 2),
+                    }
+
+                # Box Displacement Cap: Cannot enter if already overextended beyond the squeeze box
+                if (box_low - bar.close) > (1.20 * atr):
+                    return False, "overextended_from_squeeze_box", {
+                        "displacement": round(box_low - bar.close, 2),
+                        "max_allowed": round(1.20 * atr, 2),
+                        "atr": round(atr, 2),
+                    }
+
                 close_edge_put = (bar.high - bar.close) / bar_range
                 if not (
                     (bar.close < bar.open)
@@ -2947,15 +3020,6 @@ class PriceActionEngine:
                 )
                 if not ok_struct:
                     return False, f"structural_obstacle_{r_struct}", det_struct
-
-                # Wyckoff Institutional Option Flow Delta Gate (Initiative SOW)
-                ok_wflow, r_wflow, det_wflow = self._evaluate_wyckoff_pillar_flow(
-                    pillar=3,
-                    direction="PUT",
-                    bar=bar,
-                )
-                if not ok_wflow:
-                    return False, r_wflow, det_wflow
 
                 sl_price = round(box_high + buffer_pts, 2)
                 details = {
@@ -2997,6 +3061,31 @@ class PriceActionEngine:
 
             # Upside breakout: must clear box_high by at least min_box_clearance
             if bar.close >= (box_high + min_box_clearance):
+                # Wyckoff Institutional Option Flow Delta Gate (Initiative SOS)
+                ok_wflow, r_wflow, det_wflow = self._evaluate_wyckoff_pillar_flow(
+                    pillar=3,
+                    direction="CALL",
+                    bar=bar,
+                )
+                if not ok_wflow:
+                    return False, r_wflow, det_wflow
+
+                # Climax Exhaustion Cap: Breakout candle cannot be an overextended blowout bar
+                if bar_range > (1.35 * atr):
+                    return False, "exhausted_squeeze_breakout_candle_range", {
+                        "bar_range": round(bar_range, 2),
+                        "atr": round(atr, 2),
+                        "max_allowed": round(1.35 * atr, 2),
+                    }
+
+                # Box Displacement Cap: Cannot enter if already overextended beyond the squeeze box
+                if (bar.close - box_high) > (1.20 * atr):
+                    return False, "overextended_from_squeeze_box", {
+                        "displacement": round(bar.close - box_high, 2),
+                        "max_allowed": round(1.20 * atr, 2),
+                        "atr": round(atr, 2),
+                    }
+
                 close_edge_call = (bar.close - bar.low) / bar_range
                 if not (
                     (bar.close > bar.open)
@@ -3018,15 +3107,6 @@ class PriceActionEngine:
                 )
                 if not ok_struct:
                     return False, f"structural_obstacle_{r_struct}", det_struct
-
-                # Wyckoff Institutional Option Flow Delta Gate (Initiative SOS)
-                ok_wflow, r_wflow, det_wflow = self._evaluate_wyckoff_pillar_flow(
-                    pillar=3,
-                    direction="CALL",
-                    bar=bar,
-                )
-                if not ok_wflow:
-                    return False, r_wflow, det_wflow
 
                 sl_price = round(box_low - buffer_pts, 2)
                 details = {
@@ -3937,4 +4017,135 @@ class PriceActionEngine:
                     return False, f"50m_trend_bullish ({live_slope_50_bps:+.2f}bps)", metrics
 
         return True, "permission_granted", metrics
+
+    def evaluate_t50_intrabar_candidate(
+        self,
+        direction: str,
+        external_vwap: float = 0.0,
+        current_time: float = 0.0,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        UPGRADE 5: T:50s Intra-Bar Early Entry Evaluator.
+        Evaluates in-flight 1-minute bar at T:50s-T:54s for high-conviction early entry.
+        Default SHADOW mode (can be overridden by AEGIS_T50_INTRABAR_MODE env var).
+
+        Criteria:
+        1. Time Window: 50 <= sec_in_min <= 54 (or current_time parameter).
+        2. Range sweet-spot: 0.45 * ATR <= range <= 1.15 * ATR.
+        3. Dominant body: body / range >= 0.72.
+        4. Minimal opposing wick: opposing_wick / range <= 0.12.
+        5. Delta ratio: directional / opposing >= 1.30 (on active volume >= 500).
+        6. Directional alignment: Above VWAP for CALL, below VWAP for PUT.
+        """
+        now_t = current_time if current_time > 0 else (self.last_ts if self.last_ts > 0 else time.time())
+        sec_in_min = int(now_t % 60)
+        if not (50 <= sec_in_min <= 54):
+            return False, "outside_t50_window", {"sec_in_min": sec_in_min}
+
+        b = self._curr_1m_bar
+        if b is None or b.tick_count < 5:
+            return False, "insufficient_intrabar_data", {}
+
+        rng = b.high - b.low
+        ref_spot = self.last_price if self.last_price > 0 else b.close
+        atr = self.current_atr_1m if self.current_atr_1m > 0 else (ref_spot * 0.001)
+
+        if rng <= 0 or atr <= 0:
+            return False, "zero_range_or_atr", {}
+
+        if rng < (0.45 * atr):
+            return False, "intrabar_range_underdeveloped", {
+                "range": round(rng, 2),
+                "min_required": round(0.45 * atr, 2),
+                "atr": round(atr, 2),
+            }
+
+        if rng > (1.15 * atr):
+            return False, "intrabar_range_overextended_exhaustion", {
+                "range": round(rng, 2),
+                "max_allowed": round(1.15 * atr, 2),
+                "atr": round(atr, 2),
+            }
+
+        body = abs(b.close - b.open)
+        body_ratio = body / rng
+        if body_ratio < 0.72:
+            return False, "insufficient_body_ratio", {
+                "body_ratio": round(body_ratio, 3),
+                "min_required": 0.72,
+            }
+
+        is_call = direction.upper() in ("UP", "CALL")
+        if is_call:
+            if b.close <= b.open:
+                return False, "bearish_bar_direction", {}
+            opposing_wick = b.high - b.close
+            opposing_wick_ratio = opposing_wick / rng
+            if opposing_wick_ratio > 0.12:
+                return False, "upper_wick_rejection", {
+                    "opposing_wick_ratio": round(opposing_wick_ratio, 3),
+                    "max_allowed": 0.12,
+                }
+        else:
+            if b.close >= b.open:
+                return False, "bullish_bar_direction", {}
+            opposing_wick = b.close - b.low
+            opposing_wick_ratio = opposing_wick / rng
+            if opposing_wick_ratio > 0.12:
+                return False, "lower_wick_rejection", {
+                    "opposing_wick_ratio": round(opposing_wick_ratio, 3),
+                    "max_allowed": 0.12,
+                }
+
+        # VWAP filter
+        eff_vwap = external_vwap if external_vwap > 0 else self.current_vwap
+        if eff_vwap > 0:
+            if is_call and b.close <= eff_vwap:
+                return False, "below_vwap", {"close": round(b.close, 2), "vwap": round(eff_vwap, 2)}
+            elif (not is_call) and b.close >= eff_vwap:
+                return False, "above_vwap", {"close": round(b.close, 2), "vwap": round(eff_vwap, 2)}
+
+        # In-flight order flow delta confirmation
+        flow = self.get_in_flight_opt_flow()
+        bull_vol = float(flow.get("bullish_vol", 0.0))
+        bear_vol = float(flow.get("bearish_vol", 0.0))
+        tot_vol = float(flow.get("total_vol", 0.0))
+
+        if tot_vol >= 500.0:
+            if is_call and bull_vol < (1.30 * max(bear_vol, 1.0)):
+                return False, "insufficient_bullish_delta", {
+                    "bull_vol": round(bull_vol, 1),
+                    "bear_vol": round(bear_vol, 1),
+                    "ratio": round(bull_vol / max(bear_vol, 1.0), 2),
+                    "min_required": 1.30,
+                }
+            elif (not is_call) and bear_vol < (1.30 * max(bull_vol, 1.0)):
+                return False, "insufficient_bearish_delta", {
+                    "bull_vol": round(bull_vol, 1),
+                    "bear_vol": round(bear_vol, 1),
+                    "ratio": round(bear_vol / max(bull_vol, 1.0), 2),
+                    "min_required": 1.30,
+                }
+
+        t50_mode = os.getenv("AEGIS_T50_INTRABAR_MODE", "SHADOW").upper()
+        details = {
+            "pa_setup_name": "t50_intrabar_early_entry",
+            "pillar": 5,
+            "direction": "CALL" if is_call else "PUT",
+            "bar_open": round(b.open, 2),
+            "bar_high": round(b.high, 2),
+            "bar_low": round(b.low, 2),
+            "bar_close": round(b.close, 2),
+            "range": round(rng, 2),
+            "atr_14": round(atr, 2),
+            "body_ratio": round(body_ratio, 3),
+            "opposing_wick_ratio": round(opposing_wick_ratio, 3),
+            "sec_in_min": sec_in_min,
+            "t50_mode": t50_mode,
+            "is_shadow": (t50_mode != "ACTIVE"),
+            "bullish_vol": round(bull_vol, 1),
+            "bearish_vol": round(bear_vol, 1),
+            "in_flight_net_delta": round(bull_vol - bear_vol, 1),
+        }
+        return True, "t50_intrabar_candidate_confirmed", details
 
