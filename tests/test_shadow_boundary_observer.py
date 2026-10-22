@@ -105,3 +105,40 @@ def test_ema200_levels_and_live_slope():
     assert top > bottom
     assert top == pytest.approx(pa.ema_200_1m + 2.5)
     assert bottom == pytest.approx(pa.ema_200_1m - 2.5)
+
+
+def test_inflight_breakthrough_surge():
+    from unittest.mock import MagicMock
+    mock_pae = MagicMock()
+    mock_bar = MagicMock()
+    mock_bar.tick_count = 10
+    mock_bar.open = 22505.0
+    mock_bar.high = 22525.0
+    mock_bar.low = 22495.0
+    mock_bar.close = 22520.0
+    mock_bar.call_buy_vol = 5000.0
+    mock_bar.put_buy_vol = 1000.0
+    mock_pae._curr_1m_bar = mock_bar
+    mock_pae.get_pain_zone_vwaps.return_value = {"zone_top": 22510.0, "zone_bottom": 22490.0}
+    mock_pae.bars_1m = [mock_bar] * 25
+    mock_pae.current_atr_1m = 10.0
+    mock_pae.ema_200_1m = 22480.0
+
+    observer = ShadowBoundaryObserver(price_action_engine=mock_pae, strike_step=50.0, log_dir="scratch")
+    observer.current_atm_strike = 22500.0
+    observer.strike_to_symbol = {
+        (0, 22750.0): "NIFTY_22750_CE",
+        (1, 22250.0): "NIFTY_22250_PE",
+    }
+    observer.option_cache = {"NIFTY_22750_CE": 45.0}
+
+    # At T+25s, spot is 22520.0, which is > pz_top (22510) + 0.15*ATR (1.5) = 22511.5
+    now_sec = 1700000000.0 + 25.0  # sec_in_min = 25
+    observer._check_inflight_breakthrough(spot=22520.0, now_sec=now_sec)
+
+    assert len(observer.active_trades) == 1
+    trade = observer.active_trades[0]
+    assert trade.boundary == "PAIN_ZONE_BREAKTHROUGH"
+    assert trade.direction == "UP"
+    assert trade.spot_entry == 22520.0
+    assert trade.opt_symbol == "NIFTY_22750_CE"
