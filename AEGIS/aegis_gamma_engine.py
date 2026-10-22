@@ -46,6 +46,7 @@ try:
     from AEGIS.core.composite_conviction_engine import CompositeConvictionEngine, ConvictionResult
     from AEGIS.core.volume_profile_engine import VolumeProfileEngine
     from AEGIS.core.wyckoff_volume_engine import WyckoffVolumeEngine
+    from AEGIS.core.shadow_boundary_observer import ShadowBoundaryObserver
 except ImportError:
     try:
         from core.price_action_engine import PriceActionEngine
@@ -69,6 +70,7 @@ except ImportError:
         from core.ai_shadow_reviewer import AIShadowReviewer
         from core.hvg_engine import HVGEngine
         from core.signature_inflection_engine import AEGISv4Pipeline, V4TickSnapshot
+        from core.shadow_boundary_observer import ShadowBoundaryObserver
     except ImportError:
         PriceActionEngine = None
         MicrostructureScorer = None
@@ -86,6 +88,7 @@ except ImportError:
         OIBuiltupGate = None
         IndexVWAPEngine = None
         ShadowQuantTracker = None
+        ShadowBoundaryObserver = None
         MLGatekeeper = None
         QualitySlotPolicy = None
         PostTriggerStabilityTracker = None
@@ -355,12 +358,26 @@ class AegisGammaEngine:
             mode=self.wyckoff_mode,
         ) if WyckoffVolumeEngine is not None else None
 
+        # ─── Shadow Boundary Observer (Monitors First-Touch Pain Zone & 200 EMA + OTM 5 Paper Trading) ───
+        self.shadow_boundary_observer = ShadowBoundaryObserver(
+            price_action_engine=self.price_action_engine,
+            wyckoff_engine=self.wyckoff_volume_engine,
+            strike_step=self.strike_step,
+            log_dir=telemetry_dir,
+        ) if ShadowBoundaryObserver is not None else None
+        if self.shadow_boundary_observer is not None:
+            self.shadow_boundary_observer.strike_to_symbol = self.strike_to_symbol
+            self.shadow_boundary_observer.option_cache = self.option_cache
+
+        # ─── T:50s vs T:60s Intra-Bar A/B Telemetry Bridge ───
+        self._t50_candidate_snapshot: Dict[str, Any] = {}
+
         # ─── AI Shadow Reviewer (Gemini 3.8 Flash Technical Analyst Co-Pilot) ───
         self.ai_reviewer_mode = str(self.P.get("ai_reviewer_mode", os.getenv("AEGIS_AI_REVIEWER_MODE", "SHADOW"))).upper()
         self.ai_shadow_reviewer = AIShadowReviewer(mode=self.ai_reviewer_mode) if (AIShadowReviewer is not None and self.ai_reviewer_mode != "DISABLED") else None
 
-        # ─── Topological HVG Dual-Envelope Engine (Pillar 4 Legacy / Shadow Evaluator) ───
-        self.hvg_mode = str(self.P.get("hvg_mode", os.getenv("AEGIS_HVG_MODE", "SHADOW"))).upper()
+        # ─── Topological HVG Dual-Envelope Engine (Pillar 4 Unified BOS Breakout) ───
+        self.hvg_mode = str(self.P.get("hvg_mode", os.getenv("AEGIS_HVG_MODE", "ACTIVE"))).upper()
         hvg_shadow = (self.hvg_mode != "ACTIVE")
         self.hvg_engine = HVGEngine(log_dir=telemetry_dir, shadow_only=hvg_shadow) if HVGEngine is not None else None
         if self.price_action_engine and self.hvg_engine:
@@ -492,6 +509,8 @@ class AegisGammaEngine:
                 self.outcome_telemetry.update_tick(sym, lp, now_sec)
             if self.shadow_quant_tracker and sym:
                 self.shadow_quant_tracker.update_option(sym, lp, now_sec)
+            if getattr(self, "shadow_boundary_observer", None) and sym:
+                self.shadow_boundary_observer.on_option_tick(sym, lp, now_sec)
             if self.ml_gatekeeper and getattr(self.ml_gatekeeper, "paper_trader", None) and sym:
                 self.ml_gatekeeper.paper_trader.on_option_tick(sym, lp, now_sec)
 
@@ -1988,6 +2007,41 @@ class AegisGammaEngine:
         if self.volume_profile_engine:
             self.volume_profile_engine.record_spot_tick(lp, 1.0)
 
+        # Update Shadow Boundary Observer (First-Touch Pain Zone & 200 EMA + OTM 5)
+        if getattr(self, "shadow_boundary_observer", None):
+            self.shadow_boundary_observer.on_underlying_tick(lp, now_sec)
+
+        # Update T:50s Intra-Bar Early Entry Telemetry Sampling
+        if self.price_action_engine:
+            sec_in_min = int(now_sec % 60)
+            curr_min_bucket = int(now_sec // 60)
+            if 50 <= sec_in_min <= 54:
+                if self._t50_candidate_snapshot.get("min_bucket") != curr_min_bucket:
+                    for cand_dir in ("UP", "DOWN"):
+                        vwap_val = getattr(self.price_action_engine, "current_vwap", 0.0)
+                        cand_passed, cand_reason, cand_m = self.price_action_engine.evaluate_t50_intrabar_candidate(
+                            cand_dir, external_vwap=vwap_val, current_time=now_sec
+                        )
+                        if cand_passed:
+                            cand_side = 0 if cand_dir == "UP" else 1
+                            atm_k = self.current_atm_strike or (round(lp / self.strike_step) * self.strike_step)
+                            cand_sym = self.strike_to_symbol.get((cand_side, atm_k), "")
+                            cand_ltp = self.option_cache.get(cand_sym, 0.0) if cand_sym else 0.0
+                            self._t50_candidate_snapshot = {
+                                "min_bucket": curr_min_bucket,
+                                "direction": cand_dir,
+                                "t50_sec": now_sec,
+                                "t50_spot": lp,
+                                "t50_symbol": cand_sym,
+                                "t50_opt_ltp": cand_ltp,
+                                "metrics": cand_m,
+                            }
+                            logger.info(
+                                f"[T:50s INTRABAR SHADOW] Candidate Qualified ({cand_dir}) | Spot: {lp:.2f} | "
+                                f"Option: {cand_sym} @ Rs.{cand_ltp:.2f} | BodyRatio: {cand_m.get('body_ratio', 0):.2f}"
+                            )
+                            break
+
         # 1. Update V3 TimeBarEngine & 5-minute Volatility Impulse Memory
         if self.time_bar_engine:
             self.time_bar_engine.update_tick(price=lp, ts_sec=now_sec)
@@ -2237,6 +2291,8 @@ class AegisGammaEngine:
                     self.strike_to_symbol[(int(info["side"]), float(info["strike"]))] = sym_name
                 except Exception:
                     continue
+        if getattr(self, "shadow_boundary_observer", None) is not None:
+            self.shadow_boundary_observer.strike_to_symbol = self.strike_to_symbol
 
     def refresh_token_maps(self, token_to_symbol: Dict[str, str], token_map: Dict[str, Dict]):
         """Hot-refresh after expiry roll / ATM rebuild (called by aegis_main on 1-min boundary)."""
@@ -2258,6 +2314,30 @@ class AegisGammaEngine:
 
     def _emit_signal(self, sym: str, lp: float, direction: str, conviction: float, gates: Dict, metrics: Dict):
         """Emits signal to AegisExecutionManager queue."""
+        # A/B Comparison: Compare with T:50s Candidate Snapshot if qualified in current minute
+        now_ts = time.time()
+        curr_min_bucket = int(now_ts // 60)
+        if (
+            self._t50_candidate_snapshot
+            and self._t50_candidate_snapshot.get("min_bucket") == curr_min_bucket
+            and self._t50_candidate_snapshot.get("direction") == direction
+        ):
+            t50_spot = self._t50_candidate_snapshot.get("t50_spot", 0.0)
+            t50_opt_ltp = self._t50_candidate_snapshot.get("t50_opt_ltp", 0.0)
+            t50_sym = self._t50_candidate_snapshot.get("t50_symbol", "")
+            spot_diff = (self.last_spot - t50_spot) if direction == "UP" else (t50_spot - self.last_spot)
+            opt_diff_pct = ((lp - t50_opt_ltp) / t50_opt_ltp * 100.0) if t50_opt_ltp > 0 else 0.0
+            logger.info(
+                f"[T:50s vs T:60s A/B SHADOW] Direction: {direction} | "
+                f"T:50 Spot: {t50_spot:.2f} -> T:60 Spot: {self.last_spot:.2f} (Delta: {spot_diff:+.2f} pts) | "
+                f"T:50 Opt: {t50_sym} @ Rs.{t50_opt_ltp:.2f} -> T:60 Signal: {sym} @ Rs.{lp:.2f} (Slippage: {opt_diff_pct:+.2f}%)"
+            )
+            metrics["t50_spot"] = t50_spot
+            metrics["t50_opt_ltp"] = t50_opt_ltp
+            metrics["t50_symbol"] = t50_sym
+            metrics["t50_vs_t60_opt_diff_pct"] = round(opt_diff_pct, 2)
+            metrics["t50_vs_t60_spot_delta_pts"] = round(spot_diff, 2)
+
         if not self.signal_queue:
             logger.warning("[AEGIS] Signal queue is not connected — signal dropped")
             return

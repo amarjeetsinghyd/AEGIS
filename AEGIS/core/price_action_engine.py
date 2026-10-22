@@ -189,6 +189,11 @@ class PriceActionEngine:
         self.ema_50_1m_prev: float = 0.0
         self.ema_50_1m_slope: float = 0.0
 
+        self.ema_200_1m: float = 0.0
+        self.ema_200_1m_prev: float = 0.0
+        self.ema_200_1m_slope: float = 0.0
+        self.ema_200_history: deque[float] = deque(maxlen=self.max_history_bars)
+
         # ─── Volatility State ───
         self.atr_history: deque[float] = deque(maxlen=max(100, atr_period * 3))
         self.current_atr_1m: float = 0.0
@@ -758,6 +763,18 @@ class PriceActionEngine:
             self.ema_50_1m = (bar.close * k50) + (self.ema_50_1m * (1.0 - k50))
             self.ema_50_1m_slope = self.ema_50_1m - self.ema_50_1m_prev
 
+        # 3. Update 200 EMA
+        k200 = 2.0 / (200.0 + 1.0)
+        if self.ema_200_1m <= 0:
+            self.ema_200_1m = bar.close
+            self.ema_200_1m_prev = bar.close
+            self.ema_200_1m_slope = 0.0
+        else:
+            self.ema_200_1m_prev = self.ema_200_1m
+            self.ema_200_1m = (bar.close * k200) + (self.ema_200_1m * (1.0 - k200))
+            self.ema_200_1m_slope = self.ema_200_1m - self.ema_200_1m_prev
+        self.ema_200_history.append(self.ema_200_1m)
+
         # 2b. Feed 1-Minute ML Gatekeeper Flow Recorder
         if getattr(self, "ml_gatekeeper", None) is not None:
             try:
@@ -1129,6 +1146,23 @@ class PriceActionEngine:
         live_slope_50_bps = (live_slope_50 / ref) * 10000.0
         return live_ema_50, live_slope_50_bps
 
+    def get_live_200_ema_and_slope(self) -> Tuple[float, float]:
+        """
+        Computes dynamic 200-EMA and slope on the active in-flight tick price.
+        Returns:
+            (live_ema_200, live_slope_200_bps)
+        """
+        ref = self.last_price if self.last_price > 0 else 1.0
+        k200 = 2.0 / (200.0 + 1.0)
+        if self.ema_200_1m_prev > 0 and self.last_price > 0:
+            live_ema_200 = (self.last_price * k200) + (self.ema_200_1m_prev * (1.0 - k200))
+            live_slope_200 = live_ema_200 - self.ema_200_1m_prev
+        else:
+            live_ema_200 = self.ema_200_1m if self.ema_200_1m > 0 else self.last_price
+            live_slope_200 = self.ema_200_1m_slope
+        live_slope_200_bps = (live_slope_200 / ref) * 10000.0
+        return live_ema_200, live_slope_200_bps
+
     def get_live_ema_and_slope(self) -> Tuple[float, float, float, float]:
         """
         Returns (live_ema_20, live_slope_20_bps, live_ema_50, live_slope_50_bps)
@@ -1221,7 +1255,7 @@ class PriceActionEngine:
 
         if self.bars_1m:
             self.last_price = self.bars_1m[-1].close
-        logger.info(f"[PriceActionEngine] Seeded {count} historical bars. Live 20 EMA: {self.ema_20_1m:.1f}, 50 EMA: {self.ema_50_1m:.1f}")
+        logger.info(f"[PriceActionEngine] Seeded {count} historical bars. Live 20 EMA: {self.ema_20_1m:.1f}, 50 EMA: {self.ema_50_1m:.1f}, 200 EMA: {self.ema_200_1m:.1f}")
         return count
 
     def seed_daily_levels(self, pdh: float, pdl: float, pdc: float = 0.0) -> None:
@@ -3985,14 +4019,17 @@ class PriceActionEngine:
             (has_permission, reason, metrics)
         """
         live_ema_20, live_slope_20_bps, live_ema_50, live_slope_50_bps = self.get_live_ema_and_slope()
+        live_ema_200, live_slope_200_bps = self.get_live_200_ema_and_slope()
         metrics = {
             "ema_1m_live": round(live_ema_20, 2),
             "ema_3m_live": round(live_ema_50, 2),
             "ema_20_1m_live": round(live_ema_20, 2),
             "ema_50_1m_live": round(live_ema_50, 2),
+            "ema_200_1m_live": round(live_ema_200, 2),
             "ema_1m_slope": round(self.ema_20_1m_slope, 2),
             "ema_1m_slope_bps": round(live_slope_20_bps, 2),
             "ema_50_1m_slope_bps": round(live_slope_50_bps, 2),
+            "ema_200_1m_slope_bps": round(live_slope_200_bps, 2),
             "atr_ratio": round(self.atr_ratio, 2),
             "current_atr_1m": round(self.current_atr_1m, 2),
             "market_structure": self.get_market_structure(direction),

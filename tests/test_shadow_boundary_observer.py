@@ -74,3 +74,34 @@ def test_shadow_trade_lifecycle():
     assert trade.is_active is False
     assert trade.outcome == "WINNER"
     assert trade.exit_reason == "TAKE_PROFIT_HIT"
+
+
+def test_ema200_levels_and_live_slope():
+    from AEGIS.core.price_action_engine import PriceActionEngine
+    pa = PriceActionEngine()
+    assert pa.ema_200_1m == 0.0
+    
+    # Seed 20 historical bars
+    bars = []
+    base_ts = 1700000000.0
+    for i in range(25):
+        bars.append({
+            "ts": base_ts + i * 60,
+            "open": 22500.0 + i,
+            "high": 22505.0 + i,
+            "low": 22495.0 + i,
+            "close": 22502.0 + i,
+            "volume": 1000.0,
+        })
+    pa.seed_historical_bars(bars)
+    
+    assert pa.ema_200_1m > 0.0
+    live_ema_200, slope_bps = pa.get_live_200_ema_and_slope()
+    assert live_ema_200 > 0.0
+    
+    # Test ShadowBoundaryObserver EMA 200 retrieval
+    observer = ShadowBoundaryObserver(price_action_engine=pa, strike_step=50.0, log_dir="scratch")
+    top, bottom = observer._get_ema200_levels(atr=10.0)
+    assert top > bottom
+    assert top == pytest.approx(pa.ema_200_1m + 2.5)
+    assert bottom == pytest.approx(pa.ema_200_1m - 2.5)
