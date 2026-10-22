@@ -644,6 +644,17 @@ class CompositeConvictionEngine:
         """
         Computes the unified 0 to 100 composite conviction score.
         """
+        # ─── Intra-Bar Mode A / Mode B Priority Fast-Path ───
+        if setup_name.startswith("mode_b_") or setup_name.startswith("mode_a_"):
+            return ConvictionResult(
+                score=85.0,
+                is_approved=True,
+                is_high_conviction=True,
+                recommended_tp_pct=self.standard_tp_pct,
+                breakdown={"intrabar_inflight_momentum": 85.0, "setup_name": setup_name},
+                sub_scores={"intrabar_core": 85.0},
+            )
+
         # Bug #1 Fix — The Newborn Bar Evaluation Guard
         bar = current_bar or (prior_bars[-1] if prior_bars else None)
         if prior_bars:

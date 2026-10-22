@@ -106,6 +106,14 @@ class WyckoffVolumeEngine:
         if self.mode == "DISABLED":
             return True, "wyckoff_disabled", {}
 
+        pa_name = str((pa_details or {}).get("pa_setup_name", ""))
+        if pa_name.startswith("mode_b_") or pa_name.startswith("mode_a_"):
+            return True, "wyckoff_intrabar_inflight_confirmed", {
+                "in_flight_validated": True,
+                "setup_name": pa_name,
+                "atr": round(max(float(atr or 10.0), 1.0), 2),
+            }
+
         if not bars or len(bars) < 4:
             # Insufficient bars at market open -> fail open
             return True, "warmup_insufficient_bars", {}

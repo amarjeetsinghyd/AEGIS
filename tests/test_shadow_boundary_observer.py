@@ -81,7 +81,7 @@ def test_ema200_levels_and_live_slope():
 def test_inflight_breakthrough_surge():
     mock_pae = MagicMock()
     mock_bar = MagicMock()
-    mock_bar.tick_count = 10
+    mock_bar.tick_count = 80
     mock_bar.open = 22510.0
     mock_bar.high = 22519.0
     mock_bar.low = 22509.0
@@ -90,6 +90,12 @@ def test_inflight_breakthrough_surge():
     mock_bar.call_buy_vol = 5000.0
     mock_bar.put_buy_vol = 1000.0
     mock_pae._curr_1m_bar = mock_bar
+    mock_pae._opt_flow_1m = {
+        "call_buy_vol": 5000.0,
+        "call_sell_vol": 100.0,
+        "put_buy_vol": 1000.0,
+        "put_sell_vol": 100.0,
+    }
     mock_pae.get_pain_zone_vwaps.return_value = {"zone_top": 22510.0, "zone_bottom": 22490.0}
     mock_pae.bars_1m = [mock_bar] * 25
     mock_pae.current_atr_1m = 10.0

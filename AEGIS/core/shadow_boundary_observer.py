@@ -304,15 +304,27 @@ class ShadowBoundaryObserver:
         if curr_rng < (0.35 * atr) or curr_rng > (1.20 * atr):
             return
 
-        # 2. Time-Normalized Volume Velocity (>= 1.30x expected pace)
+        # 2. In-Flight Option Flow & Spot Tick Arrival Rate
+        tick_rate = curr_bar.tick_count / max(float(sec_in_min), 1.0)
+        opt_flow = getattr(self.pa_engine, "_opt_flow_1m", None)
+        if not isinstance(opt_flow, dict):
+            opt_flow = {}
+        cb = float(opt_flow.get("call_buy_vol", 0.0) or getattr(curr_bar, "call_buy_vol", 0.0) or 0.0)
+        cs = float(opt_flow.get("call_sell_vol", 0.0) or getattr(curr_bar, "call_sell_vol", 0.0) or 0.0)
+        pb = float(opt_flow.get("put_buy_vol", 0.0) or getattr(curr_bar, "put_buy_vol", 0.0) or 0.0)
+        ps = float(opt_flow.get("put_sell_vol", 0.0) or getattr(curr_bar, "put_sell_vol", 0.0) or 0.0)
+        inflight_opt_vol = cb + cs + pb + ps
+
         vols_60 = [float(getattr(b, "volume", 0.0) or 0.0) for b in list(self.pa_engine.bars_1m)[-60:]]
-        if vols_60:
+        if vols_60 and inflight_opt_vol > 0:
             s_v = sorted(vols_60)
             med_vol = float(s_v[len(s_v)//2])
+            expected_opt_vol = max(1.0, med_vol * (float(sec_in_min) / 60.0))
+            opt_pace_ok = (inflight_opt_vol / expected_opt_vol) >= 1.15
         else:
-            med_vol = 1.0
-        expected_vol = max(1.0, med_vol * (float(sec_in_min) / 60.0))
-        if (curr_bar.volume / expected_vol) < 1.30:
+            opt_pace_ok = True
+
+        if not (opt_pace_ok or tick_rate >= 1.5):
             return
 
         bar_idx = len(self.pa_engine.bars_1m)

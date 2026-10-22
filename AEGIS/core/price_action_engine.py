@@ -4069,24 +4069,31 @@ class PriceActionEngine:
         if curr_rng < (0.35 * atr) or curr_rng > (1.20 * atr):
             return False, "range_outside_sweet_spot", {}
 
-        # 2. Time-Normalized In-Flight Volume Velocity (>= 1.30x expected pace)
-        vols_60 = [float(getattr(b, "volume", 0.0) or 0.0) for b in list(self.bars_1m)[-60:]]
-        if vols_60:
-            s_v = sorted(vols_60)
-            med_vol = float(s_v[len(s_v)//2])
-        else:
-            med_vol = 1.0
-        expected_vol_so_far = max(1.0, med_vol * (float(sec_in_min) / 60.0))
-        if (curr_bar.volume / expected_vol_so_far) < 1.30:
-            return False, "volume_velocity_sub_threshold", {}
-
-        # 3. Wyckoff Aggressive Option Flow Dominance
+        # 2. In-Flight Option Flow & Spot Tick Arrival Rate
         cb = float(self._opt_flow_1m.get("call_buy_vol", 0.0))
         cs = float(self._opt_flow_1m.get("call_sell_vol", 0.0))
         pb = float(self._opt_flow_1m.get("put_buy_vol", 0.0))
         ps = float(self._opt_flow_1m.get("put_sell_vol", 0.0))
+        inflight_opt_vol = cb + cs + pb + ps
         bull_flow = cb + ps
         bear_flow = pb + cs
+
+        # Spot tick arrival rate during active bar formation
+        tick_rate = curr_bar.tick_count / max(float(sec_in_min), 1.0)
+
+        # Time-Normalized In-Flight Option Volume Pace (comparing option contracts to option contracts)
+        vols_60 = [float(getattr(b, "volume", 0.0) or 0.0) for b in list(self.bars_1m)[-60:]]
+        if vols_60 and inflight_opt_vol > 0:
+            s_v = sorted(vols_60)
+            med_vol = float(s_v[len(s_v)//2])
+            expected_opt_vol = max(1.0, med_vol * (float(sec_in_min) / 60.0))
+            opt_pace_ok = (inflight_opt_vol / expected_opt_vol) >= 1.15
+        else:
+            opt_pace_ok = True
+
+        # Require either active option flow velocity or high spot tick rate (>= 1.5 ticks/sec)
+        if not (opt_pace_ok or tick_rate >= 1.5):
+            return False, "volume_velocity_sub_threshold", {}
 
         pz = self.get_pain_zone_vwaps()
         pz_top = float(pz.get("zone_top", 0.0) or 0.0)
