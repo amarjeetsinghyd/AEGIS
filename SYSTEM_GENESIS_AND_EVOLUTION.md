@@ -25,6 +25,9 @@ timeline
     September 30, 2026 : Epoch III: 15 OTM Depth & Pillar 4 Live Sweep : 3/3 Wins (+10.2% ROI) : 0.8% Pullback Tolerance : Near-Target +3.36% Surgical Lock
     October 01, 2026 : Epoch III: 0-DTE Micro-Wiggle Trap & 5s Scalp : Trade #18 (+4.07% in 5s flat) : -17.8M Put Delta : Breathing Room vs Stepped Safety Net
     October 05, 2026 : Epoch III: Squeeze Breakout & Target Mandate : Trade #19 (+3.70% in 11s) : Strict +4.0% Maker TP Discipline : 84.2% Win Rate (16/19 Wins)
+    October 07, 2026 : Epoch III: Universal Structural Invalidation : Removal of 9-EMA Choke : Trades #21-#23 (100% Win/BE Rate) : Entry Candle Low/High Defense
+    October 14, 2026 : Epoch III: 0-DTE ML Decommissioning : 18-Day CatBoost Trial (46.4% WR) Shut Down : 100% Deterministic Price Action & Wyckoff Edge
+    October 22, 2026 : Epoch III: The Golden Middle Path : Mode B In-Flight Mid-Bar Breakthrough (T:08s-T:48s) : 0.75s Single-Shot No-Chasing : Friday 4-DTE +3.0% Calibration
 ```
 
 ---
@@ -688,6 +691,112 @@ Immediately following the deployment of the Universal Structural Invalidation fi
    - Execution: Resting Maker Limit TP placed at +4.0% filled passively at **₹26.05 (+3.99% / +₹20.00 net profit) in just 17 seconds**!
    - Daily Milestone: Reached the 3-trades-per-day safety cap (`trades_today: 3`). Daily performance: **3 trades, 2 Wins, 1 BE Scratch, 0 Losses (100% Win/Neutral rate, Day PnL +₹39.00)**.
 
+---
+
+### 7.27 The Decommissioning of Machine Learning on 0-DTE & The Triumph of Deterministic Price Action (14 October 2026)
+
+Across an 18-day continuous production paper-trading trial (24 September – 14 October 2026), `CatBoostPaperTrader` ran side-by-side with AEGIS live executions:
+1. **Empirical Results**:
+   - CatBoost ML Paper Trader: **46.4% Win Rate** (struggling with rapid regime shifts, false morning warm-ups, and feature drift on 0-DTE index wiggles).
+   - Deterministic Price Action 4 Pillars + Wyckoff Volume Gate: **84.2% Win Rate** (16/19 Wins).
+2. **The Institutional Decision**:
+   - Machine learning models trained on static order-flow features cannot adapt to sub-second institutional spoofing and violent gamma inflection on expiration day.
+   - Per Institutional Rule 5 (*The Canonical Observation Dataset Is Supreme Truth*), the founder permanently **decommissioned and shut down the CatBoost ML Gatekeeper** and Standalone Paper Trader on 14 October 2026.
+   - AEGIS cemented its identity as a **100% Deterministic Price Action & Microstructure Scalper**, relying on the 4 Pillars, Wyckoff Volume & OFI Delta Gate, and the Absolute Pain Zone VWAP Band.
+
+---
+
+### 7.28 The Order Chasing Forensic Audit & The Single-Shot Clean Entry Rule (22 October 2026)
+
+On **22 October 2026**, an exhaustive forensic audit of all **46 live executions** and **24 shadow trades** was conducted to analyze entry latency, broker order chasing, and queue dynamics:
+1. **The Critical Finding**:
+   - **First-Attempt Clean Fills (<= 0.75s)**: **100.0% Win Rate** on verified Price Action setups. When liquidity was immediately present and the limit order filled passively on the crest, the trade was overwhelmingly profitable.
+   - **Order Chasing via In-Place Modification (3.0s+ timeout)**: **0.0% Win Rate** (0 out of 7 attempts succeeded).
+2. **Root Cause Analysis**:
+   - In Indian index options (NIFTY/SENSEX), momentum during a breakout or rejection moves in sharp, explosive micro-bursts lasting 5 to 15 seconds.
+   - If an order is rejected or delayed, and the bot modifies the price to "chase" the moving ask 3 seconds later, the option premium has already rallied +5% to +10%. Entering late results in buying the exact exhaustion crest, right as market makers reload and mean-revert.
+   - On 22 October at 09:51:11 IST, an unconfirmed 74500CE order was rejected, and 3.2 seconds later a queued 74600CE was punched into a falling market, causing a sharp drawdown.
+3. **The Architecture Rule Codification**:
+   - **Single-Shot Clean Entry**: Limit orders are given an atomic 0.75-second fill window. If unconfirmed or rejected, the order is cancelled immediately.
+   - **Immediate Queue Draining (`_drain_signal_queue`)**: All pending signals in the queue are purged immediately upon any rejection or completion, permanently eliminating order chasing.
+
+---
+
+### 7.29 The Discovery of the Golden Middle Path: Mode B In-Flight Mid-Bar Breakthrough Surge (22 October 2026)
+
+On **22 October 2026**, the founder synthesized the entire multi-epoch quantitative journey into a philosophical and architectural breakthrough—**The Golden Middle Path (Mode B)**:
+
+```
+[Extreme 1: Pure Micro-tick / HFT] <====== [THE GOLDEN MIDDLE PATH] ======> [Extreme 2: 60s Candle Close]
+• Order flow alpha decays in 200ms        • Mode B Mid-Bar Entry (T:08s-T:48s)       • Retail trap: waits for 60s close
+• Cannot capture +4% on 2 ticks           • Enters on pre-mapped boundaries          • Buys exhaustion top of 80pt candle
+• Trapped by retail latency & spoofing    • Ahead of retail, rides institutional wave • Institutions dump into close buyers
+```
+
+1. **The Flaw of Extreme 1 (Pure Microstructure / HFT)**:
+   - Early in Epoch I & II, the system attempted to enter purely on tick-by-tick order-flow imbalances and micro-price slope.
+   - However, micro-tick imbalances decay in 200–500 milliseconds. Trying to harvest a macro +4.0% Maker TP from a 2-tick order flow flicker without exchange co-location is mathematically impossible. Microstructure belongs as a *secondary validator*, not an ungrounded trigger.
+2. **The Flaw of Extreme 2 (The 60-Second Candle Close Retail Trap)**:
+   - Conversely, waiting for a 1-minute candle to formally close (T:60s) is standard retail behavior.
+   - During major momentum expansions (e.g. an 80-point SENSEX breakout), by the time 60 seconds expire, the candle has reached its climax, options have already surged +15% to +20%, and institutions begin taking profits by dumping onto breakout retail buyers. Entering on the close guarantees buying the top of the wick.
+3. **The Synthesis: Mode B In-Flight Mid-Bar Breakthrough**:
+   - **Pre-Mapped Structural Map**: The bot maintains a live mathematical map of structural boundaries: the 200 EMA Ribbon, the 4-Line Pain Zone VWAP Band, Squeeze Boxes, and S&R Registries.
+   - **In-Flight Window (T:08s to T:48s)**: When a forming 1-minute candle aggressively pierces the boundary mid-bar, Mode B evaluates:
+     - Sweet-spot range: $0.35 \times \text{ATR} \le \text{Range} \le 1.20 \times \text{ATR}$ (ignores small noise, vetoes climaxes $> 1.25 \times \text{ATR}$).
+     - Solid body ratio $\ge 65\%$ with negligible opposing wick $\le 0.05 \times \text{ATR}$.
+     - 2-tick boundary persistence ($+0.15 \times \text{ATR}$ clearance).
+     - Aggressive live option delta dominance $\ge 1.30\times$ (or spot tick rate $\ge 1.5$ ticks/sec).
+   - **Execution & Advantage**:
+     - The bot enters mid-candle at T:18s or T:24s while the option is still cheap and momentum is accelerating.
+     - While retail traders wait for the candle to close, the resting **+4.0% Maker TP fills passively at T:35s to T:50s**.
+     - By the time the candle closes and retail enters at T:60s, AEGIS has already pocketed its profit and exited!
+
+---
+
+### 7.30 Resolution of the In-Flight Volume Velocity Unit Mismatch Bug (22 October 2026)
+
+During the implementation of Mode B, a critical unit mismatch bug in the in-flight volume velocity logic was discovered and resolved:
+1. **The Bug**:
+   - In `price_action_engine.py`, during forming bar evaluation, `curr_bar.volume` represented the spot tick arrival count (~15 to 30 ticks).
+   - However, the historical volume array `vols_60` across closed bars contained total option contracts traded (~1,000,000 to 2,000,000 contracts).
+   - Dividing ~25 spot ticks by ~1,500,000 expected option contracts yielded a velocity ratio of $0.000025$, which was permanently below the $1.30\times$ threshold. This silently blocked 100% of candidate Mode B breakthroughs.
+2. **The Architectural Fix**:
+   - Replaced `curr_bar.volume` with live in-flight option volume `_opt_flow_1m` ($\text{Call Buy} + \text{Call Sell} + \text{Put Buy} + \text{Put Sell}$), ensuring contracts are compared against contracts.
+   - Added a dual-velocity condition: `(inflight_opt_vol / expected_opt_vol >= 1.15) or (spot_tick_rate >= 1.5 ticks/sec)`.
+   - Wired downstream fast-paths in `wyckoff_volume_engine.py` and `composite_conviction_engine.py`: in-flight `mode_b_` setups are validated via live delta and awarded an approved conviction score of **85.0**, preventing false vetoes based on the prior closed bar (`bars[-1]`).
+
+---
+
+### 7.31 Friday (4 DTE) Option Elasticity ($\Omega$) & Dynamic Take-Profit Calibration (22 October 2026)
+
+On **22 October 2026**, a dedicated empirical audit of Friday NIFTY trading (4 DTE) was conducted using 30 raw L2 Parquet partitions from 16 October 2026:
+1. **The Mathematical Problem: The $5\times$ Elasticity Collapse**:
+   - Option Elasticity $\Omega = \Delta \times \frac{\text{Spot}}{\text{Premium}}$ governs the percentage option return per 1% spot move.
+   - On 0-DTE (Tuesday), ATM options cost ~₹35, yielding $\Omega_{\text{0 DTE}} \approx 354\times$. Spot needs to move only **2.8 points** to hit +4.0% option gain.
+   - On 4-DTE (Friday), heavy extrinsic time value raises ATM options to ~₹175, dropping elasticity by $5\times$ to $\Omega_{\text{4 DTE}} \approx 71\times$. Spot must move **14.0 points** without a retracement to achieve +4.0% option gain.
+   - Furthermore, Gamma $\Gamma = \frac{N'(d_1)}{S \sigma \sqrt{\tau}}$ is diffuse and flat on Friday ($\sqrt{\tau} \approx 0.105$ vs $0.05$ on 0 DTE), providing no "gamma kick" acceleration.
+2. **Empirical Telemetry Proof (16 October 2026 Audit)**:
+   - High-premium options (ATM/ITM ₹140–₹200) reached only **+2.19% to +2.33%** MFE in 60 seconds.
+   - Affordable OTM options (₹20–₹50) achieved **+4.30% to +5.19%** MFE in the exact same 60 seconds.
+   - Simulated TP sweeps revealed:
+     - At +4.0% TP: Only 18.8% (3/16) filled within 60 seconds; remaining trades took 120s–180s, risking reversal.
+     - At +3.0% TP: 37.5% filled within 60s (+100% faster), and 100% of clean breakouts filled within 120s.
+3. **The Friday 4-DTE Calibrated Standard**:
+   - **Resting Maker TP**: Set to **`+3.0%`** on Friday (Monday–Thursday remains strict `+4.0%`).
+   - **Near-Target Profit Lock**: Triggered at **`+2.5%`** with 0.5% pullback tolerance.
+   - **Cost-Shield Breakeven**: Shifts to `0.0%` scratch as soon as peak touches **`+2.2%`**.
+   - This ensures Friday trades exit in 30–60 seconds, immunizing capital from Friday's slow gamma decay.
+
+---
+
+### 7.32 Universal Structural Invalidation Across All Pillars & Mode B (22 October 2026)
+
+To ensure mathematical symmetry across the entire execution stack, the structural invalidation model was unified:
+- For ALL Pillars (P1 20 EMA Pullback, P2 Liquidity Sweep, P3 Squeeze Breakout, P4 Prominence Hub) and Mode B (In-Flight Breakthrough):
+  $$\text{CALL SL} = \text{Entry Candle Low} - (0.10 \times \text{ATR})$$
+  $$\text{PUT SL} = \text{Entry Candle High} + (0.10 \times \text{ATR})$$
+- Evaluated strictly against the cash index spot price, fully immunizing trades from option spread widening and order book spoofing.
+- Synchronized with the 2-Layer Dynamic Profit Shield: -12% Disaster Floor $\to$ +3.0% Safety Net (-3.0% SL) $\to$ +3.5% Cost-Shield (0.0% Breakeven) $\to$ Near-Target Lock (0.8% pullback) $\to$ +4.0% Maker TP (+3.0% Friday).
 
 ---
 
@@ -708,11 +817,11 @@ The evolution of Quant-Bot reflects a unique human-machine synergy:
 | **Execution Host** | Local Windows PC (PM2) | Local PC / Initial Cloud testing | Oracle Cloud Infrastructure (OCI) Linux VPS (`137.23.41.38`) | Oracle Cloud Infrastructure (OCI) Linux VPS (`137.23.41.38`) | Oracle Cloud Infrastructure (OCI) Linux VPS (`137.23.41.38`) | **Oracle Cloud Linux VPS (`opc@137.23.41.38`)** + PM2 (`aegis-bot`, `unified-dashboard`) |
 | **Broker Seam** | AngelOne / Shoonya REST | Shoonya REST + WebSocket | Shoonya NorenApi (Zero-Brokerage) + AngelOne fallback | Shoonya NorenApi (Zero-Brokerage) + AngelOne fallback | Shoonya NorenApi (Zero-Brokerage) + AngelOne fallback | **Shoonya NorenApi (Zero-Brokerage, Static IP, Single Session, Token Cache)** |
 | **Market Data Feed** | 50-stock REST $\to$ Tick ZMQ | Tick-by-tick WS + Parquet | Zero-Copy L1 + L2 (Top-5 Depth) WebSocket Streaming | Zero-Copy L1 + L2 Full 5-Level Depth Quotes Streaming | Zero-Copy L1 + L2 Full 5-Level Depth Quotes Streaming | **Zero-Copy L1 + L2 Full 5-Level Depth Quotes Streaming across ATM $\pm 15$ Strikes (62 Tokens CE+PE)** |
-| **Primary Signal Trigger** | 1-min 9 EMA x VWAP + VFI | 5-min `Kronos-base` Transformer Delta | Dual-Timeframe (1m+5m) HVG Topological Price Action | 5D Sliding Window Rough Path Signature Inflection ($\hat{S}^{\le 3}$) | Pure Price Action Quadrinity + 12s Freshness + $0.85\times\text{ATR}$ S/R Clear + Live Invalidation | **Pure Price Action 4 Pillars + Absolute Pain Zone Band V4.1 Early Directional Veto (+0.3 ATR Buffer)** |
+| **Primary Signal Trigger** | 1-min 9 EMA x VWAP + VFI | 5-min `Kronos-base` Transformer Delta | Dual-Timeframe (1m+5m) HVG Topological Price Action | 5D Sliding Window Rough Path Signature Inflection ($\hat{S}^{\le 3}$) | Pure Price Action Quadrinity + 12s Freshness + $0.85\times\text{ATR}$ S/R Clear + Live Invalidation | **Pure Price Action 4 Pillars + Priority Mode B Mid-Bar In-Flight Breakthrough (T:08s–T:48s) + Absolute Pain Zone Band Early Directional Veto** |
 | **Pillar 4 Logic** | N/A | Naive 3-Bar BOS | $O(N)$ Monotonic Stack HVG Phase Shift | Discounted Banach Contraction + Cross-Lévy Area ($\mathcal{A}^{LL}, \mathcal{A}^{PF}$) | Rough Path Signature Inflection + Dual-Timeframe HVG Shadow | **Topological Prominence Hub / Break of Structure ($O(N)$ Stack, Prominence $> 1.80$, $20\,\text{EMA} < 50\,\text{EMA}$ Trend Filter)** |
-| **Order Flow Role** | Candidate Delta ($>0$) Gate | Vectorized Net Delta OI Kinematics | 2-Second Rolling Anti-Spoof L2 Wall Shield (Validator) | Price-Indexed Queue Depletion Hazard Model + Sweep Attribution | 17-Feature CatBoost Classifier + Dual-Track Paper Trader + Adaptive Daily Median Gatekeeper | **Deterministic Wyckoff Volume ($VDR \ge 1.0$) + OFI Delta Gate ($\ge 2.0\times$ Imbalance) + Volume Profile (VAH/VAL/POC/LVN) + 100% Shadow CatBoost Paper Trader** |
-| **Execution Routing** | Fixed Market Orders | Aggressive Taker Fill | Market with Slippage Checks | Latency-Aware Adapter (Passive Limit vs IOC vs Adverse Abort) | Live Shoonya LMT/NRML + Instant 10s Stability Check | **Live Shoonya LMT/NRML + Atomic In-Place TP Modification (`modify_order`) + Strict 1-Lot Maker TP + Testing Deep Depth 16** |
-| **Exits** | 10% Fixed TP, 3-min Gamma Stall | 2-Phase Trailing HWM, Theta Abort | Claude's 4-Pillar Adaptive Exits (Maker TP, Noise Trailing, 15:08 CAS) | Claude's 4-Pillar Adaptive Exits + Post-Fill Edge Analytics | Normalized Stepped Risk Compression (+2% $\to$ -3% SL, +3% $\to$ 0% Cost-Shield, +3.5% $\to$ 0.5% Near-Target Lock) + +4% Maker TP + 9-EMA Structural + 5m Timeout | **Adaptive Stepped Ladder: -12% Disaster Floor $\to$ Step 1 Safety Net (-3% SL @ $+3.0\%$ Peak) $\to$ Step 2 Cost-Shield (0.0% @ $+3.5\%$ Peak) $\to$ Step 3 Near-Target Lock (0.8% Pullback @ $+3.5\%$ Peak) $\to$ Strict +4.0% Maker TP (₹0.05 Tick Rounded) + 15:08 CAS** |
+| **Order Flow Role** | Candidate Delta ($>0$) Gate | Vectorized Net Delta OI Kinematics | 2-Second Rolling Anti-Spoof L2 Wall Shield (Validator) | Price-Indexed Queue Depletion Hazard Model + Sweep Attribution | 17-Feature CatBoost Classifier + Dual-Track Paper Trader + Adaptive Daily Median Gatekeeper | **Deterministic Wyckoff Volume ($VDR \ge 1.0$) + OFI Delta Gate ($\ge 1.30\times$ Imbalance) + In-Flight Option Flow Velocity + ML Decommissioned (100% Deterministic Edge)** |
+| **Execution Routing** | Fixed Market Orders | Aggressive Taker Fill | Market with Slippage Checks | Latency-Aware Adapter (Passive Limit vs IOC vs Adverse Abort) | Live Shoonya LMT/NRML + Instant 10s Stability Check | **Live Shoonya LMT/NRML + Single-Shot Clean 0.75s Entry (Zero Chasing Mandate) + Immediate Queue Draining + Strict 1-Lot Maker TP** |
+| **Exits** | 10% Fixed TP, 3-min Gamma Stall | 2-Phase Trailing HWM, Theta Abort | Claude's 4-Pillar Adaptive Exits (Maker TP, Noise Trailing, 15:08 CAS) | Claude's 4-Pillar Adaptive Exits + Post-Fill Edge Analytics | Normalized Stepped Risk Compression (+2% $\to$ -3% SL, +3% $\to$ 0% Cost-Shield, +3.5% $\to$ 0.5% Near-Target Lock) + +4% Maker TP + 9-EMA Structural + 5m Timeout | **Universal Entry Candle Low/High $\pm$ 0.10 ATR Invalidation + Adaptive Stepped Shield: -12% Floor $\to$ Step 1 Safety Net (-3% SL @ $+3.0\%$) $\to$ Step 2 Cost-Shield (0.0% @ $+3.5\%$) $\to$ Near-Target Lock $\to$ Maker TP (+4.0% Mon–Thu, +3.0% Fri DTE 4) + 15:08 CAS** |
 | **Max Trades / Day** | 3 trades / day (30m cooldown) | 3 trades / day (60s hold floor) | 3 trades / day (Slot 3 reserved for $\ge 14:45$ afternoon gamma) | 3 trades / day (Slot 3 reserved for $\ge 14:45$ afternoon gamma) | 3 trades / day (3/3 Wins, 100% Win Rate on Sep 24 Expiry) | **3 trades / day (19 Trades: 16 Wins, 3 Losses, 84.2% Win Rate, Profit Factor 4.08, +35.4% Capital Growth)** |
 | **UI Dashboard** | Intelligence Lab (Lightweight Charts) | Bloomberg Terminal (Sensibull parity) | Dual-Brand Quant Console (ARGUS × AEGIS) | Dual-Brand Quant Console (ARGUS × AEGIS) | Dual-Brand Quant Console (ARGUS × AEGIS) + Outcome Telemetry | **Dual-Brand Quant Console (AEGIS × ARGUS) + Telemetry Engine + Gold Target Discipline Banners + Dynamic Date-Mapped Telemetry** |
 | **Governing Law** | Research Gap Register | The Covenant & Document 0.08 | `AGENTS.md` (Kronos decommissioned, 100% green tests mandatory) | `AGENTS.md` (Kronos decommissioned, 100% green tests mandatory) | `AGENTS.md` (Kronos decommissioned, 100% green tests mandatory) | **`AGENTS.md` (Kronos decommissioned, Strict +4% Target Discipline Mandate, Scale-Invariance via bps/%, 100% Green Pytest)** |

@@ -1,7 +1,7 @@
 # AEGIS — Autonomous Execution & Gamma Imbalance System (Version 1.0 Production Locked)
 
 **Architecture Authority — Code-Grounded Definitive Specification**  
-**Version:** Production 1.0 (v1.0 Production Locked — Wyckoff Volume & Order Flow Delta Engine + Auction Market Volume Profile Engine + Standalone CatBoost ML Paper Trader + P4 0-D Prominence Hub Breakout + P1-P4 Quadrinity + Composite Conviction Dynamic Ladder + 100% Shadow ML + Strict 1-Lot Maker TP — Live)  
+**Version:** Production 1.0 (v1.0 Production Locked — Priority Mode B In-Flight Mid-Bar Breakthrough Surge [T:08s–T:48s] + 4 Macro Price Action Pillars + Absolute Pain Zone VWAP Band + Wyckoff Volume & OFI Delta Gate + Single-Shot Clean Entry Mandate [No Chasing] + Universal Entry Candle Low/High Invalidation + Friday 4-DTE +3.0% TP Calibration — Live)  
 **Status:** ACTIVE · PM2 `aegis-bot` · `AEGIS/aegis_main.py:87`  
 **Host:** Oracle Cloud `opc@137.23.41.38` · `ecosystem.config.js:3` · `cwd=/home/opc`  
 **Instruments:** NIFTY (Mon [1 DTE], Tue [0 DTE], Fri [4 DTE], NFO, strike step 50, lot 65) · SENSEX (Wed [1 DTE], Thu [0 DTE], BFO, strike step 100, lot 20)  
@@ -10,33 +10,44 @@
 ---
 
 > ⚠️ **CRITICAL GOVERNANCE LAWS (DO NOT ALTER ARBITRARILY):**  
-> 1. **Price Action Primary Law**: AEGIS operates strictly on a **Macro Price Action Primary Trigger**. An option contract is admitted ONLY when one of the 4 empirically verified Price Action Scalper Pillars triggers:
->    - **Pillar 1**: 20 EMA Pullback & Momentum Rejection (`20_ema_rejection` — `price_action_engine.py`).
+> 1. **Price Action Primary & Mode B Golden Middle Path Law**: AEGIS operates strictly on a **Macro Price Action Primary Trigger** across 4 canonical pillars and Priority Mode B In-Flight Breakthrough:
+>    - **Priority Mode B (In-Flight Breakthrough Surge)**: Mid-bar entry between **T:08s and T:48s** when forming candle pierces pre-mapped boundary (Pain Zone Top/Bottom, 200 EMA Ribbon, Squeeze Box, S&R) with sweet-spot range ($0.35 \times \text{ATR} \le \text{Range} \le 1.20 \times \text{ATR}$), body ratio $\ge 65\%$, leading wick $\le 0.05 \times \text{ATR}$, 2-tick boundary persistence, and live option delta dominance $\ge 1.30\times$ (or spot tick rate $\ge 1.5$ ticks/sec). Enters ahead of retail, filling resting +4.0% Maker TP before or as candle closes.
+>    - **Pillar 1**: 20 EMA Pullback & Momentum Rejection (`20_ema_rejection` — `price_action_engine.py`, Bar close T:00s with pre-staged strikes & T:50s early entry).
 >    - **Pillar 2**: Liquidity Sweep & Reclaim (`micro_sweep_reclaim` 5-bar Turtle Soup stop-hunt reclaim + parallel shadow topological sweep).
 >    - **Pillar 3**: Volatility Squeeze to Expansion Breakout (`volatility_squeeze_breakout` — $O(1)$ metric ATR box compression).
 >    - **Pillar 4**: 0-D Prominence Hub Structural Breakout (`check_topological_prominence_breakout` via `FastMonotonicStack`, $\hat{\pi} \ge 1.75$, $VR_t \ge 1.4$ Volume Ratio vs 60m median volume, 5m structural trend alignment).
-> 2. **Wyckoff Volume & Order Flow Delta Parallel Law (NEW in V4.1)**: Immediately following a Price Action setup trigger, the trade MUST pass the **WyckoffVolumeEngine** (`wyckoff_volume_engine.py`):
+> 2. **Absolute Pain Zone VWAP Band Law**: Single unified directional veto before pillars:
+>    - Spot **ABOVE** Upper Band (`zone_top`) $\implies$ **ONLY CALL** trades allowed.
+>    - Spot **BELOW** Lower Band (`zone_bottom`) $\implies$ **ONLY PUT** trades allowed.
+>    - Spot **INSIDE** Band $\implies$ Discarded / Neutral zone.
+> 3. **Wyckoff Volume & Order Flow Delta Parallel Law**: Immediately following a Price Action setup trigger, the trade MUST pass the **WyckoffVolumeEngine** (`wyckoff_volume_engine.py`):
 >    - **Effort vs Result**: Volume spent vs price displacement achieved. High volume + narrow spread at support/resistance = Institutional Absorption.
 >    - **Volume Dry-Up Ratio (VDR)**: For Pillar 1 pullbacks, approach candles must show supply drying up ($VDR < 0.85$, decaying volume slope). Counter-trend volume expansion ($VDR \ge 1.25$ rising) is classified as an **Institutional Liquidation Dump** and vetoed immediately.
->    - **Delta Harmony**: On breakouts (P3/P4), option aggressor flow must match direction ($\text{Call Buy} \ge \text{Put Buy}$ for CALLs). Opposing delta swamping ($> 2.2\times$ opposing flow) is classified as a **Bull/Bear Trap** and vetoed immediately.
-> 3. **Fixed Sizing & Maker TP Discipline Law (USER MANDATE - 2026-09-25)**:
+>    - **Delta Harmony**: On breakouts (P3/P4/Mode B), option aggressor flow must match direction ($\text{Call Buy} \ge \text{Put Buy}$ for CALLs). Opposing delta swamping ($> 2.2\times$ opposing flow) is classified as a **Bull/Bear Trap** and vetoed immediately.
+>    - **In-Flight Fast-Path**: Mode B and Mode A intra-bar setups evaluate live in-flight option delta flow (`_opt_flow_1m`) and bypass prior closed bar volume checks.
+> 4. **Fixed Sizing & Maker TP Discipline Law (USER MANDATE - 2026-09-25)**:
 >    - Position sizing is strictly locked to **1 Lot** (no dynamic 2-lot scaling).
->    - Take-Profit is strictly locked to constant **+4.0% Resting Maker Limit** (no +5.0% expansion).
-> 4. **Composite Conviction Continuous Scoring Law**: Replaces rigid, binary boolean gating with continuous 0–100 multi-domain scoring (`composite_conviction_engine.py:40`). Sizing & admission:
->    - $\ge 80.0$: Admitted with standard **1 Lot (+4.0% Maker TP)**.
+>    - Take-Profit is strictly locked to constant **+4.0% Resting Maker Limit** for Monday–Thursday (never expand to 5%–6%; holding for bigger targets destroys the 84%+ win-rate).
+>    - **Friday (4 DTE) Calibrated TP**: Due to $5\times$ Option Elasticity ($\Omega$) drop on 4 DTE, Friday resting limit TP is calibrated to **`+3.0%`**, with Near-Target Profit Lock at **`+2.5%`** and Breakeven shift at **`+2.2%`**.
+> 5. **Single-Shot Clean Entry & Zero Chasing Mandate (NEW 2026-10-22)**:
+>    - Limit orders receive an atomic **0.75-second fill window**. If unconfirmed or rejected, the order is cancelled immediately.
+>    - Never modify or chase orders (empirical audit proved 100% win-rate on clean first-attempt fills vs 0.0% on chased orders).
+>    - Immediate queue draining (`_drain_signal_queue`) purges pending signals upon any failure.
+> 6. **Universal Structural Invalidation Law**:
+>    - Universal Spot Invalidation across ALL 4 Pillars and Mode B:
+>      $$\text{CALL SL} = \text{Entry Candle Low} - (0.10 \times \text{ATR})$$
+>      $$\text{PUT SL} = \text{Entry Candle High} + (0.10 \times \text{ATR})$$
+>    - Evaluated strictly against the cash index spot price, fully immunizing trades from option spread widening and order book spoofing.
+> 7. **Composite Conviction Continuous Scoring Law**: Replaces rigid, binary boolean gating with continuous 0–100 multi-domain scoring (`composite_conviction_engine.py`). Sizing & admission:
+>    - $\ge 80.0$: Admitted with standard **1 Lot (+4.0% Maker TP, +3.0% Friday)**.
 >    - $< 80.0$: Blocked by conviction threshold.
-> 5. **Adaptive ML Gatekeeper 100% Shadow Law (NEW in V4.1)**:
->    - ML Gatekeeper (`ml_gatekeeper.py`) is decoupled from live vetoing and locked to **100% PASSIVE SHADOW MODE**.
->    - Runs completely independently in background, recording 1m CatBoost order flow scores and telemetry.
->    - `CatBoostPaperTrader` (`catboost_paper_trader.py`) runs an autonomous virtual execution loop on 1m bars ($TP = +4.0\%, SL = -3.0\%$) to track ML model performance risk-free (achieved +5.47% net PnL across 24-25 Sep 2026).
-> 6. **Volume Profile & Auction Market Theory Law (NEW in V4.1)**:
->    - `VolumeProfileEngine` (`volume_profile_engine.py`) maintains real-time Spot POC (Point of Control), 70% Value Area (VAH/VAL), and Low Volume Nodes (LVN).
->    - Tracks Strike-Wise Call POC and Put POC (institutional liquidity magnets).
->    - Operates in **100% Passive Shadow Mode** (zero execution interference, zero overfitting).
-> 7. **Pre-Trade Abort Slot Rollback Law**:
+>    - Intra-bar `mode_b_` setups awarded approved **85.0** score.
+> 8. **Decommissioned Machine Learning Law (14 October 2026)**:
+>    - CatBoost ML Gatekeeper & Standalone CatBoost Paper Trader are **PERMANENTLY DECOMMISSIONED & DISABLED** (18-day trial proved 46.4% win-rate inferior to 84%+ deterministic price action).
+> 9. **Pre-Trade Abort Slot Rollback Law**:
 >    - If an admitted setup is aborted before order execution (e.g. cooldown lockout, spread violation, bad fill), `_rollback_slot()` immediately restores the consumed daily slot so capital capacity is never phantom-locked.
-> 8. **Scale-Invariance Law**: NEVER hardcode fixed point thresholds for index calculations across NIFTY (24k) and SENSEX (80k). All spot distances, invalidations, stops, and confirmations MUST be normalized via **Basis Points (bps, where 1 bps = 0.01% of spot)** or localized volatility multiples ($k \times \text{ATR}_{1m}$).
-> 9. **Session Force-Flatten Law**: All positions unconditionally liquidated at **15:08:00 IST** (`AEGIS_FORCE_FLATTEN = 15:08`) to avoid NSE Closing Auction (CAS) volatility and broker auto-square-off penalization.
+> 10. **Scale-Invariance Law**: NEVER hardcode fixed point thresholds for index calculations across NIFTY (24k) and SENSEX (80k). All spot distances, invalidations, stops, and confirmations MUST be normalized via **Basis Points (bps, where 1 bps = 0.01% of spot)** or localized volatility multiples ($k \times \text{ATR}_{1m}$).
+> 11. **Session Force-Flatten Law**: All positions unconditionally liquidated at **15:08:00 IST** (`AEGIS_FORCE_FLATTEN = 15:08`) to avoid NSE Closing Auction (CAS) volatility and broker auto-square-off penalization.
 
 ---
 
@@ -176,7 +187,7 @@ All active non-archive modules within `AEGIS/` mapped with exact lines, responsi
 | `AEGIS/aegis_main.py` | Process orchestrator, PM2 entry, 09:14 AM seeding, 1-min ATM shift, IPC state | `main()`, `build_minute_digest()`, `attach_aegis_archiver()` |
 | `AEGIS/aegis_gamma_engine.py` | Central brain, tick router, rolling L2 depth deque, Wyckoff parallel gate, conviction wiring, shadow ML router | `AegisGammaEngine`, `create_aegis_engine()`, `on_tick_parsed()` |
 | `AEGIS/aegis_execution_manager.py` | Execution daemon, order routing, strict 1-lot maker TP (+4.0%), pre-trade rollback, 15:08 CAS flatten | `AegisExecutionManager`, `_manage_open_trade()`, `_rollback_slot()`, `_chase_exit_thread()` |
-| `AEGIS/core/price_action_engine.py` | **Primary Macro Trigger**: 1m OHLC bars, 20/50 EMA, ATR(14), Pain Zone band V4.1 single source (`get_pain_zone_vwaps()` → zone_top / zone_bottom / zone_mid; second-place pillar confluence removed), 4 active pillars (P1 20 EMA, P2 Liquidity Sweep, P3 Vol Squeeze, P4 0-D Prominence Hub Breakout) | `PriceActionEngine`, `evaluate_setup()`, `get_pain_zone_vwaps()`, `check_20_ema_rejection()`, `check_micro_sweep_reclaim()`, `check_topological_prominence_breakout()` |
+| `AEGIS/core/price_action_engine.py` | **Primary Macro Trigger**: 1m OHLC bars, 20/50/200 EMA, ATR(14), Pain Zone band single source (`get_pain_zone_vwaps()` → zone_top / zone_bottom), Priority Mode B Mid-Bar In-Flight Breakthrough (`check_mode_b_breakthrough`), Mode A Pierce (`check_mode_a_pierce`), 4 active pillars (P1 20 EMA, P2 Liquidity Sweep, P3 Vol Squeeze, P4 0-D Prominence Hub Breakout) | `PriceActionEngine`, `evaluate_setup()`, `check_mode_b_breakthrough()`, `check_mode_a_pierce()`, `check_20_ema_rejection()`, `check_micro_sweep_reclaim()`, `check_topological_prominence_breakout()` |
 | `AEGIS/core/wyckoff_volume_engine.py` | **Wyckoff Volume & Delta Gate**: Effort vs Result, Volume Dry-Up Ratio (VDR), Absorption pin wick, Delta Harmony (Call Buy vs Put Buy) | `WyckoffVolumeEngine`, `evaluate()` |
 | `AEGIS/core/volume_profile_engine.py` | **Auction Market Volume Profile (Shadow)**: Spot POC, 70% Value Area (VAH/VAL dual pointer), LVN liquidity vacuums, Strike-wise Call/Put POC magnets | `VolumeProfileEngine`, `get_profile_metrics()`, `record_spot_tick()`, `record_option_tick()` |
 | `AEGIS/core/composite_conviction_engine.py` | **Continuous 0–100 Evaluator**: 4 orthogonal domains, dynamic conviction ladder ($\ge 80.0 \to 1\text{ Lot}, +4.0\%\text{ TP}$) | `CompositeConvictionEngine`, `ConvictionResult`, `compute_conviction_score()` |
@@ -322,27 +333,27 @@ All price action setups are evaluated on finalized 1-minute bars (`price_action_
 Monitored at 2 Hz by `_manage_open_trade()` (`aegis_execution_manager.py`):
 
 1. **Strict 1-Lot Allocation**: Every admitted trade executes strictly with **1 Lot** (no dynamic multi-lot scaling).
-2. **Passive Resting Maker TP Exit (+4.0%)**:
-   - Limit order resting on exchange book at **+4.0%** above entry price.
+2. **Passive Resting Maker TP Exit (+4.0% Mon–Thu, +3.0% Friday DTE 4)**:
+   - Limit order resting on exchange book at **+4.0%** (Mon–Thu) or **+3.0%** (Friday 4 DTE) above entry price.
    - Zero-slippage maker fill on exchange order book.
-   - Dual-verified: local tick-cadence touch/cross check (0B) + broker resting order fill check (0) so a +4% day-move never slips to time stop.
+   - Dual-verified: local tick-cadence touch/cross check + broker resting order fill check.
 3. **Near-Target Profit Lock**:
-   - Arms when peak bid reaches $\ge +3.5\%$ (`NEAR_TARGET_TRIGGER_PCT = 0.035`).
-   - If price pulls back $\ge 0.8\%$ from peak (`NEAR_TARGET_PULLBACK_TOLERANCE = 0.008`), an instant market exit executes to lock profit (`Near-Target Profit Lock`), guaranteeing net green exit while allowing minor tick wiggles to hit the +4.0% Maker TP.
+   - Arms when peak bid reaches $\ge +3.5\%$ (Mon–Thu) or $\ge +2.5\%$ (Friday 4 DTE).
+   - If price pulls back $\ge 0.8\%$ (0.5% on Friday) from peak, an instant market exit executes to lock profit (`Near-Target Profit Lock`), guaranteeing net green exit.
 4. **Stepped Risk Compression & Cost-Shield Scratch Engine (V4.1)**:
-   - Scale-invariant normalized percentage model (strictly % normalized, no fixed paise):
-     - **Step 1 (Stepped Safety Net)**: When peak gain reaches $\ge +3.0\%$ (`STEP1_TRIGGER_PCT = 0.030`), SL is tightened from the disaster floor to **-3.0%** (`STEP1_SL_PCT = -0.030`), giving wide breathing room (+2.0% premature choke removed to prevent stopouts on normal candle open wicks).
-     - **Step 2 (Cost-Shield Scratch)**: When peak gain reaches $\ge +3.5\%$ (`STEP2_TRIGGER_PCT = 0.035`), SL is permanently locked to **0.0% (Entry Price)** (`STEP2_SL_PCT = 0.000`). A winning trade is mathematically prevented from ever turning into a loss!
+   - Scale-invariant normalized percentage model:
+     - **Step 1 (Stepped Safety Net)**: When peak gain reaches $\ge +3.0\%$ (Mon–Thu) or $\ge +2.0\%$ (Friday), SL is tightened from the -12% disaster floor to **-3.0%**, giving wide breathing room.
+     - **Step 2 (Cost-Shield Scratch)**: When peak gain reaches $\ge +3.5\%$ (Mon–Thu) or $\ge +2.2\%$ (Friday), SL is permanently locked to **0.0% (Entry Price)**. A winning trade is mathematically prevented from ever turning into a loss!
 5. **3-Minute Profit Harvest Choke (DECOMMISSIONED 2026-10-09)**:
-   - Permanently removed to give profitable running trades the full 5-minute (`MAX_HOLD_SEC = 300s`) breathing runway to reach their full resting maker target (+4.0% TP). A trade in green (+1.5% to +2.5%) is never prematurely choked at 180s.
+   - Permanently removed to give profitable running trades the full 5-minute (`MAX_HOLD_SEC = 300s`) breathing runway to reach their full resting maker target (+4.0% TP). A trade in green is never prematurely choked at 180s.
 6. **Dynamic 0DTE Time-Decay Shield & Stagnation Trap**:
    - Expiry days: 240s baseline before 12:30 PM, 180s strict after 12:30 PM.
    - At 90s on expiry afternoon (post-12:30 PM): if gain $< +0.5\%$ and 50-EMA is opposed, exits on `0DTE_STAGNATION_TRAP_EXIT`.
-   - Non-expiry days: 300s baseline, extendable to 360s for running winners with favorable structure.
-7. **Pillar 4 Pure Price Action Entry Candle Low/High Invalidation**:
-   - For Pillar 4 (0-D Prominence Hub / Break of Structure), exit is anchored directly to the spot price action of the breakout candle:
-     - **CALL**: Immediate exit if Spot crosses $\le$ Entry Candle Low (`candle_low`).
-     - **PUT**: Immediate exit if Spot crosses $\ge$ Entry Candle High (`candle_high`).
+   - Non-expiry days: 300s baseline.
+7. **Universal Pure Price Action Entry Candle Low/High Invalidation (All Pillars & Mode B)**:
+   - For ALL 4 Pillars and Mode B, exit is anchored directly to the spot price action of the entry candle with an ATR buffer:
+     - **CALL**: Immediate exit if $\text{Spot} \le \text{Entry Candle Low} - (0.10 \times \text{ATR})$.
+     - **PUT**: Immediate exit if $\text{Spot} \ge \text{Entry Candle High} + (0.10 \times \text{ATR})$.
      - Option is protected from artificial Greeks/spread noise as long as the breakout candle structure holds!
 8. **Spot Adverse Movement SL & Trend Reversal Exit**:
    - Spot moves $\ge 6.5\text{ bps}$ + 1.0x ATR against trade direction.
