@@ -14,7 +14,6 @@ from collections import deque
 import pytest
 
 from AEGIS.core.price_action_engine import PriceActionEngine, OHLCBar
-from AEGIS.core.regime_chop_gate import RegimeChopGate
 from AEGIS.aegis_gamma_engine import AegisGammaEngine
 
 
@@ -153,7 +152,7 @@ class TestPillar1_20_EMA_Rejection:
         engine.last_price = pin_bar.close
 
         # Sanity: seeded downtrend bars never touched the falling EMA...
-        assert engine._had_prior_ema_touch("PUT") is False
+        assert engine._validate_dow_hl2_lh2_structure("PUT").is_valid is False
         is_rejection, reason, details = engine.check_20_ema_rejection("DOWN")
         assert is_rejection is False
         assert reason in ("single_touch_no_confirmation", "did_not_test_20_ema")
@@ -369,62 +368,7 @@ class TestPillar1_20_EMA_Rejection:
 # PILLAR 2: AL BROOKS 2-LEGGED PULLBACK TESTS
 # ═══════════════════════════════════════════════════════════════
 
-class TestPillar2_AlBrooks_2Legged_Pullback:
-    def test_albrooks_l2_put_exhaustion(self):
-        engine = PriceActionEngine()
-        # Seed 55 bars in downtrend
-        for i in range(55):
-            engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 24000.0 - i * 0.5, 24002.0 - i * 0.5, 23998.0 - i * 0.5, 24000.0 - i * 0.5))
-
-        live_ema_50, _ = engine.get_live_50_ema_and_slope()
-        assert live_ema_50 > 0
-
-        # Leg 1 tests 50 EMA from below (closed), then 6 same-side pause bars,
-        # then Leg 2 sweeps higher into 50 EMA with bearish reversal close.
-        b3 = OHLCBar(3300, 3360, live_ema_50 - 15.0, live_ema_50 - 8.0, live_ema_50 - 16.0, live_ema_50 - 10.0)
-        engine.bars_1m.append(b3)
-        for k in range(6):
-            engine.bars_1m.append(OHLCBar(3360 + k * 60, 3420 + k * 60, live_ema_50 - 12.0, live_ema_50 - 9.0, live_ema_50 - 14.0, live_ema_50 - 11.0))
-        # Leg 2 deep sweep right into 50 EMA (higher than b3) with reversal close
-        b1 = OHLCBar(3720, 3780, live_ema_50 - 1.0, live_ema_50 + 1.0, live_ema_50 - 10.0, live_ema_50 - 7.0)
-        engine._on_1m_bar_close(b1)
-        engine.last_price = b1.close
-
-        current_vwap = live_ema_50 + 20.0  # Safe below VWAP
-        is_rejection, reason, details = engine.check_albrooks_2legged_pullback("DOWN", current_vwap)
-
-        assert is_rejection is True
-        assert details["pillar"] == 2
-        assert details["pa_setup_name"] == "albrooks_2legged_pullback"
-        assert details["structure"] == "L2_bearish_exhaustion"
-        assert details["sl_price"] >= b1.high + 5.0
-
-    def test_albrooks_h2_call_exhaustion(self):
-        engine = PriceActionEngine()
-        # Seed 55 bars in uptrend
-        for i in range(55):
-            engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 24000.0 + i * 0.5, 24002.0 + i * 0.5, 23998.0 + i * 0.5, 24000.0 + i * 0.5))
-
-        live_ema_50, _ = engine.get_live_50_ema_and_slope()
-
-        # Leg 1 tests 50 EMA from above (closed), then 6 same-side pause bars,
-        # then Leg 2 sweeps lower into 50 EMA with bullish reversal close.
-        b3 = OHLCBar(3300, 3360, live_ema_50 + 15.0, live_ema_50 + 16.0, live_ema_50 + 8.0, live_ema_50 + 10.0)
-        engine.bars_1m.append(b3)
-        for k in range(6):
-            engine.bars_1m.append(OHLCBar(3360 + k * 60, 3420 + k * 60, live_ema_50 + 12.0, live_ema_50 + 14.0, live_ema_50 + 9.0, live_ema_50 + 11.0))
-        # Leg 2 deep sweep right down into 50 EMA (lower than b3) with reversal
-        b1 = OHLCBar(3720, 3780, live_ema_50 + 1.0, live_ema_50 + 10.0, live_ema_50 - 1.0, live_ema_50 + 7.0)
-        engine._on_1m_bar_close(b1)
-        engine.last_price = b1.close
-
-        current_vwap = live_ema_50 - 20.0  # Safe above VWAP
-        is_rejection, reason, details = engine.check_albrooks_2legged_pullback("UP", current_vwap)
-
-        assert is_rejection is True
-        assert details["pillar"] == 2
-        assert details["structure"] == "H2_bullish_exhaustion"
-        assert details["sl_price"] <= b1.low - 5.0
+class TestPillar2_Micro_Sweep_Reclaim:
 
     def test_micro_sweep_call_reclaim(self):
         engine = PriceActionEngine()
@@ -669,93 +613,6 @@ class TestWatertightPriceActionIntegration:
         # Test when no setup is active
         is_setup, name, details = engine.check_price_action_setups("UP", 24000.0)
         assert is_setup is False
-
-    def test_watertight_regime_chop_gate_bypass(self):
-        """
-        Critical Watertight Test:
-        Verifies that when an active Price Action setup triggers,
-        RegimeChopGate (Kaufman KER < 0.04 and RangeComp) CANNOT veto the trade!
-        """
-        sig_q = queue.Queue()
-        token_map = {"100": {"side": 0, "strike": 24000.0, "is_index": True}}
-        engine = AegisGammaEngine(
-            token_to_symbol={"100": "NIFTY_SPOT", "200": "NIFTY24000CE"},
-            token_map={"200": {"side": 0, "strike": 24000.0}},
-            bucket_map={},
-            strike_step=50.0,
-            signal_queue=sig_q,
-        )
-        engine.last_spot = 24000.0
-        engine.high_conviction_threshold = 75.0
-        engine.moderate_conviction_threshold = 60.0
-
-        # Equip with RegimeChopGate that is in HARD CHOP (KER = 0.01)
-        engine.chop_gate = RegimeChopGate(ker_veto_threshold=0.04)
-        # Feed back-and-forth ticks so KER collapses to near 0
-        now = time.time()
-        for i in range(40):
-            px = 24000.0 + (0.5 if i % 2 == 0 else -0.5)
-            engine.chop_gate.update(px, now - (40 - i) * 1.0, evaluate=False)
-
-        ok, reason, metrics = engine.chop_gate.get_regime_state(now)
-        assert ok is False  # Confirmed: RegimeChopGate is actively vetoing normal trades!
-
-        # Setup PriceActionEngine with an active Pillar 1 (20 EMA Hammer rejection on valid Dow 2-touch)
-        pa_engine = PriceActionEngine()
-        for i in range(25):
-            pa_engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 24000.0 + i * 1.0, 24002.0 + i * 1.0, 23998.0 + i * 1.0, 24000.0 + i * 1.0))
-
-        live_ema_20, _ = pa_engine.get_live_20_ema_and_slope()
-        # Touch 1 (HL1)
-        pa_engine._on_1m_bar_close(OHLCBar(1500.0, 1560.0, live_ema_20 + 1.5, live_ema_20 + 2.0, live_ema_20 - 0.1, live_ema_20 + 1.0))
-        live_ema_20, _ = pa_engine.get_live_20_ema_and_slope()
-        # 6-bar orderly pullback
-        for k in range(6):
-            pa_engine._on_1m_bar_close(OHLCBar(1560.0 + k * 60, 1620.0 + k * 60, live_ema_20 + 2.5, live_ema_20 + 3.5, live_ema_20 + 1.5, live_ema_20 + 2.5))
-
-        live_ema_20, _ = pa_engine.get_live_20_ema_and_slope()
-        pa_engine.last_price = live_ema_20 + 4.0
-        hammer = OHLCBar(2000.0, 2060.0, live_ema_20 + 3.0, live_ema_20 + 5.0, live_ema_20 - 0.5, live_ema_20 + 4.5)
-        pa_engine._on_1m_bar_close(hammer)
-        pa_engine._curr_1m_bar = hammer
-        engine.price_action_engine = pa_engine
-        engine.time_bar_engine = pa_engine
-
-        # Verify evaluate_setup finds it
-        is_pa, pa_name, pa_det = pa_engine.evaluate_setup("UP", 0.0)
-        assert is_pa is True
-        assert pa_name == "20_ema_rejection"
-
-        class MockParsedTick:
-            def __init__(self, tok, lp, vol=1000.0, ts=1787023500.0):
-                import numpy as np
-                self.tok = str(tok)
-                self.lp = float(lp)
-                self.vol = float(vol)
-                self.ts = float(ts)
-                self.bp = np.array([lp - 0.2, lp - 0.3, lp - 0.4, lp - 0.5, lp - 0.6], dtype=np.float64)
-                self.bq = np.array([500, 400, 300, 200, 100], dtype=np.float64)
-                self.sp = np.array([lp + 0.2, lp + 0.3, lp + 0.4, lp + 0.5, lp + 0.6], dtype=np.float64)
-                self.sq = np.array([500, 400, 300, 200, 100], dtype=np.float64)
-
-        # Mock option tick passing Option Quality
-        # Even with KER collapsing and RegimeChopGate vetoing, the trade MUST fire!
-        tick = MockParsedTick(
-            tok="200",
-            lp=150.0,
-            vol=1000.0,
-            ts=now,
-        )
-        engine.on_tick_parsed(tick)
-
-        # Verify that signal was placed into queue!
-        assert not sig_q.empty()
-        sig = sig_q.get_nowait()
-        assert sig["type"] == "GAMMA_BURST_ENTRY"
-        assert sig["metrics"]["is_price_action_setup"] is True
-        assert sig["metrics"]["pa_setup_name"] == "20_ema_rejection"
-        assert sig["metrics"]["sl_price"] > 0
-        assert sig["metrics"]["recommended_tp_pct"] == 0.040  # Constant 4% TP
 
     def test_microstructure_validator_opposing_wall_veto(self):
         """Verifies that an extreme opposing ask wall (top5_imb < -0.40) vetoes price action entry."""
@@ -1060,114 +917,6 @@ def test_hybrid_option_flow_and_pain_zone_vwaps():
     assert engine._cum_pb_vol == 0.0
     vwaps_reset = engine.get_pain_zone_vwaps(lot_size=1.0, min_bars=0)
     assert vwaps_reset["vwap_call_buy"] == 0.0
-
-
-def test_pain_zone_confluence_scorecard():
-    """
-    Tests DeepSeek V4 Pro 4 Setups x 4 Lines Ruleset:
-    - P1: 20 EMA Wick Rejection (Boost, Veto, Hard Block)
-    - P3: Squeeze Expansion (Positive gamma fade vs expansion boost)
-    - P4: BOS (Max fuel vs late extension)
-    """
-    engine = PriceActionEngine(strike_step=50.0)
-    engine.current_atr_1m = 10.0
-    # Warmup requirement: 30 bars for institutional stabilization
-    for i in range(30):
-        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 22800.0, 22805.0, 22795.0, 22800.0))
-
-    # Setup simulated lines (> 13000.0 warmup threshold with 200 lots * 65):
-    # CallBuy = 22850.0 (vol=15000), PutBuy = 22820.0 (vol=15000)
-    # CallSell = 22860.0 (vol=15000), PutSell = 22810.0 (vol=15000)
-    engine._cum_cb_pv = 22850.0 * 15000.0; engine._cum_cb_vol = 15000.0
-    engine._cum_pb_pv = 22820.0 * 15000.0; engine._cum_pb_vol = 15000.0
-    engine._cum_cs_pv = 22860.0 * 15000.0; engine._cum_cs_vol = 15000.0
-    engine._cum_ps_pv = 22810.0 * 15000.0; engine._cum_ps_vol = 15000.0
-
-    # Test 1: P1 PE setup with Spot at 22805 (Below CallBuy 22850 AND Below PutSell 22810)
-    # Call buyers trapped (< 22850) AND Put writers underwater (< 22810) -> DUAL FUEL BOOST!
-    ok, score, reason, _ = engine.evaluate_pain_zone_confluence(pillar=1, direction="PUT", spot=22805.0)
-    assert ok is True
-    assert score == 15.0
-    assert reason == "p1_pe_dual_fuel_boost"
-
-    # Test 2: P1 PE setup with Spot at 22828 (Above PutBuy 22820 by 8 pts > 0.5 ATR = 5 pts)
-    # Put buyers trapped, dumping risk -> Veto -10 pts
-    ok, score, reason, _ = engine.evaluate_pain_zone_confluence(pillar=1, direction="PUT", spot=22828.0)
-    assert ok is True
-    assert score == -10.0
-    assert reason == "veto_put_buyer_dump_risk"
-
-    # Test 3: P1 PE setup with Spot at 22835 (Above PutBuy 22820 by 15 pts >= 1.0 ATR = 10 pts)
-    # Severe put buyer pain -> HARD BLOCK!
-    ok, score, reason, _ = engine.evaluate_pain_zone_confluence(pillar=1, direction="PUT", spot=22835.0)
-    assert ok is False
-    assert score == -999.0
-    assert reason == "hard_block_put_buyer_pain_severe"
-
-    # Test 4: P1 CE setup with Spot at 22865 (Above PutBuy 22820 AND Above CallSell 22860)
-    # Put buyers trapped (> 22820) AND Call writers underwater (> 22860) -> DUAL FUEL BOOST!
-    ok, score, reason, _ = engine.evaluate_pain_zone_confluence(pillar=1, direction="CALL", spot=22865.0)
-    assert ok is True
-    assert score == 15.0
-    assert reason == "p1_ce_dual_fuel_boost"
-
-    # Test 5: P3 Squeeze Expansion with Spot at 22840 (Below CallBuy 22850) under POSITIVE gamma
-    # Positive gamma pinning fade -> Hard Block!
-    ok, score, reason, _ = engine.evaluate_pain_zone_confluence(pillar=3, direction="CALL", spot=22840.0, gamma_regime="POSITIVE")
-    assert ok is False
-    assert score == -999.0
-    assert reason == "fade_p3_ce_under_call_buy_pos_gamma"
-
-    # Test 6: P4 BOS PE with Spot at 22800 (Below PutSell 22810)
-    # Put writers capitulation -> Max Fuel!
-    ok, score, reason, _ = engine.evaluate_pain_zone_confluence(pillar=4, direction="PUT", spot=22800.0)
-    assert ok is True
-    assert score == 15.0
-    assert reason == "p4_pe_max_fuel_writer_capitulation"
-
-    # Test 7: P1 PE setup with PutBuy neutral, but Spot at 22866 (Above CallSell 22860 + 0.5 ATR = 22865)
-    # Veto Check 2: Call writers broken / short squeeze risk -> Soft Veto (-10)
-    engine._cum_pb_pv = 0.0; engine._cum_pb_vol = 0.0
-    ok, score, reason, _ = engine.evaluate_pain_zone_confluence(pillar=1, direction="PUT", spot=22866.0)
-    assert ok is True
-    assert score == -10.0
-    assert reason == "veto_call_seller_broken_risk"
-
-
-
-def test_flow_symmetry_diagnostic_and_and_gate_warmup():
-    """Verifies EOD Flow Symmetry Diagnostic ratio & AND-gate time + volume warmup."""
-    engine = PriceActionEngine()
-    engine._cum_cb_vol = 5000.0
-    engine._cum_cs_vol = 5000.0
-    engine._cum_pb_vol = 5000.0
-    engine._cum_ps_vol = 5000.0
-    diag = engine.get_flow_symmetry_diagnostic()
-    assert diag["is_balanced"] is True
-    assert diag["buyer_ratio"] == 0.50
-    assert diag["alarm"] is False
-
-    # Skewed volume (> 55% buyers) -> Alarm fires!
-    engine._cum_cb_vol = 12000.0
-    diag_skew = engine.get_flow_symmetry_diagnostic()
-    assert diag_skew["buyer_ratio"] > 0.55
-    assert diag_skew["alarm"] is True
-
-    # AND-Gate Warmup: Even with 200 lots volume, if min_bars=30 and len(bars) < 30 -> Inactive!
-    engine._cum_cb_pv = 15000.0 * 22800.0
-    engine._cum_cb_vol = 15000.0
-    pz_inactive = engine.get_pain_zone_vwaps(lot_size=65.0, min_bars=30)
-    assert pz_inactive["vwap_call_buy"] == 0.0  # Blocked by time gate!
-
-    # Once 30 bars are present -> Active!
-    for i in range(30):
-        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 22800.0, 22805.0, 22795.0, 22800.0))
-    pz_active = engine.get_pain_zone_vwaps(lot_size=65.0, min_bars=30)
-    assert pz_active["vwap_call_buy"] == 22800.0
-
-
-
-
 
 
 def test_argon_p4_prominence_anti_exhaustion_and_origin_caps():
@@ -1735,73 +1484,3 @@ def test_freak_preopen_settlement_spike_filtered_in_levels_and_runway():
     assert ok is False
     assert reason == "insufficient_runway_to_day_high"
     assert details["day_high"] == 73423.0
-
-
-def test_t50_intrabar_candidate_evaluation():
-    """
-    UPGRADE 5: T:50s Intra-Bar Early Entry Engine (evaluate_t50_intrabar_candidate).
-    Verifies time window, range sweet-spot, body ratio, opposing wick, and delta ratio.
-    """
-    engine = PriceActionEngine()
-    engine.current_atr_1m = 40.0
-    engine.current_vwap = 73400.0
-
-    # 1. Outside time window (e.g. sec=25) -> VETO
-    ok, reason, _ = engine.evaluate_t50_intrabar_candidate("CALL", current_time=60025.0)
-    assert ok is False
-    assert reason == "outside_t50_window"
-
-    # Set up in-flight 1m bar at T:52s (epoch % 60 = 52)
-    t52_epoch = 60052.0
-    # Add completed prior bars to seed history
-    for i in range(10):
-        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 73400.0, 73415.0, 73390.0, 73405.0, volume=100.0))
-
-    # In-flight bar: Open=73405, High=73428, Low=73404, Close=73427.
-    # ATR is ~25 pts from the 10 prior bars.
-    # Range = 24 pts (0.45 * 25 = 11.25 <= 24 <= 1.15 * 25 = 28.75) -> In sweet-spot!
-    # Body = 22 pts -> Body ratio = 22/24 = 91.6% >= 72%!
-    # Upper wick = 73428 - 73427 = 1 pt -> Wick ratio = 1/24 = 4.1% <= 12%!
-    engine._curr_1m_bar = OHLCBar(
-        ts_start=60000.0,
-        ts_end=60060.0,
-        open=73405.0,
-        high=73428.0,
-        low=73404.0,
-        close=73427.0,
-        tick_count=20,
-    )
-    engine.last_price = 73427.0
-    engine._opt_flow_1m = {
-        "call_buy_vol": 1500.0,
-        "call_sell_vol": 200.0,
-        "put_buy_vol": 300.0,
-        "put_sell_vol": 500.0,
-    }
-
-    # Should PASS in SHADOW mode!
-    ok, reason, details = engine.evaluate_t50_intrabar_candidate("CALL", current_time=t52_epoch)
-    assert ok is True, f"Failed with reason: {reason}, details: {details}"
-    assert reason == "t50_intrabar_candidate_confirmed"
-    assert details["is_shadow"] is True
-    assert details["body_ratio"] >= 0.72
-    assert details["opposing_wick_ratio"] <= 0.12
-
-    # 2. Test Range Underdeveloped (< 0.45 * ATR)
-    engine._curr_1m_bar.high = 73410.0  # Range = 6 pts < 11.25 pts
-    engine._curr_1m_bar.close = 73409.0
-    ok_small, reason_small, _ = engine.evaluate_t50_intrabar_candidate("CALL", current_time=t52_epoch)
-    assert ok_small is False
-    assert reason_small == "intrabar_range_underdeveloped"
-
-    # 3. Test Range Overextended / Exhaustion (> 1.15 * ATR)
-    engine._curr_1m_bar.high = 73445.0  # Range = 41 pts > 28.75 pts
-    engine._curr_1m_bar.close = 73443.0
-    ok_giant, reason_giant, _ = engine.evaluate_t50_intrabar_candidate("CALL", current_time=t52_epoch)
-    assert ok_giant is False
-    assert reason_giant == "intrabar_range_overextended_exhaustion"
-
-
-
-
-

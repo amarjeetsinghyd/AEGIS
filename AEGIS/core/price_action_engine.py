@@ -18,6 +18,9 @@ from __future__ import annotations
 import math
 import logging
 import os
+from datetime import datetime, time as dt_time, timezone, timedelta
+
+_IST = timezone(timedelta(hours=5, minutes=30))
 from collections import deque
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
@@ -158,6 +161,7 @@ class PriceActionEngine:
         }
         self._opt_last_cum_vol: Dict[str, float] = {}
         self._opt_last_lp: Dict[str, float] = {}
+        self._last_global_opt_tick_ts: float = 0.0
         self._opt_last_frac: Dict[str, float] = {}
 
         # ─── 4-Line Trapped-Buyer Pain Zone VWAP Accumulators ───
@@ -216,8 +220,6 @@ class PriceActionEngine:
         self.pdl: float = 0.0
         self.pdc: float = 0.0
         self.proximity_threshold_bps: float = float(os.getenv("AEGIS_KEY_LEVEL_PROXIMITY_BPS", "8.0"))
-        # ─── HVG Topological Engine (Pillar 4 Legacy/Shadow) ───
-        self.hvg_engine: Any = None
         # ─── AEGIS V4.0 Topological 0-D Prominence Stack (Pillar 4 Final) ───
         self.prominence_stack: Any = FastMonotonicStack(capacity=128) if FastMonotonicStack is not None else None
         self._l2_depth_history: Optional[List[Tuple[float, float, float, float]]] = None
@@ -310,6 +312,7 @@ class PriceActionEngine:
         """Resets option flow accumulators and tracking state on session rollover."""
         self._opt_last_cum_vol.clear()
         self._opt_last_lp.clear()
+        self._last_global_opt_tick_ts = 0.0
         self._opt_last_frac.clear()
         self._cum_cb_pv = 0.0
         self._cum_cb_vol = 0.0
@@ -418,184 +421,6 @@ class PriceActionEngine:
             return (curr_spot < top - buf), top, bottom, buf
         return (curr_spot > bottom + buf), top, bottom, buf
 
-    def get_flow_symmetry_diagnostic(self) -> Dict[str, Any]:
-        """
-        EOD Classifier Symmetry Diagnostic per DeepSeek V4 Pro.
-        Evaluates overall buyer vs seller balance across Call and Put contracts.
-        Ratio = (CallBuy + PutBuy) / Total Volume.
-        Acceptable institutional equilibrium is 0.45 - 0.55.
-        """
-        cb = self._cum_cb_vol
-        cs = self._cum_cs_vol
-        pb = self._cum_pb_vol
-        ps = self._cum_ps_vol
-        tot = cb + cs + pb + ps
-        buyer_vol = cb + pb
-        ratio = (buyer_vol / tot) if tot > 0 else 0.50
-        is_balanced = (0.45 <= ratio <= 0.55) if tot >= 5000.0 else True
-        alarm = not is_balanced
-        return {
-            "total_option_vol": tot,
-            "call_buy_vol": cb,
-            "call_sell_vol": cs,
-            "put_buy_vol": pb,
-            "put_sell_vol": ps,
-            "buyer_ratio": round(ratio, 4),
-            "is_balanced": is_balanced,
-            "alarm": alarm,
-        }
-
-
-    def evaluate_pain_zone_confluence(
-        self,
-        pillar: int,
-        direction: str,
-        spot: Optional[float] = None,
-        atr: Optional[float] = None,
-        gamma_regime: str = "NEUTRAL",
-    ) -> Tuple[bool, float, str, Dict[str, Any]]:
-        """
-        Evaluates 4-Line Trapped-Buyer Pain Zone Confluence per DeepSeek V4 Pro Institutional Ruleset.
-        Returns: (is_allowed: bool, score_delta: float, reason: str, metrics: dict)
-        Score Delta:
-          +15: 2 fuel lines hit (opposite buyer + writer trapped)
-          +10: 1 fuel line hit
-            0: neutral (within ±0.3 ATR or warmup < 200 lots)
-          -10: 1 veto line hit (0.5 ATR) -> soft veto (requires extra confirmation)
-          Hard Block (is_allowed=False): Veto >= 1.0 ATR or explicit fade condition.
-        """
-        curr_spot = float(spot or self.last_price or 0.0)
-        curr_atr = float(atr or self.current_atr_1m or 10.0)
-        if curr_atr <= 0:
-            curr_atr = 10.0
-
-        pz = self.get_pain_zone_vwaps()
-        cb = pz.get("vwap_call_buy", 0.0)
-        cs = pz.get("vwap_call_sell", 0.0)
-        pb = pz.get("vwap_put_buy", 0.0)
-        ps = pz.get("vwap_put_sell", 0.0)
-
-        # Warmup gate check: if any key line is 0, lines are inactive (neutral 0)
-        if curr_spot <= 0 or (cb <= 0 and pb <= 0):
-            return True, 0.0, "warmup_neutral", {"pain_zone_active": False}
-
-        is_ce = direction.upper() in ("UP", "CALL")
-        is_pe = direction.upper() in ("DOWN", "PUT")
-        gamma = gamma_regime.upper()
-
-        # Dynamic buffer based on gamma regime
-        # Positive gamma (pinning): tighter boundaries. Negative gamma (dealers amplify): wider buffer
-        veto_buffer = (0.75 * curr_atr) if gamma == "NEGATIVE" else (0.50 * curr_atr)
-        if gamma == "POSITIVE" and pillar in (3, 4):
-            veto_buffer = 0.25 * curr_atr
-
-        metrics = {
-            "spot": curr_spot,
-            "atr": curr_atr,
-            "vwap_call_buy": cb,
-            "vwap_call_sell": cs,
-            "vwap_put_buy": pb,
-            "vwap_put_sell": ps,
-            "gamma_regime": gamma,
-            "pain_zone_active": True,
-        }
-
-        # ─── P1: 20 EMA Wick Rejection ───
-        if pillar == 1:
-            if is_ce:
-                # Veto Check 1: spot < CallBuy - 0.5 ATR (Call buyers trapped, will dump on bounce)
-                if cb > 0 and curr_spot < (cb - veto_buffer):
-                    if curr_spot < (cb - 1.0 * curr_atr):
-                        return False, -999.0, "hard_block_call_buyer_pain_severe", metrics
-                    return True, -10.0, "veto_call_buyer_dump_risk", metrics
-                # Veto Check 2: spot < PutSell - 0.5 ATR (Put writers broken, downside capitulation risk)
-                if ps > 0 and curr_spot < (ps - veto_buffer):
-                    return True, -10.0, "veto_put_seller_broken_risk", metrics
-                
-                # Boost conditions:
-                fuel_count = 0
-                if pb > 0 and curr_spot > pb:  # Pullback trapped Put buyers
-                    fuel_count += 1
-                if cs > 0 and curr_spot > cs:  # Call writers underwater
-                    fuel_count += 1
-                
-                if fuel_count >= 2:
-                    return True, 15.0, "p1_ce_dual_fuel_boost", metrics
-                elif fuel_count == 1:
-                    return True, 10.0, "p1_ce_single_fuel_boost", metrics
-                return True, 0.0, "p1_ce_neutral", metrics
-
-            elif is_pe:
-                # Veto Check 1: spot > PutBuy + 0.5 ATR (Put buyers trapped, will dump on dip)
-                if pb > 0 and curr_spot > (pb + veto_buffer):
-                    if curr_spot > (pb + 1.0 * curr_atr):
-                        return False, -999.0, "hard_block_put_buyer_pain_severe", metrics
-                    return True, -10.0, "veto_put_buyer_dump_risk", metrics
-                # Veto Check 2: spot > CallSell + 0.5 ATR (Call writers broken, upside short squeeze risk)
-                if cs > 0 and curr_spot > (cs + veto_buffer):
-                    return True, -10.0, "veto_call_seller_broken_risk", metrics
-
-                # Boost conditions:
-                fuel_count = 0
-                if cb > 0 and curr_spot < cb:  # Call buyers trapped
-                    fuel_count += 1
-                if ps > 0 and curr_spot < ps:  # Put writers underwater
-                    fuel_count += 1
-
-                if fuel_count >= 2:
-                    return True, 15.0, "p1_pe_dual_fuel_boost", metrics
-                elif fuel_count == 1:
-                    return True, 10.0, "p1_pe_single_fuel_boost", metrics
-                return True, 0.0, "p1_pe_neutral", metrics
-
-
-        # ─── P2: 2-Leg Pullback / 50 EMA Sweep ───
-        elif pillar == 2:
-            if is_ce:
-                if cb > 0 and curr_spot < (cb - 1.0 * curr_atr):
-                    return False, -999.0, "hard_block_p2_ce_distribution", metrics
-                if cb > 0 and curr_spot < (cb - 0.3 * curr_atr):
-                    return True, -10.0, "p2_ce_below_call_buy_soft_veto", metrics
-                score = 10.0 if (pb > 0 and curr_spot > pb) else 0.0
-                return True, score, "p2_ce_confluence", metrics
-            elif is_pe:
-                if pb > 0 and curr_spot > (pb + 1.0 * curr_atr):
-                    return False, -999.0, "hard_block_p2_pe_distribution", metrics
-                if pb > 0 and curr_spot > (pb + 0.3 * curr_atr):
-                    return True, -10.0, "p2_pe_above_put_buy_soft_veto", metrics
-                score = 10.0 if (cb > 0 and curr_spot < cb) else 0.0
-                return True, score, "p2_pe_confluence", metrics
-
-        # ─── P3: Squeeze -> Expansion Breakout ───
-        elif pillar == 3:
-            if is_ce:
-                if cb > 0 and curr_spot < cb and gamma == "POSITIVE":
-                    return False, -999.0, "fade_p3_ce_under_call_buy_pos_gamma", metrics
-                score = 15.0 if (cb > 0 and curr_spot > cb) else 0.0
-                return True, score, "p3_ce_expansion", metrics
-            elif is_pe:
-                if pb > 0 and curr_spot > pb and gamma == "POSITIVE":
-                    return False, -999.0, "fade_p3_pe_above_put_buy_pos_gamma", metrics
-                score = 15.0 if (pb > 0 and curr_spot < pb) else 0.0
-                return True, score, "p3_pe_expansion", metrics
-
-        # ─── P4: BOS (PDH/PDL/Pivot Break) ───
-        elif pillar == 4:
-            if is_ce:
-                if cs > 0 and curr_spot > (cs + 1.0 * curr_atr):
-                    return True, 5.0, "p4_ce_late_extension", metrics
-                if cs > 0 and curr_spot > cs:
-                    return True, 15.0, "p4_ce_max_fuel_writer_capitulation", metrics
-                return True, 10.0, "p4_ce_half_size", metrics
-            elif is_pe:
-                if ps > 0 and curr_spot < (ps - 1.0 * curr_atr):
-                    return True, 5.0, "p4_pe_late_extension", metrics
-                if ps > 0 and curr_spot < ps:
-                    return True, 15.0, "p4_pe_max_fuel_writer_capitulation", metrics
-                return True, 10.0, "p4_pe_half_size", metrics
-
-        return True, 0.0, "neutral", metrics
-
     def update_option_tick(
         self,
         sym: str,
@@ -615,6 +440,16 @@ class PriceActionEngine:
         """
         if vol <= 0 or lp <= 0:
             return
+
+        import time as _time
+        now_ts = self.last_ts if self.last_ts > 0 else _time.time()
+
+        # Global WebSocket Reconnect / Freeze Guard:
+        # If the entire options feed went silent between 5.0s and 55.0s, clear cum vols
+        # so every symbol cleanly reseeds its baseline on its first post-reconnect tick.
+        if self._last_global_opt_tick_ts > 0 and 5.0 < (now_ts - self._last_global_opt_tick_ts) < 55.0:
+            self._opt_last_cum_vol.clear()
+        self._last_global_opt_tick_ts = now_ts
 
         # 1. Day-cumulative volume differencing + session rollover guard
         prev_vol = self._opt_last_cum_vol.get(sym)
@@ -782,56 +617,6 @@ class PriceActionEngine:
             self.ema_200_1m_slope = self.ema_200_1m - self.ema_200_1m_prev
         self.ema_200_history.append(self.ema_200_1m)
 
-        # 2b. Feed 1-Minute ML Gatekeeper Flow Recorder
-        if getattr(self, "ml_gatekeeper", None) is not None:
-            try:
-                open_px = max(bar.open, 1.0)
-                ret_1m = (bar.close - bar.open) / open_px * 10000.0
-                range_bps = (bar.high - bar.low) / open_px * 10000.0
-                body_bps = (bar.close - bar.open) / open_px * 10000.0
-                upper_wick_bps = (bar.high - max(bar.open, bar.close)) / open_px * 10000.0
-                lower_wick_bps = (min(bar.open, bar.close) - bar.low) / open_px * 10000.0
-                ema20_dist = (bar.close - self.ema_20_1m) / self.ema_20_1m * 10000.0 if self.ema_20_1m > 0 else 0.0
-                ema5_dist = (bar.close - self.ema_50_1m) / self.ema_50_1m * 10000.0 if self.ema_50_1m > 0 else 0.0
-
-                recent_3 = list(self.bars_1m)[-3:] if len(self.bars_1m) >= 3 else list(self.bars_1m)
-                opt_delta_3m = sum(getattr(b, "opt_delta_flow", 0.0) for b in recent_3)
-
-                cb = bar.call_buy_vol
-                cs = bar.call_sell_vol
-                pb = bar.put_buy_vol
-                ps = bar.put_sell_vol
-
-                call_agg = (cb - cs) / max(cb + cs, 1.0)
-                put_agg = (pb - ps) / max(pb + ps, 1.0)
-                opt_ratio = (cb + 1.0) / (pb + 1.0)
-
-                ml_feats = {
-                    "put_aggression": put_agg,
-                    "call_buy_vol": cb,
-                    "call_sell_vol": cs,
-                    "call_aggression": call_agg,
-                    "avg_book_imb": 0.0,
-                    "upper_wick_bps": upper_wick_bps,
-                    "ema20_dist_bps": ema20_dist,
-                    "lower_wick_bps": lower_wick_bps,
-                    "opt_flow_ratio": opt_ratio,
-                    "range_bps": range_bps,
-                    "body_bps": body_bps,
-                    "put_buy_vol": pb,
-                    "put_sell_vol": ps,
-                    "opt_delta_3m": opt_delta_3m,
-                    "ema5_dist_bps": ema5_dist,
-                    "opt_total_vol": bar.opt_total_vol,
-                    "opt_pcr": bar.opt_pcr,
-                    "opt_delta_flow": bar.opt_delta_flow,
-                    "ret_1m_bps": ret_1m,
-                }
-                idx_name = "SENSEX" if getattr(self, "strike_step", 50) == 100 else "NIFTY"
-                self.ml_gatekeeper.record_1m_bar(bar.ts, ml_feats, index_name=idx_name)
-            except Exception as e:
-                logger.debug(f"[PriceActionEngine] ml_gatekeeper record_1m_bar failed: {e}")
-
         # 3. Update ATR(14)
         if len(self.bars_1m) >= 2:
             prev_close = self.bars_1m[-2].close
@@ -857,21 +642,6 @@ class PriceActionEngine:
             self.current_atr_1m = sum(self.atr_history) / len(self.atr_history)
             self.baseline_atr_1m = self.current_atr_1m
             self.atr_ratio = 1.0
-
-        # 4. Feed Topological HVG Shadow Engine (Pillar 4 Shadow)
-        if getattr(self, "hvg_engine", None) is not None:
-            try:
-                self.hvg_engine.add_bar(
-                    open_price=bar.open,
-                    high_price=bar.high,
-                    low_price=bar.low,
-                    close_price=bar.close,
-                    atr=self.current_atr_1m,
-                    vwap=self.current_vwap,
-                    timestamp=bar.ts_start,
-                )
-            except Exception:
-                pass
 
         # 5. Dynamic Session S/R Level Registry Update
         self._update_structural_levels(bar)
@@ -1692,18 +1462,6 @@ class PriceActionEngine:
             chain.pb_counter_flow = round(pb_counter_flow, 1)
             return chain
 
-    def _had_prior_ema_touch(
-        self,
-        direction: str,
-        tolerance_bps: float = 1.5,
-        lookback: int = 40,
-        current_vwap: float = 0.0,
-    ) -> bool:
-        """Backward compatibility helper: checks if prior touch / Dow structure is valid."""
-        dow = self._validate_dow_hl2_lh2_structure(direction, touch2_offset=0, tolerance_bps=tolerance_bps, lookback=lookback)
-        if not dow.is_valid:
-            dow = self._validate_dow_hl2_lh2_structure(direction, touch2_offset=1, tolerance_bps=tolerance_bps, lookback=lookback)
-        return dow.is_valid
     def _check_day_extreme_runway(
         self,
         direction: str,
@@ -1816,16 +1574,7 @@ class PriceActionEngine:
 
         hurdle_pts = 0.85 * self.current_atr_1m
 
-        # 1. 5m Macro HVG Structural Check (if hvg_engine available)
-        if getattr(self, "hvg_engine", None) is not None:
-            try:
-                ok_5m, reason_5m, det_5m = self.hvg_engine.check_5m_structural_alignment(direction, current_price)
-                if not ok_5m:
-                    return False, f"hvg_shield_veto ({reason_5m})", det_5m
-            except Exception as e:
-                logger.debug(f"[StructuralShield] 5m HVG check failed: {e}")
-
-        # 2. 1m Structural Horizontal Pivots / Multi-Touch Clusters
+        # 1m Structural Horizontal Pivots / Multi-Touch Clusters
         if len(self.bars_1m) >= 4:
             bars = list(self.bars_1m)[:-1][-lookback:]
             pivot_lows = []
@@ -1914,167 +1663,6 @@ class PriceActionEngine:
         nearest_pl = pivot_lows[-1] if pivot_lows else None
         nearest_ph = pivot_highs[-1] if pivot_highs else None
         return nearest_pl, nearest_ph
-
-    def check_pivot_exhaustion(
-        self,
-        direction: str,
-        lookback: int = 30,
-    ) -> Tuple[bool, str, Dict[str, Any]]:
-        """
-        Pillar 1 Trend Exhaustion Filter:
-        Prevents buying CALL pullbacks into a sequence of descending Lower Highs (distribution / bear flag)
-        and prevents buying PUT pullbacks into a sequence of ascending Higher Lows (accumulation / bull flag).
-
-        Scale-invariant: Thresholds are normalized via ATR and index spot price.
-        """
-        if not os.getenv("AEGIS_PIVOT_EXHAUSTION_FILTER", "true").lower() in ("true", "1", "yes"):
-            return False, "filter_disabled", {}
-
-        if len(self.bars_1m) < 6:
-            return False, "insufficient_bars", {}
-
-        bar = self.bars_1m[-1]
-        prior_bars = list(self.bars_1m)[:-1][-lookback:]
-        if len(prior_bars) < 4:
-            return False, "insufficient_bars", {}
-
-        ref_spot = self.last_price if self.last_price > 0 else bar.close
-        atr = self.current_atr_1m if self.current_atr_1m > 0 else (ref_spot * 0.001)
-        buffer_pts = max(5.0, (ref_spot / 24000.0) * 5.0)
-        exh_threshold = max(0.20 * atr, 0.50 * buffer_pts)
-        min_swing_depth = max(0.15 * atr, 0.40 * buffer_pts)
-
-        live_ema_20, live_slope_20_bps = self.get_live_20_ema_and_slope()
-
-        if direction.upper() in ("UP", "CALL"):
-            # 1. Identify distinct swing highs in lookback
-            raw_highs: List[Tuple[int, float]] = []
-            for i in range(1, len(prior_bars) - 1):
-                p_b = prior_bars[i - 1]
-                c_b = prior_bars[i]
-                n_b = prior_bars[i + 1]
-                if (c_b.high >= p_b.high and c_b.high > n_b.high) or (c_b.high > p_b.high and c_b.high >= n_b.high):
-                    raw_highs.append((i, c_b.high))
-
-            if len(raw_highs) < 2:
-                return False, "insufficient_pivots", {}
-
-            # Filter distinct swing highs that are separated by a pullback of at least min_swing_depth
-            distinct_highs: List[Tuple[int, float]] = [raw_highs[0]]
-            for idx, h in raw_highs[1:]:
-                prev_idx, prev_h = distinct_highs[-1]
-                # Check intervening low
-                intervening_low = min(b.low for b in prior_bars[prev_idx:idx + 1])
-                pullback = min(prev_h, h) - intervening_low
-                if pullback >= min_swing_depth and (idx - prev_idx) >= 3:
-                    distinct_highs.append((idx, h))
-                elif h > prev_h:
-                    distinct_highs[-1] = (idx, h)
-
-            if len(distinct_highs) < 2:
-                return False, "insufficient_pivots", {}
-
-            # Check the most recent 2 or 3 distinct pivot highs
-            recent_highs = [h for _, h in distinct_highs[-3:]]
-            h_prev = recent_highs[-2]
-            h_last = recent_highs[-1]
-
-            # If current bar has already broken above the last swing high, structure is breaking out (not exhausted)
-            if bar.close > h_last:
-                return False, "broken_above_last_pivot_high", {}
-
-            # Case A: 3 consecutive lower highs (H1 > H2 > H3)
-            is_3_lower_highs = False
-            if len(recent_highs) >= 3:
-                h_first = recent_highs[-3]
-                if (h_first - h_prev) >= (0.10 * atr) and (h_prev - h_last) >= (0.10 * atr):
-                    is_3_lower_highs = True
-
-            # Case B: Significant lower high (h_prev - h_last >= exh_threshold)
-            drop = h_prev - h_last
-            is_significant_drop = drop >= exh_threshold
-
-            # Exhaustion confirms if slope is not strongly bullish (<= 0.20 bps) and making lower highs
-            if (is_3_lower_highs or is_significant_drop) and live_slope_20_bps <= 0.20:
-                reason = "consecutive_lower_highs" if is_3_lower_highs else "descending_pivot_high_drop"
-                return True, reason, {
-                    "direction": "CALL",
-                    "h_prev": round(h_prev, 2),
-                    "h_last": round(h_last, 2),
-                    "drop_pts": round(drop, 2),
-                    "threshold_pts": round(exh_threshold, 2),
-                    "bar_close": round(bar.close, 2),
-                    "ema_20_slope_bps": round(live_slope_20_bps, 2),
-                    "all_recent_highs": [round(x, 2) for x in recent_highs],
-                }
-
-            return False, "higher_highs_or_strong_slope", {}
-
-        elif direction.upper() in ("DOWN", "PUT"):
-            # 1. Identify distinct swing lows in lookback
-            raw_lows: List[Tuple[int, float]] = []
-            for i in range(1, len(prior_bars) - 1):
-                p_b = prior_bars[i - 1]
-                c_b = prior_bars[i]
-                n_b = prior_bars[i + 1]
-                if (c_b.low <= p_b.low and c_b.low < n_b.low) or (c_b.low < p_b.low and c_b.low <= n_b.low):
-                    raw_lows.append((i, c_b.low))
-
-            if len(raw_lows) < 2:
-                return False, "insufficient_pivots", {}
-
-            # Filter distinct swing lows that are separated by a bounce of at least min_swing_depth
-            distinct_lows: List[Tuple[int, float]] = [raw_lows[0]]
-            for idx, l in raw_lows[1:]:
-                prev_idx, prev_l = distinct_lows[-1]
-                # Check intervening high
-                intervening_high = max(b.high for b in prior_bars[prev_idx:idx + 1])
-                bounce = intervening_high - max(prev_l, l)
-                if bounce >= min_swing_depth and (idx - prev_idx) >= 3:
-                    distinct_lows.append((idx, l))
-                elif l < prev_l:
-                    distinct_lows[-1] = (idx, l)
-
-            if len(distinct_lows) < 2:
-                return False, "insufficient_pivots", {}
-
-            # Check the most recent 2 or 3 distinct pivot lows
-            recent_lows = [l for _, l in distinct_lows[-3:]]
-            l_prev = recent_lows[-2]
-            l_last = recent_lows[-1]
-
-            # If current bar has already broken below the last swing low, structure is breaking down (not exhausted)
-            if bar.close < l_last:
-                return False, "broken_below_last_pivot_low", {}
-
-            # Case A: 3 consecutive higher lows (L1 < L2 < L3)
-            is_3_higher_lows = False
-            if len(recent_lows) >= 3:
-                l_first = recent_lows[-3]
-                if (l_prev - l_first) >= (0.10 * atr) and (l_last - l_prev) >= (0.10 * atr):
-                    is_3_higher_lows = True
-
-            # Case B: Significant higher low (l_last - l_prev >= exh_threshold)
-            rise = l_last - l_prev
-            is_significant_rise = rise >= exh_threshold
-
-            # Exhaustion confirms if slope is not strongly bearish (>= -0.20 bps) and making higher lows
-            if (is_3_higher_lows or is_significant_rise) and live_slope_20_bps >= -0.20:
-                reason = "consecutive_higher_lows" if is_3_higher_lows else "ascending_pivot_low_rise"
-                return True, reason, {
-                    "direction": "PUT",
-                    "l_prev": round(l_prev, 2),
-                    "l_last": round(l_last, 2),
-                    "rise_pts": round(rise, 2),
-                    "threshold_pts": round(exh_threshold, 2),
-                    "bar_close": round(bar.close, 2),
-                    "ema_20_slope_bps": round(live_slope_20_bps, 2),
-                    "all_recent_lows": [round(x, 2) for x in recent_lows],
-                }
-
-            return False, "lower_lows_or_strong_slope", {}
-
-        return False, "unknown_direction", {}
 
     def _evaluate_wyckoff_pillar_flow(
         self,
@@ -2536,185 +2124,6 @@ class PriceActionEngine:
             }
             details.update(det_wflow)
             return True, f"20_ema_put_lh2_rejection ({sig_type})", details
-
-        return False, "unknown_direction", {}
-
-    def check_albrooks_2legged_pullback(
-        self,
-        direction: str,
-        current_vwap: float = 0.0,
-    ) -> Tuple[bool, str, Dict[str, Any]]:
-        """
-        Pillar 2: Al Brooks 2-Legged Pullback (H2 / L2 Exhaustion Sweep into 50 EMA).
-        Flexible pause up to 40 bars with same-side discipline.
-        Trend filter: 20 MA must lead 50 MA. Full-candle entries only.
-        """
-        if len(self.bars_1m) < 3:
-            return False, "insufficient_bars", {}
-
-        b1 = self.bars_1m[-1]  # Leg 2 sweep bar (latest closed)
-        bar = self.bars_1m[-1]  # Full-candle only, no mid-bar hop.
-        if bar is None:
-            return False, "no_closed_bar", {}
-
-        live_ema_50, live_slope_50_bps = self.get_live_50_ema_and_slope()
-        if live_ema_50 <= 0:
-            return False, "no_ema50", {}
-        try:
-            _e20t, _ = self.get_live_20_ema_and_slope()
-        except Exception:
-            _e20t = 0.0
-        if _e20t > 0:
-            if direction.upper() in ("UP", "CALL") and _e20t <= live_ema_50:
-                return False, "20_below_50_no_uptrend", {}
-            if direction.upper() in ("DOWN", "PUT") and _e20t >= live_ema_50:
-                return False, "20_above_50_no_downtrend", {}
-
-        buffer_pts = max(5.0, (live_ema_50 / 24000.0) * 5.0)
-        tol_pts = buffer_pts * 1.5
-
-        if direction.upper() in ("DOWN", "PUT"):
-            if current_vwap > 0 and bar.close >= current_vwap:
-                return False, "above_vwap", {}
-
-            # Leg 2 must reach 50 EMA with bearish reversal.
-            tested_50 = abs(b1.high - live_ema_50) <= tol_pts or (b1.high >= (live_ema_50 - tol_pts) and b1.close <= (live_ema_50 + tol_pts))
-            if not (tested_50 and bar.close < bar.open):
-                return False, "l2_structure_not_met", {}
-            # Flexible Leg 1 search: any touch in last 15 bars with same-side pause.
-            bars = list(self.bars_1m)
-            leg_found = False
-            leg1_high = b1.high
-            for k in range(6, min(41, len(bars))):
-                cand = bars[-(k + 1)]
-                c_test = abs(cand.high - live_ema_50) <= tol_pts or (cand.high >= (live_ema_50 - tol_pts) and cand.close <= (live_ema_50 + tol_pts))
-                if not c_test:
-                    continue
-                # Leg 1 must sit below VWAP (bearish falling from VWAP).
-                if current_vwap > 0 and cand.high >= current_vwap:
-                    continue
-                if not (b1.high > cand.high):
-                    continue
-                # Same-side pause: all bars between Leg 1 and Leg 2 stay below EMA.
-                ok = True
-                for mid in bars[-k:-1]:
-                    if mid.close > (live_ema_50 + 0.5 * tol_pts):
-                        ok = False
-                        break
-                if ok:
-                    leg_found = True
-                    leg1_high = cand.high
-                    break
-            # Fallback: first lower-high anywhere (bearish falling from VWAP).
-            if not leg_found:
-                for k in range(6, min(41, len(bars))):
-                    cand = bars[-(k + 1)]
-                    if not (cand.high > b1.high and cand.close < cand.open):
-                        continue
-                    # Below VWAP discipline for entire chain.
-                    if current_vwap > 0 and cand.high >= current_vwap:
-                        continue
-                    ok = True
-                    for mid in bars[-k:-1]:
-                        if mid.close > (live_ema_50 + 0.5 * tol_pts):
-                            ok = False
-                            break
-                    if ok:
-                        leg_found = True
-                        leg1_high = cand.high
-                        break
-            if not leg_found:
-                return False, "l2_no_valid_leg1_same_side", {}
-            if True:
-                sl_price = round(max(bar.high, b1.high) + buffer_pts, 2)
-                details = {
-                    "pa_setup_name": "albrooks_2legged_pullback",
-                    "pillar": 2,
-                    "structure": "L2_bearish_exhaustion",
-                    "ema_50": round(live_ema_50, 2),
-                    "bar_open": round(bar.open, 2),
-                    "bar_high": round(bar.high, 2),
-                    "bar_low": round(bar.low, 2),
-                    "bar_close": round(bar.close, 2),
-                    "leg1_high": round(leg1_high, 2),
-                    "leg2_high": round(b1.high, 2),
-                    "rejection_type": "l2_reversal",
-                    "sl_price": sl_price,
-                    "buffer_pts": round(buffer_pts, 2),
-                }
-                return True, "albrooks_l2_put_exhaustion", details
-            return False, "l2_structure_not_met", {}
-
-        elif direction.upper() in ("UP", "CALL"):
-            if current_vwap > 0 and bar.close <= current_vwap:
-                return False, "below_vwap", {}
-
-            # Leg 2 must reach 50 EMA with bullish reversal.
-            tested_50 = abs(b1.low - live_ema_50) <= tol_pts or (b1.low <= (live_ema_50 + tol_pts) and b1.close >= (live_ema_50 - tol_pts))
-            if not (tested_50 and bar.close > bar.open):
-                return False, "h2_structure_not_met", {}
-            # Flexible Leg 1 search with same-side pause (bullish stays above EMA).
-            bars = list(self.bars_1m)
-            leg_found = False
-            leg1_low = b1.low
-            for k in range(6, min(41, len(bars))):
-                cand = bars[-(k + 1)]
-                c_test = abs(cand.low - live_ema_50) <= tol_pts or (cand.low <= (live_ema_50 + tol_pts) and cand.close >= (live_ema_50 - tol_pts))
-                if not c_test:
-                    continue
-                # Leg 1 must sit above VWAP (bullish rising from VWAP).
-                if current_vwap > 0 and cand.low <= current_vwap:
-                    continue
-                if not (b1.low < cand.low):
-                    continue
-                ok = True
-                for mid in bars[-k:-1]:
-                    if mid.close < (live_ema_50 - 0.5 * tol_pts):
-                        ok = False
-                        break
-                if ok:
-                    leg_found = True
-                    leg1_low = cand.low
-                    break
-            # Fallback: first higher-low anywhere (bullish rising from VWAP).
-            if not leg_found:
-                for k in range(6, min(41, len(bars))):
-                    cand = bars[-(k + 1)]
-                    if not (cand.low < b1.low and cand.close > cand.open):
-                        continue
-                    # Above VWAP discipline for entire chain.
-                    if current_vwap > 0 and cand.low <= current_vwap:
-                        continue
-                    ok = True
-                    for mid in bars[-k:-1]:
-                        if mid.close < (live_ema_50 - 0.5 * tol_pts):
-                            ok = False
-                            break
-                    if ok:
-                        leg_found = True
-                        leg1_low = cand.low
-                        break
-            if not leg_found:
-                return False, "h2_no_valid_leg1_same_side", {}
-            if True:
-                sl_price = round(min(bar.low, b1.low) - buffer_pts, 2)
-                details = {
-                    "pa_setup_name": "albrooks_2legged_pullback",
-                    "pillar": 2,
-                    "structure": "H2_bullish_exhaustion",
-                    "ema_50": round(live_ema_50, 2),
-                    "bar_open": round(bar.open, 2),
-                    "bar_high": round(bar.high, 2),
-                    "bar_low": round(bar.low, 2),
-                    "bar_close": round(bar.close, 2),
-                    "leg1_low": round(leg1_low, 2),
-                    "leg2_low": round(b1.low, 2),
-                    "rejection_type": "h2_reversal",
-                    "sl_price": sl_price,
-                    "buffer_pts": round(buffer_pts, 2),
-                }
-                return True, "albrooks_h2_call_exhaustion", details
-            return False, "h2_structure_not_met", {}
 
         return False, "unknown_direction", {}
 
@@ -3186,242 +2595,6 @@ class PriceActionEngine:
                 details.update(det_wflow)
                 return True, "volatility_squeeze_upside_breakout", details
             return False, "no_upside_breakout", {}
-
-        return False, "unknown_direction", {}
-
-    def check_break_of_structure(
-        self,
-        direction: str,
-        current_vwap: float = 0.0,
-    ) -> Tuple[bool, str, Dict[str, Any]]:
-        """
-        [DISCARDED / RETIRED FROM LIVE TRADING] Legacy Naive 3-Bar BOS Level Breakout.
-        Superseded by Pillar 4: Topological HVG Dual-Timeframe Network Phase Shift Breakout.
-        Naive 3-bar local pivots lacked topological prominence and produced excessive noise.
-        Kept strictly as a standalone method for backward-compatibility with existing tests.
-        """
-        if len(self.bars_1m) < 4:
-            return False, "insufficient_bars", {}
-
-        bar = self.bars_1m[-1]
-        if bar is None:
-            return False, "no_closed_bar", {}
-
-        prior_bars = list(self.bars_1m)[:-1]
-        if not prior_bars:
-            return False, "insufficient_bars", {}
-
-        ref_spot = self.last_price if self.last_price > 0 else (bar.close if bar.close > 0 else 24000.0)
-        atr = self.current_atr_1m if self.current_atr_1m > 0 else (ref_spot * 0.001)
-        buffer_pts = max(5.0, (ref_spot / 24000.0) * 5.0)
-
-        live_ema_20, live_slope_20_bps = self.get_live_20_ema_and_slope()
-        live_ema_50, live_slope_50_bps = self.get_live_50_ema_and_slope()
-
-        total_range = bar.high - bar.low
-        if total_range <= 0:
-            return False, "zero_range", {}
-        if total_range < (0.30 * atr):
-            return False, "tiny_range_noise", {}
-
-        lookback = min(20, len(prior_bars))
-        lookback_bars = prior_bars[-lookback:]
-
-        if direction.upper() in ("UP", "CALL"):
-            # 1. Macro trend / VWAP alignment
-            if current_vwap > 0 and bar.close <= current_vwap:
-                return False, "below_vwap", {}
-
-            # 2. Strict EMA Trend Alignment: Cannot buy breakout when 20 EMA < 50 EMA
-            if self.ema_20_1m > 0 and self.ema_50_1m > 0 and self.ema_20_1m < self.ema_50_1m:
-                return False, "bear_overlap_ema_disallowed", {}
-            if live_slope_20_bps < -0.10:
-                return False, "20_ema_slope_bearish", {}
-
-            # 3. Candle quality: bullish impulse, solid body (>= 40%), strong close (upper 35%)
-            if bar.close <= bar.open:
-                return False, "not_bullish_candle", {}
-            body = bar.close - bar.open
-            if body < (0.40 * total_range):
-                return False, "body_too_small", {}
-            if (bar.close - bar.low) / total_range < 0.65:
-                return False, "wick_rejection_at_high", {}
-
-            # 4. Identify candidate structural resistance levels
-            candidate_levels: List[Tuple[str, float]] = []
-            if self.pdh > 0:
-                candidate_levels.append(("pdh", self.pdh))
-
-            # Pivot highs in lookback
-            if len(lookback_bars) >= 3:
-                for i in range(1, len(lookback_bars) - 1):
-                    prev_b = lookback_bars[i - 1]
-                    curr_b = lookback_bars[i]
-                    next_b = lookback_bars[i + 1]
-                    if curr_b.high >= prev_b.high and curr_b.high > next_b.high:
-                        candidate_levels.append(("pivot_high", curr_b.high))
-
-            # Prior swing high formed before immediate prior bar (at least 2 bars established)
-            if len(prior_bars) >= 3:
-                prior_swing_h = max(b.high for b in prior_bars[:-1])
-                candidate_levels.append(("prior_swing_high", prior_swing_h))
-
-            # 5. Evaluate candidate breakouts
-            broken_candidates: List[Tuple[str, float]] = []
-            threshold_pts = (self.proximity_threshold_bps / 10000.0) * ref_spot
-
-            prior_margin = max(0.10 * atr, buffer_pts * 0.25)
-            open_margin = max(0.25 * atr, buffer_pts * 0.50)
-            ext_cap = max(1.25 * atr, buffer_pts * 1.50)
-
-            for name, lvl in candidate_levels:
-                if lvl <= 0:
-                    continue
-                # Current bar must close above the level
-                if bar.close <= lvl:
-                    continue
-                # Prior closed bar must have closed at or below the level (+ small float margin)
-                if prior_bars[-1].close > (lvl + prior_margin):
-                    continue
-                # Breakout candle must have started near or below the level (not an unfillable gap)
-                if bar.open > (lvl + open_margin):
-                    continue
-                # Anti-chasing extension cap: close must not be overextended beyond level
-                if (bar.close - lvl) > ext_cap:
-                    continue
-
-                # Overhead PDH proximity check: if this broken level is NOT PDH, but PDH is directly overhead
-                if name != "pdh" and self.pdh > 0 and bar.close < self.pdh:
-                    if (self.pdh - bar.close) <= threshold_pts:
-                        continue  # Blocked: breaking intraday pivot directly into unbroken PDH resistance
-
-                broken_candidates.append((name, lvl))
-
-            if not broken_candidates:
-                return False, "no_bos_level_broken", {}
-
-            # Pick the highest broken level as the decisive structural resistance
-            best_name, broken_lvl = max(broken_candidates, key=lambda x: x[1])
-            sl_price = round(min(bar.low - buffer_pts, broken_lvl - buffer_pts), 2)
-
-            details = {
-                "pa_setup_name": "break_of_structure",
-                "pillar": 4,
-                "broken_level": round(broken_lvl, 2),
-                "broken_level_type": best_name,
-                "bar_open": round(bar.open, 2),
-                "bar_high": round(bar.high, 2),
-                "bar_low": round(bar.low, 2),
-                "bar_close": round(bar.close, 2),
-                "total_range": round(total_range, 2),
-                "body": round(body, 2),
-                "atr_14": round(atr, 2),
-                "extension_pts": round(bar.close - broken_lvl, 2),
-                "rejection_type": "bos_breakout_confirmation",
-                "sl_price": sl_price,
-                "buffer_pts": round(buffer_pts, 2),
-                "ema_20": round(live_ema_20, 2),
-                "ema_50": round(live_ema_50, 2),
-            }
-            return True, f"bos_call_breakout ({best_name})", details
-
-        elif direction.upper() in ("DOWN", "PUT"):
-            # 1. Macro trend / VWAP alignment
-            if current_vwap > 0 and bar.close >= current_vwap:
-                return False, "above_vwap", {}
-
-            # 2. Strict EMA Trend Alignment: Cannot short breakdown when 20 EMA > 50 EMA
-            if self.ema_20_1m > 0 and self.ema_50_1m > 0 and self.ema_20_1m > self.ema_50_1m:
-                return False, "bull_overlap_ema_disallowed", {}
-            if live_slope_20_bps > 0.10:
-                return False, "20_ema_slope_bullish", {}
-
-            # 3. Candle quality: bearish impulse, solid body (>= 40%), strong close (lower 35%)
-            if bar.close >= bar.open:
-                return False, "not_bearish_candle", {}
-            body = bar.open - bar.close
-            if body < (0.40 * total_range):
-                return False, "body_too_small", {}
-            if (bar.high - bar.close) / total_range < 0.65:
-                return False, "wick_rejection_at_low", {}
-
-            # 4. Identify candidate structural support levels
-            candidate_levels: List[Tuple[str, float]] = []
-            if self.pdl > 0:
-                candidate_levels.append(("pdl", self.pdl))
-
-            # Pivot lows in lookback
-            if len(lookback_bars) >= 3:
-                for i in range(1, len(lookback_bars) - 1):
-                    prev_b = lookback_bars[i - 1]
-                    curr_b = lookback_bars[i]
-                    next_b = lookback_bars[i + 1]
-                    if curr_b.low <= prev_b.low and curr_b.low < next_b.low:
-                        candidate_levels.append(("pivot_low", curr_b.low))
-
-            # Prior swing low formed before immediate prior bar (at least 2 bars established)
-            if len(prior_bars) >= 3:
-                prior_swing_l = min(b.low for b in prior_bars[:-1])
-                candidate_levels.append(("prior_swing_low", prior_swing_l))
-
-            # 5. Evaluate candidate breakdowns
-            broken_candidates: List[Tuple[str, float]] = []
-            threshold_pts = (self.proximity_threshold_bps / 10000.0) * ref_spot
-
-            prior_margin = max(0.10 * atr, buffer_pts * 0.25)
-            open_margin = max(0.25 * atr, buffer_pts * 0.50)
-            ext_cap = max(1.25 * atr, buffer_pts * 1.50)
-
-            for name, lvl in candidate_levels:
-                if lvl <= 0:
-                    continue
-                # Current bar must close below the level
-                if bar.close >= lvl:
-                    continue
-                # Prior closed bar must have closed at or above the level (- small float margin)
-                if prior_bars[-1].close < (lvl - prior_margin):
-                    continue
-                # Breakdown candle must have started near or above the level (not an unfillable gap)
-                if bar.open < (lvl - open_margin):
-                    continue
-                # Anti-chasing extension cap: close must not be overextended beyond level
-                if (lvl - bar.close) > ext_cap:
-                    continue
-
-                # Underlying PDL proximity check: if this broken level is NOT PDL, but PDL is directly below
-                if name != "pdl" and self.pdl > 0 and bar.close > self.pdl:
-                    if (bar.close - self.pdl) <= threshold_pts:
-                        continue  # Blocked: breaking intraday pivot directly into unbroken PDL support
-
-                broken_candidates.append((name, lvl))
-
-            if not broken_candidates:
-                return False, "no_bos_level_broken", {}
-
-            # Pick the lowest broken level as the decisive structural support
-            best_name, broken_lvl = min(broken_candidates, key=lambda x: x[1])
-            sl_price = round(max(bar.high + buffer_pts, broken_lvl + buffer_pts), 2)
-
-            details = {
-                "pa_setup_name": "break_of_structure",
-                "pillar": 4,
-                "broken_level": round(broken_lvl, 2),
-                "broken_level_type": best_name,
-                "bar_open": round(bar.open, 2),
-                "bar_high": round(bar.high, 2),
-                "bar_low": round(bar.low, 2),
-                "bar_close": round(bar.close, 2),
-                "total_range": round(total_range, 2),
-                "body": round(body, 2),
-                "atr_14": round(atr, 2),
-                "extension_pts": round(broken_lvl - bar.close, 2),
-                "rejection_type": "bos_breakdown_confirmation",
-                "sl_price": sl_price,
-                "buffer_pts": round(buffer_pts, 2),
-                "ema_20": round(live_ema_20, 2),
-                "ema_50": round(live_ema_50, 2),
-            }
-            return True, f"bos_put_breakdown ({best_name})", details
 
         return False, "unknown_direction", {}
 
@@ -3898,18 +3071,26 @@ class PriceActionEngine:
 
     def _enrich_details(self, details: Dict[str, Any]) -> Dict[str, Any]:
         """Enriches setup details dict with relative bar metrics and volume SMA."""
-        closed_bar = (self.bars_1m[-1] if self.bars_1m else None) or self._curr_1m_bar
-        bar_m = self.get_relative_bar_metrics(bar=closed_bar)
+        mode_val = str(details.get("mode", "")).upper()
+        if mode_val.startswith("MODE_") and self._curr_1m_bar is not None:
+            active_bar = self._curr_1m_bar
+        else:
+            active_bar = (self.bars_1m[-1] if self.bars_1m else None) or self._curr_1m_bar
+        bar_m = self.get_relative_bar_metrics(bar=active_bar)
         for k, v in bar_m.items():
             if k not in details:
                 details[k] = v
         return details
 
     def _evaluate_mode_a_arming(self, bar: OHLCBar) -> None:
-        """Evaluates boundary rejection on latest closed 1m candle and arms Mode A."""
-        if len(self.bars_1m) < 20:
+        """
+        Evaluates boundary rejection on latest closed 1m candle and arms Mode A.
+        Strictly wired to Pillar 1 (20 EMA Pullback Rejection) & Pillar 2 (Micro-Sweep).
+        Never arms on breakouts from below (CALL) or breakouts from above (PUT)!
+        """
+        if len(self.bars_1m) < 12:
             return
-        bar_idx = len(self.bars_1m) - 1
+        bar_idx = self._total_bars_seen
         atr = self.current_atr_1m if self.current_atr_1m > 0 else 10.0
         c_range = max(bar.high - bar.low, 0.5)
         lower_wick = min(bar.open, bar.close) - bar.low
@@ -3917,49 +3098,126 @@ class PriceActionEngine:
         lower_wick_ratio = lower_wick / c_range
         upper_wick_ratio = upper_wick / c_range
 
-        pz = self.get_pain_zone_vwaps()
-        pz_top = float(pz.get("zone_top", 0.0) or 0.0)
-        pz_bot = float(pz.get("zone_bottom", 0.0) or 0.0)
+        live_ema_20, live_slope_20_bps = self.get_live_20_ema_and_slope()
+        e_close_arr, e_high_arr, e_low_arr = self.get_20_ema_band_arrays(2)
+        band_high = e_high_arr[-1]
+        band_low = e_low_arr[-1]
+        tol_pts = max(1.5, live_ema_20 * (1.5 / 10000.0), 0.12 * atr)
 
-        boundaries_to_check = []
-        if pz_top > 0 and pz_bot > 0:
-            boundaries_to_check.append(("PAIN_ZONE_BAND", pz_top, pz_bot))
-        if getattr(self, "ema_200_1m", 0.0) > 0:
-            boundaries_to_check.append(("EMA_200_BAND", self.ema_200_1m + 0.25 * atr, self.ema_200_1m - 0.25 * atr))
+        # ─── 1. Pillar 1: CALL 20 EMA Pullback Rejection Arming ───
+        last_p1_up_idx = self._mode_a_last_trigger_bar_idx.get("P1_EMA20_UP", -100)
+        if (bar_idx - last_p1_up_idx) >= 3:
+            uptrend_ok = (live_slope_20_bps >= -0.10) and (self.ema_20_1m >= self.ema_50_1m or self.ema_50_1m <= 0)
+            vwap_ok = (self.current_vwap <= 0 or bar.close > self.current_vwap)
+            # Breakout-from-below VETO: Price must have opened at/above band and prior bars must have been above band!
+            prior_bars = list(self.bars_1m)[-4:-1]
+            came_from_above = (bar.open >= band_low - 0.25 * atr) and any(b.high >= band_high for b in prior_bars)
+            # Band Touch
+            band_tested = (bar.low <= band_high + tol_pts) and (bar.close >= band_low - 0.25 * atr)
+            # Rejection Geometry: Real lower wick (>= 0.20), closing in top half (NO 'or close > open'!)
+            rej_geom = (lower_wick_ratio >= 0.20) and (bar.close >= bar.low + 0.40 * c_range)
+            dow = self._validate_dow_hl2_lh2_structure("CALL", touch2_offset=0)
+            ok_struct, _, _ = self._check_structural_obstacle("CALL", bar.close, check_day_extremes=True)
 
-        for b_name, b_top, b_bottom in boundaries_to_check:
-            last_idx = self._mode_a_last_trigger_bar_idx.get(b_name, -100)
-            if (bar_idx - last_idx) < 3:
-                continue
-
-            # CALL Support Rejection Check
-            call_touch = (bar.low <= b_top + 0.35 * atr) and (bar.close >= b_bottom - 0.25 * atr)
-            call_rej = (lower_wick_ratio >= 0.20) or (bar.close > bar.open)
-            if call_touch and call_rej and self._check_wyckoff_harmony("UP", bar):
-                self._mode_a_armed_setups[b_name] = {
+            if uptrend_ok and vwap_ok and came_from_above and band_tested and rej_geom and dow.is_valid and ok_struct and self._check_wyckoff_harmony("UP", bar):
+                self._mode_a_armed_setups["PILLAR_1_EMA_UP"] = {
                     "direction": "UP",
+                    "pillar": 1,
+                    "pa_setup_name": "20_ema_rejection",
                     "anchor_high": bar.high,
                     "anchor_low": bar.low,
+                    "boundary_level": band_high,
                     "armed_bar_idx": bar_idx,
                     "armed_ts": self.last_ts,
                 }
-                self._mode_a_last_trigger_bar_idx[b_name] = bar_idx
-                logger.info(f"[PriceActionEngine] [MODE_A_ARMED] {b_name} CALL Rejection Armed | AnchorHigh: {bar.high:.2f}")
-                continue
+                self._mode_a_last_trigger_bar_idx["P1_EMA20_UP"] = bar_idx
+                logger.info(f"[PriceActionEngine] [MODE_A_ARMED] Pillar 1 20 EMA CALL Pullback Rejection Armed | AnchorHigh: {bar.high:.2f}")
 
-            # PUT Resistance Rejection Check
-            put_touch = (bar.high >= b_bottom - 0.35 * atr) and (bar.close <= b_top + 0.25 * atr)
-            put_rej = (upper_wick_ratio >= 0.20) or (bar.close < bar.open)
-            if put_touch and put_rej and self._check_wyckoff_harmony("DOWN", bar):
-                self._mode_a_armed_setups[b_name] = {
+        # ─── 2. Pillar 1: PUT 20 EMA Pullback Rejection Arming ───
+        last_p1_down_idx = self._mode_a_last_trigger_bar_idx.get("P1_EMA20_DOWN", -100)
+        if (bar_idx - last_p1_down_idx) >= 3:
+            downtrend_ok = (live_slope_20_bps <= 0.10) and (self.ema_20_1m <= self.ema_50_1m or self.ema_50_1m <= 0)
+            vwap_ok = (self.current_vwap <= 0 or bar.close < self.current_vwap)
+            prior_bars = list(self.bars_1m)[-4:-1]
+            came_from_below = (bar.open <= band_high + 0.25 * atr) and any(b.low <= band_low for b in prior_bars)
+            band_tested = (bar.high >= band_low - tol_pts) and (bar.close <= band_high + 0.25 * atr)
+            rej_geom = (upper_wick_ratio >= 0.20) and (bar.close <= bar.high - 0.40 * c_range)
+            dow = self._validate_dow_hl2_lh2_structure("PUT", touch2_offset=0)
+            ok_struct, _, _ = self._check_structural_obstacle("PUT", bar.close, check_day_extremes=True)
+
+            if downtrend_ok and vwap_ok and came_from_below and band_tested and rej_geom and dow.is_valid and ok_struct and self._check_wyckoff_harmony("DOWN", bar):
+                self._mode_a_armed_setups["PILLAR_1_EMA_DOWN"] = {
                     "direction": "DOWN",
+                    "pillar": 1,
+                    "pa_setup_name": "20_ema_rejection",
                     "anchor_high": bar.high,
                     "anchor_low": bar.low,
+                    "boundary_level": band_low,
                     "armed_bar_idx": bar_idx,
                     "armed_ts": self.last_ts,
                 }
-                self._mode_a_last_trigger_bar_idx[b_name] = bar_idx
-                logger.info(f"[PriceActionEngine] [MODE_A_ARMED] {b_name} PUT Rejection Armed | AnchorLow: {bar.low:.2f}")
+                self._mode_a_last_trigger_bar_idx["P1_EMA20_DOWN"] = bar_idx
+                logger.info(f"[PriceActionEngine] [MODE_A_ARMED] Pillar 1 20 EMA PUT Pullback Rejection Armed | AnchorLow: {bar.low:.2f}")
+
+        # ─── 3. Pillar 2: CALL Micro-Sweep & Reclaim Arming ───
+        last_p2_up_idx = self._mode_a_last_trigger_bar_idx.get("P2_SWEEP_UP", -100)
+        if len(self.bars_1m) >= 7 and (bar_idx - last_p2_up_idx) >= 3:
+            is_lunch_chop = False
+            if bar.ts_start > 1_000_000_000.0:
+                try:
+                    dt_bar = datetime.fromtimestamp(bar.ts_start, _IST)
+                except Exception:
+                    dt_bar = None
+                if dt_bar is not None:
+                    is_lunch_chop = (dt_time(11, 15, 0) <= dt_bar.time() <= dt_time(13, 0, 0))
+            if not is_lunch_chop:
+                prior_5 = list(self.bars_1m)[-6:-1]
+                swept_low = min(b.low for b in prior_5)
+                swept_and_reclaimed = (bar.low < swept_low) and (bar.close > swept_low)
+                sweep_geom = (lower_wick_ratio >= 0.35) and (bar.close >= bar.low + 0.50 * c_range)
+                if swept_and_reclaimed and sweep_geom and self._check_wyckoff_harmony("UP", bar):
+                    self._mode_a_armed_setups["PILLAR_2_SWEEP_UP"] = {
+                        "direction": "UP",
+                        "pillar": 2,
+                        "pa_setup_name": "micro_sweep_reclaim",
+                        "anchor_high": bar.high,
+                        "anchor_low": bar.low,
+                        "boundary_level": swept_low,
+                        "armed_bar_idx": bar_idx,
+                        "armed_ts": self.last_ts,
+                    }
+                    self._mode_a_last_trigger_bar_idx["P2_SWEEP_UP"] = bar_idx
+                    logger.info(f"[PriceActionEngine] [MODE_A_ARMED] Pillar 2 Micro-Sweep CALL Armed | SweptLow: {swept_low:.2f} | AnchorHigh: {bar.high:.2f}")
+
+        # ─── 4. Pillar 2: PUT Micro-Sweep & Reclaim Arming ───
+        last_p2_down_idx = self._mode_a_last_trigger_bar_idx.get("P2_SWEEP_DOWN", -100)
+        if len(self.bars_1m) >= 7 and (bar_idx - last_p2_down_idx) >= 3:
+            is_lunch_chop = False
+            if bar.ts_start > 1_000_000_000.0:
+                try:
+                    dt_bar = datetime.fromtimestamp(bar.ts_start, _IST)
+                except Exception:
+                    dt_bar = None
+                if dt_bar is not None:
+                    is_lunch_chop = (dt_time(11, 15, 0) <= dt_bar.time() <= dt_time(13, 0, 0))
+            if not is_lunch_chop:
+                prior_5 = list(self.bars_1m)[-6:-1]
+                swept_high = max(b.high for b in prior_5)
+                swept_and_reclaimed = (bar.high > swept_high) and (bar.close < swept_high)
+                sweep_geom = (upper_wick_ratio >= 0.35) and (bar.close <= bar.high - 0.50 * c_range)
+                if swept_and_reclaimed and sweep_geom and self._check_wyckoff_harmony("DOWN", bar):
+                    self._mode_a_armed_setups["PILLAR_2_SWEEP_DOWN"] = {
+                        "direction": "DOWN",
+                        "pillar": 2,
+                        "pa_setup_name": "micro_sweep_reclaim",
+                        "anchor_high": bar.high,
+                        "anchor_low": bar.low,
+                        "boundary_level": swept_high,
+                        "armed_bar_idx": bar_idx,
+                        "armed_ts": self.last_ts,
+                    }
+                    self._mode_a_last_trigger_bar_idx["P2_SWEEP_DOWN"] = bar_idx
+                    logger.info(f"[PriceActionEngine] [MODE_A_ARMED] Pillar 2 Micro-Sweep PUT Armed | SweptHigh: {swept_high:.2f} | AnchorLow: {bar.low:.2f}")
 
     def _check_wyckoff_harmony(self, direction: str, bar: Any) -> bool:
         """Verifies institutional order flow delta harmony (no opposing liquidation dump)."""
@@ -3990,10 +3248,6 @@ class PriceActionEngine:
         atr = self.current_atr_1m if self.current_atr_1m > 0 else 10.0
         spot = self.last_price
 
-        pz = self.get_pain_zone_vwaps()
-        pz_top = float(pz.get("zone_top", 0.0) or 0.0)
-        pz_bot = float(pz.get("zone_bottom", 0.0) or 0.0)
-
         for b_name, setup in list(self._mode_a_armed_setups.items()):
             s_dir = setup.get("direction", "")
             if s_dir != direction:
@@ -4001,23 +3255,14 @@ class PriceActionEngine:
 
             anchor_h = setup.get("anchor_high", 0.0)
             anchor_l = setup.get("anchor_low", 0.0)
+            pillar_num = setup.get("pillar", 1)
+            setup_name = setup.get("pa_setup_name", "20_ema_rejection")
 
-            # 1. Priority Window: Disarm after 20s if not pierced
+            # Priority Window: Disarm after 20s if not pierced
             if sec_in_min > 20:
                 del self._mode_a_armed_setups[b_name]
                 continue
 
-            # 2. Auto-Flip Disarm Rule: If new candle reverses across opposite boundary by 0.15*ATR
-            if s_dir == "UP" and pz_bot > 0 and spot <= (pz_bot - 0.15 * atr):
-                del self._mode_a_armed_setups[b_name]
-                logger.info(f"[PriceActionEngine] Mode A {b_name} CALL Disarmed: Reversed across lower boundary")
-                continue
-            elif s_dir == "DOWN" and pz_top > 0 and spot >= (pz_top + 0.15 * atr):
-                del self._mode_a_armed_setups[b_name]
-                logger.info(f"[PriceActionEngine] Mode A {b_name} PUT Disarmed: Reversed across upper boundary")
-                continue
-
-            # 3. Piercing Trigger
             triggered = False
             if s_dir == "UP" and spot >= anchor_h:
                 triggered = True
@@ -4026,20 +3271,195 @@ class PriceActionEngine:
 
             if triggered:
                 del self._mode_a_armed_setups[b_name]
-                logger.info(f"[PriceActionEngine] [MODE_A_PIERCE] {b_name} {direction} Triggered at spot={spot:.2f} (T+{sec_in_min}s)")
-                return True, "mode_a_boundary_pierce", {
-                    "pillar": 1,
-                    "pa_setup_name": "mode_a_boundary_pierce",
+                b_open = round(self._curr_1m_bar.open, 2) if self._curr_1m_bar is not None else round(anchor_l if direction == "UP" else anchor_h, 2)
+                logger.info(f"[PriceActionEngine] [MODE_A_PIERCE] Pillar {pillar_num} {setup_name} {direction} Triggered at spot={spot:.2f} (T+{sec_in_min}s)")
+                return True, setup_name, {
+                    "pillar": pillar_num,
+                    "pa_setup_name": setup_name,
+                    "mode": "MODE_A_PIERCE",
                     "boundary": b_name,
-                    "boundary_level": round(pz_top if direction == "UP" else pz_bot, 2),
-                    "sl_price": round(anchor_l - 0.10 * atr if direction == "UP" else anchor_h + 0.10 * atr, 2),
+                    "boundary_level": round(setup.get("boundary_level", spot), 2),
+                    "sl_price": round(anchor_l - 0.15 * atr if direction == "UP" else anchor_h + 0.15 * atr, 2),
                     "trigger_sec": sec_in_min,
+                    "bar_open": b_open,
                     "bar_high": anchor_h,
                     "bar_low": anchor_l,
+                    "bar_close": round(spot, 2),
                     "entry_bar_bucket": int(now_sec // 60),
                 }
 
-        return False, "no_mode_a_trigger", {}
+        return False, "mode_a_not_pierced", {}
+
+    def check_mode_a_pre_close(
+        self,
+        direction: str,
+        external_vwap: float = 0.0,
+        current_time: float = 0.0,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Mode A: Live In-Flight Pre-Close Early Entry (T:50s - T:58s) for Pillar 1 & Pillar 2.
+        Triggers before candle close if rejection geometry and live delta harmony are confirmed.
+        """
+        now_sec = current_time if current_time > 0 else self.last_ts
+        sec_in_min = int(now_sec % 60)
+        if not (50 <= sec_in_min <= 58):
+            return False, "outside_preclose_window", {}
+
+        curr_bar = self._curr_1m_bar
+        if curr_bar is None or curr_bar.tick_count < 6 or self.current_atr_1m <= 0:
+            return False, "insufficient_ticks_or_atr", {}
+
+        atr = self.current_atr_1m
+        spot = self.last_price
+        curr_rng = max(curr_bar.high - curr_bar.low, 0.5)
+
+        cb = float(self._opt_flow_1m.get("call_buy_vol", 0.0))
+        cs = float(self._opt_flow_1m.get("call_sell_vol", 0.0))
+        pb = float(self._opt_flow_1m.get("put_buy_vol", 0.0))
+        ps = float(self._opt_flow_1m.get("put_sell_vol", 0.0))
+        bull_flow = cb + ps
+        bear_flow = pb + cs
+
+        if direction == "UP":
+            if (bull_flow + bear_flow > 0) and not (bull_flow >= 1.25 * bear_flow and cb >= cs):
+                return False, "delta_harmony_fail", {}
+        elif direction == "DOWN":
+            if (bull_flow + bear_flow > 0) and not (bear_flow >= 1.25 * bull_flow and pb >= ps):
+                return False, "delta_harmony_fail", {}
+
+        bar_idx = self._total_bars_seen
+
+        # ─── Pillar 1 Pre-Close (20 EMA Rejection) ───
+        live_ema_20, live_slope_20_bps = self.get_live_20_ema_and_slope()
+        e_close_arr, e_high_arr, e_low_arr = self.get_20_ema_band_arrays(2)
+        band_high = e_high_arr[-1]
+        band_low = e_low_arr[-1]
+        tol_pts = max(1.5, live_ema_20 * (1.5 / 10000.0), 0.12 * atr)
+
+        if direction == "UP":
+            last_p1 = self._mode_a_last_trigger_bar_idx.get("P1_EMA20_UP", -100)
+            if (bar_idx - last_p1) >= 3:
+                uptrend_ok = (live_slope_20_bps >= -0.10) and (self.ema_20_1m >= self.ema_50_1m or self.ema_50_1m <= 0)
+                vwap_ok = (self.current_vwap <= 0 or spot > self.current_vwap)
+                came_from_above = curr_bar.open >= (band_low - 0.25 * atr)
+                band_tested = (curr_bar.low <= band_high + tol_pts) and (spot >= band_low - 0.25 * atr)
+                lower_wick = min(curr_bar.open, spot) - curr_bar.low
+                lower_wick_ratio = lower_wick / curr_rng
+                close_edge = (spot - curr_bar.low) / curr_rng
+                dow = self._validate_dow_hl2_lh2_structure("CALL", touch2_offset=0)
+                ok_struct, _, _ = self._check_structural_obstacle("CALL", spot)
+                if uptrend_ok and vwap_ok and came_from_above and band_tested and lower_wick_ratio >= 0.20 and close_edge >= 0.65 and (dow.is_valid or len(self.bars_1m) < 16) and ok_struct:
+                    self._mode_a_last_trigger_bar_idx["P1_EMA20_UP"] = bar_idx
+                    logger.info(f"[PriceActionEngine] [MODE_A_PRECLOSE] Pillar 1 20 EMA CALL Rejection Triggered at spot={spot:.2f} (T+{sec_in_min}s)")
+                    return True, "20_ema_rejection", {
+                        "pillar": 1,
+                        "pa_setup_name": "20_ema_rejection",
+                        "mode": "MODE_A_PRECLOSE",
+                        "boundary": "20_EMA_BAND",
+                        "boundary_level": round(band_high, 2),
+                        "sl_price": round(curr_bar.low - 0.15 * atr, 2),
+                        "trigger_sec": sec_in_min,
+                        "bar_open": round(curr_bar.open, 2),
+                        "bar_high": round(curr_bar.high, 2),
+                        "bar_low": round(curr_bar.low, 2),
+                        "bar_close": round(spot, 2),
+                        "entry_bar_bucket": int(now_sec // 60),
+                    }
+        elif direction == "DOWN":
+            last_p1 = self._mode_a_last_trigger_bar_idx.get("P1_EMA20_DOWN", -100)
+            if (bar_idx - last_p1) >= 3:
+                downtrend_ok = (live_slope_20_bps <= 0.10) and (self.ema_20_1m <= self.ema_50_1m or self.ema_50_1m <= 0)
+                vwap_ok = (self.current_vwap <= 0 or spot < self.current_vwap)
+                came_from_below = curr_bar.open <= (band_high + 0.25 * atr)
+                band_tested = (curr_bar.high >= band_low - tol_pts) and (spot <= band_high + 0.25 * atr)
+                upper_wick = curr_bar.high - max(curr_bar.open, spot)
+                upper_wick_ratio = upper_wick / curr_rng
+                close_edge = (curr_bar.high - spot) / curr_rng
+                dow = self._validate_dow_hl2_lh2_structure("PUT", touch2_offset=0)
+                ok_struct, _, _ = self._check_structural_obstacle("PUT", spot)
+                if downtrend_ok and vwap_ok and came_from_below and band_tested and upper_wick_ratio >= 0.20 and close_edge >= 0.65 and (dow.is_valid or len(self.bars_1m) < 16) and ok_struct:
+                    self._mode_a_last_trigger_bar_idx["P1_EMA20_DOWN"] = bar_idx
+                    logger.info(f"[PriceActionEngine] [MODE_A_PRECLOSE] Pillar 1 20 EMA PUT Rejection Triggered at spot={spot:.2f} (T+{sec_in_min}s)")
+                    return True, "20_ema_rejection", {
+                        "pillar": 1,
+                        "pa_setup_name": "20_ema_rejection",
+                        "mode": "MODE_A_PRECLOSE",
+                        "boundary": "20_EMA_BAND",
+                        "boundary_level": round(band_low, 2),
+                        "sl_price": round(curr_bar.high + 0.15 * atr, 2),
+                        "trigger_sec": sec_in_min,
+                        "bar_open": round(curr_bar.open, 2),
+                        "bar_high": round(curr_bar.high, 2),
+                        "bar_low": round(curr_bar.low, 2),
+                        "bar_close": round(spot, 2),
+                        "entry_bar_bucket": int(now_sec // 60),
+                    }
+
+        # ─── Pillar 2 Pre-Close (Micro-Sweep & Reclaim) ───
+        if len(self.bars_1m) >= 6:
+            is_lunch_chop = False
+            if now_sec > 1_000_000_000.0:
+                try:
+                    dt_now = datetime.fromtimestamp(now_sec, _IST)
+                except Exception:
+                    dt_now = None
+                if dt_now is not None:
+                    is_lunch_chop = (dt_time(11, 15, 0) <= dt_now.time() <= dt_time(13, 0, 0))
+            if not is_lunch_chop:
+                prior_5 = list(self.bars_1m)[-5:]
+                if direction == "UP":
+                    last_p2 = self._mode_a_last_trigger_bar_idx.get("P2_SWEEP_UP", -100)
+                    if (bar_idx - last_p2) >= 3:
+                        swept_low = min(b.low for b in prior_5)
+                        swept_and_reclaimed = (curr_bar.low < swept_low) and (spot > swept_low)
+                        lower_wick = min(curr_bar.open, spot) - curr_bar.low
+                        lower_wick_ratio = lower_wick / curr_rng
+                        close_edge = (spot - curr_bar.low) / curr_rng
+                        if swept_and_reclaimed and lower_wick_ratio >= 0.35 and close_edge >= 0.65:
+                            self._mode_a_last_trigger_bar_idx["P2_SWEEP_UP"] = bar_idx
+                            logger.info(f"[PriceActionEngine] [MODE_A_PRECLOSE] Pillar 2 Micro-Sweep CALL Triggered at spot={spot:.2f} (T+{sec_in_min}s)")
+                            return True, "micro_sweep_reclaim", {
+                                "pillar": 2,
+                                "pa_setup_name": "micro_sweep_reclaim",
+                                "mode": "MODE_A_PRECLOSE",
+                                "boundary": "MICRO_SWEEP_LOW",
+                                "boundary_level": round(swept_low, 2),
+                                "sl_price": round(curr_bar.low - 0.15 * atr, 2),
+                                "trigger_sec": sec_in_min,
+                                "bar_open": round(curr_bar.open, 2),
+                                "bar_high": round(curr_bar.high, 2),
+                                "bar_low": round(curr_bar.low, 2),
+                                "bar_close": round(spot, 2),
+                                "entry_bar_bucket": int(now_sec // 60),
+                            }
+                elif direction == "DOWN":
+                    last_p2 = self._mode_a_last_trigger_bar_idx.get("P2_SWEEP_DOWN", -100)
+                    if (bar_idx - last_p2) >= 3:
+                        swept_high = max(b.high for b in prior_5)
+                        swept_and_reclaimed = (curr_bar.high > swept_high) and (spot < swept_high)
+                        upper_wick = curr_bar.high - max(curr_bar.open, spot)
+                        upper_wick_ratio = upper_wick / curr_rng
+                        close_edge = (curr_bar.high - spot) / curr_rng
+                        if swept_and_reclaimed and upper_wick_ratio >= 0.35 and close_edge >= 0.65:
+                            self._mode_a_last_trigger_bar_idx["P2_SWEEP_DOWN"] = bar_idx
+                            logger.info(f"[PriceActionEngine] [MODE_A_PRECLOSE] Pillar 2 Micro-Sweep PUT Triggered at spot={spot:.2f} (T+{sec_in_min}s)")
+                            return True, "micro_sweep_reclaim", {
+                                "pillar": 2,
+                                "pa_setup_name": "micro_sweep_reclaim",
+                                "mode": "MODE_A_PRECLOSE",
+                                "boundary": "MICRO_SWEEP_HIGH",
+                                "boundary_level": round(swept_high, 2),
+                                "sl_price": round(curr_bar.high + 0.15 * atr, 2),
+                                "trigger_sec": sec_in_min,
+                                "bar_open": round(curr_bar.open, 2),
+                                "bar_high": round(curr_bar.high, 2),
+                                "bar_low": round(curr_bar.low, 2),
+                                "bar_close": round(spot, 2),
+                                "entry_bar_bucket": int(now_sec // 60),
+                            }
+
+        return False, "mode_a_preclose_not_met", {}
+
 
     def check_mode_b_breakthrough(
         self,
@@ -4049,8 +3469,10 @@ class PriceActionEngine:
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
         Mode B: Live In-Flight Intra-Bar Breakthrough Surge.
-        Triggers when an active forming 1-minute candle breaks through the Pain Zone
-        with strong directional expansion mid-bar between T:08s and T:48s.
+        Triggers strictly on:
+          1. Pillar 3: Volatility Squeeze Box Breakout (3-4 bar tight compression).
+          2. Pillar 4: Dynamic S/R Registry Breakout (with Day Extreme Runway Shield).
+        Active mid-bar between T:08s and T:48s.
         """
         now_sec = current_time if current_time > 0 else self.last_ts
         sec_in_min = int(now_sec % 60)
@@ -4065,24 +3487,21 @@ class PriceActionEngine:
         spot = self.last_price
         curr_rng = curr_bar.high - curr_bar.low
 
-        # 1. Sweet-Spot Range Filter: never trigger on tiny noise (<0.35x ATR) or climax (>1.20x ATR)
+        # Sweet-Spot Range Filter: 0.35x to 1.20x ATR
         if curr_rng < (0.35 * atr) or curr_rng > (1.20 * atr):
             return False, "range_outside_sweet_spot", {}
 
-        # 2. In-Flight Option Flow & Spot Tick Arrival Rate
         cb = float(self._opt_flow_1m.get("call_buy_vol", 0.0))
         cs = float(self._opt_flow_1m.get("call_sell_vol", 0.0))
         pb = float(self._opt_flow_1m.get("put_buy_vol", 0.0))
         ps = float(self._opt_flow_1m.get("put_sell_vol", 0.0))
-        inflight_opt_vol = cb + cs + pb + ps
         bull_flow = cb + ps
         bear_flow = pb + cs
-
-        # Spot tick arrival rate during active bar formation
         tick_rate = curr_bar.tick_count / max(float(sec_in_min), 1.0)
 
-        # Time-Normalized In-Flight Option Volume Pace (comparing option contracts to option contracts)
+        # Require active volume delta or tick rate >= 1.5
         vols_60 = [float(getattr(b, "volume", 0.0) or 0.0) for b in list(self.bars_1m)[-60:]]
+        inflight_opt_vol = cb + cs + pb + ps
         if vols_60 and inflight_opt_vol > 0:
             s_v = sorted(vols_60)
             med_vol = float(s_v[len(s_v)//2])
@@ -4091,70 +3510,213 @@ class PriceActionEngine:
         else:
             opt_pace_ok = True
 
-        # Require either active option flow velocity or high spot tick rate (>= 1.5 ticks/sec)
         if not (opt_pace_ok or tick_rate >= 1.5):
             return False, "volume_velocity_sub_threshold", {}
 
-        pz = self.get_pain_zone_vwaps()
-        pz_top = float(pz.get("zone_top", 0.0) or 0.0)
-        pz_bot = float(pz.get("zone_bottom", 0.0) or 0.0)
-        if pz_top <= 0 or pz_bot <= 0:
-            return False, "pain_zone_uninitialized", {}
+        bar_idx = self._total_bars_seen
 
-        bar_idx = len(self.bars_1m)
-        last_trig = self._mode_b_last_trigger_bar_idx.get("PAIN_ZONE_BREAKTHROUGH", -100)
-        if (bar_idx - last_trig) < 3:
-            return False, "cooldown_active", {}
+        # ─── 1. PILLAR 3: Squeeze Box Breakout (Mode B) ───
+        min_clearance = max(2.0, (spot / 24000.0) * 2.0, 0.08 * atr)
+        n_box = 4 if len(self.bars_1m) >= 5 else 3
+        if len(self.bars_1m) >= n_box:
+            recent_bars = list(self.bars_1m)[-n_box:]
+            box_high = max(b.high for b in recent_bars)
+            box_low = min(b.low for b in recent_bars)
+            box_rng = box_high - box_low
+            last_p3 = self._mode_b_last_trigger_bar_idx.get("P3_BOX_BREAKTHROUGH", -100)
+            if box_rng <= (1.25 * atr) and (bar_idx - last_p3) >= 3:
+                if direction == "UP":
+                    if curr_bar.open <= box_high and spot >= (box_high + min_clearance):
+                        body_ratio = (spot - curr_bar.open) / max(curr_rng, 0.1)
+                        upper_wick = curr_bar.high - spot
+                        trend_ok = not (self.ema_20_1m < self.ema_50_1m and self.ema_20_1m > 0 and self.ema_50_1m > 0)
+                        ok_struct, _, _ = self._check_structural_obstacle("CALL", spot, check_day_extremes=True)
+                        if body_ratio >= 0.65 and upper_wick <= (0.05 * atr) and trend_ok and ok_struct:
+                            if (bull_flow + bear_flow <= 0) or (bull_flow >= 1.30 * bear_flow and cb > cs):
+                                last_spot_cnt = getattr(self, "_mode_b_p3_up_last_tick", -1)
+                                last_spot_time = getattr(self, "_mode_b_p3_up_last_time", 0.0)
+                                if curr_bar.tick_count != last_spot_cnt or (now_sec - last_spot_time) >= 0.25:
+                                    self._mode_b_p3_up_ticks = getattr(self, "_mode_b_p3_up_ticks", 0) + 1
+                                    self._mode_b_p3_up_last_tick = curr_bar.tick_count
+                                    self._mode_b_p3_up_last_time = now_sec
+                                if self._mode_b_p3_up_ticks >= 2:
+                                    self._mode_b_p3_up_ticks = 0
+                                    self._mode_b_last_trigger_bar_idx["P3_BOX_BREAKTHROUGH"] = bar_idx
+                                    logger.info(f"[PriceActionEngine] [MODE_B_P3] Squeeze Box CALL Breakout at spot={spot:.2f} > box_high={box_high:.2f} (T+{sec_in_min}s)")
+                                    return True, "volatility_squeeze_breakout", {
+                                        "pillar": 3,
+                                        "pa_setup_name": "volatility_squeeze_breakout",
+                                        "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
+                                        "box_high": round(box_high, 2),
+                                        "box_low": round(box_low, 2),
+                                        "boundary_level": round(box_high, 2),
+                                        "sl_price": round(curr_bar.low - 0.15 * atr, 2),
+                                        "trigger_sec": sec_in_min,
+                                        "bar_open": round(curr_bar.open, 2),
+                                        "bar_high": round(curr_bar.high, 2),
+                                        "bar_low": round(curr_bar.low, 2),
+                                        "bar_close": round(spot, 2),
+                                        "entry_bar_bucket": int(now_sec // 60),
+                                    }
+                                return False, "awaiting_second_tick", {}
+                    self._mode_b_p3_up_ticks = 0
+                elif direction == "DOWN":
+                    if curr_bar.open >= box_low and spot <= (box_low - min_clearance):
+                        body_ratio = (curr_bar.open - spot) / max(curr_rng, 0.1)
+                        lower_wick = spot - curr_bar.low
+                        trend_ok = not (self.ema_20_1m > self.ema_50_1m and self.ema_20_1m > 0 and self.ema_50_1m > 0)
+                        ok_struct, _, _ = self._check_structural_obstacle("PUT", spot, check_day_extremes=True)
+                        if body_ratio >= 0.65 and lower_wick <= (0.05 * atr) and trend_ok and ok_struct:
+                            if (bull_flow + bear_flow <= 0) or (bear_flow >= 1.30 * bull_flow and pb > ps):
+                                last_spot_cnt = getattr(self, "_mode_b_p3_down_last_tick", -1)
+                                last_spot_time = getattr(self, "_mode_b_p3_down_last_time", 0.0)
+                                if curr_bar.tick_count != last_spot_cnt or (now_sec - last_spot_time) >= 0.25:
+                                    self._mode_b_p3_down_ticks = getattr(self, "_mode_b_p3_down_ticks", 0) + 1
+                                    self._mode_b_p3_down_last_tick = curr_bar.tick_count
+                                    self._mode_b_p3_down_last_time = now_sec
+                                if self._mode_b_p3_down_ticks >= 2:
+                                    self._mode_b_p3_down_ticks = 0
+                                    self._mode_b_last_trigger_bar_idx["P3_BOX_BREAKTHROUGH"] = bar_idx
+                                    logger.info(f"[PriceActionEngine] [MODE_B_P3] Squeeze Box PUT Breakout at spot={spot:.2f} < box_low={box_low:.2f} (T+{sec_in_min}s)")
+                                    return True, "volatility_squeeze_breakout", {
+                                        "pillar": 3,
+                                        "pa_setup_name": "volatility_squeeze_breakout",
+                                        "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
+                                        "box_high": round(box_high, 2),
+                                        "box_low": round(box_low, 2),
+                                        "boundary_level": round(box_low, 2),
+                                        "sl_price": round(curr_bar.high + 0.15 * atr, 2),
+                                        "trigger_sec": sec_in_min,
+                                        "bar_open": round(curr_bar.open, 2),
+                                        "bar_high": round(curr_bar.high, 2),
+                                        "bar_low": round(curr_bar.low, 2),
+                                        "bar_close": round(spot, 2),
+                                        "entry_bar_bucket": int(now_sec // 60),
+                                    }
+                                return False, "awaiting_second_tick", {}
+                    self._mode_b_p3_down_ticks = 0
 
-        # 4. Bullish Breakthrough Surge (CALL)
-        if direction == "UP":
-            if curr_bar.open <= pz_top and spot >= (pz_top + 0.15 * atr):
-                body_ratio = (spot - curr_bar.open) / max(curr_rng, 0.1)
-                upper_wick = curr_bar.high - spot
-                if body_ratio >= 0.65 and upper_wick <= (0.05 * atr):
-                    if (bull_flow + bear_flow <= 0) or (bull_flow >= 1.30 * bear_flow and cb > cs):
-                        self._mode_b_up_ticks = getattr(self, "_mode_b_up_ticks", 0) + 1
-                        if self._mode_b_up_ticks >= 2:
-                            self._mode_b_up_ticks = 0
-                            self._mode_b_last_trigger_bar_idx["PAIN_ZONE_BREAKTHROUGH"] = bar_idx
-                            logger.info(f"[PriceActionEngine] [MODE_B_BREAKTHROUGH] CALL Triggered at spot={spot:.2f} > pz_top={pz_top:.2f} (T+{sec_in_min}s)")
-                            return True, "mode_b_inflight_breakthrough", {
-                                "pillar": 4,
-                                "pa_setup_name": "mode_b_inflight_breakthrough",
-                                "boundary_level": round(pz_top, 2),
-                                "sl_price": round(curr_bar.low - 0.10 * atr, 2),
-                                "trigger_sec": sec_in_min,
-                                "bar_high": round(curr_bar.high, 2),
-                                "bar_low": round(curr_bar.low, 2),
-                                "entry_bar_bucket": int(now_sec // 60),
-                            }
-                        return False, "awaiting_second_tick", {}
-            self._mode_b_up_ticks = 0
-
-        # 5. Bearish Breakthrough Surge (PUT)
-        elif direction == "DOWN":
-            if curr_bar.open >= pz_bot and spot <= (pz_bot - 0.15 * atr):
-                body_ratio = (curr_bar.open - spot) / max(curr_rng, 0.1)
-                lower_wick = spot - curr_bar.low
-                if body_ratio >= 0.65 and lower_wick <= (0.05 * atr):
-                    if (bull_flow + bear_flow <= 0) or (bear_flow >= 1.30 * bull_flow and pb > ps):
-                        self._mode_b_down_ticks = getattr(self, "_mode_b_down_ticks", 0) + 1
-                        if self._mode_b_down_ticks >= 2:
-                            self._mode_b_down_ticks = 0
-                            self._mode_b_last_trigger_bar_idx["PAIN_ZONE_BREAKTHROUGH"] = bar_idx
-                            logger.info(f"[PriceActionEngine] [MODE_B_BREAKTHROUGH] PUT Triggered at spot={spot:.2f} < pz_bot={pz_bot:.2f} (T+{sec_in_min}s)")
-                            return True, "mode_b_inflight_breakthrough", {
-                                "pillar": 4,
-                                "pa_setup_name": "mode_b_inflight_breakthrough",
-                                "boundary_level": round(pz_bot, 2),
-                                "sl_price": round(curr_bar.high + 0.10 * atr, 2),
-                                "trigger_sec": sec_in_min,
-                                "bar_high": round(curr_bar.high, 2),
-                                "bar_low": round(curr_bar.low, 2),
-                                "entry_bar_bucket": int(now_sec // 60),
-                            }
-                        return False, "awaiting_second_tick", {}
-            self._mode_b_down_ticks = 0
+        # ─── 2. PILLAR 4: Dynamic Session S/R Registry & T-2 Prominence Hub Breakout (Mode B) ───
+        last_p4 = self._mode_b_last_trigger_bar_idx.get("P4_SR_BREAKTHROUGH", -100)
+        if (bar_idx - last_p4) >= 3:
+            if direction == "UP":
+                candidates = [
+                    lvl for lvl in self.session_levels
+                    if lvl.level_type == "RESISTANCE"
+                    and not lvl.is_broken
+                    and lvl.prominence >= 1.25
+                    and ((self._total_bars_seen - lvl.seq_idx) >= 3 or (now_sec - lvl.ts_created) >= 180.0)
+                ]
+                for hub in getattr(self, "_topological_hubs", []):
+                    if hub.get("hub_type") == "PEAK" and not hub.get("is_broken", False) and hub.get("pi_hat", 0.0) >= 1.75:
+                        if not any(abs(c.price - hub["price"]) < 2.0 for c in candidates):
+                            candidates.append(StructuralLevel(
+                                level_type="RESISTANCE",
+                                price=hub["price"],
+                                ts_created=hub.get("ts_created", now_sec),
+                                prominence=hub.get("pi_hat", 1.75),
+                                bar_idx=hub.get("bar_idx", 0),
+                                touch_count=1
+                            ))
+                candidates.sort(key=lambda l: (l.touch_count * 0.5 + l.prominence), reverse=True)
+                matched_any = False
+                for r_lvl in candidates:
+                    origin_dist = abs(curr_bar.open - r_lvl.price)
+                    if origin_dist <= (0.35 * atr) and curr_bar.open <= r_lvl.price and spot >= (r_lvl.price + min_clearance):
+                        body_ratio = (spot - curr_bar.open) / max(curr_rng, 0.1)
+                        upper_wick = curr_bar.high - spot
+                        trend_ok = not (self.ema_20_1m < self.ema_50_1m and self.ema_20_1m > 0 and self.ema_50_1m > 0)
+                        ok_struct, _, _ = self._check_structural_obstacle("CALL", spot, ignore_pivots_below=r_lvl.price, check_day_extremes=True)
+                        if body_ratio >= 0.65 and upper_wick <= (0.05 * atr) and trend_ok and ok_struct:
+                            if (bull_flow + bear_flow <= 0) or (bull_flow >= 1.30 * bear_flow and cb > cs):
+                                matched_any = True
+                                last_spot_cnt = getattr(self, "_mode_b_p4_up_last_tick", -1)
+                                last_spot_time = getattr(self, "_mode_b_p4_up_last_time", 0.0)
+                                if curr_bar.tick_count != last_spot_cnt or (now_sec - last_spot_time) >= 0.25:
+                                    self._mode_b_p4_up_ticks = getattr(self, "_mode_b_p4_up_ticks", 0) + 1
+                                    self._mode_b_p4_up_last_tick = curr_bar.tick_count
+                                    self._mode_b_p4_up_last_time = now_sec
+                                if self._mode_b_p4_up_ticks >= 2:
+                                    self._mode_b_p4_up_ticks = 0
+                                    self._mode_b_last_trigger_bar_idx["P4_SR_BREAKTHROUGH"] = bar_idx
+                                    r_lvl.is_broken = True
+                                    r_lvl.ts_broken = now_sec
+                                    logger.info(f"[PriceActionEngine] [MODE_B_P4] Dynamic S/R CALL Breakout at spot={spot:.2f} > res={r_lvl.price:.2f} (T+{sec_in_min}s)")
+                                    return True, "topological_prominence_breakout", {
+                                        "pillar": 4,
+                                        "pa_setup_name": "topological_prominence_breakout",
+                                        "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
+                                        "boundary_level": round(r_lvl.price, 2),
+                                        "sl_price": round(curr_bar.low - 0.15 * atr, 2),
+                                        "trigger_sec": sec_in_min,
+                                        "bar_open": round(curr_bar.open, 2),
+                                        "bar_high": round(curr_bar.high, 2),
+                                        "bar_low": round(curr_bar.low, 2),
+                                        "bar_close": round(spot, 2),
+                                        "entry_bar_bucket": int(now_sec // 60),
+                                    }
+                                return False, "awaiting_second_tick", {}
+                if not matched_any:
+                    self._mode_b_p4_up_ticks = 0
+            elif direction == "DOWN":
+                candidates = [
+                    lvl for lvl in self.session_levels
+                    if lvl.level_type == "SUPPORT"
+                    and not lvl.is_broken
+                    and lvl.prominence >= 1.25
+                    and ((self._total_bars_seen - lvl.seq_idx) >= 3 or (now_sec - lvl.ts_created) >= 180.0)
+                ]
+                for hub in getattr(self, "_topological_hubs", []):
+                    if hub.get("hub_type") == "TROUGH" and not hub.get("is_broken", False) and hub.get("pi_hat", 0.0) >= 1.75:
+                        if not any(abs(c.price - hub["price"]) < 2.0 for c in candidates):
+                            candidates.append(StructuralLevel(
+                                level_type="SUPPORT",
+                                price=hub["price"],
+                                ts_created=hub.get("ts_created", now_sec),
+                                prominence=hub.get("pi_hat", 1.75),
+                                bar_idx=hub.get("bar_idx", 0),
+                                touch_count=1
+                            ))
+                candidates.sort(key=lambda l: (l.touch_count * 0.5 + l.prominence), reverse=True)
+                matched_any = False
+                for s_lvl in candidates:
+                    origin_dist = abs(curr_bar.open - s_lvl.price)
+                    if origin_dist <= (0.35 * atr) and curr_bar.open >= s_lvl.price and spot <= (s_lvl.price - min_clearance):
+                        body_ratio = (curr_bar.open - spot) / max(curr_rng, 0.1)
+                        lower_wick = spot - curr_bar.low
+                        trend_ok = not (self.ema_20_1m > self.ema_50_1m and self.ema_20_1m > 0 and self.ema_50_1m > 0)
+                        ok_struct, _, _ = self._check_structural_obstacle("PUT", spot, ignore_pivots_above=s_lvl.price, check_day_extremes=True)
+                        if body_ratio >= 0.65 and lower_wick <= (0.05 * atr) and trend_ok and ok_struct:
+                            if (bull_flow + bear_flow <= 0) or (bear_flow >= 1.30 * bull_flow and pb > ps):
+                                matched_any = True
+                                last_spot_cnt = getattr(self, "_mode_b_p4_down_last_tick", -1)
+                                last_spot_time = getattr(self, "_mode_b_p4_down_last_time", 0.0)
+                                if curr_bar.tick_count != last_spot_cnt or (now_sec - last_spot_time) >= 0.25:
+                                    self._mode_b_p4_down_ticks = getattr(self, "_mode_b_p4_down_ticks", 0) + 1
+                                    self._mode_b_p4_down_last_tick = curr_bar.tick_count
+                                    self._mode_b_p4_down_last_time = now_sec
+                                if self._mode_b_p4_down_ticks >= 2:
+                                    self._mode_b_p4_down_ticks = 0
+                                    self._mode_b_last_trigger_bar_idx["P4_SR_BREAKTHROUGH"] = bar_idx
+                                    s_lvl.is_broken = True
+                                    s_lvl.ts_broken = now_sec
+                                    logger.info(f"[PriceActionEngine] [MODE_B_P4] Dynamic S/R PUT Breakout at spot={spot:.2f} < sup={s_lvl.price:.2f} (T+{sec_in_min}s)")
+                                    return True, "topological_prominence_breakout", {
+                                        "pillar": 4,
+                                        "pa_setup_name": "topological_prominence_breakout",
+                                        "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
+                                        "boundary_level": round(s_lvl.price, 2),
+                                        "sl_price": round(curr_bar.high + 0.15 * atr, 2),
+                                        "trigger_sec": sec_in_min,
+                                        "bar_open": round(curr_bar.open, 2),
+                                        "bar_high": round(curr_bar.high, 2),
+                                        "bar_low": round(curr_bar.low, 2),
+                                        "bar_close": round(spot, 2),
+                                        "entry_bar_bucket": int(now_sec // 60),
+                                    }
+                                return False, "awaiting_second_tick", {}
+                if not matched_any:
+                    self._mode_b_p4_down_ticks = 0
 
         return False, "no_mode_b_trigger", {}
 
@@ -4182,15 +3744,18 @@ class PriceActionEngine:
         # ─── Priority Intra-Bar Triggers (Mode A Pierce & Mode B Breakthrough) ───
         ok_mb, reason_mb, details_mb = self.check_mode_b_breakthrough(direction, eff_vwap, current_time=current_time)
         if ok_mb:
-            details_mb["pain_zone_score"] = 0.0
-            details_mb["pain_zone_reason"] = "mode_b_breakthrough"
-            return True, "mode_b_inflight_breakthrough", self._enrich_details(details_mb)
+            setup_name = details_mb.get("pa_setup_name", reason_mb)
+            return True, setup_name, self._enrich_details(details_mb)
 
         ok_ma, reason_ma, details_ma = self.check_mode_a_pierce(direction, eff_vwap, current_time=current_time)
         if ok_ma:
-            details_ma["pain_zone_score"] = 0.0
-            details_ma["pain_zone_reason"] = "mode_a_pierce"
-            return True, "mode_a_boundary_pierce", self._enrich_details(details_ma)
+            setup_name = details_ma.get("pa_setup_name", reason_ma)
+            return True, setup_name, self._enrich_details(details_ma)
+
+        ok_mp, reason_mp, details_mp = self.check_mode_a_pre_close(direction, eff_vwap, current_time=current_time)
+        if ok_mp:
+            setup_name = details_mp.get("pa_setup_name", reason_mp)
+            return True, setup_name, self._enrich_details(details_mp)
 
         # Pillar 1: 20 EMA Pullback Rejection (Double-Touch)
         # V4.1: second-place Pain Zone removed — absolute band veto at tick top is single source.
@@ -4200,13 +3765,7 @@ class PriceActionEngine:
             details_20["pain_zone_reason"] = "band_veto_top_only"
             return True, "20_ema_rejection", self._enrich_details(details_20)
 
-        # Pillar 2: Micro-Sweep & Reclaim (Parallel Shadow A/B Tracking)
-        if getattr(self, "hvg_engine", None) is not None:
-            try:
-                self.hvg_engine.check_topological_sweep_reclaim(direction, eff_vwap)
-            except Exception as e:
-                logger.debug(f"[PriceActionEngine] HVG shadow sweep check failed: {e}")
-
+        # Pillar 2: Micro-Sweep & Reclaim
         ok_sw, reason_sw, details_sw = self.check_micro_sweep_reclaim(direction, eff_vwap, current_time=current_time)
         if ok_sw:
             # V4.1: second-place Pain Zone removed — absolute band veto at tick top is single source.
@@ -4238,22 +3797,6 @@ class PriceActionEngine:
             details_prom["timestamp"] = bar_ts
             details_prom["event_id"] = f"P4_PROM_{int(bar_ts)}_{direction.upper()}"
             return True, "topological_prominence_breakout", self._enrich_details(details_prom)
-
-        # Pillar 4 Fallback: Topological HVG Phase Shift Breakout (Dual-Timeframe 1m + 5m)
-        if getattr(self, "hvg_engine", None) is not None:
-            try:
-                l2_depth = getattr(self, "_l2_depth_history", None)
-                ok_hvg, reason_hvg, details_hvg = self.hvg_engine.evaluate_phase_shift(
-                    direction=direction,
-                    ema_20=self.ema_20_1m,
-                    ema_50=self.ema_50_1m,
-                    current_vwap=eff_vwap,
-                    l2_depth_history=l2_depth,
-                )
-                if ok_hvg and not getattr(self.hvg_engine, "shadow_only", True):
-                    return True, "hvg_network_phase_shift", self._enrich_details(details_hvg)
-            except Exception:
-                pass
 
         # V4.0 (2026-09-21): standalone Break of Structure retired from the live
         # ladder — superseded by P4 topological phase shift. Method kept offline.
@@ -4303,178 +3846,4 @@ class PriceActionEngine:
                 return "NEUTRAL"
 
         return "NEUTRAL"
-
-    def get_permission_state(self, direction: str) -> Tuple[bool, str, Dict[str, Any]]:
-        """
-        Backward compatibility permission evaluator.
-        Returns:
-            (has_permission, reason, metrics)
-        """
-        live_ema_20, live_slope_20_bps, live_ema_50, live_slope_50_bps = self.get_live_ema_and_slope()
-        live_ema_200, live_slope_200_bps = self.get_live_200_ema_and_slope()
-        metrics = {
-            "ema_1m_live": round(live_ema_20, 2),
-            "ema_3m_live": round(live_ema_50, 2),
-            "ema_20_1m_live": round(live_ema_20, 2),
-            "ema_50_1m_live": round(live_ema_50, 2),
-            "ema_200_1m_live": round(live_ema_200, 2),
-            "ema_1m_slope": round(self.ema_20_1m_slope, 2),
-            "ema_1m_slope_bps": round(live_slope_20_bps, 2),
-            "ema_50_1m_slope_bps": round(live_slope_50_bps, 2),
-            "ema_200_1m_slope_bps": round(live_slope_200_bps, 2),
-            "atr_ratio": round(self.atr_ratio, 2),
-            "current_atr_1m": round(self.current_atr_1m, 2),
-            "market_structure": self.get_market_structure(direction),
-            "slope_veto_bps": self.slope_veto_bps,
-        }
-
-        # Warmup check
-        if len(self.bars_1m) < 2:
-            return True, "warmup_permissive", metrics
-
-        struct = metrics["market_structure"]
-        if struct == "OPPOSED":
-            return False, f"market_structure_opposed ({struct})", metrics
-
-        # 50 EMA Trend Permission
-        if self.ema_50_1m > 0:
-            if direction.upper() in ("UP", "CALL"):
-                if live_slope_50_bps < -0.10:
-                    return False, f"50m_trend_bearish ({live_slope_50_bps:+.2f}bps)", metrics
-            elif direction.upper() in ("DOWN", "PUT"):
-                if live_slope_50_bps > 0.10:
-                    return False, f"50m_trend_bullish ({live_slope_50_bps:+.2f}bps)", metrics
-
-        return True, "permission_granted", metrics
-
-    def evaluate_t50_intrabar_candidate(
-        self,
-        direction: str,
-        external_vwap: float = 0.0,
-        current_time: float = 0.0,
-    ) -> Tuple[bool, str, Dict[str, Any]]:
-        """
-        UPGRADE 5: T:50s Intra-Bar Early Entry Evaluator.
-        Evaluates in-flight 1-minute bar at T:50s-T:54s for high-conviction early entry.
-        Default SHADOW mode (can be overridden by AEGIS_T50_INTRABAR_MODE env var).
-
-        Criteria:
-        1. Time Window: 50 <= sec_in_min <= 54 (or current_time parameter).
-        2. Range sweet-spot: 0.45 * ATR <= range <= 1.15 * ATR.
-        3. Dominant body: body / range >= 0.72.
-        4. Minimal opposing wick: opposing_wick / range <= 0.12.
-        5. Delta ratio: directional / opposing >= 1.30 (on active volume >= 500).
-        6. Directional alignment: Above VWAP for CALL, below VWAP for PUT.
-        """
-        now_t = current_time if current_time > 0 else (self.last_ts if self.last_ts > 0 else time.time())
-        sec_in_min = int(now_t % 60)
-        if not (50 <= sec_in_min <= 54):
-            return False, "outside_t50_window", {"sec_in_min": sec_in_min}
-
-        b = self._curr_1m_bar
-        if b is None or b.tick_count < 5:
-            return False, "insufficient_intrabar_data", {}
-
-        rng = b.high - b.low
-        ref_spot = self.last_price if self.last_price > 0 else b.close
-        atr = self.current_atr_1m if self.current_atr_1m > 0 else (ref_spot * 0.001)
-
-        if rng <= 0 or atr <= 0:
-            return False, "zero_range_or_atr", {}
-
-        if rng < (0.45 * atr):
-            return False, "intrabar_range_underdeveloped", {
-                "range": round(rng, 2),
-                "min_required": round(0.45 * atr, 2),
-                "atr": round(atr, 2),
-            }
-
-        if rng > (1.15 * atr):
-            return False, "intrabar_range_overextended_exhaustion", {
-                "range": round(rng, 2),
-                "max_allowed": round(1.15 * atr, 2),
-                "atr": round(atr, 2),
-            }
-
-        body = abs(b.close - b.open)
-        body_ratio = body / rng
-        if body_ratio < 0.72:
-            return False, "insufficient_body_ratio", {
-                "body_ratio": round(body_ratio, 3),
-                "min_required": 0.72,
-            }
-
-        is_call = direction.upper() in ("UP", "CALL")
-        if is_call:
-            if b.close <= b.open:
-                return False, "bearish_bar_direction", {}
-            opposing_wick = b.high - b.close
-            opposing_wick_ratio = opposing_wick / rng
-            if opposing_wick_ratio > 0.12:
-                return False, "upper_wick_rejection", {
-                    "opposing_wick_ratio": round(opposing_wick_ratio, 3),
-                    "max_allowed": 0.12,
-                }
-        else:
-            if b.close >= b.open:
-                return False, "bullish_bar_direction", {}
-            opposing_wick = b.close - b.low
-            opposing_wick_ratio = opposing_wick / rng
-            if opposing_wick_ratio > 0.12:
-                return False, "lower_wick_rejection", {
-                    "opposing_wick_ratio": round(opposing_wick_ratio, 3),
-                    "max_allowed": 0.12,
-                }
-
-        # VWAP filter
-        eff_vwap = external_vwap if external_vwap > 0 else self.current_vwap
-        if eff_vwap > 0:
-            if is_call and b.close <= eff_vwap:
-                return False, "below_vwap", {"close": round(b.close, 2), "vwap": round(eff_vwap, 2)}
-            elif (not is_call) and b.close >= eff_vwap:
-                return False, "above_vwap", {"close": round(b.close, 2), "vwap": round(eff_vwap, 2)}
-
-        # In-flight order flow delta confirmation
-        flow = self.get_in_flight_opt_flow()
-        bull_vol = float(flow.get("bullish_vol", 0.0))
-        bear_vol = float(flow.get("bearish_vol", 0.0))
-        tot_vol = float(flow.get("total_vol", 0.0))
-
-        if tot_vol >= 500.0:
-            if is_call and bull_vol < (1.30 * max(bear_vol, 1.0)):
-                return False, "insufficient_bullish_delta", {
-                    "bull_vol": round(bull_vol, 1),
-                    "bear_vol": round(bear_vol, 1),
-                    "ratio": round(bull_vol / max(bear_vol, 1.0), 2),
-                    "min_required": 1.30,
-                }
-            elif (not is_call) and bear_vol < (1.30 * max(bull_vol, 1.0)):
-                return False, "insufficient_bearish_delta", {
-                    "bull_vol": round(bull_vol, 1),
-                    "bear_vol": round(bear_vol, 1),
-                    "ratio": round(bear_vol / max(bull_vol, 1.0), 2),
-                    "min_required": 1.30,
-                }
-
-        t50_mode = os.getenv("AEGIS_T50_INTRABAR_MODE", "SHADOW").upper()
-        details = {
-            "pa_setup_name": "t50_intrabar_early_entry",
-            "pillar": 5,
-            "direction": "CALL" if is_call else "PUT",
-            "bar_open": round(b.open, 2),
-            "bar_high": round(b.high, 2),
-            "bar_low": round(b.low, 2),
-            "bar_close": round(b.close, 2),
-            "range": round(rng, 2),
-            "atr_14": round(atr, 2),
-            "body_ratio": round(body_ratio, 3),
-            "opposing_wick_ratio": round(opposing_wick_ratio, 3),
-            "sec_in_min": sec_in_min,
-            "t50_mode": t50_mode,
-            "is_shadow": (t50_mode != "ACTIVE"),
-            "bullish_vol": round(bull_vol, 1),
-            "bearish_vol": round(bear_vol, 1),
-            "in_flight_net_delta": round(bull_vol - bear_vol, 1),
-        }
-        return True, "t50_intrabar_candidate_confirmed", details
 

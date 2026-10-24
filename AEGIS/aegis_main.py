@@ -207,14 +207,9 @@ def build_minute_digest(now, aegis_engine, trader, spot_price):
                 if getattr(pae, 'current_atr_1m', 0.0) > 0:
                     seg.append(f"ATR:{pae.current_atr_1m:.1f}({pae.atr_ratio:.2f}x)")
 
-                # Active Price Action Setup Check
-                pa_status = "IDLE"
-                ok_up, name_up, _ = pae.evaluate_setup("UP", eff_vwap)
-                ok_dn, name_dn, _ = pae.evaluate_setup("DOWN", eff_vwap)
-                if ok_up:
-                    pa_status = f"UP({name_up})"
-                elif ok_dn:
-                    pa_status = f"DOWN({name_dn})"
+                # Active Price Action Setup Status (passive display only — never mutate state on main loop thread)
+                armed_cnt = len(getattr(pae, "_mode_a_armed_setups", {}))
+                pa_status = f"ARMED({armed_cnt})" if armed_cnt > 0 else "IDLE"
                 seg.append(f"PA:{pa_status}")
         except Exception:
             pass
@@ -427,34 +422,38 @@ def main():
                         except Exception as e_fb:
                             logger.warning(f"[AegisMain][COLD-BOOT] Fallback failed (non-fatal): {e_fb}")
 
-                    # ─── Seed Daily Structural Levels (PDH / PDL / PDC) ───
-                    pdh, pdl, pdc = 0.0, 0.0, 0.0
-                    try:
-                        df_day = fetcher.get_historical_candles(spot_exch, spot_token, "ONE_DAY", days_back=5)
-                        if df_day is not None and not df_day.empty and len(df_day) >= 2:
-                            today_d = datetime.now().date()
-                            if "date" in df_day.columns:
-                                df_day["date_dt"] = pd.to_datetime(df_day["date"]).dt.date
-                                prev_df = df_day[df_day["date_dt"] < today_d]
-                                if not prev_df.empty:
-                                    last_day = prev_df.iloc[-1]
-                                    pdh = float(last_day.get("high") or 0.0)
-                                    pdl = float(last_day.get("low") or 0.0)
-                                    pdc = float(last_day.get("close") or 0.0)
-                    except Exception as e_pd:
-                        logger.debug(f"[AegisMain] Daily candle fetch failed: {e_pd}")
+                # ─── Seed Daily Structural Levels (PDH / PDL / PDC) ───
+                pdh, pdl, pdc = 0.0, 0.0, 0.0
+                try:
+                    df_day = fetcher.get_historical_candles(spot_exch, spot_token, "ONE_DAY", days_back=5)
+                    if df_day is not None and not df_day.empty and len(df_day) >= 2:
+                        today_str = datetime.now().strftime("%Y-%m-%d")
+                        candles_day = df_day.to_dict(orient="records") if hasattr(df_day, "to_dict") else []
+                        prev_days = []
+                        for r in candles_day:
+                            d_val = str(r.get("date", "") or r.get("time", ""))[:10]
+                            if d_val and d_val < today_str:
+                                prev_days.append(r)
+                        if prev_days:
+                            last_day = prev_days[-1]
+                            pdh = float(last_day.get("high") or last_day.get("inth") or 0.0)
+                            pdl = float(last_day.get("low") or last_day.get("intl") or 0.0)
+                            pdc = float(last_day.get("close") or last_day.get("intc") or 0.0)
+                except Exception as e_pd:
+                    logger.debug(f"[AegisMain] Daily candle fetch failed: {e_pd}")
 
-                    # Fallback: derive from seeded 1m bars if available
-                    if pdh <= 0 and pa_eng and pa_eng.bars_1m:
-                        today_d = datetime.now().date()
-                        y_bars = [b for b in pa_eng.bars_1m if datetime.fromtimestamp(b.ts_start).date() < today_d]
-                        if y_bars:
-                            pdh = max(b.high for b in y_bars)
-                            pdl = min(b.low for b in y_bars)
-                            pdc = y_bars[-1].close
+                # Fallback: derive from seeded 1m bars if available
+                if pdh <= 0 and pa_eng and pa_eng.bars_1m:
+                    today_d = datetime.now().date()
+                    y_bars = [b for b in pa_eng.bars_1m if datetime.fromtimestamp(b.ts_start).date() < today_d]
+                    if y_bars:
+                        pdh = max(b.high for b in y_bars)
+                        pdl = min(b.low for b in y_bars)
+                        pdc = y_bars[-1].close
 
-                    if pdh > 0:
-                        pa_eng.seed_daily_levels(pdh, pdl, pdc)
+                if pdh > 0:
+                    pa_eng.seed_daily_levels(pdh, pdl, pdc)
+                    logger.info(f"[AegisMain] Seeded Daily Structural Levels: PDH={pdh:.2f} | PDL={pdl:.2f} | PDC={pdc:.2f}")
         except Exception as e_seed:
             logger.warning(f"[AegisMain] Historical 1m bar seeding warning (non-fatal): {e_seed}")
 

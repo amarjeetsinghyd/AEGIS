@@ -81,11 +81,12 @@ flowchart TD
         BAND -->|Blocked| DROP["Instant Discard & Purge<br/>(return None)"]
         BAND -->|Passed| PA_CHECK{"Price Action Setup?<br/>(evaluate_setup)"}
         PA_CHECK -->|No Setup| DROP
-        PA_CHECK -->|Pillar 1| P1["Pillar 1: 20 EMA Pullback & Momentum Rejection<br/>• 20 EMA Wick Rejection<br/>• Two-Bar / Retest Confirmation<br/>• Upper Wick ≤ 15% (Two-Bar ≤ 18%), Close Edge ≥ 0.60"]
-        PA_CHECK -->|Pillar 2| P2["Pillar 2: Liquidity Sweep & Reclaim<br/>• 5-Bar Turtle Soup Stop-Hunt Reclaim<br/>• Lower Wick ≥ 35% & ≥ 1.25x Upper Wick<br/>• Upper Wick ≤ 15%, Close Edge ≥ 0.55"]
-        PA_CHECK -->|Pillar 3| P3["Pillar 3: Volatility Squeeze Breakout<br/>• 3-4 Bar Box Compression (≤1.25x ATR)<br/>• Full Bar Close Outside Box, Opposing Wick ≤ 18%<br/>• Body ≥ 35% of Range, Close Edge ≥ 0.55"]
-        PA_CHECK -->|Pillar 4| P4["Pillar 4: 0-D Prominence Hub Breakout<br/>• Prominence Anchor (π ≥ 1.75)<br/>• Directional Expansion Body ≥ 35%<br/>• Opposing Wick ≤ 20%, Close Edge ≥ 0.55"]
-        P1 & P2 & P3 & P4 --> SINGLE_ADM{"Single Admission Policy<br/>(Deterministic First-Hit Resolution)"}
+        PA_CHECK -->|Mode B Breakthrough| PB["Mode B: In-Flight Mid-Bar Breakthrough (T:08s–T:48s)<br/>• Boundary Pierce (Pain Zone, 200 EMA, Squeeze Box, S&R)<br/>• Sweet-Spot Range 0.35x–1.20x ATR, Body ≥ 65%<br/>• 2-Tick Persistence, Live Opt Delta ≥ 1.30x"]
+        PA_CHECK -->|Pillar 1| P1["Pillar 1: 20 EMA Pullback & Momentum Rejection (Mode A)<br/>• Classical Dow HL2/LH2 2nd-Touch Confirmation<br/>• 20 EMA Wick Rejection, Close Edge ≥ 0.60<br/>• Upper Wick ≤ 15% (Two-Bar ≤ 18%)"]
+        PA_CHECK -->|Pillar 2| P2["Pillar 2: Liquidity Sweep & Reclaim (Mode A)<br/>• 5-Bar Turtle Soup Stop-Hunt Reclaim<br/>• Lower Wick ≥ 35% & ≥ 1.25x Upper Wick<br/>• Upper Wick ≤ 15%, Close Edge ≥ 0.55"]
+        PA_CHECK -->|Pillar 3| P3["Pillar 3: Volatility Squeeze Breakout<br/>• 3-4 Bar Box Compression (≤1.25x ATR)<br/>• Expansion Breakout, Anti-Climax Cap ≤ 1.35x ATR<br/>• Body ≥ 35% of Range, Close Edge ≥ 0.55"]
+        PA_CHECK -->|Pillar 4| P4["Pillar 4: Topological Prominence Breakout<br/>• Priority 1: Dynamic Session S/R Level Registry Breakout<br/>• Priority 2: T-2 0-D Prominence Hub (π ≥ 1.75)<br/>• Day Extreme Runway Shield (min 1.25x ATR / 8 bps)"]
+        PB & P1 & P2 & P3 & P4 --> SINGLE_ADM{"Single Admission Policy<br/>(Deterministic First-Hit Resolution)"}
     end
 
     subgraph Wyckoff_Parallel_Gate ["4. Wyckoff Volume & Order Flow Delta Gate (Parallel First-Line)"]
@@ -112,11 +113,12 @@ flowchart TD
         
         C_CHECK -->|Score ≥ 80.0| Q_SLOT["Quality Slot Policy (3 Slots/Day)<br/>• Slot 1, 2, 3: Full-Day Agile Quality Sizing<br/>• Dynamic Hurdle: Beat Prev Score<br/>• Loss Guard: Consec Loss ≤ 2, Daily Cap ₹2k"]
         Q_SLOT -->|No Slot Available| DROP
-        Q_SLOT -->|Slot Admitted| SIZING["Locked Sizing Discipline<br/>• Strict 1 Lot Allocation<br/>• Constant +4.0% Maker Limit TP"]
+        Q_SLOT -->|Slot Admitted| SIZING["Locked Sizing Discipline<br/>• Strict 1 Lot Allocation<br/>• Constant +4.0% Maker Limit TP (+3.0% Fri)"]
     end
 
     subgraph Shadow_Telemetry ["6. Independent Shadow Telemetry (Passive)"]
-        W_PASS -.-> ML_SHADOW["ML Order Flow Tracker (100% SHADOW)<br/>• CatBoost 1m Flow Feature Logging<br/>• Standalone CatBoost Paper Trader (Shadow)"]
+        W_PASS -.-> ML_SHADOW["ML Order Flow Tracker [DECOMMISSIONED 2026-10-14]<br/>• CatBoost & Kyle's Lambda SHUT DOWN<br/>• Standalone CatBoost Paper Trader Disabled"]
+        W_PASS -.-> SBO["ShadowBoundaryObserver (core/shadow_boundary_observer.py)<br/>• Zero-Capital Empirical Paper-Trader<br/>• First-Touch Pain Zone & 200 EMA Rejections"]
         W_PASS -.-> SHADOW_QUANT["ShadowQuantTracker<br/>• ATM Straddle, Skew, Opt-Spot Lead"]
     end
 
@@ -128,33 +130,33 @@ flowchart TD
         EM_LOOP --> G_COOL{"Inter-Trade Cooldown (60s)<br/>Post-Loss Cooloff (120s)"}
         EM_LOOP --> G_TIME{"Session Window<br/>(09:16 ≤ now ≤ 15:00)"}
         
-        EM_LOOP --> ORDER_FIRE["Execute Entry Order (1 Lot)<br/>(LMT Day at Ask / Sweep)"]
-        ORDER_FIRE --> RESTING_TP["Place Exchange Resting Limit TP<br/>(Maker Order @ Entry + 4.0%)"]
+        EM_LOOP --> ORDER_FIRE["Single-Shot 0.75s Clean Entry (Zero Chasing)<br/>• Atomic 0.75s Fill Window (LMT Day at Ask / Sweep)<br/>• Pre-Staged Rolling 5s Hot Strikes Cache<br/>• Immediate _drain_signal_queue() on Abort"]
+        ORDER_FIRE --> RESTING_TP["Place Exchange Resting Limit TP<br/>• Maker Order @ Entry + 4.0% (Mon–Thu)<br/>• Friday 4-DTE Calibrated to +3.0% TP"]
     end
 
     subgraph Adaptive_Exits ["8. Flexible Multi-Layered Adaptive Quantitative Exits"]
         RESTING_TP --> MANAGE["_manage_open_trade() Poller (2 Hz)"]
         
         MANAGE --> EX_TP{"Resting TP Hit?<br/>(Bid ≥ TP Price / Maker fill verified)"}
-        EX_TP -->|YES| CL_TP["Passive Maker TP Exit (+4.0%)<br/>(Zero Slippage Exchange Fill)"]
+        EX_TP -->|YES| CL_TP["Passive Maker TP Exit (+4.0% / +3.0% Fri)<br/>(Zero Slippage Exchange Fill)"]
         
-        MANAGE --> EX_NEAR{"Near-Target Profit Lock?<br/>Peak ≥ +3.5% AND Pullback ≥ 0.8%"}
-        EX_NEAR -->|YES| CL_NEAR["Near-Target Lock Exit<br/>(Exits on ≥0.8% pullback from peak bid)"]
+        MANAGE --> EX_NEAR{"Near-Target Profit Lock?<br/>Peak ≥ +3.5% (Fri: +2.5%) AND Pullback ≥ 0.8% (Fri: 0.5%)"}
+        EX_NEAR -->|YES| CL_NEAR["Near-Target Lock Exit<br/>(Exits on pullback from peak bid)"]
         
-        MANAGE --> EX_STEP2{"Cost-Shield Scratch?<br/>Peak ≥ +3.5% AND Bid ≤ Entry"}
+        MANAGE --> EX_STEP2{"Cost-Shield Scratch?<br/>Peak ≥ +3.5% (Fri: +2.2%) AND Bid ≤ Entry"}
         EX_STEP2 -->|YES| CL_STEP2["Cost-Shield Scratch Exit (0.0% Breakeven)<br/>(Loss Permanently Prevented!)"]
         
-        MANAGE --> EX_STEP1{"Stepped Safety Net?<br/>Peak ≥ +3.0% AND Bid ≤ Entry - 3.0%"}
+        MANAGE --> EX_STEP1{"Stepped Safety Net?<br/>Peak ≥ +3.0% (Fri: +2.0%) AND Bid ≤ Entry - 3.0%"}
         EX_STEP1 -->|YES| CL_STEP1["Stepped Safety Net SL (-3.0%)<br/>(SL compressed from -12% to -3%)"]
         
         MANAGE --> EX_STAG{"0DTE Stagnation Trap?<br/>Expiry PM (≥12:30), Hold ≥ 90s, Gain < +0.5%<br/>AND 50-EMA Opposed Structure"}
         EX_STAG -->|YES| CL_STAG["0DTE Stagnation Trap Exit"]
         
-        MANAGE --> EX_REV{"Trend Reversal Exit?<br/>1m Bar Close Crosses 9-EMA,<br/>50-EMA Broken, or Structure Opposed"}
+        MANAGE --> EX_REV{"Trend Reversal Exit?<br/>50-EMA Broken or Structure Opposed<br/>(9-EMA Choke Permanently Decommissioned)"}
         EX_REV -->|YES| CL_REV["Trend Reversal Structural Exit"]
         
-        MANAGE --> EX_WICK{"Pillar Wick Invalidation?<br/>(Spot hits Candle High/Low ± buffer)"}
-        EX_WICK -->|YES| CL_WICK["Pillar Wick Invalidation Exit"]
+        MANAGE --> EX_WICK{"Universal Spot Invalidation?<br/>(Spot Hits Entry Candle Low/High ± 0.10x ATR)<br/>• Mode B Failed Close Escape at T:60s"}
+        EX_WICK -->|YES| CL_WICK["Universal Entry Candle Low/High Invalidation Exit"]
         
         MANAGE --> EX_SPOT_SL{"Spot Invalidation SL Hit?<br/>(Spot move ≥ 6.5 bps + 1.0x ATR)"}
         EX_SPOT_SL -->|YES| CL_SPOT["Adaptive Spot SL Exit<br/>(Derived via Realized Delta, max 35%)"]
@@ -273,31 +275,43 @@ Passively models the continuous price-volume distribution (inspired by the Maxwe
 
 ---
 
-## Deep-Dive: CatBoost Standalone Paper Trader & 100% Shadow ML
+## Deep-Dive: CatBoost Standalone Paper Trader & 100% Shadow ML [DECOMMISSIONED 2026-10-14 — Retained for Historical Reference Only]
 
-1. **Autonomous Execution Loop (`catboost_paper_trader.py`)**:
-   - Runs on every completed 1-minute bar independently of 4-Pillars price action triggers.
-   - Uses pre-trained CatBoost Flow Brain (17 order flow + microstructure features).
+> ⚠️ **COMPONENT DECOMMISSIONED & DISABLED (14 October 2026)**:  
+> CatBoost ML Gatekeeper and Standalone CatBoost Paper Trader were permanently decommissioned after an extensive 18-day forward trial proved their 46.4% win rate was far inferior to the 84%+ deterministic price action engine. Kyle's Lambda is inactive. Retained below strictly for historical archival reference; NO process runs this loop.
+
+1. **Historical Execution Loop (`catboost_paper_trader.py` - Inactive)**:
+   - Previously ran on completed 1-minute bars independently of 4-Pillars price action triggers.
+   - Evaluated CatBoost Flow Brain (17 order flow + microstructure features).
    - If $\text{Score} \ge 40.0\%$ AND $\text{Score} \ge \text{Day Median}$:
      - Virtual 1-lot trade initiated on ATM strike.
      - Hard targets: **+4.0% TP**, **-3.0% SL**, **300s Max-Hold Timeout**.
-   - Tracks live MFE/MAE on every option tick and appends to `catboost_paper_trades_YYYY-MM-DD.jsonl`.
-2. **Empirical Paper Trading Performance (24–25 Sep 2026)**:
+   - Tracked live MFE/MAE on every option tick and appended to `catboost_paper_trades_YYYY-MM-DD.jsonl`.
+2. **Empirical Historical Performance (24–25 Sep 2026)**:
    - Total Trades: 4
    - Wins: 2 (+6.79% in 33s, +5.41% with 0% MAE)
    - Losses: 2 (-3.22%, -3.51%)
-   - Win Rate: 50.0%
+   - Win Rate: 50.0% (Extended 18-day trial: 46.4% win rate -> permanently decommissioned)
    - Risk-to-Reward: 1 : 1.8
-   - **Net PnL: +5.47% NET GREEN 🟢**
-3. **ML Gatekeeper Mode**:
-   - Locked to **`SHADOW`** in `aegis_gamma_engine.py` (zero active vetoes).
+3. **Current Production State**:
+   - CatBoost inference is completely removed from live trade evaluation.
    - Prevents black-box ML thresholds from blocking high-conviction structural price action setups.
 
 ---
 
-## Deep-Dive: 4 Price Action Scalper Pillars (Active Setup Architecture)
+## Deep-Dive: 4 Price Action Scalper Pillars & Hybrid Intra-Bar Architecture
 
-All price action setups are evaluated on finalized 1-minute bars (`price_action_engine.py`):
+AEGIS employs a **Hybrid Intra-Bar Execution Architecture**:
+- **Mode A (Reversal / Retest / Sweep)**: Evaluates finalized 1-minute bars at **T:00s** (with pre-staged strikes & **T:50s–T:58s** pre-close confirmation) for **Pillar 1** (`20_ema_rejection`) and **Pillar 2** (`micro_sweep_reclaim`).
+- **Priority Mode B (In-Flight Breakthrough Surge)**: Evaluates live forming bars mid-bar between **T:08s and T:48s** for **Pillar 3** (`volatility_squeeze_breakout`), **Pillar 4** (`topological_prominence_breakout` + Dynamic S/R Registry), Absolute Pain Zone boundaries, and 200 EMA Ribbon pierces.
+
+### Priority Mode B: In-Flight Mid-Bar Breakthrough Surge (`check_mode_b_breakthrough`)
+- **Execution Window**: Evaluated strictly mid-bar between **T:08s and T:48s** on active forming tick stream.
+- **Sweet-Spot Range**: Forming candle range must be within $0.35 \times \text{ATR}_{1m} \le \text{Range} \le 1.20 \times \text{ATR}_{1m}$ (avoids both micro-noise and exhausted anti-climax bars).
+- **Body Ratio**: Solid directional candle body $\ge 65\%$ of range with minimal leading wick ($\le 0.05 \times \text{ATR}_{1m}$).
+- **Boundary Persistence**: Minimum 2 consecutive ticks maintaining price beyond the breached level (Pain Zone, 200 EMA Ribbon, Squeeze Box High/Low, or Session S/R Level).
+- **Order Flow & Velocity Gate**: Live in-flight option volume delta ratio $\ge 1.30\times$ (or spot tick rate $\ge 1.5$ ticks/sec).
+- **Mode B Failed Close Escape Rule (`MODE_B_FAILED_CLOSE_ESCAPE`)**: If a trade entered via Mode B closes back inside the broken boundary at `T:60s`, an immediate scratch escape is triggered at market.
 
 ### 1. Pillar 1: Classical Dow Theory 20 EMA Retracement Engine (`20_ema_rejection`)
 - **Trend Age & Filter**: Trend Age $\ge 10$ bars continuously on the active side of the 20 EMA Band. 20 EMA slope aligned with trade direction.
@@ -309,22 +323,33 @@ All price action setups are evaluated on finalized 1-minute bars (`price_action_
   - $HL_2$ (2nd Touch): Retests 20 EMA High-Low Band with $HL_2 > HL_1$.
 - **Candlestick Rejection**: Lower wick $\ge 33\%$ (Hammer) or Bullish Expansion body $\ge 40\%$, closing away from 20 EMA Band.
 - **Live Piercing Invalidation Guard**: Forming price cannot pierce below 20 EMA Low Band during entry evaluation.
-- **12s Bar Freshness Gate**: Entry window cutoff at $\le 12.0$s after bar open.
+- **12s Bar Freshness Gate**: Entry window cutoff at $\le 12.0$s after bar open (with Mode A T:50s pre-close staging).
 
 ### 2. Pillar 2: Liquidity Sweep & Reclaim (`micro_sweep_reclaim`)
 - **5-Bar Extreme Sweep**: Price dips below previous 5-bar swing low (CALL) or above swing high (PUT).
-- **Instant Reclaim**: Bar closes back inside the level with rejection wick $\ge 35\%$.
+- **Instant Reclaim**: Bar closes back inside the level with rejection wick $\ge 35\%$ and lower wick $\ge 1.25\times$ upper wick (for CALLs).
+- **Lunch Chop Veto**: Blocked between 11:15 IST and 13:00 IST to prevent whipsaws during low-volume midday drift.
 - **Wyckoff Spring Equivalent**: Stop-loss flush followed by immediate institutional reclaim.
 
 ### 3. Pillar 3: Volatility Squeeze Breakout (`volatility_squeeze_breakout`)
-- **Box Compression**: 3 to 4 prior closed bars compress within $\le 1.25\times \text{ATR}_{14}$.
-- **Decisive Breakout**: Bar closes completely outside box high (CALL) or box low (PUT).
+- **Box Compression**: 3 to 4 prior closed bars compress tightly within $\le 1.25\times \text{ATR}_{14}$.
+- **Decisive Breakout**: Bar closes completely outside box high (CALL) or box low (PUT) with opposing wick $\le 18\%$.
+- **Anti-Climax Cap**: Breakout candle range must not exceed $\le 1.35\times \text{ATR}_{14}$ (prevents buying at climax exhaustion).
 - **Trend Alignment**: 20 EMA $\ge$ 50 EMA for CALL, 20 EMA $\le$ 50 EMA for PUT.
 
-### 4. Pillar 4: 0-D Prominence Hub Structural Breakout (`check_topological_prominence_breakout`)
-- **Topological Prominence**: Anchor identified via `FastMonotonicStack` with prominence ratio $\hat{\pi} \ge 1.75$.
-- **Volume Ratio Gate**: Current volume $VR_t \ge 1.4\times$ rolling 60-minute median volume.
-- **5m Macro Alignment**: Confirmed by 5m clock-aligned candle trend.
+### 4. Pillar 4: Topological Prominence Breakout (`topological_prominence_breakout`)
+- **Priority 1: Dynamic Session S/R Level Registry Breakout**:
+  - Breakouts through registered `StructuralLevel` nodes with monotonic `seq_idx` tracking (never `len(bars_1m)`).
+  - Multi-touch boost (`+0.35`), dynamic post-excursion prominence, and confirmed order flow footprint.
+- **Day Extreme Runway Shield**:
+  - Scale-invariant clearance requirement:
+    $$\text{min\_runway\_pts} = \max(1.25 \times \text{ATR}_{1m}, 0.0008 \times \text{Spot})$$
+  - Rejects CALL entries within `min_runway_pts` of Day High / PDH, and PUT entries within `min_runway_pts` of Day Low / PDL.
+- **Priority 2: T-2 0-D Prominence Hub (`FastMonotonicStack`)**:
+  - Anchor identified via `FastMonotonicStack` with prominence ratio $\hat{\pi} \ge 1.75$.
+  - Volume Ratio Gate: Current volume $VR_t \ge 1.4\times$ rolling 60-minute median volume.
+  - Wyckoff Stopping Volume Veto: Opposing institutional delta swamping ($> 2.2\times$) triggers instant discard.
+  - Note: `hvg_network_phase_shift` is strictly `SHADOW_ONLY`.
 
 ---
 
@@ -357,7 +382,7 @@ Monitored at 2 Hz by `_manage_open_trade()` (`aegis_execution_manager.py`):
      - Option is protected from artificial Greeks/spread noise as long as the breakout candle structure holds!
 8. **Spot Adverse Movement SL & Trend Reversal Exit**:
    - Spot moves $\ge 6.5\text{ bps}$ + 1.0x ATR against trade direction.
-   - Completed 1m bar close crossing 9-EMA, breaking 50-EMA, or structure turning opposed triggers immediate `Trend Reversal Exit`.
+   - Completed 1m bar close breaking 50-EMA or structure turning opposed triggers immediate `Trend Reversal Exit` (9-EMA bar-close choke was permanently decommissioned on 2026-10-07).
 9. **Tick-Cadence Option Premium Disaster Circuit Breaker (-12.0% Floor)**:
    - `PREMIUM_HARD_SL_PCT = 0.120` (-12.0% disaster floor).
    - Allows natural option bid-ask noise and normal spread flutter to breathe without premature stop-outs, while catching catastrophic black-swan flash crashes.
@@ -405,7 +430,7 @@ python -m pytest tests/ -q
 ## Senior Human-Trader Principles for AI Reviewers
 
 When Gemini 3.8 Flash evaluates any candidate setup in Shadow Mode, it must apply the following **Senior Human-Trader Principles**:
-1. **Never Chase into Brick Walls**: A setup firing within 10–15 points of PDH, Day High, or a flatline VWAP is a high-probability trap. Demand minimum 20–30 points of unobstructed runway.
+1. **Never Chase into Brick Walls (Day Extreme Runway Rule)**: A setup firing within 1.25x ATR or 8 bps of PDH, Day High, Day Low, or a flatline VWAP is a high-probability trap. Demand minimum 1.5x–2.0x ATR or 15–20 bps of unobstructed runway.
 2. **Effort vs Result in Retracements**: Pullbacks into 20 EMA must see volume dry up ($VDR < 0.85$). Expanding volume on counter-trend candles indicates an institutional dump; do not fade it.
 3. **Delta Harmony on Breakouts**: A valid expansion breakout requires option aggressor flow to agree with price ($\text{Call Buy} \ge \text{Put Buy}$). Opposing delta swamping indicates trapped retail breakout buyers.
 4. **Stopping Volume Confirmation**: Rejection candles must exhibit absorption (lower wick $\ge 30\%$ on calls, upper wick $\ge 30\%$ on puts) closing firmly in the direction of the trade.

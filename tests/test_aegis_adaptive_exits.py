@@ -19,10 +19,6 @@ from AEGIS.aegis_execution_manager import (
     DEFAULT_MIN_NOISE_FLOOR_RS,
     NOISE_FLOOR_SPREAD_MULT,
     NOISE_FLOOR_SIGMA_MULT,
-    BREAKEVEN_NOISE_MULT,
-    BREAKEVEN_TIME_SEC,
-    BREAKEVEN_LOCK_BUFFER_RS,
-    RUNNER_ARM_NOISE_MULT,
     RUNNER_TRAIL_RATIO,
     RESTING_TP_LIMIT_PCT,
     FRIDAY_TP_LIMIT_PCT,
@@ -254,71 +250,6 @@ def test_breakeven_guard_arms_on_genuine_impulse():
     
     assert len(em.exit_reasons) == 1
     assert any(term in em.exit_reasons[0] for term in ("Cost-Shield Scratch Exit", "Breakeven Guard", "Near-Target Profit Lock"))
-
-
-def test_dynamic_runner_trailing_and_ema_slope_exit():
-    """V4.0 (2026-09-21): runner trailing is disabled (single-target mode) —
-    peak gain must NOT arm the runner; 9-EMA slope reversal still exits."""
-    em, context, leg = create_test_manager(entry_price=13.00, spot_entry=23700.0, signal_type="PUT")
-
-    # Peak reaches 20.00 (+53.8% gain)
-    em.broker.market_data_provider._quote = {"ltp": 20.00, "bp1": 19.95, "sp1": 20.05}
-    em._manage_open_trade()
-
-    # Runner must NOT be armed in V4 single-target mode!
-    assert not getattr(leg, "runner_locked", False)
-    assert leg.highest_price == 20.00
-    
-    # Configure mock TimeBarEngine with bullish reversal for PUT trade
-    class DummyTBEngine:
-        def get_live_ema_and_slope(self):
-            # Spot crossed above 9-EMA with positive slope (+2.5 bps)
-            return 23680.0, 2.5, 23680.0, 2.0
-        def get_market_structure(self, direction):
-            return "ALIGNED"
-            
-    em.aegis_engine.time_bar_engine = DummyTBEngine()
-    em.data_fetcher._spot = 23685.0  # Spot (23685) > 9-EMA (23680)
-    
-    # When price is still profitable (19.00), EMA slope flip triggers exit
-    em.broker.market_data_provider._quote = {"ltp": 19.00, "bp1": 18.95, "sp1": 19.05}
-    em._manage_open_trade()
-    
-    assert len(em.exit_reasons) == 1
-    assert "Trend Reversal Exit" in em.exit_reasons[0]
-    assert "crossed above 9-EMA" in em.exit_reasons[0]
-
-
-def test_unconditional_ema_reversal_exit_on_negative_pnl():
-    """
-    Trade Reproduction (09:46 IST) under V4.0 (2026-09-21):
-    PUT entry at ₹17.40, peak was only ₹18.10 (+4.0%, runner NEVER locked).
-    Option dips to ₹17.00 (-2.3% loss, inside the -3.5% premium floor).
-    Spot crosses back above 9-EMA with positive slope.
-    It MUST exit via Trend Reversal immediately without waiting for timeout!
-    (Deeper dips through -3.5% exit via Premium Hard SL first by design.)
-    """
-    em, context, leg = create_test_manager(entry_price=17.40, spot_entry=23670.0, signal_type="PUT")
-    leg.highest_price = 18.10
-    leg.runner_locked = False
-    leg.breakeven_locked = False
-
-    class DummyTBEngine:
-        def get_live_ema_and_slope(self):
-            return 23675.0, 1.8, 23675.0, 1.2
-        def get_market_structure(self, direction):
-            return "ALIGNED"
-
-    em.aegis_engine.time_bar_engine = DummyTBEngine()
-    em.data_fetcher._spot = 23681.0  # Spot (23681) crossed above 9-EMA (23675)
-
-    # Option is in shallow loss at ₹17.00 (-2.3%, above the premium floor)
-    em.broker.market_data_provider._quote = {"ltp": 17.00, "bp1": 16.95, "sp1": 17.05}
-    em._manage_open_trade()
-
-    assert len(em.exit_reasons) == 1
-    assert "Trend Reversal Exit" in em.exit_reasons[0]
-    assert "crossed above 9-EMA" in em.exit_reasons[0]
 
 
 def test_scale_invariance_across_nifty_and_sensex():
@@ -915,7 +846,7 @@ def test_pillar3_12pct_disaster_sl_allows_small_noise():
 def test_pillar2_entry_candle_invalidation_and_no_9ema_choke():
     """Verify that Pillar 2 (Micro-Sweep & Reclaim) is NOT choked by 9-EMA bar close,
     and exits ONLY when spot breaks the Entry Candle Low (CALL) / High (PUT)."""
-    from AEGIS.core.time_bar_engine import OHLCBar
+    from AEGIS.core.price_action_engine import OHLCBar
     em, ctx, leg = create_test_manager(entry_price=25.20, spot_entry=74884.0, signal_type="CALL")
     t0 = datetime.now() - timedelta(seconds=70)
     ctx.entry_time = t0
@@ -964,7 +895,7 @@ def test_pillar2_entry_candle_invalidation_and_no_9ema_choke():
 def test_pillar1_entry_candle_invalidation_and_no_9ema_choke():
     """Verify that Pillar 1 (20 EMA Pullback) is NOT choked by 9-EMA bar close,
     and exits ONLY when spot breaks the Entry Candle Low (CALL) / High (PUT)."""
-    from AEGIS.core.time_bar_engine import OHLCBar
+    from AEGIS.core.price_action_engine import OHLCBar
     em, ctx, leg = create_test_manager(entry_price=25.20, spot_entry=74884.0, signal_type="CALL")
     t0 = datetime.now() - timedelta(seconds=70)
     ctx.entry_time = t0
@@ -1012,7 +943,7 @@ def test_pillar1_entry_candle_invalidation_and_no_9ema_choke():
 def test_pillar3_entry_candle_invalidation_and_no_9ema_choke():
     """Verify that Pillar 3 (Volatility Squeeze Breakout) is NOT choked by 9-EMA bar close,
     and exits ONLY when spot breaks the Entry Candle Low (CALL) / High (PUT)."""
-    from AEGIS.core.time_bar_engine import OHLCBar
+    from AEGIS.core.price_action_engine import OHLCBar
     em, ctx, leg = create_test_manager(entry_price=25.20, spot_entry=74884.0, signal_type="CALL")
     t0 = datetime.now() - timedelta(seconds=70)
     ctx.entry_time = t0
@@ -1162,7 +1093,7 @@ def test_atomic_modify_fallback_on_error():
 
 def test_trailing_structural_sl_on_entry_bar_close():
     """Verify that once the entry candle closes, the structural SL trails to the entry candle's low."""
-    from AEGIS.core.time_bar_engine import OHLCBar
+    from AEGIS.core.price_action_engine import OHLCBar
     em, ctx, leg = create_test_manager(entry_price=14.0, spot_entry=23122.0, signal_type="CALL")
     t_signal = datetime.now() - timedelta(seconds=90)
     t_entry = t_signal + timedelta(seconds=65)  # 5s into the entry bar
@@ -1217,7 +1148,7 @@ def test_trailing_structural_sl_on_entry_bar_close():
 
 def test_trailing_structural_sl_put():
     """Verify that for PUT trades, once the entry candle closes, structural SL trails down to entry candle's high + cushion."""
-    from AEGIS.core.time_bar_engine import OHLCBar
+    from AEGIS.core.price_action_engine import OHLCBar
     em, ctx, leg = create_test_manager(entry_price=18.0, spot_entry=23100.0, signal_type="PUT")
     t_signal = datetime.now() - timedelta(seconds=90)
     t_entry = t_signal + timedelta(seconds=65)
@@ -1271,7 +1202,7 @@ def test_trailing_structural_sl_put():
 
 def test_trade37_forensic_replication():
     """Forensic verification: Trade #37 on 16 Oct exits early on entry candle low breakdown rather than 300s timeout."""
-    from AEGIS.core.time_bar_engine import OHLCBar
+    from AEGIS.core.price_action_engine import OHLCBar
     em, ctx, leg = create_test_manager(entry_price=14.05, spot_entry=23122.30, signal_type="CALL")
     t0 = datetime.now() - timedelta(seconds=140)  # ~2.3 minutes ago (well within 300s time ceiling)
     ctx.entry_time = t0 + timedelta(seconds=65)  # 13:11:05
@@ -1308,7 +1239,7 @@ def test_trade37_forensic_replication():
 def test_thin_candle_bypass_and_cushion_protection():
     """Verify that thin candles (< 1.5 bps hurdle) are skipped for trailing,
     and micro-wicks within the cushion buffer do not prematurely stop out the trade."""
-    from AEGIS.core.time_bar_engine import OHLCBar
+    from AEGIS.core.price_action_engine import OHLCBar
     em, ctx, leg = create_test_manager(entry_price=20.0, spot_entry=23988.0, signal_type="CALL")
     t0 = datetime.now() - timedelta(seconds=150)
     ctx.entry_time = t0 + timedelta(seconds=65)
@@ -1379,7 +1310,7 @@ def test_ratchet_only_rule_never_loosens_sl():
     """Verify Ratchet-Only Rule:
     If a candle has range >= hurdle and green close, but its low is lower than current SL,
     the stop loss MUST NEVER loosen (drop)."""
-    from AEGIS.core.time_bar_engine import OHLCBar
+    from AEGIS.core.price_action_engine import OHLCBar
     em, ctx, leg = create_test_manager(entry_price=25.0, spot_entry=24000.0, signal_type="CALL")
     t0 = datetime.now() - timedelta(seconds=180)
     ctx.entry_time = t0 + timedelta(seconds=65)
@@ -1428,7 +1359,7 @@ def test_ratchet_only_rule_never_loosens_sl():
 def test_multi_bar_continuous_trailing_t1_t2_t3():
     """Verify that Bar-by-Bar Trailing SL runs continuously across every subsequent bar (T+1, T+2, T+3...)
     until the trade exits."""
-    from AEGIS.core.time_bar_engine import OHLCBar
+    from AEGIS.core.price_action_engine import OHLCBar
     em, ctx, leg = create_test_manager(entry_price=30.0, spot_entry=24000.0, signal_type="CALL")
     t0 = datetime.now() - timedelta(seconds=240)
     ctx.entry_time = t0 + timedelta(seconds=65)
@@ -1703,7 +1634,7 @@ def test_last_mile_in_flight_continuation_and_drawdown_gate():
     3. In-Flight Delta Reversal: Order flow flipped to > 1.25x opposing volume.
     """
     from unittest.mock import MagicMock
-    from AEGIS.core.time_bar_engine import OHLCBar
+    from AEGIS.core.price_action_engine import OHLCBar
     em, ctx, leg = create_test_manager(entry_price=100.0, spot_entry=73400.0, signal_type="CALL")
     em.trade_context = None
     em.trades_today = 0
@@ -1771,3 +1702,70 @@ def test_last_mile_in_flight_continuation_and_drawdown_gate():
     assert em.trade_context is None
     aegis_engine.slot_policy.rollback_admission.assert_called_once()
 
+
+
+def test_friday_4dte_low_capital_guard():
+    """
+    UPGRADE: Smart Friday 4-DTE Low-Capital Guard.
+    Verifies that on Friday (4 DTE):
+    1. If available funds < FRIDAY_MIN_CAPITAL_RS (₹3000), live entry is skipped,
+       slot is rolled back, and queue is drained.
+    2. If AEGIS_FRIDAY_TRADING_ENABLED == '0', live entry is skipped regardless of capital.
+    3. AegisExecutionManager.can_enter respects Friday rules and allows Mon-Thu.
+    """
+    from unittest.mock import MagicMock, patch
+    import os
+    import queue
+    from AEGIS.aegis_execution_manager import FRIDAY_MIN_CAPITAL_RS, AegisExecutionManager
+
+    em, ctx, leg = create_test_manager(entry_price=8.15, spot_entry=22472.0, signal_type="PUT")
+    em.trade_context = None
+    em.trades_today = 0
+    em.signal_queue = queue.Queue()
+    em.aegis_engine.slot_policy = MagicMock()
+    em.capital_engine = MagicMock()
+
+    # Create dummy signal
+    signal = {
+        "type": "GAMMA_BURST_ENTRY",
+        "signal": "DOWN",
+        "conviction": 85.0,
+        "lp": 8.15,
+        "sym": "NIFTY21700PE",
+        "spot": 22472.0,
+        "timestamp": time.time(),
+        "metrics": {"pa_setup_name": "topological_prominence_breakout", "sizing_tier": "STANDARD_SIZE"},
+    }
+
+    friday_noon = datetime(2026, 10, 23, 11, 28, 46)  # Friday (weekday == 4)
+    monday_noon = datetime(2026, 10, 26, 11, 28, 46)  # Monday (weekday == 0)
+
+    # 1. can_enter tests
+    with patch.dict(os.environ, {"AEGIS_FRIDAY_TRADING_ENABLED": "0"}):
+        assert AegisExecutionManager.can_enter(friday_noon, available_funds=50000.0) is False
+        assert AegisExecutionManager.can_enter(monday_noon, available_funds=1000.0) is True
+
+    with patch.dict(os.environ, {"AEGIS_FRIDAY_TRADING_ENABLED": "1"}):
+        assert AegisExecutionManager.can_enter(friday_noon, available_funds=1500.0) is False
+        assert AegisExecutionManager.can_enter(friday_noon, available_funds=3500.0) is True
+
+    # 2. _process_aegis_signal: Low capital on Friday blocks execution
+    em.capital_engine.get_available_funds.return_value = 1200.0  # < ₹3,000
+    with patch.dict(os.environ, {"AEGIS_FRIDAY_TRADING_ENABLED": "1"}):
+        with patch("AEGIS.aegis_execution_manager.datetime") as mock_dt:
+            mock_dt.now.return_value = friday_noon
+            em._process_aegis_signal(signal)
+
+            assert em.trade_context is None
+            em.aegis_engine.slot_policy.rollback_admission.assert_called_once()
+
+    # 3. _process_aegis_signal: Trading disabled on Friday blocks execution even with high funds
+    em.aegis_engine.slot_policy.rollback_admission.reset_mock()
+    em.capital_engine.get_available_funds.return_value = 50000.0
+    with patch.dict(os.environ, {"AEGIS_FRIDAY_TRADING_ENABLED": "0"}):
+        with patch("AEGIS.aegis_execution_manager.datetime") as mock_dt:
+            mock_dt.now.return_value = friday_noon
+            em._process_aegis_signal(signal)
+
+            assert em.trade_context is None
+            em.aegis_engine.slot_policy.rollback_admission.assert_called_once()

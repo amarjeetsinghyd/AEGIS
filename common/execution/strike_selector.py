@@ -11,7 +11,7 @@ logger = logging.getLogger("strike_selector")
 TESTING_BAND_LO = float(os.getenv("AEGIS_TESTING_BAND_LO", "8.0"))
 TESTING_BAND_HI = float(os.getenv("AEGIS_TESTING_BAND_HI", "14.5"))
 TESTING_TINY_FUNDS = float(os.getenv("AEGIS_TESTING_TINY_FUNDS", "5000.0"))
-TESTING_DEEP_DEPTH = int(os.getenv("AEGIS_TESTING_DEEP_DEPTH", "16"))
+TESTING_DEEP_DEPTH = int(os.getenv("AEGIS_TESTING_DEEP_DEPTH", "32"))
 # Dead-zone safety buffer: effective floor stops this far below the per-lot
 # budget ceiling so floor can never exceed what the account can afford.
 PREMIUM_SAFETY_BUFFER = float(os.getenv("AEGIS_PREMIUM_SAFETY_BUFFER", "0.50"))
@@ -93,7 +93,7 @@ class StrikeSelector:
         Prioritizes the highest affordable premium (closest to ATM) for maximum delta.
         Always picks within budget like yesterday — cheapest fallback if needed.
         """
-        if weekly_opts.empty:
+        if weekly_opts is None or (hasattr(weekly_opts, "empty") and weekly_opts.empty):
             logger.debug("[StrikeSelector] Option chain is empty. Aborting selection.")
             return []
 
@@ -128,14 +128,14 @@ class StrikeSelector:
             _depth = min(max_0dte_depth, 5)
             try:
                 if float(available_funds or 0) < TESTING_TINY_FUNDS:
-                    _depth = max(16, TESTING_DEEP_DEPTH)
+                    _depth = max(32, TESTING_DEEP_DEPTH)
             except Exception:
                 pass
         else:
             _depth = 6
             try:
                 if float(available_funds or 0) < TESTING_TINY_FUNDS:
-                    _depth = max(16, TESTING_DEEP_DEPTH)
+                    _depth = max(32, TESTING_DEEP_DEPTH)
             except Exception:
                 pass
 
@@ -165,19 +165,26 @@ class StrikeSelector:
                 
             opt_row = match.iloc[0]
             token = str(opt_row['token'])
+            sym = str(opt_row.get('symbol', ''))
             ltp = option_cache.get(token) if isinstance(option_cache, dict) else None
             if ltp is None and token.isdigit() and isinstance(option_cache, dict):
                 ltp = option_cache.get(int(token))
+            if (ltp is None or ltp <= 0) and sym and isinstance(option_cache, dict):
+                ltp = option_cache.get(sym)
                 
             # RAM Fast-Path: check market_data_provider._live_quotes in-memory cache directly (0.001ms)
             if (ltp is None or ltp <= 0) and market_data_provider is not None:
                 live_quotes = getattr(market_data_provider, "_live_quotes", None)
                 if isinstance(live_quotes, dict):
                     q_mem = live_quotes.get(token) or (live_quotes.get(int(token)) if token.isdigit() else None)
+                    if not q_mem and sym:
+                        q_mem = live_quotes.get(sym)
                     if isinstance(q_mem, dict) and float(q_mem.get("ltp", 0.0) or 0.0) > 0:
                         ltp = float(q_mem["ltp"])
                         if isinstance(option_cache, dict):
                             option_cache[token] = ltp
+                            if sym:
+                                option_cache[sym] = ltp
 
             # Zero-REST Discipline: If token has no tick streaming in memory, it is illiquid.
             # Skip instantly in 0.001ms — NEVER block hot-path with synchronous HTTP REST calls!

@@ -31,20 +31,13 @@ try:
     from AEGIS.core.price_action_engine import PriceActionEngine
     from AEGIS.core.microstructure_scorer import MicrostructureScorer
     from AEGIS.core.adaptive_micro_validator import AdaptiveMicroValidator
-    from AEGIS.core.regime_chop_gate import RegimeChopGate
-    from AEGIS.core.time_bar_engine import TimeBarEngine
     from AEGIS.core.directional_persistence import DirectionalPersistenceEngine
     from AEGIS.core.option_quality import OptionQualityEngine
-    from AEGIS.core.signal_state_machine import SignalStateMachine, SignalState
     from AEGIS.core.outcome_telemetry import OutcomeTelemetryEngine
-    from AEGIS.core.entry_quality_engine import EntryQualityEngine
     from AEGIS.core.oi_builtup_gate import OIBuiltupGate
     from AEGIS.core.index_vwap_engine import IndexVWAPEngine
-    from AEGIS.core.shadow_quant_tracker import ShadowQuantTracker
-    from AEGIS.core.ml_gatekeeper import MLGatekeeper
     from AEGIS.core.quality_stack import QualitySlotPolicy, PostTriggerStabilityTracker
     from AEGIS.core.composite_conviction_engine import CompositeConvictionEngine, ConvictionResult
-    from AEGIS.core.volume_profile_engine import VolumeProfileEngine
     from AEGIS.core.wyckoff_volume_engine import WyckoffVolumeEngine
     from AEGIS.core.shadow_boundary_observer import ShadowBoundaryObserver
 except ImportError:
@@ -52,50 +45,29 @@ except ImportError:
         from core.price_action_engine import PriceActionEngine
         from core.microstructure_scorer import MicrostructureScorer
         from core.adaptive_micro_validator import AdaptiveMicroValidator
-        from core.regime_chop_gate import RegimeChopGate
-        from core.time_bar_engine import TimeBarEngine
         from core.directional_persistence import DirectionalPersistenceEngine
         from core.option_quality import OptionQualityEngine
-        from core.signal_state_machine import SignalStateMachine, SignalState
         from core.outcome_telemetry import OutcomeTelemetryEngine
-        from core.entry_quality_engine import EntryQualityEngine
         from core.oi_builtup_gate import OIBuiltupGate
         from core.index_vwap_engine import IndexVWAPEngine
-        from core.shadow_quant_tracker import ShadowQuantTracker
-        from core.ml_gatekeeper import MLGatekeeper
         from core.quality_stack import QualitySlotPolicy, PostTriggerStabilityTracker
         from core.composite_conviction_engine import CompositeConvictionEngine, ConvictionResult
-        from core.volume_profile_engine import VolumeProfileEngine
         from core.wyckoff_volume_engine import WyckoffVolumeEngine
-        from core.ai_shadow_reviewer import AIShadowReviewer
-        from core.hvg_engine import HVGEngine
-        from core.signature_inflection_engine import AEGISv4Pipeline, V4TickSnapshot
         from core.shadow_boundary_observer import ShadowBoundaryObserver
     except ImportError:
         PriceActionEngine = None
         MicrostructureScorer = None
         CompositeConvictionEngine = None
-        VolumeProfileEngine = None
         WyckoffVolumeEngine = None
         AdaptiveMicroValidator = None
-        RegimeChopGate = None
-        TimeBarEngine = None
         DirectionalPersistenceEngine = None
         OptionQualityEngine = None
-        SignalStateMachine = None
         OutcomeTelemetryEngine = None
-        EntryQualityEngine = None
         OIBuiltupGate = None
         IndexVWAPEngine = None
-        ShadowQuantTracker = None
         ShadowBoundaryObserver = None
-        MLGatekeeper = None
         QualitySlotPolicy = None
         PostTriggerStabilityTracker = None
-        AIShadowReviewer = None
-        HVGEngine = None
-        AEGISv4Pipeline = None
-        V4TickSnapshot = None
 
 # ─── Resilient optional imports (hardening 2026-09-21: each isolated so one
 # missing/stale module on a deploy target can never kill engine init; every
@@ -104,11 +76,7 @@ try:
     from AEGIS.core.aegis_v4_core import (
         FastTickRingBuffer,
         Top5DepthGuard,
-        Confirm15StateMachine,
         Direction as V4Direction,
-        SignalSource as V4SignalSource,
-        WatchSlotState,
-        AsymmetricExecutionEngine,
         FastMonotonicStack,
     )
 except ImportError:
@@ -116,36 +84,13 @@ except ImportError:
         from core.aegis_v4_core import (
             FastTickRingBuffer,
             Top5DepthGuard,
-            Confirm15StateMachine,
-            Direction as V4Direction,
-            SignalSource as V4SignalSource,
-            WatchSlotState,
-            AsymmetricExecutionEngine,
             FastMonotonicStack,
         )
     except ImportError:
         FastTickRingBuffer = None
         Top5DepthGuard = None
-        Confirm15StateMachine = None
         V4Direction = None
-        V4SignalSource = None
-        WatchSlotState = None
-        AsymmetricExecutionEngine = None
         FastMonotonicStack = None
-try:
-    from AEGIS.core.ai_shadow_reviewer import AIShadowReviewer
-except ImportError:
-    try:
-        from core.ai_shadow_reviewer import AIShadowReviewer
-    except ImportError:
-        AIShadowReviewer = None
-try:
-    from AEGIS.core.hvg_engine import HVGEngine
-except ImportError:
-    try:
-        from core.hvg_engine import HVGEngine
-    except ImportError:
-        HVGEngine = None
 
 logger = get_logger("aegis_gamma")
 
@@ -215,7 +160,6 @@ class AegisGammaEngine:
             self.adaptive_micro_validator = None
 
         # Decoupled legacy chop gate: wiring cut per user instruction
-        self.chop_gate = None
 
         # State Tracking
         self.last_spot = 0.0
@@ -264,8 +208,6 @@ class AegisGammaEngine:
         self._veto_log_ts: Dict[str, float] = {}
         self._veto_log_suppressed: Dict[str, int] = {}
         self._veto_log_interval_sec = float(os.getenv("AEGIS_VETO_LOG_INTERVAL_SEC", "60.0"))
-        self.signal_fsm = SignalStateMachine(max_trigger_freshness_sec=45.0, max_trigger_acceptable_sec=45.0, prime_timeout_sec=60.0) if SignalStateMachine is not None else None
-        self.eqs_engine = EntryQualityEngine(dispatch_threshold=float(self.P.get("eqs_dispatch_threshold", 70.0))) if EntryQualityEngine is not None else None
         self.outcome_telemetry = OutcomeTelemetryEngine(log_dir=telemetry_dir) if OutcomeTelemetryEngine is not None else None
         self.oi_gate = OIBuiltupGate(
             strike_step=self.strike_step,
@@ -297,20 +239,10 @@ class AegisGammaEngine:
         ) if IndexVWAPEngine is not None else None
 
         # Shadow Quant Telemetry Tracker (Tracks 5 novel quant edges in passive shadow mode)
-        self.shadow_quant_tracker = ShadowQuantTracker() if ShadowQuantTracker is not None else None
 
         # ML Gatekeeper Engine (DECOMMISSIONED / DISABLED — Zero CPU overhead)
         self.is_sensex = is_sensex
         self.index_name = "SENSEX" if is_sensex else "NIFTY"
-        self.ml_gatekeeper_mode = str(self.P.get("ml_gatekeeper_mode", os.getenv("AEGIS_ML_MODE", "DISABLED"))).upper()
-        self.ml_gatekeeper = MLGatekeeper() if (MLGatekeeper is not None and self.ml_gatekeeper_mode != "DISABLED") else None
-        if self.ml_gatekeeper is not None:
-            self.ml_gatekeeper.strike_to_symbol = self.strike_to_symbol
-            self.ml_gatekeeper.option_cache = self.option_cache
-            self.ml_gatekeeper.get_spot = lambda: getattr(self, "last_spot", 0.0)
-            self.ml_gatekeeper.get_atm = lambda: getattr(self, "current_atm_strike", 0.0)
-        if self.price_action_engine is not None and self.ml_gatekeeper is not None:
-            self.price_action_engine.ml_gatekeeper = self.ml_gatekeeper
         # ─── Option Quality Mode (SHADOW = log but don't block) ───
         # Index options (NIFTY/SENSEX) always have institutional liquidity; premium floor
         # and depth checks are over-specified for 0DTE affordable index option testing.
@@ -347,11 +279,6 @@ class AegisGammaEngine:
             high_conviction_tp_pct=float(self.P.get("high_conviction_tp_pct", 0.040)),
         ) if CompositeConvictionEngine is not None else None
 
-        # ─── Volume Profile & Auction Market Engine (100% Passive Shadow Telemetry) ───
-        self.volume_profile_engine = VolumeProfileEngine(
-            index_name=getattr(self, "index_name", "NIFTY"),
-        ) if VolumeProfileEngine is not None else None
-
         # ─── Wyckoff Volume & Delta Engine (Parallel Price & Volume Confirmation Gate) ───
         self.wyckoff_mode = str(self.P.get("wyckoff_mode", os.getenv("AEGIS_WYCKOFF_MODE", "ACTIVE"))).upper()
         self.wyckoff_volume_engine = WyckoffVolumeEngine(
@@ -369,28 +296,10 @@ class AegisGammaEngine:
             self.shadow_boundary_observer.strike_to_symbol = self.strike_to_symbol
             self.shadow_boundary_observer.option_cache = self.option_cache
 
-        # ─── T:50s vs T:60s Intra-Bar A/B Telemetry Bridge ───
-        self._t50_candidate_snapshot: Dict[str, Any] = {}
-
-        # ─── AI Shadow Reviewer (Gemini 3.8 Flash Technical Analyst Co-Pilot) ───
-        self.ai_reviewer_mode = str(self.P.get("ai_reviewer_mode", os.getenv("AEGIS_AI_REVIEWER_MODE", "SHADOW"))).upper()
-        self.ai_shadow_reviewer = AIShadowReviewer(mode=self.ai_reviewer_mode) if (AIShadowReviewer is not None and self.ai_reviewer_mode != "DISABLED") else None
-
-        # ─── Topological HVG Dual-Envelope Engine (Pillar 4 Unified BOS Breakout) ───
-        self.hvg_mode = str(self.P.get("hvg_mode", os.getenv("AEGIS_HVG_MODE", "ACTIVE"))).upper()
-        hvg_shadow = (self.hvg_mode != "ACTIVE")
-        self.hvg_engine = HVGEngine(log_dir=telemetry_dir, shadow_only=hvg_shadow) if HVGEngine is not None else None
-        if self.price_action_engine and self.hvg_engine:
-            self.price_action_engine.hvg_engine = self.hvg_engine
 
         # ─── AEGIS V4.0 Futures RingBuffer & Top-5 Depth Guard (Pillar 4 / Micro Guard) ───
         self.v4_futures_buffer = FastTickRingBuffer(size=256) if FastTickRingBuffer is not None else None
         self.top5_depth_guard = Top5DepthGuard(history_len=30) if Top5DepthGuard is not None else None
-        self.v4_state_machines: Dict[str, Any] = {}
-        # V4 Confirm15 futures-confirmation gate (wired 2026-09-21):
-        # ACTIVE = pillar fires arm, futures flow must TRIGGER before entry;
-        # SHADOW = evaluate + telemetry only, never blocks; DISABLED = legacy path.
-        self.confirm15_mode = str(self.P.get("confirm15_mode", os.getenv("AEGIS_CONFIRM15_MODE", "SHADOW"))).upper()
 
         # Fill & Edge tracking
         self.fill_latency_buf = np.zeros(500, dtype=np.float32)
@@ -456,29 +365,6 @@ class AegisGammaEngine:
         }
         return priors
 
-    def reload_params(self):
-        """Hot-reload params from disk."""
-        self.P = self._load_or_default_params()
-        self.high_conviction_threshold = float(self.P.get("high_conviction_threshold", 75.0))
-        self.moderate_conviction_threshold = float(self.P.get("moderate_conviction_threshold", 60.0))
-        self.min_tick_rate_gate = float(self.P.get("min_tick_rate_gate", 0.05))
-        # V3.0: impulse memory permanently deprecated — force 0.0 on reload.
-        self.impulse_validity_window_sec = 0.0
-        self.impulse_memory.clear()
-        self.volatility_memory_window_sec = float(self.P.get("volatility_memory_window_sec", 300.0))
-        self.macro_drift_target_bps = float(self.P.get("macro_drift_target_bps", 1.0))
-        if self.scorer is not None:
-            weights_file = os.path.join(PARAM_DIR, "microstructure_weights.json")
-            self.scorer = MicrostructureScorer(weights_path=weights_file, high_conviction_threshold=self.high_conviction_threshold)
-        logger.info(
-            f"Parameters reloaded | HighThresh: {self.high_conviction_threshold} | "
-            f"ModThresh: {self.moderate_conviction_threshold} | MinTickRate: {self.min_tick_rate_gate} | "
-            f"MacroDriftTarget: {self.macro_drift_target_bps}bps"
-        )
-
-    # ═══════════════════════════════════════════════════════════
-    # HOT PATH: PER-TICK PROCESSING (O(1), ZERO ALLOC)
-    # ═══════════════════════════════════════════════════════════
     def on_tick_parsed(self, tick) -> None:
         """Processes zero-copy incoming tick from market WebSocket."""
         try:
@@ -507,12 +393,8 @@ class AegisGammaEngine:
                 self.option_cache[sym] = lp
             if self.outcome_telemetry:
                 self.outcome_telemetry.update_tick(sym, lp, now_sec)
-            if self.shadow_quant_tracker and sym:
-                self.shadow_quant_tracker.update_option(sym, lp, now_sec)
             if getattr(self, "shadow_boundary_observer", None) and sym:
                 self.shadow_boundary_observer.on_option_tick(sym, lp, now_sec)
-            if self.ml_gatekeeper and getattr(self.ml_gatekeeper, "paper_trader", None) and sym:
-                self.ml_gatekeeper.paper_trader.on_option_tick(sym, lp, now_sec)
 
             info = self.token_map.get(tok_str)
             if not info:
@@ -626,9 +508,6 @@ class AegisGammaEngine:
                     atm_strike=self.current_atm_strike,
                 )
 
-            # ─── Volume Profile Strike Accumulator ───
-            if self.volume_profile_engine is not None and strike > 0 and vol_val > 0:
-                self.volume_profile_engine.record_option_tick(strike=strike, side=side, vol=vol_val)
 
             if self.scorer is not None:
                 self.scorer.update_tick(sym, now_sec, lp, bp1, sp1, b1, a1, b2, a2, b3, a3, b4, a4, b5, a5, vol=vol_val)
@@ -781,93 +660,6 @@ class AegisGammaEngine:
                     last_fired = self.cooldowns.get(sym, 0.0)
                     cooldown_dur = float(self.P.get("burst_cooldown_sec", 60.0))
                     if now_sec - last_fired >= cooldown_dur:
-                        # [OCCAM GATE] Veto if market is quiet (low intensity)
-                        if not is_pa_setup and live_tick_rate < self.min_tick_rate_gate:
-                            logger.info(
-                                f"[OCCAM VETO] {sym} Score={score:.1f} tick_rate={live_tick_rate:.2f} < {self.min_tick_rate_gate:.1f}"
-                            )
-                            return
-
-                        # [REGIME CHOP GATE] Veto if market is in low-efficiency oscillation or dead compression
-                        # Watertight Guard: Price action pullbacks naturally cause low KER, and Squeeze causes RangeComp veto.
-                        # Both are explicitly bypassed when an active Price Action setup is detected.
-                        if not is_pa_setup and self.chop_gate:
-                            chop_ok, chop_reason, chop_metrics = self.chop_gate.get_regime_state(now_sec)
-                            if not chop_ok and chop_reason != "warmup":
-                                logger.info(
-                                    f"[REGIME CHOP VETO] {sym} ({direction}) blocked by '{chop_reason}' (KER={chop_metrics.get('ker', 0.0):.3f}, RangeComp={chop_metrics.get('range_ratio', 0.0):.3f})"
-                                )
-                                return
-
-                        # [MACRO ALIGNMENT GATE] Agile 60-Second Spot Drift Confirmation (>= macro_drift_target_bps)
-                        # Watertight Guard: Bypassed during Price Action setups so counter-trend pullback doesn't veto
-                        if not is_pa_setup and len(self.spot_history) >= 2 and self.last_spot > 0:
-                            drift_60_pts = self.get_spot_drift(now_sec, 60.0)
-                            if direction == "UP" and drift_60_bps < self.macro_drift_target_bps:
-                                logger.info(
-                                    f"[MACRO ALIGN VETO] {sym} (UP) blocked: 60s spot drift below momentum target ({drift_60_bps:+.1f}bps/{drift_60_pts:+.1f}pts < {self.macro_drift_target_bps:.1f}bps)"
-                                )
-                                return
-                            elif direction == "DOWN" and drift_60_bps > -self.macro_drift_target_bps:
-                                logger.info(
-                                    f"[MACRO ALIGN VETO] {sym} (DOWN) blocked: 60s spot drift above momentum target ({drift_60_bps:+.1f}bps/{drift_60_pts:+.1f}pts > -{self.macro_drift_target_bps:.1f}bps)"
-                                )
-                                return
-
-                        # [ANTI-EXHAUSTION GATE] Multi-Window Scale-Invariant Exhaustion (5m & 15m)
-                        # Watertight Guard: Price Action setups have retraced and reset exhaustion
-                        if not is_pa_setup and len(self.spot_history) >= 2 and self.last_spot > 0:
-                            drift_5m_bps = self.get_spot_drift_bps(now_sec, 300.0)
-                            drift_15m_bps = self.get_spot_drift_bps(now_sec, 900.0)
-                            max_exhaust_5m_bps = float(self.P.get("max_exhaust_5m_bps", 15.0))
-                            max_exhaust_15m_bps = float(self.P.get("max_exhaust_15m_bps", 25.0))
-
-                            if direction == "DOWN":
-                                if drift_5m_bps < -max_exhaust_5m_bps:
-                                    logger.info(
-                                        f"[EXHAUSTION VETO] {sym} (DOWN) blocked: 5m spot drop {drift_5m_bps:.1f}bps exceeds limit (-{max_exhaust_5m_bps:.1f}bps)"
-                                    )
-                                    return
-                                if drift_15m_bps < -max_exhaust_15m_bps:
-                                    logger.info(
-                                        f"[EXHAUSTION VETO] {sym} (DOWN) blocked: 15m spot drop {drift_15m_bps:.1f}bps exceeds limit (-{max_exhaust_15m_bps:.1f}bps)"
-                                    )
-                                    return
-                            elif direction == "UP":
-                                if drift_5m_bps > max_exhaust_5m_bps:
-                                    logger.info(
-                                        f"[EXHAUSTION VETO] {sym} (UP) blocked: 5m spot surge +{drift_5m_bps:.1f}bps exceeds limit (+{max_exhaust_5m_bps:.1f}bps)"
-                                    )
-                                    return
-                                if drift_15m_bps > max_exhaust_15m_bps:
-                                    logger.info(
-                                        f"[EXHAUSTION VETO] {sym} (UP) blocked: 15m spot surge +{drift_15m_bps:.1f}bps exceeds limit (+{max_exhaust_15m_bps:.1f}bps)"
-                                    )
-                                    return
-
-                        # [SESSION EXTREME PROXIMITY GATE]
-                        # Vetoes entering PUT directly on unconfirmed session low / floor, or CALL directly on session ceiling
-                        # Watertight Guard: Bypassed for Price Action setups so squeeze breakouts at extremes aren't vetoed
-                        if not is_pa_setup and self.session_high > 0 and self.session_low < float("inf") and self.last_spot > 0:
-                            dist_to_low = self.last_spot - self.session_low
-                            dist_to_high = self.session_high - self.last_spot
-                            session_drop_bps = ((self.session_high - self.last_spot) / self.session_high) * 10000.0
-                            session_rally_bps = ((self.last_spot - self.session_low) / self.session_low) * 10000.0
-
-                            if direction == "DOWN" and session_drop_bps >= 25.0 and dist_to_low <= (0.25 * self.strike_step):
-                                logger.info(
-                                    f"[SESSION FLOOR VETO] {sym} (DOWN) blocked: session drop {session_drop_bps:.1f}bps, sitting on session low floor (dist={dist_to_low:.1f}pts)"
-                                )
-                                return
-                            elif direction == "UP" and session_rally_bps >= 25.0 and dist_to_high <= (0.25 * self.strike_step):
-                                logger.info(
-                                    f"[SESSION CEILING VETO] {sym} (UP) blocked: session rally +{session_rally_bps:.1f}bps, sitting on session high ceiling (dist={dist_to_high:.1f}pts)"
-                                )
-                                return
-
-                        # [VWAP OVER-EXTENSION GATE DECOMMISSIONED]
-                        # Retained pure directional alignment (Spot vs VWAP) without artificial distance cap.
-
                         # Domain 0.5: Key Structural Level Proximity Veto (PDH Resistance / PDL Support)
                         pa_eng = getattr(self, "price_action_engine", None)
                         if pa_eng and hasattr(pa_eng, "check_key_level_proximity"):
@@ -881,39 +673,13 @@ class AegisGammaEngine:
                                 )
                                 return None
 
-                        # Domain 1: Permission (Higher Timeframe Trend & Structure)
+                        # Price action setup has verified trend alignment and rejection geometry
                         has_permission = True
-                        perm_reason = "permission_ok"
+                        perm_reason = f"price_action_{pa_setup_name}"
                         perm_metrics = {}
-                        if self.time_bar_engine:
-                            if is_pa_setup:
-                                # Price action setup has verified trend alignment and rejection geometry
-                                has_permission = True
-                                perm_reason = f"price_action_{pa_setup_name}"
-                            else:
-                                has_permission, perm_reason, perm_metrics = self.time_bar_engine.get_permission_state(direction)
-                                if not has_permission and perm_reason != "warmup_permissive":
-                                    self._throttled_veto_log("permission_veto", f"[PERMISSION VETO] {sym} ({direction}) blocked by '{perm_reason}'")
-                                    return
-
-                        # Domain 1.5: Volatility Expansion Gate with 5-Minute Impulse Memory
-                        # Watertight Guard: Bypassed for Price Action setups (especially Squeeze which is compression)
-                        if not is_pa_setup:
-                            atr_ratio = float(perm_metrics.get("atr_ratio", 1.0))
-                            has_vol_memory = (now_sec - self.last_volatility_burst_ts) <= self.volatility_memory_window_sec
-                            if atr_ratio < 0.75 and not has_vol_memory and perm_reason != "warmup_permissive":
-                                logger.info(
-                                    f"[VOLATILITY CHOP VETO] {sym} ({direction}) blocked: ATR ratio severely depressed "
-                                    f"({atr_ratio:.2f} < 0.75) and no active 5m volatility memory"
-                                )
-                                return
-
-                        # Domain 2: Confirmation (60s Signed Persistence)
                         pers_confirmed = True
                         pers_score = 1.0
                         pers_metrics = {}
-                        if not is_pa_setup and self.persistence_engine:
-                            pers_confirmed, pers_score, pers_metrics = self.persistence_engine.evaluate_persistence(direction)
 
                         # Domain 3 & 4: Option Tradability & Quality
                         opt_qualified = True
@@ -1104,27 +870,8 @@ class AegisGammaEngine:
 
                             should_fire = True
                             fsm_reason = f"price_action_{pa_setup_name}"
-                        elif self.signal_fsm:
-                            fsm_state, should_fire, fsm_reason = self.signal_fsm.update_trigger(
-                                sym=sym,
-                                now_sec=now_sec,
-                                direction=direction,
-                                micro_score=score,
-                                has_permission=has_permission,
-                                persistence_confirmed=pers_confirmed,
-                                option_qualified=opt_qualified,
-                            )
-                            if not should_fire:
-                                if fsm_state == SignalState.PRIMED and fsm_reason.startswith("primed"):
-                                    logger.info(f"[AEGIS V3 PRIMED] {sym} ({direction}) | Score: {score:.1f}/100 | FSM: PRIMED | Awaiting persistence & confirmation...")
-                                return
-                        else:
-                            should_fire = is_trigger_eligible
-
                         if should_fire:
                             trigger_age = 0.5
-                            if self.signal_fsm and not is_pa_setup:
-                                trigger_age = now_sec - self.signal_fsm.get_or_create(sym).last_trigger_ts
                             
                             eqs = 85.0
                             is_eqs_qual = True
@@ -1162,7 +909,10 @@ class AegisGammaEngine:
                                 conviction_breakdown = {}
                                 conviction_sub_scores = {}
                                 if self.conviction_engine and self.price_action_engine:
-                                    current_bar = (self.price_action_engine.bars_1m[-1] if self.price_action_engine.bars_1m else None) or self.price_action_engine._curr_1m_bar
+                                    if str(pa_details.get("mode", "")).startswith("MODE_") and self.price_action_engine._curr_1m_bar is not None:
+                                        current_bar = self.price_action_engine._curr_1m_bar
+                                    else:
+                                        current_bar = (self.price_action_engine.bars_1m[-1] if self.price_action_engine.bars_1m else None) or self.price_action_engine._curr_1m_bar
                                     wyckoff_context = dict(pa_details.get("wyckoff_metrics") or {})
                                     if wyckoff_passed:
                                         wyckoff_context["wyckoff_confirmed"] = True
@@ -1323,45 +1073,6 @@ class AegisGammaEngine:
                                     conviction_breakdown = conviction_res.breakdown
                                     conviction_sub_scores = conviction_res.sub_scores
 
-                                # ─── ML Gatekeeper (Synchronous evaluation ONLY if in ACTIVE mode) ───
-                                ml_passed = True
-                                ml_score = 1.0
-                                ml_reason = "ML_GATEKEEPER_DISABLED" if self.ml_gatekeeper_mode == "DISABLED" else "ML_GATEKEEPER_SHADOW"
-                                if self.ml_gatekeeper and self.ml_gatekeeper_mode == "ACTIVE":
-                                    idx_id = 1 if ("SENSEX" in str(getattr(self, "index_name", "")).upper() or self.strike_step >= 100.0) else 0
-                                    bar = self.price_action_engine.bars_1m[-1] if (self.price_action_engine and self.price_action_engine.bars_1m) else None
-                                    if bar is not None:
-                                        b_open, b_high, b_low, b_close = float(bar.open), float(bar.high), float(bar.low), float(bar.close)
-                                    else:
-                                        b_open = float(pa_details.get("bar_open", self.last_spot))
-                                        b_high = float(pa_details.get("bar_high", self.last_spot))
-                                        b_low = float(pa_details.get("bar_low", self.last_spot))
-                                        b_close = float(pa_details.get("bar_close", self.last_spot))
-                                    b_rng = max(b_high - b_low, 0.5)
-                                    atr_val = max(atr_1m_val, 1.0)
-                                    opt_ret = float(micro_m.get("option_ret_30s", micro_m.get("micro_ret_30s", 0.0)))
-                                    kyle_lambda = float(micro_m.get("kyle_lambda_30s", 0.0))
-                                    momentum_accel = float(micro_m.get("momentum_accel_10s", 0.0))
-                                    spread_pct_val = float(micro_m.get("spread_pct", spread_val))
-                                    ml_feats = {
-                                        "kyle_lambda_30s": round(kyle_lambda, 6),
-                                        "momentum_accel_10s": round(momentum_accel, 4),
-                                        "option_ret_30s": round(opt_ret, 4),
-                                        "spread_pct": round(spread_pct_val, 4),
-                                    }
-                                    ml_passed, ml_score, ml_reason = self.ml_gatekeeper.evaluate(
-                                        ml_feats, index_name=getattr(self, "index_name", "NIFTY")
-                                    )
-                                    adaptive_ml_thresh = 0.10 if conviction_score_val >= 81.0 else (0.15 if conviction_score_val >= 80.0 else None)
-                                    conf_passed, conf_max_score, conf_details = self.ml_gatekeeper.check_rolling_confluence(
-                                        threshold=adaptive_ml_thresh, current_ts=now_sec
-                                    )
-                                    if not (ml_passed or conf_passed):
-                                        self._purge_impulse_memory(sym)
-                                        self._throttled_veto_log("ml_gatekeeper_veto", f"[ML CONFLUENCE VETO] {sym} ({direction}) {pa_setup_name} P{pillar} blocked: {conf_details.get('reason', ml_reason)}")
-                                        return None
-                                    ml_score = max(ml_score, conf_max_score)
-
                                 # ─── Quality Stack 3-Slot Policy Gate ───
                                 slot_admit = True
                                 slot_reason = "slot_policy_off"
@@ -1380,23 +1091,6 @@ class AegisGammaEngine:
                                         f"[SLOT POLICY VETO] {sym} ({direction}) {pa_setup_name} blocked: {slot_reason}",
                                     )
                                     return None
-
-                                # ─── V4 CONFIRM15 FUTURES CONFIRMATION ───
-                                if Confirm15StateMachine is not None and self.v4_futures_buffer is not None:
-                                    _c15_snap = {
-                                        "conviction": conviction_score_val,
-                                        "sizing": sizing_tier,
-                                        "ml_score": ml_score,
-                                        "slot": slot_reason,
-                                    }
-                                    _c15 = self._confirm15_gate(sym, direction, pa_setup_name,
-                                                                pa_details, lp, now_sec,
-                                                                snapshot=_c15_snap)
-                                    if _c15 is False:
-                                        self._purge_impulse_memory(sym)
-                                        return None
-                                    if _c15 is None:
-                                        return None  # armed, holding for futures confirmation
 
                                 # ─── Shield v2: delta inflection + OI kinematics ───
                                 _di_veto, _di_detail = self._delta_inflection_check(sym, direction)
@@ -1441,7 +1135,7 @@ class AegisGammaEngine:
                                         return None
 
                                 # ─── EXECUTION COMMIT & IMMEDIATE DISPATCH (<0.8ms from Tick) ───
-                                if self.signal_fsm:
+                                if getattr(self, "signal_fsm", None):
                                     self.signal_fsm.register_trade_executed(sym, now_sec)
 
                                 if self.slot_policy and slot_admit:
@@ -1513,7 +1207,7 @@ class AegisGammaEngine:
                                 # Runs immediately after order dispatch; live execution is never delayed.
                                 # 1. Passive Shadow Quant Telemetry
                                 shadow_m = {}
-                                if self.shadow_quant_tracker:
+                                if getattr(self, "shadow_quant_tracker", None):
                                     try:
                                         atm_k = self.current_atm_strike or (round(self.last_spot / self.strike_step) * self.strike_step)
                                         atm_ce_sym = self.strike_to_symbol.get((0, atm_k))
@@ -1541,115 +1235,6 @@ class AegisGammaEngine:
                                             )
                                     except Exception as _e_sq:
                                         logger.debug(f"[Aegis] Shadow Quant error: {_e_sq}")
-
-                                # 2. Passive Volume Profile Telemetry
-                                vp_metrics = {}
-                                if self.volume_profile_engine:
-                                    try:
-                                        vp_metrics = self.volume_profile_engine.get_profile_metrics(
-                                            spot_price=self.last_spot,
-                                            atr_1m=atr_1m_val,
-                                            direction=direction,
-                                        )
-                                        if vp_metrics:
-                                            self._throttled_veto_log(
-                                                f"vp_shadow_{sym}",
-                                                f"[VOLUME PROFILE SHADOW] {sym} ({direction}) | "
-                                                f"SpotPOC: {vp_metrics.get('poc_price', 0.0):.1f} | "
-                                                f"VA: [{vp_metrics.get('val_price', 0.0):.1f} - {vp_metrics.get('vah_price', 0.0):.1f}] "
-                                                f"({vp_metrics.get('auction_zone', 'N/A')}) | "
-                                                f"DistPOC: {vp_metrics.get('dist_to_poc_pts', 0.0):+.1f}pts ({vp_metrics.get('dist_to_poc_atr', 0.0):+.2f} ATR) | "
-                                                f"POCAlign: {vp_metrics.get('poc_alignment', 'N/A')} | "
-                                                f"LVN: {vp_metrics.get('is_lvn_zone', False)} | "
-                                                f"CallPOC_K: {vp_metrics.get('call_poc_strike', 0.0):.0f} | "
-                                                f"PutPOC_K: {vp_metrics.get('put_poc_strike', 0.0):.0f}",
-                                                interval_sec=15.0,
-                                            )
-                                    except Exception as _e_vp:
-                                        logger.debug(f"[Aegis] Volume Profile error: {_e_vp}")
-
-                                # 3. CatBoost ML Gatekeeper Shadow Evaluation & Logging
-                                if self.ml_gatekeeper and self.ml_gatekeeper_mode == "SHADOW":
-                                    try:
-                                        bar = self.price_action_engine.bars_1m[-1] if (self.price_action_engine and self.price_action_engine.bars_1m) else None
-                                        if bar is not None:
-                                            b_open, b_high, b_low, b_close = float(bar.open), float(bar.high), float(bar.low), float(bar.close)
-                                        else:
-                                            b_open = float(pa_details.get("bar_open", self.last_spot))
-                                            b_high = float(pa_details.get("bar_high", self.last_spot))
-                                            b_low = float(pa_details.get("bar_low", self.last_spot))
-                                            b_close = float(pa_details.get("bar_close", self.last_spot))
-                                        b_rng = max(b_high - b_low, 0.5)
-                                        atr_val = max(atr_1m_val, 1.0)
-                                        opt_ret = float(micro_m.get("option_ret_30s", micro_m.get("micro_ret_30s", 0.0)))
-                                        kyle_lambda = float(micro_m.get("kyle_lambda_30s", 0.0))
-                                        momentum_accel = float(micro_m.get("momentum_accel_10s", 0.0))
-                                        spread_pct_val = float(micro_m.get("spread_pct", spread_val))
-                                        ml_feats = {
-                                            "kyle_lambda_30s": round(kyle_lambda, 6),
-                                            "momentum_accel_10s": round(momentum_accel, 4),
-                                            "option_ret_30s": round(opt_ret, 4),
-                                            "spread_pct": round(spread_pct_val, 4),
-                                        }
-                                        ml_passed, ml_score, ml_reason = self.ml_gatekeeper.evaluate(
-                                            ml_feats, index_name=getattr(self, "index_name", "NIFTY")
-                                        )
-                                        adaptive_ml_thresh = 0.10 if conviction_score_val >= 81.0 else (0.15 if conviction_score_val >= 80.0 else None)
-                                        conf_passed, conf_max_score, conf_details = self.ml_gatekeeper.check_rolling_confluence(
-                                            threshold=adaptive_ml_thresh, current_ts=now_sec
-                                        )
-                                        effective_ml_passed = ml_passed or conf_passed
-                                        effective_score = max(ml_score, conf_max_score)
-                                        if conf_passed:
-                                            ml_reason = f"{ml_reason} | {conf_details.get('reason', '')}"
-                                        self._throttled_veto_log(
-                                            f"ml_shadow_{sym}",
-                                            f"[ML CONFLUENCE SHADOW] {sym} ({direction}) {pa_setup_name} P{pillar} | "
-                                            f"Score: {effective_score:.4f} | Peak5m: {conf_max_score:.4f} | "
-                                            f"Passed: {effective_ml_passed} | Reason: {conf_details.get('reason', ml_reason)}",
-                                            interval_sec=15.0,
-                                        )
-                                        ml_score = effective_score
-                                        ml_passed = effective_ml_passed
-                                    except Exception as _e_ml:
-                                        logger.debug(f"[Aegis] Shadow ML error: {_e_ml}")
-
-                                # 4. AI Shadow Reviewer
-                                if self.ai_shadow_reviewer:
-                                    try:
-                                        pa_eng = getattr(self, "price_action_engine", None)
-                                        pdh_val = getattr(pa_eng, "pdh", 0.0) if pa_eng else 0.0
-                                        pdl_val = getattr(pa_eng, "pdl", 0.0) if pa_eng else 0.0
-                                        pdc_val = getattr(pa_eng, "pdc", 0.0) if pa_eng else 0.0
-                                        bars_1m_deque = getattr(pa_eng, "bars_1m", None)
-                                        day_open_val = bars_1m_deque[0].open if (bars_1m_deque and len(bars_1m_deque) > 0) else self.last_spot
-                                        bars_list = list(bars_1m_deque) if bars_1m_deque else []
-                                        self.ai_shadow_reviewer.review_setup_async(
-                                            symbol=sym,
-                                            direction=direction,
-                                            setup_name=pa_setup_name,
-                                            pillar=pillar,
-                                            spot_price=self.last_spot,
-                                            pdh=pdh_val,
-                                            pdl=pdl_val,
-                                            pdc=pdc_val,
-                                            session_high=self.session_high,
-                                            session_low=self.session_low,
-                                            day_open=day_open_val,
-                                            vwap=vwap_val,
-                                            ema_20=getattr(self.price_action_engine, "ema_20_1m", 0.0) if self.price_action_engine else 0.0,
-                                            ema_50=getattr(self.price_action_engine, "ema_50_1m", 0.0) if self.price_action_engine else 0.0,
-                                            atr_1m=atr_1m_val,
-                                            index_name=getattr(self, "index_name", "NIFTY"),
-                                            strike_step=self.strike_step,
-                                            bars_1m=bars_list,
-                                            machine_conviction_score=conviction_score_val,
-                                            conviction_breakdown=conviction_breakdown,
-                                            micro_metrics=micro_m,
-                                            now_sec=now_sec,
-                                        )
-                                    except Exception as _e_ai:
-                                        logger.debug(f"[Aegis] AI Shadow Reviewer error: {_e_ai}")
 
                                 # 5. Stability Tracker Post-Trigger Arming
                                 if self.stability_tracker and micro_m:
@@ -1709,26 +1294,6 @@ class AegisGammaEngine:
 
         except Exception as e:
             logger.error(f"AEGIS on_tick_parsed error: {e}", exc_info=True)
-
-    # ─── V4 CONFIRM15 helpers (wired 2026-09-21) ───
-    @staticmethod
-    def _confirm15_source(pa_setup_name: str):
-        s = str(pa_setup_name or "")
-        if "20_ema" in s:
-            return V4SignalSource.P1_EMA_WICK
-        if "sweep" in s:
-            return V4SignalSource.P2_LIQUIDITY_SWEEP
-        if "squeeze" in s:
-            return V4SignalSource.P3_VOL_SQUEEZE
-        return V4SignalSource.P4_TOPOLOGICAL_HUB
-
-    def _futures_candle_60s(self, now_sec: float):
-        """Rolling 60s futures candle (open/high/low/last) for Confirm15 phi gate."""
-        hist = [p for p in self.futures_history if p[0] >= now_sec - 60.0]
-        if not hist:
-            return 0.0, 0.0, 0.0, 0.0
-        px = [float(p[1]) for p in hist]
-        return px[0], max(px), min(px), px[-1]
 
     def _delta_inflection_check(self, sym: str, direction: str):
         """Delta inflection veto (Shield, added 2026-09-22).
@@ -1856,64 +1421,6 @@ class AegisGammaEngine:
         except Exception:
             return False
 
-    def _confirm15_gate(self, sym: str, direction: str, pa_setup_name: str,
-                        pa_details: Dict, opt_lp: float, now_sec: float,
-                        snapshot: Dict = None):
-        """V4 futures-confirmation gate. True=proceed, False=vetoed, None=waiting.
-        Snapshot holds pre-computed gate outputs from the ARM tick (conviction /
-        ML / slot) for telemetry; TRIGGER re-evaluates fresh (milliseconds)."""
-        if self.confirm15_mode == "DISABLED":
-            return True
-        # Blind without futures flow: fail-open, preserve legacy behavior
-        # (keeps unit tests and feed outages from starving all signals).
-        if self.last_futures_price <= 0 or self.v4_futures_buffer.count < 5:
-            return True
-        v4dir = V4Direction.BULLISH if direction == "UP" else V4Direction.BEARISH
-        entry = self.v4_state_machines.get(sym)
-        if entry is not None and (entry.get("direction") != direction
-                                  or now_sec - float(entry["m"].armed_ts) > 60.0):
-            entry = None  # direction flip or stale arm: drop and re-arm below
-        if entry is None:
-            m = Confirm15StateMachine()
-            hub = float(pa_details.get("hub_price") or pa_details.get("sl_price")
-                        or self.last_spot or 0.0)
-            atr = float(getattr(self.price_action_engine, "current_atr_1m", 0.0) or 0.0)
-            m.arm(source=self._confirm15_source(pa_setup_name), direction=v4dir,
-                  hub_price=hub, opt_ltp=opt_lp, atr_1m=atr, ts=now_sec,
-                  candle_open=self.last_futures_price, fut_price=self.last_futures_price)
-            if m.state != WatchSlotState.ARMED:
-                return True  # arm guard refused: fail-open
-            self.v4_state_machines[sym] = {"m": m, "direction": direction,
-                                           "setup": pa_setup_name,
-                                           "snapshot": dict(snapshot or {})}
-            logger.info(f"[CONFIRM15 ARMED] {sym} ({direction}) {pa_setup_name} "
-                        f"hub={hub:.1f} fut={self.last_futures_price:.1f}")
-            if self.confirm15_mode == "SHADOW":
-                return True
-            return None
-        m = entry["m"]
-        fut_o, fut_h, fut_l, _ = self._futures_candle_60s(now_sec)
-        st = m.evaluate_tick(self.v4_futures_buffer, opt_lp, self.last_futures_price,
-                             fut_h, fut_l, fut_o, now_sec)
-        if st == WatchSlotState.TRIGGERED:
-            armed_for = now_sec - float(m.armed_ts)
-            self.v4_state_machines.pop(sym, None)
-            logger.info(f"[CONFIRM15 TRIGGERED] {sym} ({direction}) {pa_setup_name} "
-                        f"armed_for={armed_for:.1f}s snap={entry.get('snapshot', {})} "
-                        f"-> fresh depth + fire")
-            return True
-        if st in (WatchSlotState.INVALIDATED, WatchSlotState.TIMEOUT):
-            self.v4_state_machines.pop(sym, None)
-            if self.confirm15_mode == "SHADOW":
-                logger.info(f"[CONFIRM15 SHADOW] {sym} ({direction}) {pa_setup_name} "
-                            f"would veto: {st}")
-                return True
-            self._throttled_veto_log("confirm15_veto",
-                                     f"[CONFIRM15 VETO] {sym} ({direction}) {pa_setup_name} "
-                                     f"blocked: futures_{str(st).lower()} (adverse/timeout)")
-            return False
-        return None  # still ARMED: hold for futures confirmation (8-45s window)
-
     def _on_futures_tick(self, sym: str, lp: float, tick: Any, now_sec: float):
         """Processes active index futures ticks for Basis, volume, and lead-lag analysis."""
         if lp <= 0:
@@ -1982,65 +1489,9 @@ class AegisGammaEngine:
         if self.session_low == float("inf") or lp < self.session_low:
             self.session_low = lp
 
-        if self.chop_gate:
-            self.chop_gate.update(lp, now_sec, evaluate=False)
-
-        if self.vwap_engine:
-            self.vwap_engine.update_spot(lp, now_sec)
-
-        # Update Shadow Quant Tracker (Passive zero-copy telemetry)
-        if self.shadow_quant_tracker:
-            self.shadow_quant_tracker.update_spot(lp, now_sec)
-            atm_k = self.current_atm_strike or (round(lp / self.strike_step) * self.strike_step)
-            atm_ce_sym = self.strike_to_symbol.get((0, atm_k))
-            atm_pe_sym = self.strike_to_symbol.get((1, atm_k))
-            ce_px = self._resolve_option_ltp(atm_ce_sym, None) if atm_ce_sym else 0.0
-            pe_px = self._resolve_option_ltp(atm_pe_sym, None) if atm_pe_sym else 0.0
-            if ce_px > 0 and pe_px > 0:
-                self.shadow_quant_tracker.update_straddle(ce_px, pe_px, now_sec)
-
-        # Update Topological HVG Shadow Telemetry (Pillar 4 Shadow)
-        if self.hvg_engine:
-            self.hvg_engine.on_underlying_tick(lp, now_sec)
-
-        # Update Volume Profile Engine (Spot tick volume accumulation)
-        if self.volume_profile_engine:
-            self.volume_profile_engine.record_spot_tick(lp, 1.0)
-
         # Update Shadow Boundary Observer (First-Touch Pain Zone & 200 EMA + OTM 5)
         if getattr(self, "shadow_boundary_observer", None):
             self.shadow_boundary_observer.on_underlying_tick(lp, now_sec)
-
-        # Update T:50s Intra-Bar Early Entry Telemetry Sampling
-        if self.price_action_engine:
-            sec_in_min = int(now_sec % 60)
-            curr_min_bucket = int(now_sec // 60)
-            if 50 <= sec_in_min <= 54:
-                if self._t50_candidate_snapshot.get("min_bucket") != curr_min_bucket:
-                    for cand_dir in ("UP", "DOWN"):
-                        vwap_val = getattr(self.price_action_engine, "current_vwap", 0.0)
-                        cand_passed, cand_reason, cand_m = self.price_action_engine.evaluate_t50_intrabar_candidate(
-                            cand_dir, external_vwap=vwap_val, current_time=now_sec
-                        )
-                        if cand_passed:
-                            cand_side = 0 if cand_dir == "UP" else 1
-                            atm_k = self.current_atm_strike or (round(lp / self.strike_step) * self.strike_step)
-                            cand_sym = self.strike_to_symbol.get((cand_side, atm_k), "")
-                            cand_ltp = self.option_cache.get(cand_sym, 0.0) if cand_sym else 0.0
-                            self._t50_candidate_snapshot = {
-                                "min_bucket": curr_min_bucket,
-                                "direction": cand_dir,
-                                "t50_sec": now_sec,
-                                "t50_spot": lp,
-                                "t50_symbol": cand_sym,
-                                "t50_opt_ltp": cand_ltp,
-                                "metrics": cand_m,
-                            }
-                            logger.info(
-                                f"[T:50s INTRABAR SHADOW] Candidate Qualified ({cand_dir}) | Spot: {lp:.2f} | "
-                                f"Option: {cand_sym} @ Rs.{cand_ltp:.2f} | BodyRatio: {cand_m.get('body_ratio', 0):.2f}"
-                            )
-                            break
 
         # 1. Update V3 TimeBarEngine & 5-minute Volatility Impulse Memory
         if self.time_bar_engine:
@@ -2222,16 +1673,6 @@ class AegisGammaEngine:
             return 0.0
         return ((self.last_spot - ref_price) / ref_price) * 10000.0
 
-    def get_spot_30s_high_low(self, now_sec: float) -> Tuple[float, float]:
-        """Returns the (spot_high_30s, spot_low_30s) across rolling 30.0s window."""
-        if not self.spot_history or self.last_spot <= 0:
-            return self.last_spot, self.last_spot
-        cutoff = now_sec - 30.0
-        pts = [p for t, p in self.spot_history if t >= cutoff]
-        if not pts:
-            return self.last_spot, self.last_spot
-        return max(pts), min(pts)
-
     def get_futures_basis_metrics(self, now_sec: float, lookback_sec: float = 60.0) -> Dict[str, float]:
         """Returns 60s pre-trade Futures Basis metrics and Futures Lead-Lag Momentum for conviction scoring."""
         if not self.futures_history or self.last_spot <= 0:
@@ -2314,30 +1755,6 @@ class AegisGammaEngine:
 
     def _emit_signal(self, sym: str, lp: float, direction: str, conviction: float, gates: Dict, metrics: Dict):
         """Emits signal to AegisExecutionManager queue."""
-        # A/B Comparison: Compare with T:50s Candidate Snapshot if qualified in current minute
-        now_ts = time.time()
-        curr_min_bucket = int(now_ts // 60)
-        if (
-            self._t50_candidate_snapshot
-            and self._t50_candidate_snapshot.get("min_bucket") == curr_min_bucket
-            and self._t50_candidate_snapshot.get("direction") == direction
-        ):
-            t50_spot = self._t50_candidate_snapshot.get("t50_spot", 0.0)
-            t50_opt_ltp = self._t50_candidate_snapshot.get("t50_opt_ltp", 0.0)
-            t50_sym = self._t50_candidate_snapshot.get("t50_symbol", "")
-            spot_diff = (self.last_spot - t50_spot) if direction == "UP" else (t50_spot - self.last_spot)
-            opt_diff_pct = ((lp - t50_opt_ltp) / t50_opt_ltp * 100.0) if t50_opt_ltp > 0 else 0.0
-            logger.info(
-                f"[T:50s vs T:60s A/B SHADOW] Direction: {direction} | "
-                f"T:50 Spot: {t50_spot:.2f} -> T:60 Spot: {self.last_spot:.2f} (Delta: {spot_diff:+.2f} pts) | "
-                f"T:50 Opt: {t50_sym} @ Rs.{t50_opt_ltp:.2f} -> T:60 Signal: {sym} @ Rs.{lp:.2f} (Slippage: {opt_diff_pct:+.2f}%)"
-            )
-            metrics["t50_spot"] = t50_spot
-            metrics["t50_opt_ltp"] = t50_opt_ltp
-            metrics["t50_symbol"] = t50_sym
-            metrics["t50_vs_t60_opt_diff_pct"] = round(opt_diff_pct, 2)
-            metrics["t50_vs_t60_spot_delta_pts"] = round(spot_diff, 2)
-
         if not self.signal_queue:
             logger.warning("[AEGIS] Signal queue is not connected — signal dropped")
             return
@@ -2418,9 +1835,6 @@ class AegisGammaEngine:
                 still_pending.append(item)
         self._pending_edge_measures = still_pending
 
-    def _hawkes_branching(self) -> float:
-        return 0.0
-
     def get_state_summary(self) -> Dict[str, Any]:
         """Provides snapshot metrics for monitoring / UI dashboard."""
         return {
@@ -2441,17 +1855,6 @@ class AegisGammaEngine:
 
     def close(self) -> None:
         """Gracefully flushes pending shadow telemetry and shuts down background resources."""
-        if self.hvg_engine is not None:
-            try:
-                self.hvg_engine.flush_all_pending()
-            except Exception:
-                pass
-        if self.ai_shadow_reviewer is not None:
-            try:
-                self.ai_shadow_reviewer.close()
-            except Exception:
-                pass
-        self.v4_pipelines.clear()
 
 
 def create_aegis_engine(

@@ -169,13 +169,8 @@ class DataFetcher:
         except Exception as e:
             logger.warning(f"Error querying futures token from repo: {e}")
 
-        # Calibrated fallback for current active monthly futures (NIFTY & SENSEX)
-        if name == "NIFTY":
-            return "68407", "NIFTY29SEP26F", "NFO"
-        elif name == "SENSEX":
-            return "844615", "SENSEX26SEPFUT", "BFO"
-
-        logger.error(f"Could not find Futures for {name} on {exch_seg}.")
+        # Repo-driven query fallback: never return hardcoded expired contracts
+        logger.warning(f"[DataFetcher] Could not query active Futures token for {name} on {exch_seg} from repo.")
         return None, None, None
 
     def get_cash_index_token(self):
@@ -239,7 +234,7 @@ class DataFetcher:
                         return self._cached_weekly_opts
 
                     # Expand to 15 strikes ITM and OTM (total 31 strikes) to support deeper affordable OTM trading
-                    depth = int(os.getenv("AEGIS_OPTION_CHAIN_DEPTH", "15"))
+                    depth = int(os.getenv("AEGIS_OPTION_CHAIN_DEPTH", "25"))
                     strike_list = [atm_strike + (i * step) for i in range(-depth, depth + 1)]
                     
                     import re

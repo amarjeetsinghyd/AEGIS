@@ -33,7 +33,6 @@ if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
 from AEGIS.aegis_gamma_engine import AegisGammaEngine, create_aegis_engine
-from AEGIS.core.signal_state_machine import SignalState
 from common.execution.realistic_paper_broker import calculate_nse_option_charges
 
 
@@ -519,7 +518,7 @@ class AegisParquetBacktester:
         )
         self.engine.high_conviction_threshold = self.high_conviction_threshold
         self.engine.min_tick_rate_gate = self.min_tick_rate_gate
-        if self.engine.eqs_engine:
+        if getattr(self.engine, "eqs_engine", None):
             self.engine.eqs_engine.dispatch_threshold = self.eqs_dispatch_threshold
         if self.engine.outcome_telemetry:
             self.engine.outcome_telemetry.log_dir = self.telemetry_dir

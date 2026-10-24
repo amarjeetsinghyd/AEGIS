@@ -107,10 +107,11 @@ class WyckoffVolumeEngine:
             return True, "wyckoff_disabled", {}
 
         pa_name = str((pa_details or {}).get("pa_setup_name", ""))
-        if pa_name.startswith("mode_b_") or pa_name.startswith("mode_a_"):
+        mode_val = str((pa_details or {}).get("mode", "")).upper()
+        if pa_name.startswith(("mode_b_", "mode_a_")) or mode_val.startswith(("MODE_A", "MODE_B")):
             return True, "wyckoff_intrabar_inflight_confirmed", {
                 "in_flight_validated": True,
-                "setup_name": pa_name,
+                "setup_name": pa_name or mode_val,
                 "atr": round(max(float(atr or 10.0), 1.0), 2),
             }
 

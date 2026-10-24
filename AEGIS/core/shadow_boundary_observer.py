@@ -315,10 +315,23 @@ class ShadowBoundaryObserver:
         ps = float(opt_flow.get("put_sell_vol", 0.0) or getattr(curr_bar, "put_sell_vol", 0.0) or 0.0)
         inflight_opt_vol = cb + cs + pb + ps
 
-        vols_60 = [float(getattr(b, "volume", 0.0) or 0.0) for b in list(self.pa_engine.bars_1m)[-60:]]
-        if vols_60 and inflight_opt_vol > 0:
-            s_v = sorted(vols_60)
-            med_vol = float(s_v[len(s_v)//2])
+        # Cache 60m median volume at 1m bar transitions to eliminate per-tick list allocation & GC pressure
+        total_bars = getattr(self.pa_engine, "_total_bars_seen", None)
+        bar_count = int(total_bars) if isinstance(total_bars, (int, float)) else len(getattr(self.pa_engine, "bars_1m", []))
+        if bar_count != getattr(self, "_cached_med_vol_bar_count", -1):
+            bars = self.pa_engine.bars_1m
+            n_bars = len(bars)
+            start_idx = max(0, n_bars - 60)
+            vols = [float(getattr(bars[i], "volume", 0.0) or 0.0) for i in range(start_idx, n_bars)]
+            if vols:
+                vols.sort()
+                self._cached_med_vol_60 = float(vols[len(vols) // 2])
+            else:
+                self._cached_med_vol_60 = 1.0
+            self._cached_med_vol_bar_count = bar_count
+
+        med_vol = getattr(self, "_cached_med_vol_60", 1.0)
+        if med_vol > 0 and inflight_opt_vol > 0:
             expected_opt_vol = max(1.0, med_vol * (float(sec_in_min) / 60.0))
             opt_pace_ok = (inflight_opt_vol / expected_opt_vol) >= 1.15
         else:
@@ -327,7 +340,7 @@ class ShadowBoundaryObserver:
         if not (opt_pace_ok or tick_rate >= 1.5):
             return
 
-        bar_idx = len(self.pa_engine.bars_1m)
+        bar_idx = bar_count
 
         # 1. Pain Zone Breakthrough
         pz_top, pz_bot = self._get_pain_zone_levels(atr)
@@ -517,6 +530,8 @@ class ShadowBoundaryObserver:
         """Creates a new OTM 5 paper trade with sub-minute telemetry."""
         opt_sym, opt_strike, opt_side = self.select_otm5_symbol(direction, spot)
         opt_lp = self.option_cache.get(opt_sym, 0.0)
+        if opt_lp <= 0.0:
+            return
         
         time_str = time.strftime("%H:%M:%S", time.localtime(now_sec))
         trade_id = f"SHADOW_{boundary}_{direction}_{int(now_sec)}"

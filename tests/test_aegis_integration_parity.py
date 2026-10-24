@@ -74,6 +74,7 @@ class TestAegisIntegrationParity:
         assert 0 in sides, "Must map at least one Call (side 0)"
         assert 1 in sides, "Must map at least one Put (side 1)"
 
+    @pytest.mark.slow
     def test_aegis_full_replay_execution_parity(self, backtester):
         """
         Executes full chronological replay of 180,000+ real ticks through AegisGammaEngine.
@@ -101,6 +102,7 @@ class TestAegisIntegrationParity:
             assert "eqs_score" in sig["metrics"]
             assert "persistence_score" in sig["metrics"]
 
+    @pytest.mark.slow
     def test_aegis_forward_outcome_telemetry_parity(self, backtester):
         """
         Verifies forward 5-minute outcome telemetry.

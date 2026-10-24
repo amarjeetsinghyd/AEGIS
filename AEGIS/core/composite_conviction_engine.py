@@ -80,14 +80,7 @@ class CompositeConvictionEngine:
             "flow": 25.0,
             "contract": 15.0,
         },
-        # Pillar 4: Break of Structure demands relentless flow & futures momentum
-        "break_of_structure": {
-            "structure": 25.0,
-            "impulse": 30.0,
-            "flow": 30.0,
-            "contract": 15.0,
-        },
-        # Pillar 4: Topological Network Phase Shift Breakout
+        # Pillar 4: Topological Network Phase Shift Breakout (Shadow)
         "hvg_network_phase_shift": {
             "structure": 30.0,
             "impulse": 30.0,
@@ -99,13 +92,6 @@ class CompositeConvictionEngine:
             "structure": 30.0,
             "impulse": 30.0,
             "flow": 25.0,
-            "contract": 15.0,
-        },
-        # Legacy compat alias
-        "signature_inflection": {
-            "structure": 25.0,
-            "impulse": 30.0,
-            "flow": 30.0,
             "contract": 15.0,
         },
     }
@@ -198,8 +184,6 @@ class CompositeConvictionEngine:
             if setup_name in (
                 "volatility_squeeze_breakout",
                 "topological_prominence_breakout",
-                "hvg_network_phase_shift",
-                "break_of_structure",
             ):
                 ref_high = max(b1.high, b2.high)
                 ref_low = min(b1.low, b2.low)
@@ -645,14 +629,16 @@ class CompositeConvictionEngine:
         Computes the unified 0 to 100 composite conviction score.
         """
         # ─── Intra-Bar Mode A / Mode B Priority Fast-Path ───
-        if setup_name.startswith("mode_b_") or setup_name.startswith("mode_a_"):
+        mode_val = str((pa_details or {}).get("mode", "")).upper()
+        if setup_name.startswith(("mode_b_", "mode_a_")) or mode_val.startswith(("MODE_A", "MODE_B")):
             return ConvictionResult(
-                score=85.0,
+                total_score=85.0,
                 is_approved=True,
-                is_high_conviction=True,
+                sizing_tier="STANDARD_SIZE",
                 recommended_tp_pct=self.standard_tp_pct,
-                breakdown={"intrabar_inflight_momentum": 85.0, "setup_name": setup_name},
                 sub_scores={"intrabar_core": 85.0},
+                breakdown={"intrabar_inflight_momentum": 85.0, "setup_name": setup_name, "mode": mode_val},
+                reason="intrabar_inflight_momentum_approved",
             )
 
         # Bug #1 Fix — The Newborn Bar Evaluation Guard

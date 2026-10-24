@@ -5,6 +5,18 @@
 
 ---
 
+## 💬 USER COMMUNICATION & PRESENTATION PROTOCOL (MANDATORY FOR ALL AI AGENTS)
+
+> **Every AI agent must strictly follow these presentation guidelines when replying to the user (Amarjeet bhai):**
+> 1. **Script & Language Mandate (देवनागरी लिपि अनिवार्य)**:
+>    - Jawab **hamesha Devnagari script (देवनागरी लिपि)** mein hi dena hai, Devnagari aur English quant/technical terms ko naturally mix karke (जैसे: *"अमरजीत भाई, AEGIS ने Priority Mode B Mid-Bar Breakthrough डिटेक्ट किया है..."*). Pure Roman English ya Roman English script (Hinglish) mein reply nahi dena hai.
+> 2. **Readability & Ultra-Clean Presentation (पढ़ने में सबसे आसान)**:
+>    - Response ko padhne mein ultra-smooth aur easy banayein: short crisp paragraphs, clear bullet points, intuitive visual badges (🟢, 🔴, ⚡, 🛡️, 🚀), clear bold highlights. Complex dense wall-of-text bilkul nahi banana hai.
+> 3. **Proactive Generative UI Integration (जेनरेटिव UI का इस्तेमाल)**:
+>    - Antigravity ki **`generative_ui`** skill ka proactive use karein. Jab bhi koi system architecture, trade setup, execution flow, Wyckoff concept, ya telemetry review explain karna ho, inline HTML cards (`<agent-embed src="file:///..."></agent-embed>`) ya standalone artifacts banayein. Tailwind CSS (`tailwindcss.min.js`) aur host theme tokens (`bg-[var(--card)]`, `text-[var(--foreground)]`, `border-[var(--border)]`) use karke beautiful, responsive widgets render karein.
+
+---
+
 ## DECOMMISSIONED COMPONENT — DO NOT REVIVE
 
 ### `kronos_bot` is SHUT DOWN (decommissioned)
@@ -52,18 +64,21 @@ the `common/` shared branches alone and ask. Never add new kronos code.**
    Architecture authority: `AEGIS/AEGIS_V1.0_ARCHITECTURE.md` (Production Version 1.0 Locked).
    - **Primary Focus**: All current development, telemetry review, and trading logic verification center on AEGIS.
    - **Architecture & Rules**: Conform all edits to `AEGIS/AEGIS_V1.0_ARCHITECTURE.md`:
-     * 4 Core Pillars with Hybrid Intra-Bar Execution (Mode A for P1/P2 Reversals at T:00s Close & T:50s–T:58s Pre-Close; Mode B for P3/P4 Breakouts mid-bar at T:08s–T:48s).
-     * Dynamic Session S/R Level Registry (`StructuralLevel` with monotonic `seq_idx`, multi-touch boost, dynamic post-excursion prominence, and Order Flow footprint).
-     * Scale-Invariant Day Extreme Runway Shield (`min_runway_pts = max(1.25 * ATR_1m, 0.0008 * Spot)`).
-     * One-Shot Clean Entry (0.75s hard cancel timeout, zero order chasing, `_drain_signal_queue`) powered by Rolling 5-Second Hot Strikes Pre-Staging Cache.
-     * Last-Mile In-Flight Continuation & Peak Drawdown Hygiene Gate.
-     * Parallel Wyckoff Volume & OFI Delta Harmony Gate.
-     * Continuous Composite Conviction Scoring ($\ge 80.0$ threshold).
-     * Absolute Pain Zone VWAP Band (v1.0 Production Early Veto).
-     * Strict 1-Lot Maker TP at +4.0% (Friday calibrated to +3.0%), Adaptive Exits, Universal Entry Candle Low/High Invalidation.
-     * Strict 3-Trade Daily Cap (`MAX_TRADES_PER_DAY = 3`).
-     * Pre-Trade Abort Slot Rollback and 15:08:00 IST CAS Force Flatten.
-   - **Testing / Consistency Phase**: Currently in consistency testing / validation mode. We are validating pipeline health, signal consistency, Wyckoff delta harmony, and telemetry without topping up paper/live funds.
+     * **4 Macro Price Action Pillars + Hybrid Intra-Bar Execution**:
+       - **Mode A (Rejection & Pierce / T:00s Close & T:50s Pre-Close)** for Pillar 1 (`20_ema_rejection`) & Pillar 2 (`micro_sweep_reclaim`).
+       - **Priority Mode B (In-Flight Mid-Bar Breakthrough Surge at T:08s–T:48s)** for Pillar 3 (`volatility_squeeze_breakout`) & Pillar 4 (`topological_prominence_breakout` + Dynamic S/R Registry), plus Pain Zone / 200 EMA boundaries.
+     * **Dynamic Session S/R Level Registry (`StructuralLevel`)**: Monotonic `seq_idx` tracking, multi-touch boost (`+0.35`), dynamic post-excursion prominence, and Order Flow footprint.
+     * **Scale-Invariant Day Extreme Runway Shield**: `min_runway_pts = max(1.25 * ATR_1m, 0.0008 * Spot)`.
+     * **Single-Shot Clean Entry Mandate**: Atomic `0.75s` fill window, zero order chasing, immediate `_drain_signal_queue()`, powered by Rolling 5-Second Hot Strikes Pre-Staging Cache.
+     * **Last-Mile In-Flight Continuation & Peak Drawdown Hygiene Gate**.
+     * **Friday (4 DTE) Option Elasticity Calibration**: `+3.0%` Maker TP on Fridays (`+4.0%` Mon–Thu).
+     * **Parallel Wyckoff Volume & OFI Delta Harmony Gate**.
+     * **Continuous Composite Conviction Scoring ($\ge 80.0$ threshold)**.
+     * **Absolute Pain Zone VWAP Band (v1.0 Production Early Veto)**.
+     * **Strict 1-Lot Maker TP at +4.0% (Friday calibrated to +3.0%), Adaptive Exits, Universal Entry Candle Low/High Invalidation**.
+     * **Strict 3-Trade Daily Cap (`MAX_TRADES_PER_DAY = 3`)**.
+     * **Pre-Trade Abort Slot Rollback and 15:08:00 IST CAS Force Flatten**.
+   - **Testing / Consistency Phase**: Currently in consistency testing / validation mode. We are validating pipeline health, signal consistency, Wyckoff delta harmony, and telemetry with current available account funds without manual top-ups.
 2. **`ARGUS/`** — **ARGUS** (**A**lgorithmic **R**eal-time **G**ranular **U**ltra-microstructure **S**calper) — HFT microstructure equities engine.
    - **Status**: **SECONDARY / DEPRIORITIZED (Ignore for now)**. We are NOT focusing on ARGUS at this stage. Treat as secondary/dormant unless explicitly directed.
 3. **`unified_dashboard/`** — monitoring UI, dual-brands: Quant Console — AEGIS × ARGUS.
@@ -80,7 +95,8 @@ Shared library: `common/` (broker / execution / market / ipc / runtime / config 
 * **Pillar 1 (`20_ema_rejection`)**: Classical Dow Theory `HL2` (CALL) / `LH2` (PUT) 2nd-touch confirmation into 20 EMA High-Low Band + Mode A execution.
 * **Pillar 2 (`micro_sweep_reclaim`)**: 5-bar liquidity sweep & reclaim + Mode A execution (with 11:15–13:00 IST Lunch Chop Veto).
 * **Pillar 3 (`volatility_squeeze_breakout`)**: 3–4 bar tight box (`<= 1.25x ATR`) expansion breakout + Mode B In-Flight Surge (`T:08s–T:48s`) + Anti-Climax Cap (`<= 1.35x ATR`).
-* **Pillar 4 (`topological_prominence_breakout`)**: Priority 1 Dynamic S/R Registry Breakout + Priority 2 `T-2` 0-D Prominence Hub (`FastMonotonicStack`), governed by Mode B In-Flight Surge, Day Extreme Runway Rule, and Wyckoff Stopping Volume Veto (`hvg_network_phase_shift` is strictly SHADOW_ONLY).
+* **Pillar 4 (`topological_prominence_breakout`)**: Priority 1 Dynamic S/R Registry Breakout + Priority 2 `T-2` 0-D Prominence Hub (`FastMonotonicStack`), governed by Mode B In-Flight Surge, Day Extreme Runway Rule, and Wyckoff Stopping Volume Veto (`hvg_engine` and its 5m structural veto are permanently DECOMMISSIONED & ARCHIVED).
+* **Priority Mode B (`check_mode_b_breakthrough`)**: Mid-bar entry between `T:08s` and `T:48s` on sweet-spot range (`0.35x–1.20x ATR`), body $\ge 65\%$, leading wick $\le 0.05 \times \text{ATR}$, 2-tick boundary persistence, and live `_opt_flow_1m` delta $\ge 1.30\times$ (or spot tick rate $\ge 1.5$ ticks/sec). Enters ahead of retail, filling resting +4.0% Maker TP (+3.0% on Friday) before or as candle closes.
 
 ### 2. Absolute Pain Zone VWAP Band (v1.0 Production Early Veto)
 * Single unified veto before pillars:
@@ -91,82 +107,69 @@ Shared library: `common/` (broker / execution / market / ipc / runtime / config 
 ### 3. Parallel Wyckoff Volume & OFI Delta Gate
 * Volume-to-Dispersion Ratio ($VDR \ge 1.0$) and positive order-flow intensity (OFI) delta harmony required to confirm institutional participation.
 
-### 4. Strike Selection & Subscription Universe (15 OTM Depth)
-* **Subscription Universe**: ATM $\pm 15$ strikes (31 strikes total, 62 tokens CE+PE) tracked on WebSocket ($t+d$).
+### 4. Strike Selection & Subscription Universe (25 OTM Depth)
+* **Subscription Universe**: ATM $\pm 25$ strikes (51 strikes total, 102 tokens CE+PE) tracked on WebSocket ($t+d$).
 * **Index Futures Passive Feed**: Subscribes 1 active near-month Index Future token (passive WebSocket feed, 0 polling loops, 0 extra REST calls) solely for emergency cold-boot candle seeding fallback and basis/telemetry. AEGIS does NOT trade futures; execution is strictly on options.
-* **Low-Capital Testing Mode (`funds < 5000`)**: `StrikeSelector` scans all 15 OTM strikes (`TESTING_DEEP_DEPTH = 16`). Automatically selects the closest affordable OTM strike for 1 lot (e.g. ₹15–₹28).
+* **Low-Capital Testing Mode (`funds < 5000`)**: `StrikeSelector` scans all available OTM strikes (`TESTING_DEEP_DEPTH = 32`, min premium ₹4.00 charges floor). Automatically selects the closest affordable OTM strike for 1 lot (e.g. ₹15–₹28).
 * **Index Option Liquidity**: Major Indian index options (NIFTY/SENSEX) have massive liquidity (millions of shares). **NEVER** apply artificial 2% spread blocks or thin-ask blocks.
 
 ### 5. Adaptive Exits & Near-Target Profit Lock (v1.0 Production Locked)
 * **Hard Disaster Floor**: `-12.0%` option premium circuit breaker.
-* **Step 1 (Safety Net)**: Peak $\ge +3.0\% \implies$ SL compressed from -12% to `-3.0%` (wide breathing room; premature +2.0% choke permanently removed).
+* **Step 1 (Safety Net)**: Peak $\ge +3.0\% \implies$ SL compressed from -12% to `-3.0%` (wide breathing room; premature +2.0% choke permanently removed; on Friday 4 DTE compressed at $+2.0\%$).
 * **Step 2 (Cost-Shield / Breakeven)**: Peak $\ge +3.5\% \implies$ SL compressed to `0.0%` (Entry Price scratch; on Friday 4 DTE compressed at $+2.2\%$).
-* **Universal Spot Invalidation (All 4 Pillars & Mode B)**: CALL exits if Spot $\le \text{Entry Candle Low} - (0.10 \times \text{ATR})$; PUT exits if Spot $\ge \text{Entry Candle High} + (0.10 \times \text{ATR})$ with structural trailing (immunizes trade from option spread/wick noise).
+* **Universal Spot Invalidation (All 4 Pillars & Mode B)**: CALL exits if Spot $\le \text{Entry Candle Low} - (0.10 \times \text{ATR})$; PUT exits if Spot $\ge \text{Entry Candle High} + (0.10 \times \text{ATR})$ with structural trailing (immunizes trade from option spread/wick noise; 9-EMA bar-close choke is permanently removed).
 * **Mode B Bar-Close Escape Rule**: If a mid-bar Mode B breakout closes back inside the broken boundary at `T:60s`, trigger immediate scratch escape (`MODE_B_FAILED_CLOSE_ESCAPE`).
 * **Near-Target Profit Lock (`NEAR_TARGET_TRIGGER_PCT = 0.035`, `NEAR_TARGET_PULLBACK_TOLERANCE = 0.008`)**:
-  * Peak Bid $\ge +3.5\% \implies$ **Exits immediately on $\ge 0.8\%$ pullback from peak bid**! (On Friday 4 DTE: Trigger at $+2.5\%$, pullback tolerance $0.6\%$).
+  * Peak Bid $\ge +3.5\% \implies$ **Exits immediately on $\ge 0.8\%$ pullback from peak bid**! (On Friday 4 DTE: Trigger at $+2.5\%$, pullback tolerance $0.5\%$).
 * **Strict 1-Lot Maker TP**: Resting Limit Order at **`+4.0%`** (100% quantity). On Friday 4-DTE, calibrated dynamically to **`+3.0%`** due to $5\times$ lower option elasticity ($\Omega$).
   * **Target Discipline Mandate (Never Expand to +5%–6%)**: +4.0% is the mathematically optimal safe harbor that fills passively within 10–40s across choppy regimes. Option momentum beyond +4% frequently faces sharp institutional dumps (e.g. crashing back below entry immediately after reaching +8%). Never greed for 5%–6% as holding for bigger targets destroys the 84%+ win-rate.
-* **One-Shot Clean Entry Discipline**: 0.75s hard timeout on entry orders; zero order chasing/modification on rejected or unfilled orders (`_drain_signal_queue` on reject).
+* **Single-Shot 0.75s Clean Entry (Zero Chasing)**: 0.75s hard timeout on entry orders; zero order chasing/modification on rejected or unfilled orders (`_drain_signal_queue` on reject).
 * **3-Minute Time Harvest (DECOMMISSIONED 2026-10-09)**: Premature 180s profit choke permanently removed. Running green trades are given the full 5-minute (300s) baseline runway (`MAX_HOLD_SEC = 300s`) to reach the resting +4.0% Maker TP.
 * **EOD CAS Flush**: 15:08:00 IST force flattens all open inventory.
 
-### 6. Component Operational State (Live vs Shadow)
-* **LIVE**: 4 Price Action Pillars, Absolute Pain Zone Band, Wyckoff Volume & OFI Gate, Composite Conviction Engine ($\ge 80$), Adaptive Exits, StrikeSelector.
-* **SHADOW**: Volume Profile Engine (VAH/VAL/POC), ShadowQuantTracker.
-* **DECOMMISSIONED**: CatBoost ML Gatekeeper & Standalone CatBoost Paper Trader (SHUT DOWN / DISABLED 2026-10-14 after 18-day trial proved 46.4% win rate inferior to 84%+ price action; Kyle's Lambda inactive), Gemini 3.8 / `ai_shadow_reviewer.py` is DELETED. Kronos is SHUT DOWN.
+### 6. Component Operational State (Live vs Shadow vs Decommissioned)
+* **LIVE**: 4 Price Action Pillars, Absolute Pain Zone Band, Wyckoff Volume & OFI Delta Gate, Composite Conviction Engine ($\ge 80$), Adaptive Exits, StrikeSelector, Futures Basis & Lead-Lag Tracking, OIBuiltupGate & OI Kinematics Veto, AdaptiveMicroValidator, MicrostructureScorer.
+* **SHADOW**: Single active shadow observer: `ShadowBoundaryObserver` (Absolute Pain Zone & 200 EMA breakout analytics).
+* **DECOMMISSIONED & ARCHIVED (`AEGIS/_archive/decommissioned_2026-10/`)**:
+  - `hvg_engine.py`: Decommissioned and archived (its live 5m stealth veto `check_5m_structural_alignment` in `_check_structural_obstacle` permanently eliminated).
+  - `volume_profile_engine.py`: Decommissioned and archived.
+  - `shadow_quant_tracker.py`: Decommissioned and archived.
+  - `ml_gatekeeper.py` & `catboost_paper_trader.py`: Decommissioned and archived (Kyle's Lambda inactive).
+  - `causal_microstructure_pipeline.py`: Decommissioned and archived.
+  - `time_bar_engine.py`: Decommissioned and archived (fully integrated into `price_action_engine.py`).
+  - `signal_state_machine.py`, `regime_chop_gate.py`, `entry_quality_engine.py`, `oi_quotes_poller.py`: Decommissioned and archived.
+  - Gemini 3.8 / `ai_shadow_reviewer.py`: Deleted. Kronos: Shut down.
 
 ### 7. Trading Calendar & Weekly Engine Schedule
 * **Monday**: **NIFTY** (**1 DTE**) [NFO, strike step 50, lot 65]
 * **Tuesday**: **NIFTY** (**0 DTE** — Expiry Day) [NFO, strike step 50, lot 65]
 * **Wednesday**: **SENSEX** (**1 DTE**) [BFO, strike step 100, lot 20]
 * **Thursday**: **SENSEX** (**0 DTE** — Expiry Day) [BFO, strike step 100, lot 20]
-* **Friday**: **NIFTY** (**4 DTE**) [NFO, strike step 50, lot 65]
+* **Friday**: **NIFTY** (**4 DTE**) [NFO, strike step 50, lot 65] — **DISABLED by default (Deep Sleep Mode)**. `is_trading_day` returns `False` on Friday unless `AEGIS_FRIDAY_TRADING_ENABLED=1`. The engine deep-sleeps from Thursday 15:17 close directly until Monday 08:55 AM IST.
 * **Saturday & Sunday**: Market Closed (Shoonya WebSocket disconnect is normal, no bot trading).
-* **Summary**: SENSEX trades **Wed (1 DTE) & Thu (0 DTE)**. NIFTY trades **Mon (1 DTE), Tue (0 DTE), & Fri (4 DTE)**. Engine dynamically determines active symbol and DTE from actual system date/time.
+* **Summary**: SENSEX trades **Wed (1 DTE) & Thu (0 DTE)**. NIFTY trades **Mon (1 DTE) & Tue (0 DTE)**. Friday is an automated sleep day. Engine dynamically determines active symbol and DTE from actual system date/time.
 
 ### 8. Testing Phase Discipline
-* Currently testing consistency and pipeline stability with current available live/testing funds without manual top-ups.
+* Currently testing consistency and pipeline stability with current available account funds without manual top-ups.
 * **Do NOT top up live or paper funds.**
 * **Scale-Invariance Mandatory**: Spot distances and thresholds must be normalized via Basis Points (bps) or percentage of spot. Never hardcode fixed points.
 
 ---
 
-## 🧠 MANDATORY QUANTITATIVE REASONING & PRE-CODING CHECKLIST (FOR AI AGENTS)
+## 🧠 MANDATORY FIRST-PRINCIPLES QUANT REASONING PROTOCOL (FOR AI AGENTS)
 
-> **Every AI agent MUST self-verify this 5-point checklist before writing or modifying any strategy/execution code:**
-
-### Rule 1 — Unit & State Lifecycle Verification (No Apples-to-Oranges)
-* Before comparing or computing ratios between two variables (especially between forming bar `_curr_1m_bar` and closed `bars_1m`), verify their exact units and lifecycle!
-* **Trap Example**: `_curr_1m_bar.volume` tracks spot tick counts during the minute, and ONLY becomes aggregate option volume (`opt_total_vol`) when finalized at `_on_1m_bar_close`. In-flight intra-bar option volume lives in `_opt_flow_1m['vol']`. Dividing spot ticks by option volume is an apples-to-oranges bug. Always verify data origins and types before writing arithmetic.
-
-### Rule 2 — Deque & Rolling Window Boundary Audit
-* Our `bars_1m` deque is bounded by `max_history_bars = 400`.
-* Once saturated (e.g. after 09:14 AM historical candle seeding), `len(self.bars_1m)` remains strictly constant at `400` for the entire trading day.
-* **Strict Law**: NEVER use `len(self.bars_1m)` to measure elapsed time, bar age, or session progress. Always use monotonic bar counters (`self._total_bars_seen`, `seq_idx`) or epoch timestamps (`ts_start`, `bar.timestamp`).
-
-### Rule 3 — End-to-End Pipeline Trace (Trigger $\implies$ Gatekeepers $\implies$ Execution)
-* A trigger in `price_action_engine.py` does NOT execute in isolation. When adding or modifying any trigger (e.g., Mode A/B intra-bar fast-paths), you MUST trace its full downstream path through:
-  1. `wyckoff_volume_engine.py`: Will Wyckoff evaluate against `bars[-1]` (stale closed bar) or use the forming bar's in-flight metrics (`intra_bar_metrics`)?
-  2. `composite_conviction_engine.py`: Will conviction score reach $\ge 80.0$, or will it penalize the trade due to missing closed-bar indicators?
-  3. `aegis_execution_manager.py`: Will the slot admission policy, Last-Mile Hygiene gate, or Day Runway rule allow execution?
-* If you modify one layer, update all connected downstream gatekeepers in the same changeset.
-
-### Rule 4 — Backward Compatibility with Synthetic Tests
-* Unit test suites frequently feed synthetic OHLC candles with `opt_total_vol = 0` or missing L2 depth.
-* Any new option-flow, delta, or order-book gate MUST gracefully bypass or return neutral when `opt_total_vol <= 0` or test mock data is detected, while strictly enforcing when real live market data (`opt_total_vol > 0`) is present. Never break existing test suites by making synthetic test bars fail hard.
-
-### Rule 5 — Plan-First Impact Analysis & Pytest Frugality
-* Before making non-trivial code modifications, provide a concise 5-line **Impact Analysis** covering:
-  1. Trigger Engine (`price_action_engine.py`)
-  2. Confirmation Gates (`wyckoff_volume_engine.py`, `composite_conviction_engine.py`)
-  3. Execution & Sizing (`aegis_execution_manager.py`, `order_lifecycle.py`)
-  4. Unit Tests affected
-  5. Scale-invariance & memory impact
-* Follow strict testing frugality:
-  * Documentation (`.md`), comments, or log inspection $\implies$ **0 tests run**.
-  * Single-module change $\implies$ **Run ONLY that targeted test file** (e.g. `python -m pytest tests/test_price_action_engines.py -q`).
-  * Never run the full test suite unless refactoring shared `common/` core infrastructure or explicitly requested.
+Before writing or modifying ANY strategy, gatekeeper, or execution code, every AI agent MUST perform and briefly state a **5-Point Pre-Flight Quant Audit**:
+1. **Unit & Lifecycle Parity (No Apples-to-Oranges)**: Verify exact units between forming bars (`_curr_1m_bar`) and closed bars (`bars_1m`). Remember: `_curr_1m_bar.volume` counts spot ticks during the minute and only becomes `opt_total_vol` at `_on_1m_bar_close`. Always use `self._opt_flow_1m` for in-flight option volume!
+2. **Deque Saturation & Indexing Safety**: `self.bars_1m` has `maxlen=400` and is full at 09:14 AM after seeding. `len(self.bars_1m)` stays constant at `400`. NEVER use `len(self.bars_1m)` for bar age or time elapsed—always use monotonic `self._total_bars_seen` (`seq_idx`) or epoch timestamps (`ts_start`).
+3. **End-to-End Pipeline Trace**: A trigger in `price_action_engine.py` must survive downstream gates. Always trace how a new/modified signal flows through:
+   `PriceActionEngine` -> `WyckoffVolumeEngine` (fast-path needed for intra-bar?) -> `CompositeConvictionEngine` (score >= 80?) -> `AegisExecutionManager` (Last-Mile Hygiene & Slot Rollback).
+4. **Scale-Invariance & Synthetic Test Compatibility**:
+   - Never hardcode point values (NIFTY is 24k, SENSEX is 74k). Use `k * ATR_1m` or `bps` (`0.0008 * Spot`).
+   - Unit tests often feed synthetic OHLC bars with `opt_total_vol == 0`. All option-flow/delta vetoes must gracefully bypass when `opt_total_vol <= 0`.
+5. **Strict Pytest Frugality**:
+   - `.md` docs, comments, log analysis -> **Run 0 tests**.
+   - Single module edit -> **Run ONLY that module's targeted test file** (takes ~2s).
+   - Full test suite -> **ONLY on multi-module core changes or pre-deployment**.
 
 ---
 

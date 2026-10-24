@@ -1305,7 +1305,7 @@ function openForensicModal(tradeId) {
         <div class="forensic-card-title">Execution &amp; Accounting</div>
         <div class="forensic-row"><span class="forensic-label">Fill Latency:</span><span class="forensic-val">${(f.latency_ms || 2500).toFixed(0)} ms</span></div>
         <div class="forensic-row"><span class="forensic-label">Hold Duration:</span><span class="forensic-val">${trade.duration_str}</span></div>
-        <div class="forensic-row"><span class="forensic-label">Spot Excursion (MFE / MAE):</span><span class="forensic-val"><span style="color:var(--success-bright);">+${(trade.spot_peak_mfe_pts !== undefined ? trade.spot_peak_mfe_pts : (f.spot_peak_mfe_pts || 0)).toFixed(2)} pts</span> / <span style="color:var(--danger);">${(trade.spot_peak_mae_pts !== undefined ? trade.spot_peak_mae_pts : (f.spot_peak_mae_pts || 0)).toFixed(2)} pts</span></span></div>
+        <div class="forensic-row"><span class="forensic-label">Spot Excursion (MFE / MAE):</span><span class="forensic-val"><span style="color:var(--success-bright);">${(trade.spot_peak_mfe_pts !== undefined ? trade.spot_peak_mfe_pts : (f.spot_peak_mfe_pts || 0)) >= 0 ? '+' : ''}${(trade.spot_peak_mfe_pts !== undefined ? trade.spot_peak_mfe_pts : (f.spot_peak_mfe_pts || 0)).toFixed(2)} pts</span> / <span style="color:var(--danger);">${(trade.spot_peak_mae_pts !== undefined ? trade.spot_peak_mae_pts : (f.spot_peak_mae_pts || 0)).toFixed(2)} pts</span></span></div>
         <div class="forensic-row"><span class="forensic-label">Time to Spot MFE:</span><span class="forensic-val">${(trade.spot_time_to_mfe_ms || f.spot_time_to_mfe_ms || Math.round((trade.spot_time_to_mfe_sec || f.spot_time_to_mfe_sec || 0) * 1000))} ms (${(trade.spot_time_to_mfe_sec !== undefined ? trade.spot_time_to_mfe_sec : (f.spot_time_to_mfe_sec || 0)).toFixed(2)}s)</span></div>
         <div class="forensic-row"><span class="forensic-label">Gross P&amp;L:</span><span class="forensic-val ${mGrossClass}" style="font-weight:700;">${mGrossPrefix}${mGross.toFixed(2)}</span></div>
         <div class="forensic-row"><span class="forensic-label">Brokerage:</span><span class="forensic-val" style="color:var(--text-muted);">₹${(trade.brokerage_rs || 10).toFixed(2)}</span></div>
@@ -1319,19 +1319,19 @@ function openForensicModal(tradeId) {
     <!-- RUNNER HIGHLIGHT -->
     <div class="runner-highlight">
       <div class="runner-stat">
-        <div class="val">+${trade.opt_pct.toFixed(2)}%</div>
+        <div class="val">${(trade.opt_pct || 0) >= 0 ? '+' : ''}${(trade.opt_pct || 0).toFixed(2)}%</div>
         <div class="lbl">Realized TP</div>
       </div>
       <div class="runner-stat">
-        <div class="val">+${trade.runner.mfe_30s_pct.toFixed(1)}%</div>
+        <div class="val">${((trade.runner && trade.runner.mfe_30s_pct) || 0) >= 0 ? '+' : ''}${((trade.runner && trade.runner.mfe_30s_pct) || 0).toFixed(1)}%</div>
         <div class="lbl">+30s Post-Exit</div>
       </div>
       <div class="runner-stat">
-        <div class="val">+${trade.runner.mfe_60s_pct.toFixed(1)}%</div>
+        <div class="val">${((trade.runner && trade.runner.mfe_60s_pct) || 0) >= 0 ? '+' : ''}${((trade.runner && trade.runner.mfe_60s_pct) || 0).toFixed(1)}%</div>
         <div class="lbl">+60s Post-Exit</div>
       </div>
       <div class="runner-stat">
-        <div class="val">+${trade.runner.peak_runner_pct.toFixed(1)}%</div>
+        <div class="val">${((trade.runner && trade.runner.peak_runner_pct) || 0) >= 0 ? '+' : ''}${((trade.runner && trade.runner.peak_runner_pct) || 0).toFixed(1)}%</div>
         <div class="lbl">Candle Peak MFE</div>
       </div>
     </div>

@@ -1,3 +1,4 @@
+import os
 import time
 from datetime import datetime, date, time as dt_time, timedelta
 from common.logger import get_logger
@@ -37,10 +38,16 @@ KRONOS_FORCE_FLATTEN_TIME = dt_time(15, 10, 0)
 KRONOS_ENTRY_CUTOFF_TIME = dt_time(15, 0, 0)
 
 def is_trading_day(d: date = None) -> bool:
-    """Returns True if the given date is a weekday and not an official NSE/BSE holiday."""
+    """Returns True if the given date is a weekday and not an official NSE/BSE holiday.
+    
+    Operator Policy: Friday 4-DTE trading is disabled by default (Mon-Thu 4-day engine schedule).
+    The bot goes into deep sleep on Thursday 15:17 close directly until Monday 08:55 AM IST.
+    """
     if d is None:
         d = datetime.now().date()
     if d.weekday() >= 5:  # Saturday = 5, Sunday = 6
+        return False
+    if d.weekday() == 4 and os.getenv("AEGIS_FRIDAY_TRADING_ENABLED", "0") == "0":
         return False
     if d in NSE_HOLIDAYS_2026:
         return False

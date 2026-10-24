@@ -471,7 +471,7 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
             # Auto re-subscribe all registered tokens on connect / reconnect
             if hasattr(self, "_subscribed_pairs") and self._subscribed_pairs:
                 by_exch = {}
-                for exch, tk in self._subscribed_pairs:
+                for exch, tk in list(self._subscribed_pairs):
                     by_exch.setdefault(exch, []).append(tk)
                 for exch, tks in by_exch.items():
                     try:

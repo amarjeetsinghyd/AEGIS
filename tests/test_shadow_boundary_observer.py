@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock
-from AEGIS.core.price_action_engine import PriceActionEngine, OHLCBar
+from AEGIS.core.price_action_engine import PriceActionEngine, OHLCBar, StructuralLevel
 from AEGIS.core.shadow_boundary_observer import ShadowBoundaryObserver, ShadowTrade
 
 
@@ -143,9 +143,20 @@ def test_mode_b_breakthrough_in_price_action_engine():
         volume=100.0,
     )
     pa.bars_1m = [prior_bar] * 25
+    pa._total_bars_seen = 25
 
-    # Mock Pain Zone
-    pa.get_pain_zone_vwaps = MagicMock(return_value={"zone_top": 22510.0, "zone_bottom": 22490.0})
+    # Register Pillar 4 Dynamic S/R Level (Resistance at 22510.0)
+    pa.session_levels.append(
+        StructuralLevel(
+            level_type="RESISTANCE",
+            price=22510.0,
+            ts_created=1700000000.0 - 300.0,
+            prominence=1.85,
+            seq_idx=0,
+            bar_idx=0,
+            touch_count=2,
+        )
+    )
 
     # Forming bar
     curr_bar = OHLCBar(
@@ -165,9 +176,9 @@ def test_mode_b_breakthrough_in_price_action_engine():
     assert ok1 is False
     assert reason1 == "awaiting_second_tick"
 
-    # Tick 2: returns True (breakthrough confirmed)
-    ok2, reason2, details = pa.check_mode_b_breakthrough("UP", current_time=pa.last_ts + 0.1)
+    # Tick 2: returns True (breakthrough confirmed on Pillar 4 S/R breakout)
+    ok2, reason2, details = pa.check_mode_b_breakthrough("UP", current_time=pa.last_ts + 0.3)
     assert ok2 is True
-    assert reason2 == "mode_b_inflight_breakthrough"
+    assert reason2 == "topological_prominence_breakout"
     assert details["boundary_level"] == 22510.0
     assert details["trigger_sec"] == 45
