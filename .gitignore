@@ -36,3 +36,6 @@ scratch/
 # branch in common/runtime/paths.py on every test run (harmless, 2KB).
 astra_bot/
 kronos_bot/
+
+# Accidental bundle guard
+*.tar.gz
