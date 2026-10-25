@@ -1379,19 +1379,34 @@ class AegisExecutionManager:
             if entry_bucket is not None and b_level > 0 and pa_eng and getattr(pa_eng, "bars_1m", None):
                 curr_bucket = int(now_ts // 60)
                 if curr_bucket > entry_bucket:
-                    last_closed_bar = pa_eng.bars_1m[-1]
-                    if context.signal_type == "CALL" and last_closed_bar.close <= b_level:
-                        logger.info(
-                            f"[AegisEM] Mode B Failed Breakthrough Bar-Close Escape: Candle closed at {last_closed_bar.close:.2f} <= boundary {b_level:.2f} -> Scratch Exit"
-                        )
-                        self._close_all_legs("MODE_B_FAILED_CLOSE_ESCAPE")
-                        return
-                    elif context.signal_type == "PUT" and last_closed_bar.close >= b_level:
-                        logger.info(
-                            f"[AegisEM] Mode B Failed Breakthrough Bar-Close Escape: Candle closed at {last_closed_bar.close:.2f} >= boundary {b_level:.2f} -> Scratch Exit"
-                        )
-                        self._close_all_legs("MODE_B_FAILED_CLOSE_ESCAPE")
-                        return
+                    # Judge the EXACT entry candle (bucket-matched), never the previous
+                    # closed bar. Before the first tick of the new minute closes the
+                    # entry candle, bars_1m[-1] is still the PRE-entry box bar (which
+                    # closed inside the boundary by definition) — judging it would
+                    # scratch a healthy breakout prematurely.
+                    entry_bar = None
+                    try:
+                        for _b in reversed(pa_eng.bars_1m):
+                            if int(getattr(_b, "ts_start", 0.0) // 60) == int(entry_bucket):
+                                entry_bar = _b
+                                break
+                    except Exception:
+                        entry_bar = None
+                    if entry_bar is not None:
+                        if context.signal_type == "CALL" and entry_bar.close <= b_level:
+                            logger.info(
+                                f"[AegisEM] Mode B Failed Breakthrough Bar-Close Escape: Entry candle (bucket {entry_bucket}) "
+                                f"closed at {entry_bar.close:.2f} <= boundary {b_level:.2f} -> Scratch Exit"
+                            )
+                            self._close_all_legs("MODE_B_FAILED_CLOSE_ESCAPE")
+                            return
+                        elif context.signal_type == "PUT" and entry_bar.close >= b_level:
+                            logger.info(
+                                f"[AegisEM] Mode B Failed Breakthrough Bar-Close Escape: Entry candle (bucket {entry_bucket}) "
+                                f"closed at {entry_bar.close:.2f} >= boundary {b_level:.2f} -> Scratch Exit"
+                            )
+                            self._close_all_legs("MODE_B_FAILED_CLOSE_ESCAPE")
+                            return
 
         # 3. Spot Adverse Movement SL (Normalized Basis Points + 1m ATR regime expansion)
         tb_engine = getattr(self.aegis_engine, "time_bar_engine", None) if self.aegis_engine else None

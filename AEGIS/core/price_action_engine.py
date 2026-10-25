@@ -419,6 +419,44 @@ class PriceActionEngine:
             return (curr_spot < top - buf), top, bottom, buf
         return (curr_spot > bottom + buf), top, bottom, buf
 
+    def _pain_zone_vwap_aligned(self, direction: str, price: float, eff_vwap: float = 0.0) -> bool:
+        """
+        Direction-Selected Pain Zone VWAP Alignment (intra-bar substitute for the
+        index VWAP — the index prints no native volume; every line here is an
+        option-flow weighted spot VWAP built from the 4 trapped-party streams).
+
+          CALL: price must be ABOVE the composite option-flow VWAP (parity with the
+                bar-close pillar ladders) AND above the Trapped Call-Buyer line
+                (vwap_call_buy): below it, trapped call buyers sit overhead at
+                breakeven and sell into our entry.
+          PUT:  price must be BELOW the composite AND below the Trapped Put-Buyer
+                line (vwap_put_buy): above it, trapped put buyers bid dips back up.
+
+        Each guard applies only when its line is available (> 0). Warmup /
+        missing lines always pass (fail-open), matching band_veto_blocks semantics.
+        """
+        try:
+            if price <= 0:
+                return True
+            is_call = str(direction).upper() in ("UP", "CALL")
+            composite = float(eff_vwap) if eff_vwap > 0 else float(getattr(self, "current_vwap", 0.0) or 0.0)
+            pz = self.get_pain_zone_vwaps()
+            if is_call:
+                cb_line = float(pz.get("vwap_call_buy", 0.0) or 0.0)
+                if composite > 0 and price <= composite:
+                    return False
+                if cb_line > 0 and price <= cb_line:
+                    return False
+            else:
+                pb_line = float(pz.get("vwap_put_buy", 0.0) or 0.0)
+                if composite > 0 and price >= composite:
+                    return False
+                if pb_line > 0 and price >= pb_line:
+                    return False
+            return True
+        except Exception:
+            return True
+
     def update_option_tick(
         self,
         sym: str,
@@ -1153,12 +1191,19 @@ class PriceActionEngine:
         touch2_offset: int = 0,
         tolerance_bps: float = 1.5,
         lookback: int = 45,
+        virtual_bar: Optional[OHLCBar] = None,
     ) -> DowStructureChain:
         """
         Strict Classical Dow Theory Validator for Pillar 1:
           - CALL requires: HH1 -> HL1 (1st touch, skipped) -> HH2 (HH2 > HH1) -> 4..12 bar orderly pullback -> HL2 (HL2 > HL1).
           - PUT requires:  LL1 -> LH1 (1st touch, skipped) -> LL2 (LL2 < LL1) -> 4..12 bar orderly pullback -> LH2 (LH2 < LH1).
-          - Zero-Tolerance Anti-Breakout Veto: Price must never close across the opposite side of the 20 EMA Band.
+          - Zero-Tolerance Anti-Breakout Veto: Price must never close OR open across
+            the opposite side of the 20 EMA Band (a candle piercing from below/above
+            is a breakout, never a pullback rejection).
+        Args:
+            virtual_bar: Optional in-flight forming bar (Mode A Pre-Close). When provided,
+            it is appended as the LAST bar (the touch2 candidate) so the Dow HL2/LH2
+            chain is judged on the live candle instead of the previous closed bar.
         """
         chain = DowStructureChain()
         n = min(lookback, len(self.bars_1m))
@@ -1168,6 +1213,11 @@ class PriceActionEngine:
 
         bars = list(self.bars_1m)[-n:]
         e_close, e_high, e_low = self.get_20_ema_band_arrays(n)
+        if virtual_bar is not None:
+            bars.append(virtual_bar)
+            e_close.append(self.ema_20_1m if getattr(self, "ema_20_1m", 0.0) > 0 else (e_close[-1] if e_close else 0.0))
+            e_high.append(self.ema_20_high_1m if getattr(self, "ema_20_high_1m", 0.0) > 0 else (e_high[-1] if e_high else 0.0))
+            e_low.append(self.ema_20_low_1m if getattr(self, "ema_20_low_1m", 0.0) > 0 else (e_low[-1] if e_low else 0.0))
         atr = self.current_atr_1m if self.current_atr_1m > 0 else (bars[-1].close * 0.001)
         tol_pts = max(1.5, bars[-1].close * (tolerance_bps / 10000.0), 0.12 * atr)
         min_bos_pts = max(1.5, 0.15 * atr)
@@ -1186,10 +1236,12 @@ class PriceActionEngine:
         # ═══════════════════════════════════════════════════════════
         if is_call:
             strict_floor_tol = 0.25 * tol_pts
-            # 1. Zero-Tolerance Anti-Breakout Veto (last 10 bars)
+            # 1. Zero-Tolerance Anti-Breakout Veto (last 10 bars):
+            #    A candle that OPENS below the band and closes back above is a
+            #    breakout-from-below pierce, not an orderly above-band pullback.
             recent_start = max(0, idx_t2 - 10)
             for j in range(recent_start, idx_t2 + 1):
-                if bars[j].close < (e_low[j] - strict_floor_tol):
+                if bars[j].close < (e_low[j] - strict_floor_tol) or bars[j].open < (e_low[j] - strict_floor_tol):
                     chain.veto_reason = "breakout_from_below_veto"
                     return chain
 
@@ -1198,7 +1250,7 @@ class PriceActionEngine:
             # Continuous uptrend start from idx_t2
             trend_start = idx_t2
             for j in range(idx_t2, -1, -1):
-                if bars[j].close < (e_low[j] - strict_floor_tol):
+                if bars[j].close < (e_low[j] - strict_floor_tol) or bars[j].open < (e_low[j] - strict_floor_tol):
                     break
                 trend_start = j
 
@@ -1229,7 +1281,7 @@ class PriceActionEngine:
             # 3. Orderly Descending Retracement Check (>= 60%)
             descent_steps = 0
             for j in range(idx_hh2 + 1, idx_t2 + 1):
-                if bars[j].close < (e_low[j] - strict_floor_tol):
+                if bars[j].close < (e_low[j] - strict_floor_tol) or bars[j].open < (e_low[j] - strict_floor_tol):
                     chain.veto_reason = "breakout_from_below_veto"
                     return chain
                 if (bars[j].close < bars[j].open) or (bars[j].high <= bars[j - 1].high) or (bars[j].close <= bars[j - 1].close):
@@ -1326,10 +1378,12 @@ class PriceActionEngine:
         # ═══════════════════════════════════════════════════════════
         else:
             strict_roof_tol = 0.25 * tol_pts
-            # 1. Zero-Tolerance Anti-Breakout Veto (last 10 bars)
+            # 1. Zero-Tolerance Anti-Breakdown Veto (last 10 bars):
+            #    A candle that OPENS above the band and closes back below is a
+            #    breakdown-from-above pierce, not an orderly below-band pullback.
             recent_start = max(0, idx_t2 - 10)
             for j in range(recent_start, idx_t2 + 1):
-                if bars[j].close > (e_high[j] + strict_roof_tol):
+                if bars[j].close > (e_high[j] + strict_roof_tol) or bars[j].open > (e_high[j] + strict_roof_tol):
                     chain.veto_reason = "breakdown_from_above_veto"
                     return chain
 
@@ -1338,7 +1392,7 @@ class PriceActionEngine:
             # Continuous downtrend start from idx_t2
             trend_start = idx_t2
             for j in range(idx_t2, -1, -1):
-                if bars[j].close > (e_high[j] + strict_roof_tol):
+                if bars[j].close > (e_high[j] + strict_roof_tol) or bars[j].open > (e_high[j] + strict_roof_tol):
                     break
                 trend_start = j
 
@@ -1368,7 +1422,7 @@ class PriceActionEngine:
             # 3. Orderly Ascending Retracement Check (>= 60%)
             ascent_steps = 0
             for j in range(idx_ll2 + 1, idx_t2 + 1):
-                if bars[j].close > (e_high[j] + strict_roof_tol):
+                if bars[j].close > (e_high[j] + strict_roof_tol) or bars[j].open > (e_high[j] + strict_roof_tol):
                     chain.veto_reason = "breakdown_from_above_veto"
                     return chain
                 if (bars[j].close > bars[j].open) or (bars[j].low >= bars[j - 1].low) or (bars[j].close >= bars[j - 1].close):
@@ -1883,6 +1937,17 @@ class PriceActionEngine:
             if live_slope_20_bps < -0.10:
                 return False, "20_ema_slope_bearish", {}
 
+            # Breakout-from-Below Open Veto: a rejection candle must OPEN at/above the
+            # lower band edge (inside the band or on the correct side). A candle that
+            # opens below the band and pierces up through it is a breakout, never a
+            # 20 EMA pullback rejection.
+            if bar.open < (band_low - 0.5 * tol_pts):
+                return False, "breakout_from_below_open_veto", {
+                    "bar_open": round(bar.open, 2),
+                    "band_low": round(band_low, 2),
+                    "tol_pts": round(tol_pts, 2),
+                }
+
             close_edge = (bar.close - bar.low) / total_range if total_range > 0 else 0.0
             is_hammer = False
             is_bullish_expansion = False
@@ -2007,6 +2072,17 @@ class PriceActionEngine:
                 return False, "above_vwap", {}
             if live_slope_20_bps > 0.10:
                 return False, "20_ema_slope_bullish", {}
+
+            # Breakdown-from-Above Open Veto: a rejection candle must OPEN at/below the
+            # upper band edge (inside the band or on the correct side). A candle that
+            # opens above the band and pierces down through it is a breakdown, never a
+            # 20 EMA pullback rejection.
+            if bar.open > (band_high + 0.5 * tol_pts):
+                return False, "breakdown_from_above_open_veto", {
+                    "bar_open": round(bar.open, 2),
+                    "band_high": round(band_high, 2),
+                    "tol_pts": round(tol_pts, 2),
+                }
 
             close_edge = (bar.high - bar.close) / total_range if total_range > 0 else 0.0
             is_shooting_star = False
@@ -3039,6 +3115,21 @@ class PriceActionEngine:
         opt_vol = float(getattr(b, "opt_total_vol", 0.0) or (cb + cs + pb + ps))
         opt_delta = float(getattr(b, "opt_delta_flow", 0.0) or (cb - pb))
         opt_pcr = float(getattr(b, "opt_pcr", 1.0) or 1.0)
+        # In-Flight Forming Bar Patch: option flow is attached to the candle ONLY at
+        # _on_1m_bar_close; while the bar is forming, the live numbers live in
+        # self._opt_flow_1m. Overlay them so Mode A / Mode B signals never carry
+        # zero option flow into conviction scoring and execution telemetry.
+        if b is self._curr_1m_bar:
+            _flow = self._opt_flow_1m or {}
+            _cb = float(_flow.get("call_buy_vol", 0.0) or 0.0)
+            _cs = float(_flow.get("call_sell_vol", 0.0) or 0.0)
+            _pb = float(_flow.get("put_buy_vol", 0.0) or 0.0)
+            _ps = float(_flow.get("put_sell_vol", 0.0) or 0.0)
+            if (_cb + _cs + _pb + _ps) > 0:
+                cb, cs, pb, ps = _cb, _cs, _pb, _ps
+                opt_vol = _cb + _cs + _pb + _ps
+                opt_delta = _cb - _pb
+                opt_pcr = (_pb + _ps) / max(_cb + _cs, 1.0)
         bull_flow = cb + ps
         bear_flow = pb + cs
 
@@ -3171,21 +3262,34 @@ class PriceActionEngine:
             if not is_lunch_chop:
                 prior_5 = list(self.bars_1m)[-6:-1]
                 swept_low = min(b.low for b in prior_5)
-                swept_and_reclaimed = (bar.low < swept_low) and (bar.close > swept_low)
-                sweep_geom = (lower_wick_ratio >= 0.35) and (bar.close >= bar.low + 0.50 * c_range)
-                if swept_and_reclaimed and sweep_geom and self._check_wyckoff_harmony("UP", bar):
-                    self._mode_a_armed_setups["PILLAR_2_SWEEP_UP"] = {
-                        "direction": "UP",
-                        "pillar": 2,
-                        "pa_setup_name": "micro_sweep_reclaim",
-                        "anchor_high": bar.high,
-                        "anchor_low": bar.low,
-                        "boundary_level": swept_low,
-                        "armed_bar_idx": bar_idx,
-                        "armed_ts": self.last_ts,
-                    }
-                    self._mode_a_last_trigger_bar_idx["P2_SWEEP_UP"] = bar_idx
-                    logger.info(f"[PriceActionEngine] [MODE_A_ARMED] Pillar 2 Micro-Sweep CALL Armed | SweptLow: {swept_low:.2f} | AnchorHigh: {bar.high:.2f}")
+                # Parity with check_micro_sweep_reclaim: minimum sweep depth
+                ref_spot_2 = self.last_price if self.last_price > 0 else (bar.close if bar.close > 0 else 24000.0)
+                min_sweep_depth = max(1.5, (ref_spot_2 / 24000.0) * 1.5, 0.08 * atr)
+                swept_and_reclaimed = (bar.low <= (swept_low - min_sweep_depth)) and (bar.close > swept_low)
+                sweep_geom = (
+                    (lower_wick_ratio >= 0.35)
+                    and (upper_wick_ratio <= 0.15)
+                    and (lower_wick >= 1.25 * upper_wick)
+                    and (bar.close >= bar.low + 0.55 * c_range)
+                )
+                # Parity with check_micro_sweep_reclaim: Pain Zone VWAP alignment
+                # (composite + direction-selected trapped-buyer line) + obstacle shield
+                vwap_ok_p2 = self._pain_zone_vwap_aligned("CALL", bar.close)
+                if swept_and_reclaimed and sweep_geom and vwap_ok_p2 and self._check_wyckoff_harmony("UP", bar):
+                    ok_struct_p2, _, _ = self._check_structural_obstacle("CALL", bar.close)
+                    if ok_struct_p2:
+                        self._mode_a_armed_setups["PILLAR_2_SWEEP_UP"] = {
+                            "direction": "UP",
+                            "pillar": 2,
+                            "pa_setup_name": "micro_sweep_reclaim",
+                            "anchor_high": bar.high,
+                            "anchor_low": bar.low,
+                            "boundary_level": swept_low,
+                            "armed_bar_idx": bar_idx,
+                            "armed_ts": self.last_ts,
+                        }
+                        self._mode_a_last_trigger_bar_idx["P2_SWEEP_UP"] = bar_idx
+                        logger.info(f"[PriceActionEngine] [MODE_A_ARMED] Pillar 2 Micro-Sweep CALL Armed | SweptLow: {swept_low:.2f} | AnchorHigh: {bar.high:.2f}")
 
         # ─── 4. Pillar 2: PUT Micro-Sweep & Reclaim Arming ───
         last_p2_down_idx = self._mode_a_last_trigger_bar_idx.get("P2_SWEEP_DOWN", -100)
@@ -3201,21 +3305,34 @@ class PriceActionEngine:
             if not is_lunch_chop:
                 prior_5 = list(self.bars_1m)[-6:-1]
                 swept_high = max(b.high for b in prior_5)
-                swept_and_reclaimed = (bar.high > swept_high) and (bar.close < swept_high)
-                sweep_geom = (upper_wick_ratio >= 0.35) and (bar.close <= bar.high - 0.50 * c_range)
-                if swept_and_reclaimed and sweep_geom and self._check_wyckoff_harmony("DOWN", bar):
-                    self._mode_a_armed_setups["PILLAR_2_SWEEP_DOWN"] = {
-                        "direction": "DOWN",
-                        "pillar": 2,
-                        "pa_setup_name": "micro_sweep_reclaim",
-                        "anchor_high": bar.high,
-                        "anchor_low": bar.low,
-                        "boundary_level": swept_high,
-                        "armed_bar_idx": bar_idx,
-                        "armed_ts": self.last_ts,
-                    }
-                    self._mode_a_last_trigger_bar_idx["P2_SWEEP_DOWN"] = bar_idx
-                    logger.info(f"[PriceActionEngine] [MODE_A_ARMED] Pillar 2 Micro-Sweep PUT Armed | SweptHigh: {swept_high:.2f} | AnchorLow: {bar.low:.2f}")
+                # Parity with check_micro_sweep_reclaim: minimum sweep depth
+                ref_spot_2d = self.last_price if self.last_price > 0 else (bar.close if bar.close > 0 else 24000.0)
+                min_sweep_depth_dn = max(1.5, (ref_spot_2d / 24000.0) * 1.5, 0.08 * atr)
+                swept_and_reclaimed = (bar.high >= (swept_high + min_sweep_depth_dn)) and (bar.close < swept_high)
+                sweep_geom = (
+                    (upper_wick_ratio >= 0.35)
+                    and (lower_wick_ratio <= 0.15)
+                    and (upper_wick >= 1.25 * lower_wick)
+                    and (bar.close <= bar.high - 0.55 * c_range)
+                )
+                # Parity with check_micro_sweep_reclaim: Pain Zone VWAP alignment
+                # (composite + direction-selected trapped-buyer line) + obstacle shield
+                vwap_ok_p2d = self._pain_zone_vwap_aligned("PUT", bar.close)
+                if swept_and_reclaimed and sweep_geom and vwap_ok_p2d and self._check_wyckoff_harmony("DOWN", bar):
+                    ok_struct_p2d, _, _ = self._check_structural_obstacle("PUT", bar.close)
+                    if ok_struct_p2d:
+                        self._mode_a_armed_setups["PILLAR_2_SWEEP_DOWN"] = {
+                            "direction": "DOWN",
+                            "pillar": 2,
+                            "pa_setup_name": "micro_sweep_reclaim",
+                            "anchor_high": bar.high,
+                            "anchor_low": bar.low,
+                            "boundary_level": swept_high,
+                            "armed_bar_idx": bar_idx,
+                            "armed_ts": self.last_ts,
+                        }
+                        self._mode_a_last_trigger_bar_idx["P2_SWEEP_DOWN"] = bar_idx
+                        logger.info(f"[PriceActionEngine] [MODE_A_ARMED] Pillar 2 Micro-Sweep PUT Armed | SweptHigh: {swept_high:.2f} | AnchorLow: {bar.low:.2f}")
 
     def _check_wyckoff_harmony(self, direction: str, bar: Any) -> bool:
         """Verifies institutional order flow delta harmony (no opposing liquidation dump)."""
@@ -3245,10 +3362,19 @@ class PriceActionEngine:
         sec_in_min = int(now_sec % 60)
         atr = self.current_atr_1m if self.current_atr_1m > 0 else 10.0
         spot = self.last_price
+        # Live Pain Zone VWAP re-check at pierce time (the composite option-flow
+        # VWAP and trapped-buyer lines can drift between arming and pierce)
+        eff_vwap_mp = external_vwap if external_vwap > 0 else self.current_vwap
 
         for b_name, setup in list(self._mode_a_armed_setups.items()):
             s_dir = setup.get("direction", "")
             if s_dir != direction:
+                continue
+
+            # Never pierce against the Pain Zone VWAP alignment (parity with all other routes)
+            if s_dir == "UP" and not self._pain_zone_vwap_aligned("CALL", spot, eff_vwap_mp):
+                continue
+            if s_dir == "DOWN" and not self._pain_zone_vwap_aligned("PUT", spot, eff_vwap_mp):
                 continue
 
             anchor_h = setup.get("anchor_high", 0.0)
@@ -3307,6 +3433,7 @@ class PriceActionEngine:
         if curr_bar is None or curr_bar.tick_count < 6 or self.current_atr_1m <= 0:
             return False, "insufficient_ticks_or_atr", {}
 
+        eff_vwap = external_vwap if external_vwap > 0 else self.current_vwap
         atr = self.current_atr_1m
         spot = self.last_price
         curr_rng = max(curr_bar.high - curr_bar.low, 0.5)
@@ -3344,7 +3471,19 @@ class PriceActionEngine:
                 lower_wick = min(curr_bar.open, spot) - curr_bar.low
                 lower_wick_ratio = lower_wick / curr_rng
                 close_edge = (spot - curr_bar.low) / curr_rng
-                dow = self._validate_dow_hl2_lh2_structure("CALL", touch2_offset=0)
+                # Judge the Dow HL2 chain on the LIVE forming candle (virtual last bar),
+                # not on the previous closed bar which is not the touch2 candidate.
+                forming_snapshot = OHLCBar(
+                    ts_start=curr_bar.ts_start,
+                    ts_end=curr_bar.ts_end,
+                    open=curr_bar.open,
+                    high=curr_bar.high,
+                    low=curr_bar.low,
+                    close=spot,
+                    volume=float(getattr(curr_bar, "volume", 1.0) or 1.0),
+                    tick_count=getattr(curr_bar, "tick_count", 0),
+                )
+                dow = self._validate_dow_hl2_lh2_structure("CALL", touch2_offset=0, virtual_bar=forming_snapshot)
                 ok_struct, _, _ = self._check_structural_obstacle("CALL", spot)
                 if uptrend_ok and vwap_ok and came_from_above and band_tested and lower_wick_ratio >= 0.20 and close_edge >= 0.65 and (dow.is_valid or len(self.bars_1m) < 16) and ok_struct:
                     self._mode_a_last_trigger_bar_idx["P1_EMA20_UP"] = bar_idx
@@ -3373,7 +3512,19 @@ class PriceActionEngine:
                 upper_wick = curr_bar.high - max(curr_bar.open, spot)
                 upper_wick_ratio = upper_wick / curr_rng
                 close_edge = (curr_bar.high - spot) / curr_rng
-                dow = self._validate_dow_hl2_lh2_structure("PUT", touch2_offset=0)
+                # Judge the Dow LH2 chain on the LIVE forming candle (virtual last bar),
+                # not on the previous closed bar which is not the touch2 candidate.
+                forming_snapshot_dn = OHLCBar(
+                    ts_start=curr_bar.ts_start,
+                    ts_end=curr_bar.ts_end,
+                    open=curr_bar.open,
+                    high=curr_bar.high,
+                    low=curr_bar.low,
+                    close=spot,
+                    volume=float(getattr(curr_bar, "volume", 1.0) or 1.0),
+                    tick_count=getattr(curr_bar, "tick_count", 0),
+                )
+                dow = self._validate_dow_hl2_lh2_structure("PUT", touch2_offset=0, virtual_bar=forming_snapshot_dn)
                 ok_struct, _, _ = self._check_structural_obstacle("PUT", spot)
                 if downtrend_ok and vwap_ok and came_from_below and band_tested and upper_wick_ratio >= 0.20 and close_edge >= 0.65 and (dow.is_valid or len(self.bars_1m) < 16) and ok_struct:
                     self._mode_a_last_trigger_bar_idx["P1_EMA20_DOWN"] = bar_idx
@@ -3409,52 +3560,80 @@ class PriceActionEngine:
                     last_p2 = self._mode_a_last_trigger_bar_idx.get("P2_SWEEP_UP", -100)
                     if (bar_idx - last_p2) >= 3:
                         swept_low = min(b.low for b in prior_5)
-                        swept_and_reclaimed = (curr_bar.low < swept_low) and (spot > swept_low)
+                        # Parity with check_micro_sweep_reclaim: minimum sweep depth
+                        ref_spot_pc = self.last_price if self.last_price > 0 else (spot if spot > 0 else 24000.0)
+                        min_sweep_depth_pc = max(1.5, (ref_spot_pc / 24000.0) * 1.5, 0.08 * atr)
+                        swept_and_reclaimed = (curr_bar.low <= (swept_low - min_sweep_depth_pc)) and (spot > swept_low)
                         lower_wick = min(curr_bar.open, spot) - curr_bar.low
                         lower_wick_ratio = lower_wick / curr_rng
+                        upper_wick_pc = curr_bar.high - max(curr_bar.open, spot)
+                        upper_wick_ratio_pc = upper_wick_pc / curr_rng
                         close_edge = (spot - curr_bar.low) / curr_rng
-                        if swept_and_reclaimed and lower_wick_ratio >= 0.35 and close_edge >= 0.65:
-                            self._mode_a_last_trigger_bar_idx["P2_SWEEP_UP"] = bar_idx
-                            logger.info(f"[PriceActionEngine] [MODE_A_PRECLOSE] Pillar 2 Micro-Sweep CALL Triggered at spot={spot:.2f} (T+{sec_in_min}s)")
-                            return True, "micro_sweep_reclaim", {
-                                "pillar": 2,
-                                "pa_setup_name": "micro_sweep_reclaim",
-                                "mode": "MODE_A_PRECLOSE",
-                                "boundary": "MICRO_SWEEP_LOW",
-                                "boundary_level": round(swept_low, 2),
-                                "sl_price": round(curr_bar.low - 0.15 * atr, 2),
-                                "trigger_sec": sec_in_min,
-                                "bar_open": round(curr_bar.open, 2),
-                                "bar_high": round(curr_bar.high, 2),
-                                "bar_low": round(curr_bar.low, 2),
-                                "bar_close": round(spot, 2),
-                                "entry_bar_bucket": int(now_sec // 60),
-                            }
+                        sweep_geom_ok = (
+                            (lower_wick_ratio >= 0.35)
+                            and (upper_wick_ratio_pc <= 0.15)
+                            and (lower_wick >= 1.25 * upper_wick_pc)
+                            and (close_edge >= 0.65)
+                        )
+                        vwap_ok_pc = self._pain_zone_vwap_aligned("CALL", spot, eff_vwap)
+                        if swept_and_reclaimed and sweep_geom_ok and vwap_ok_pc:
+                            ok_struct_pc, _, _ = self._check_structural_obstacle("CALL", spot)
+                            if ok_struct_pc:
+                                self._mode_a_last_trigger_bar_idx["P2_SWEEP_UP"] = bar_idx
+                                logger.info(f"[PriceActionEngine] [MODE_A_PRECLOSE] Pillar 2 Micro-Sweep CALL Triggered at spot={spot:.2f} (T+{sec_in_min}s)")
+                                return True, "micro_sweep_reclaim", {
+                                    "pillar": 2,
+                                    "pa_setup_name": "micro_sweep_reclaim",
+                                    "mode": "MODE_A_PRECLOSE",
+                                    "boundary": "MICRO_SWEEP_LOW",
+                                    "boundary_level": round(swept_low, 2),
+                                    "sl_price": round(curr_bar.low - 0.15 * atr, 2),
+                                    "trigger_sec": sec_in_min,
+                                    "bar_open": round(curr_bar.open, 2),
+                                    "bar_high": round(curr_bar.high, 2),
+                                    "bar_low": round(curr_bar.low, 2),
+                                    "bar_close": round(spot, 2),
+                                    "entry_bar_bucket": int(now_sec // 60),
+                                }
                 elif direction == "DOWN":
                     last_p2 = self._mode_a_last_trigger_bar_idx.get("P2_SWEEP_DOWN", -100)
                     if (bar_idx - last_p2) >= 3:
                         swept_high = max(b.high for b in prior_5)
-                        swept_and_reclaimed = (curr_bar.high > swept_high) and (spot < swept_high)
+                        # Parity with check_micro_sweep_reclaim: minimum sweep depth
+                        ref_spot_pcd = self.last_price if self.last_price > 0 else (spot if spot > 0 else 24000.0)
+                        min_sweep_depth_pcd = max(1.5, (ref_spot_pcd / 24000.0) * 1.5, 0.08 * atr)
+                        swept_and_reclaimed = (curr_bar.high >= (swept_high + min_sweep_depth_pcd)) and (spot < swept_high)
                         upper_wick = curr_bar.high - max(curr_bar.open, spot)
                         upper_wick_ratio = upper_wick / curr_rng
+                        lower_wick_pcd = min(curr_bar.open, spot) - curr_bar.low
+                        lower_wick_ratio_pcd = lower_wick_pcd / curr_rng
                         close_edge = (curr_bar.high - spot) / curr_rng
-                        if swept_and_reclaimed and upper_wick_ratio >= 0.35 and close_edge >= 0.65:
-                            self._mode_a_last_trigger_bar_idx["P2_SWEEP_DOWN"] = bar_idx
-                            logger.info(f"[PriceActionEngine] [MODE_A_PRECLOSE] Pillar 2 Micro-Sweep PUT Triggered at spot={spot:.2f} (T+{sec_in_min}s)")
-                            return True, "micro_sweep_reclaim", {
-                                "pillar": 2,
-                                "pa_setup_name": "micro_sweep_reclaim",
-                                "mode": "MODE_A_PRECLOSE",
-                                "boundary": "MICRO_SWEEP_HIGH",
-                                "boundary_level": round(swept_high, 2),
-                                "sl_price": round(curr_bar.high + 0.15 * atr, 2),
-                                "trigger_sec": sec_in_min,
-                                "bar_open": round(curr_bar.open, 2),
-                                "bar_high": round(curr_bar.high, 2),
-                                "bar_low": round(curr_bar.low, 2),
-                                "bar_close": round(spot, 2),
-                                "entry_bar_bucket": int(now_sec // 60),
-                            }
+                        sweep_geom_ok = (
+                            (upper_wick_ratio >= 0.35)
+                            and (lower_wick_ratio_pcd <= 0.15)
+                            and (upper_wick >= 1.25 * lower_wick_pcd)
+                            and (close_edge >= 0.65)
+                        )
+                        vwap_ok_pcd = self._pain_zone_vwap_aligned("PUT", spot, eff_vwap)
+                        if swept_and_reclaimed and sweep_geom_ok and vwap_ok_pcd:
+                            ok_struct_pcd, _, _ = self._check_structural_obstacle("PUT", spot)
+                            if ok_struct_pcd:
+                                self._mode_a_last_trigger_bar_idx["P2_SWEEP_DOWN"] = bar_idx
+                                logger.info(f"[PriceActionEngine] [MODE_A_PRECLOSE] Pillar 2 Micro-Sweep PUT Triggered at spot={spot:.2f} (T+{sec_in_min}s)")
+                                return True, "micro_sweep_reclaim", {
+                                    "pillar": 2,
+                                    "pa_setup_name": "micro_sweep_reclaim",
+                                    "mode": "MODE_A_PRECLOSE",
+                                    "boundary": "MICRO_SWEEP_HIGH",
+                                    "boundary_level": round(swept_high, 2),
+                                    "sl_price": round(curr_bar.high + 0.15 * atr, 2),
+                                    "trigger_sec": sec_in_min,
+                                    "bar_open": round(curr_bar.open, 2),
+                                    "bar_high": round(curr_bar.high, 2),
+                                    "bar_low": round(curr_bar.low, 2),
+                                    "bar_close": round(spot, 2),
+                                    "entry_bar_bucket": int(now_sec // 60),
+                                }
 
         return False, "mode_a_preclose_not_met", {}
 
@@ -3510,6 +3689,16 @@ class PriceActionEngine:
 
         if not (opt_pace_ok or tick_rate >= 1.5):
             return False, "volume_velocity_sub_threshold", {}
+
+        # ─── Pain Zone VWAP Alignment Gate (Parity with main Pillar 3/4 ladders) ───
+        # Mode B must never fire a breakout against the composite option-flow VWAP
+        # or the direction-selected trapped-buyer line (index has no native volume;
+        # these are the 4-stream Pain Zone substitutes for an index VWAP).
+        eff_vwap_mb = external_vwap if external_vwap > 0 else self.current_vwap
+        if direction == "UP" and not self._pain_zone_vwap_aligned("CALL", spot, eff_vwap_mb):
+            return False, "below_vwap", {}
+        if direction == "DOWN" and not self._pain_zone_vwap_aligned("PUT", spot, eff_vwap_mb):
+            return False, "above_vwap", {}
 
         bar_idx = self._total_bars_seen
 
@@ -3595,6 +3784,14 @@ class PriceActionEngine:
                     self._mode_b_p3_down_ticks = 0
 
         # ─── 2. PILLAR 4: Dynamic Session S/R Registry & T-2 Prominence Hub Breakout (Mode B) ───
+        # 5m Structural Alignment Gate (parity with check_topological_prominence_breakout)
+        trend_5m_bullish_mb = True
+        trend_5m_bearish_mb = True
+        if self.bars_5m:
+            bar_5m_mb = self.bars_5m[-1]
+            trend_5m_bullish_mb = bar_5m_mb.close >= bar_5m_mb.open
+            trend_5m_bearish_mb = bar_5m_mb.close <= bar_5m_mb.open
+
         last_p4 = self._mode_b_last_trigger_bar_idx.get("P4_SR_BREAKTHROUGH", -100)
         if (bar_idx - last_p4) >= 3:
             if direction == "UP":
@@ -3625,7 +3822,7 @@ class PriceActionEngine:
                         upper_wick = curr_bar.high - spot
                         trend_ok = not (self.ema_20_1m < self.ema_50_1m and self.ema_20_1m > 0 and self.ema_50_1m > 0)
                         ok_struct, _, _ = self._check_structural_obstacle("CALL", spot, ignore_pivots_below=r_lvl.price, check_day_extremes=True)
-                        if body_ratio >= 0.65 and upper_wick <= (0.05 * atr) and trend_ok and ok_struct:
+                        if body_ratio >= 0.65 and upper_wick <= (0.05 * atr) and trend_ok and trend_5m_bullish_mb and ok_struct:
                             if (bull_flow + bear_flow <= 0) or (bull_flow >= 1.30 * bear_flow and cb > cs):
                                 matched_any = True
                                 last_spot_cnt = getattr(self, "_mode_b_p4_up_last_tick", -1)
@@ -3684,7 +3881,7 @@ class PriceActionEngine:
                         lower_wick = spot - curr_bar.low
                         trend_ok = not (self.ema_20_1m > self.ema_50_1m and self.ema_20_1m > 0 and self.ema_50_1m > 0)
                         ok_struct, _, _ = self._check_structural_obstacle("PUT", spot, ignore_pivots_above=s_lvl.price, check_day_extremes=True)
-                        if body_ratio >= 0.65 and lower_wick <= (0.05 * atr) and trend_ok and ok_struct:
+                        if body_ratio >= 0.65 and lower_wick <= (0.05 * atr) and trend_ok and trend_5m_bearish_mb and ok_struct:
                             if (bull_flow + bear_flow <= 0) or (bear_flow >= 1.30 * bull_flow and pb > ps):
                                 matched_any = True
                                 last_spot_cnt = getattr(self, "_mode_b_p4_down_last_tick", -1)
