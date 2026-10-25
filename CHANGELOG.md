@@ -1,5 +1,39 @@
 # Changelog
 
+## [Unreleased] - 2026-10-25 (Monorepo Zero-Entropy Cleanup, Core De-Bloat, Friday Deep Sleep & Local–VPS Parity)
+
+### Added
+- **Friday 4-DTE Deep Sleep**: `is_trading_day()` Friday gate (`AEGIS_FRIDAY_TRADING_ENABLED` env, default OFF) + EM Friday low-capital guard (₹3,000) — engine sleeps Thursday 15:17 close straight through to Monday 08:55 IST.
+- **`_archive/ARCHIVE_MANIFEST.md`**: one-glance inventory of every archived folder for the 2–3 month deletion policy.
+- **`scratch/`, `astra_bot/`, `kronos_bot/` gitignore shielding** — throwaway workspace and legacy engine shells can never be committed again.
+- **Mode A / Mode B wiring**: `mode` field persisted in `decision_payload` + `trade_context.execution_mode`; Conviction/Wyckoff intra-bar fast-paths now mode-aware (`pa_details["mode"]`).
+
+### Changed
+- **Core De-Bloat (~10,000 lines removed)**: `price_action_engine.py` 4,875 → 3,847 lines; `aegis_gamma_engine.py` 2,478 → 1,835; `aegis_execution_manager.py` 2,506 → 2,438; dead runner-trailing + non-pillar 9-EMA reversal blocks + 6 unreachable gamma gate-blocks removed.
+- **11 modules archived** to `AEGIS/_archive/decommissioned_2026-10/`: `hvg_engine`, `ml_gatekeeper`, `catboost_paper_trader`, `time_bar_engine`, `signal_state_machine`, `regime_chop_gate`, `entry_quality_engine`, `oi_quotes_poller`, `volume_profile_engine`, `shadow_quant_tracker`, `causal_microstructure_pipeline`.
+- **Single Shadow Experiment**: `ShadowBoundaryObserver` (Pain Zone + 200 EMA first-touch/breakthrough) is the ONLY active shadow; its boundaries are live-Mode-B-excluded by policy.
+- **Subscription universe widened**: ATM ±25 strikes (51 strikes / 102 tokens), `TESTING_DEEP_DEPTH = 32`, minimum premium floor restored to **₹4.00** (charge-viability breakeven).
+- **Workspace sweep**: 100 one-shot scratch scripts permanently deleted; 41 research artifacts (CSV/parquet/JSONL + analyzers) archived to `_archive/2026-10_scratch_research/`; 4 reusable diagnostics promoted to `scripts/` (smoke_signal_fire, friday_check_vps, shadow-trade analyzers).
+- **Legacy engines consolidated**: `astra_bot/` archived (14.9 MB legacy telemetry + runtime data); `kronos_bot/` empty husk deleted; default runtime fallback `"astra"` → `"aegis"` in `common/config.py` (unconfigured processes now hit the ACTIVE engine's data dir).
+- **Docs synced to code**: AGENTS.md (active engines, 25-OTM universe, decommissioned components, stray-dir policy), `AEGIS_V1.0_ARCHITECTURE.md` (module map, Mermaid, decommissioned block, 216-test matrix), `SYSTEM_ARCHITECTURE.md` §8 canonical tree.
+
+### Fixed
+- **HVG 5m Stealth Veto eliminated**: ungated live `check_5m_structural_alignment` veto inside `_check_structural_obstacle` was silently blocking all 4 pillars + Mode B — cut at the root.
+- **CRITICAL trade-fire NameError**: `ml_score`/`ml_passed`/`ml_reason`/`self.ml_gatekeeper_mode` vestiges crashed `live_signal_metrics` before `_emit_signal` — would have blocked ALL Monday trades; fixed + runtime smoke-proofed.
+- **`vp_metrics` NameError** in outcome-telemetry snapshot merge.
+- **PDH/PDL/PDC seeding**: daily-levels block un-indented from the fallback `else:` (now seeds on every boot) + pandas-free date parsing.
+- **Main-loop digest race**: state-mutating `evaluate_setup()` calls removed from `build_minute_digest()` (passive `PA:ARMED(n)` display).
+- **Mode B Bar-Close Escape** now mode/pillar-aware (fires reliably on `MODE_B_FAILED_CLOSE_ESCAPE`); crash-path entry gets `_rollback_slot()` + `_drain_signal_queue()`.
+- **Friday calibration alignment**: Step-2 (+2.2%) & Near-Target (+2.5%) doc↔code parity on 4 DTE.
+- **VPS drift**: stale repo copies fixed (market_calendar Friday gate, strike_selector 0.50→4.00, shoonya_adapter), nested `common/common/` leftover deleted, SMC/ICT research junk + 7 stale test files purged from VPS `tests/`.
+
+### Tests
+- Suite **318 → 216 canonical** (76 retired tests → `tests/_archive/`; VPS/local 100% parity: 216 collected both sides, 0 failures; 2 data-dependent skips on VPS documented).
+- **Fast dev suite ~15s** (was 210s): 1.8L-tick parity replay segregated behind `@pytest.mark.slow` (registered in `pytest.ini`).
+
+### Ops
+- Full VPS sync (both `/home/opc/` and `/home/opc/quant-bot/`); `aegis-bot` restarted, error-free boot, deep sleep until Monday 08:55 IST (NIFTY 1-DTE).
+
 ## [Unreleased] - 2026-10-16 (Dow Theory HL2 Strict Retracement Engine, Anti-Breakout Vetoes & ShadowBoundaryObserver)
 
 ### Added

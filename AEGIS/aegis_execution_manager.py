@@ -93,7 +93,6 @@ STRUCTURAL_SL_BUFFER_ATR_MULT = float(os.environ.get("AEGIS_STRUCTURAL_SL_BUFFER
 
 # Legacy fallbacks maintained for external callers/tests
 TARGET_PROFIT_PCT = RESTING_TP_LIMIT_PCT
-RUNNER_TRAIL_RATIO = 0.020
 EMERGENCY_MAX_SL_PCT = 0.35
 
 # ─── AEGIS V4.1 Stepped Risk Compression + Cost-Shield + Near-Target Engine ───
@@ -1339,7 +1338,6 @@ class AegisExecutionManager:
                 is_profit_running = (
                     cur_gain_pct >= HOLD_EXTEND_MIN_PROFIT_PCT
                     or getattr(leg0, "breakeven_locked", False)
-                    or getattr(leg0, "runner_locked", False)
                 )
 
             can_extend_to_6min = is_profit_running and (market_struct != "OPPOSED") and not (is_expiry and is_post_1230)

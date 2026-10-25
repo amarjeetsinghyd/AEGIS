@@ -1135,9 +1135,6 @@ class AegisGammaEngine:
                                         return None
 
                                 # ─── EXECUTION COMMIT & IMMEDIATE DISPATCH (<0.8ms from Tick) ───
-                                if getattr(self, "signal_fsm", None):
-                                    self.signal_fsm.register_trade_executed(sym, now_sec)
-
                                 if self.slot_policy and slot_admit:
                                     self.slot_policy.mark_admitted(slot_score, now_sec=now_sec)
 
@@ -1163,10 +1160,6 @@ class AegisGammaEngine:
                                     "conviction_sub_scores": conviction_sub_scores,
                                     "conviction_breakdown": conviction_breakdown,
                                     "energy_score": round(energy_score, 1),
-                                    "ml_gatekeeper_score": round(ml_score, 4),
-                                    "ml_gatekeeper_passed": ml_passed,
-                                    "ml_gatekeeper_reason": ml_reason,
-                                    "ml_gatekeeper_mode": self.ml_gatekeeper_mode,
                                     "quality_stack_mode": self.quality_stack_mode,
                                     "slot_verdict": slot_reason,
                                     "slot_used": self.slot_policy.used if self.slot_policy else 0,
@@ -1205,38 +1198,7 @@ class AegisGammaEngine:
 
                                 # ─── POST-DISPATCH SHADOW & TELEMETRY ENRICHMENT ───
                                 # Runs immediately after order dispatch; live execution is never delayed.
-                                # 1. Passive Shadow Quant Telemetry
-                                shadow_m = {}
-                                if getattr(self, "shadow_quant_tracker", None):
-                                    try:
-                                        atm_k = self.current_atm_strike or (round(self.last_spot / self.strike_step) * self.strike_step)
-                                        atm_ce_sym = self.strike_to_symbol.get((0, atm_k))
-                                        atm_pe_sym = self.strike_to_symbol.get((1, atm_k))
-                                        ce_px = self._resolve_option_ltp(atm_ce_sym, None) if atm_ce_sym else 0.0
-                                        pe_px = self._resolve_option_ltp(atm_pe_sym, None) if atm_pe_sym else 0.0
-                                        shadow_m = self.shadow_quant_tracker.get_shadow_metrics(
-                                            symbol=sym,
-                                            direction=direction,
-                                            current_opt_price=lp,
-                                            current_spot_price=self.last_spot,
-                                            ce_price=ce_px,
-                                            pe_price=pe_px,
-                                            now_sec=now_sec,
-                                        )
-                                        if shadow_m:
-                                            self._throttled_veto_log(
-                                                f"shadow_quant_{sym}",
-                                                f"[SHADOW QUANT TELEMETRY] {sym} ({direction}) | "
-                                                f"StraddleExp: {shadow_m.get('shadow_straddle_expanding')} ({shadow_m.get('shadow_straddle_ret_60s_pct'):+.2f}%) | "
-                                                f"Skew: {shadow_m.get('shadow_skew_bias')} (Aligned: {shadow_m.get('shadow_skew_aligned')}) | "
-                                                f"OptLeadsSpot: {shadow_m.get('shadow_option_leads_spot')} ({shadow_m.get('shadow_velocity_ratio'):.2f}x) | "
-                                                f"Charm: {shadow_m.get('shadow_is_charm_window')} | Zone: {shadow_m.get('shadow_seasonality_zone')}",
-                                                interval_sec=15.0,
-                                            )
-                                    except Exception as _e_sq:
-                                        logger.debug(f"[Aegis] Shadow Quant error: {_e_sq}")
-
-                                # 5. Stability Tracker Post-Trigger Arming
+                                # 2. Stability Tracker Post-Trigger Arming
                                 if self.stability_tracker and micro_m:
                                     try:
                                         _sbp = float(micro_m.get("bp1", 0.0) or 0.0)
@@ -1249,7 +1211,6 @@ class AegisGammaEngine:
                                                 t_sec=now_sec,
                                                 mid_T=_mid_T,
                                                 meta={
-                                                    "ml_score": ml_score,
                                                     "opt_ret_30s": float(micro_m.get("micro_ret_30s", 0.0) or 0.0),
                                                     "energy_score": energy_score,
                                                 },
@@ -1257,7 +1218,7 @@ class AegisGammaEngine:
                                     except Exception as _e_st:
                                         logger.debug(f"[Aegis] Stability tracker arm error: {_e_st}")
 
-                                # 6. Outcome Telemetry Database Entry (100% enriched payload)
+                                # 3. Outcome Telemetry Database Entry (100% enriched payload)
                                 if self.outcome_telemetry:
                                     try:
                                         event_id = f"{sym}_{int(now_sec*1000)}"
@@ -1275,18 +1236,16 @@ class AegisGammaEngine:
                                                 **perm_metrics,
                                                 **live_signal_metrics,
                                                 "recommended_tp_pct": recommended_tp_pct,
-                                                **shadow_m,
-                                                **vp_metrics,
                                             },
                                         )
                                     except Exception as _e_ot:
                                         logger.debug(f"[Aegis] Outcome telemetry error: {_e_ot}")
 
-                                # 7. Consolidated Execution Log
+                                # 4. Consolidated Execution Log
                                 logger.info(
                                     f"[AEGIS V3 FIRED] {sym} ({direction}) | Conviction: {conviction_score_val:.1f}/100 ({sizing_tier}) | "
                                     f"Energy: {energy_score:.1f}/100 | EQS: {eqs:.1f}/100 | "
-                                    f"ML: {ml_score:.4f} ({self.ml_gatekeeper_mode}) | Target: +{recommended_tp_pct*100:.1f}% | "
+                                    f"Target: +{recommended_tp_pct*100:.1f}% | "
                                     f"Basis: {self.last_basis_pts:+.1f}pts ({self.last_basis_bps:+.1f}bps) | FutPx: {self.last_futures_price:.1f} | "
                                     f"Persist: {pers_score:.2f} | Struct: {perm_metrics.get('market_structure', 'N/A')} | "
                                     f"ATR_Ratio: {perm_metrics.get('atr_ratio', 1.0):.2f} | Spread: {opt_metrics.get('spread_pct', 0.5):.2f}%"
@@ -1622,8 +1581,7 @@ class AegisGammaEngine:
                 verdict = self.stability_tracker.resolve(item, mid_now)
                 logger.info(
                     f"[STABILITY 10s] {verdict['sym']} ({verdict['direction']}) | hold={verdict['hold']} "
-                    f"ret10={verdict['ret_10s']*100:.2f}% | fade_frac={verdict['fade_frac']:.2f} | "
-                    f"ml_score={verdict['meta'].get('ml_score', 0.0):.4f}"
+                    f"ret10={verdict['ret_10s']*100:.2f}% | fade_frac={verdict['fade_frac']:.2f}"
                 )
                 self._write_stability_verdict(verdict)
         except Exception:

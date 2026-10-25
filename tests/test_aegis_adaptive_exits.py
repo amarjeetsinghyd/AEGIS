@@ -19,7 +19,6 @@ from AEGIS.aegis_execution_manager import (
     DEFAULT_MIN_NOISE_FLOOR_RS,
     NOISE_FLOOR_SPREAD_MULT,
     NOISE_FLOOR_SIGMA_MULT,
-    RUNNER_TRAIL_RATIO,
     RESTING_TP_LIMIT_PCT,
     FRIDAY_TP_LIMIT_PCT,
     get_adaptive_target_profit_pct,

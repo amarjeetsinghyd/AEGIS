@@ -223,8 +223,6 @@ class PriceActionEngine:
         # ─── AEGIS V4.0 Topological 0-D Prominence Stack (Pillar 4 Final) ───
         self.prominence_stack: Any = FastMonotonicStack(capacity=128) if FastMonotonicStack is not None else None
         self._l2_depth_history: Optional[List[Tuple[float, float, float, float]]] = None
-        # ─── ML Gatekeeper Flow Recorder Reference ───
-        self.ml_gatekeeper: Any = None
 
         # ─── Intra-Bar Mode A & Mode B High-Precision Execution State ───
         self._mode_b_up_ticks: int = 0

@@ -71,9 +71,6 @@ flowchart TD
         BAD --> PERS["DirectionalPersistenceEngine<br/>(5s Snapshots: 20 EMA slope + drift)"]
         BAD --> VWAP["IndexVWAPEngine<br/>(Constituent-Volume Weighted VWAP)"]
         BAD --> OI["OIBuiltupGate<br/>(4-Quadrant OI Tracker)"]
-        BAD --> VPE["VolumeProfileEngine (core/volume_profile_engine.py)<br/>• Spot POC & 70% Value Area (VAH/VAL)<br/>• Strike-Wise Call/Put POC Magnets<br/>• Mode: 100% PASSIVE SHADOW"]
-        BAD --> SQT["ShadowQuantTracker<br/>(Straddle, Skew, Opt-Spot Lead, Vanna/Charm)"]
-        BAD --> HVG["HVGEngine (core/hvg_engine.py)<br/>• Dual-Timeframe 1m+5m Monotonic Stack<br/>• Mode: SHADOW"]
     end
 
     subgraph Primary_Trigger ["3. Macro Price Action Primary Trigger (PriceActionEngine)"]
@@ -81,7 +78,7 @@ flowchart TD
         BAND -->|Blocked| DROP["Instant Discard & Purge<br/>(return None)"]
         BAND -->|Passed| PA_CHECK{"Price Action Setup?<br/>(evaluate_setup)"}
         PA_CHECK -->|No Setup| DROP
-        PA_CHECK -->|Mode B Breakthrough| PB["Mode B: In-Flight Mid-Bar Breakthrough (T:08s–T:48s)<br/>• Boundary Pierce (Pain Zone, 200 EMA, Squeeze Box, S&R)<br/>• Sweet-Spot Range 0.35x–1.20x ATR, Body ≥ 65%<br/>• 2-Tick Persistence, Live Opt Delta ≥ 1.30x"]
+        PA_CHECK -->|Mode B Breakthrough| PB["Mode B: In-Flight Mid-Bar Breakthrough (T:08s–T:48s)<br/>• Boundary Pierce (Squeeze Box, S/R Registry — live) + (Pain Zone, 200 EMA — ShadowBoundaryObserver only)<br/>• Sweet-Spot Range 0.35x–1.20x ATR, Body ≥ 65%<br/>• 2-Tick Persistence, Live Opt Delta ≥ 1.30x"]
         PA_CHECK -->|Pillar 1| P1["Pillar 1: 20 EMA Pullback & Momentum Rejection (Mode A)<br/>• Classical Dow HL2/LH2 2nd-Touch Confirmation<br/>• 20 EMA Wick Rejection, Close Edge ≥ 0.60<br/>• Upper Wick ≤ 15% (Two-Bar ≤ 18%)"]
         PA_CHECK -->|Pillar 2| P2["Pillar 2: Liquidity Sweep & Reclaim (Mode A)<br/>• 5-Bar Turtle Soup Stop-Hunt Reclaim<br/>• Lower Wick ≥ 35% & ≥ 1.25x Upper Wick<br/>• Upper Wick ≤ 15%, Close Edge ≥ 0.55"]
         PA_CHECK -->|Pillar 3| P3["Pillar 3: Volatility Squeeze Breakout<br/>• 3-4 Bar Box Compression (≤1.25x ATR)<br/>• Expansion Breakout, Anti-Climax Cap ≤ 1.35x ATR<br/>• Body ≥ 35% of Range, Close Edge ≥ 0.55"]
@@ -117,9 +114,7 @@ flowchart TD
     end
 
     subgraph Shadow_Telemetry ["6. Independent Shadow Telemetry (Passive)"]
-        W_PASS -.-> ML_SHADOW["ML Order Flow Tracker [DECOMMISSIONED 2026-10-14]<br/>• CatBoost & Kyle's Lambda SHUT DOWN<br/>• Standalone CatBoost Paper Trader Disabled"]
         W_PASS -.-> SBO["ShadowBoundaryObserver (core/shadow_boundary_observer.py)<br/>• Zero-Capital Empirical Paper-Trader<br/>• First-Touch Pain Zone & 200 EMA Rejections"]
-        W_PASS -.-> SHADOW_QUANT["ShadowQuantTracker<br/>• ATM Straddle, Skew, Opt-Spot Lead"]
     end
 
     subgraph Execution_Manager ["7. AegisExecutionManager (Daemon Loop)"]
@@ -152,9 +147,6 @@ flowchart TD
         MANAGE --> EX_STAG{"0DTE Stagnation Trap?<br/>Expiry PM (≥12:30), Hold ≥ 90s, Gain < +0.5%<br/>AND 50-EMA Opposed Structure"}
         EX_STAG -->|YES| CL_STAG["0DTE Stagnation Trap Exit"]
         
-        MANAGE --> EX_REV{"Trend Reversal Exit?<br/>50-EMA Broken or Structure Opposed<br/>(9-EMA Choke Permanently Decommissioned)"}
-        EX_REV -->|YES| CL_REV["Trend Reversal Structural Exit"]
-        
         MANAGE --> EX_WICK{"Universal Spot Invalidation?<br/>(Spot Hits Entry Candle Low/High ± 0.10x ATR)<br/>• Mode B Failed Close Escape at T:60s"}
         EX_WICK -->|YES| CL_WICK["Universal Entry Candle Low/High Invalidation Exit"]
         
@@ -172,7 +164,7 @@ flowchart TD
     end
 
     subgraph Exit_Execution ["9. Order Exit Chaser & Telemetry"]
-        CL_NEAR & CL_STEP2 & CL_STEP1 & CL_STAG & CL_REV & CL_WICK & CL_SPOT & CL_TIME & CL_DISASTER & CL_FLAT --> CHASE["_chase_exit_thread (Daemon)<br/>3-Tier Urgency Exit Pricing:<br/>1. In-Place Modify Resting TP<br/>2. Marketable Limit with Dynamic Buffer<br/>3. Fallback Limit Place Order"]
+        CL_NEAR & CL_STEP2 & CL_STEP1 & CL_STAG & CL_WICK & CL_SPOT & CL_TIME & CL_DISASTER & CL_FLAT --> CHASE["_chase_exit_thread (Daemon)<br/>3-Tier Urgency Exit Pricing:<br/>1. In-Place Modify Resting TP<br/>2. Marketable Limit with Dynamic Buffer<br/>3. Fallback Limit Place Order"]
         CL_TP --> SYNC["Broker TP Order Sync"]
         CHASE & SYNC --> POST["Post-Fill Bookkeeping & Telemetry<br/>• Post-trade MFE/MAE Reconciliation (exit_px)<br/>• Record last_exited_route<br/>• Update trades_today & daily_pnl<br/>• OutcomeTelemetry JSONL append"]
     end
@@ -191,25 +183,20 @@ All active non-archive modules within `AEGIS/` mapped with exact lines, responsi
 | `AEGIS/aegis_execution_manager.py` | Execution daemon, order routing, strict 1-lot maker TP (+4.0%), pre-trade rollback, 15:08 CAS flatten | `AegisExecutionManager`, `_manage_open_trade()`, `_rollback_slot()`, `_chase_exit_thread()` |
 | `AEGIS/core/price_action_engine.py` | **Primary Macro Trigger**: 1m OHLC bars, 20/50/200 EMA, ATR(14), Pain Zone band single source (`get_pain_zone_vwaps()` → zone_top / zone_bottom), Priority Mode B Mid-Bar In-Flight Breakthrough (`check_mode_b_breakthrough`), Mode A Pierce (`check_mode_a_pierce`), 4 active pillars (P1 20 EMA, P2 Liquidity Sweep, P3 Vol Squeeze, P4 0-D Prominence Hub Breakout) | `PriceActionEngine`, `evaluate_setup()`, `check_mode_b_breakthrough()`, `check_mode_a_pierce()`, `check_20_ema_rejection()`, `check_micro_sweep_reclaim()`, `check_topological_prominence_breakout()` |
 | `AEGIS/core/wyckoff_volume_engine.py` | **Wyckoff Volume & Delta Gate**: Effort vs Result, Volume Dry-Up Ratio (VDR), Absorption pin wick, Delta Harmony (Call Buy vs Put Buy) | `WyckoffVolumeEngine`, `evaluate()` |
-| `AEGIS/core/volume_profile_engine.py` | **Auction Market Volume Profile (Shadow)**: Spot POC, 70% Value Area (VAH/VAL dual pointer), LVN liquidity vacuums, Strike-wise Call/Put POC magnets | `VolumeProfileEngine`, `get_profile_metrics()`, `record_spot_tick()`, `record_option_tick()` |
 | `AEGIS/core/composite_conviction_engine.py` | **Continuous 0–100 Evaluator**: 4 orthogonal domains, dynamic conviction ladder ($\ge 80.0 \to 1\text{ Lot}, +4.0\%\text{ TP}$) | `CompositeConvictionEngine`, `ConvictionResult`, `compute_conviction_score()` |
-| `AEGIS/core/ml_gatekeeper.py` | **1-Minute Option Flow Brain (Decommissioned)**: CatBoost & LightGBM inference (decommissioned from live gating 2026-10-14, shadow-only) | `MLGatekeeper`, `evaluate()`, `check_rolling_confluence()` |
 | `AEGIS/core/quality_stack.py` | **Institutional 3-Slot Daily Policy**: Full-day agile sizing (14:45 lockout removed), dynamic score hurdle, stability tracker | `QualitySlotPolicy`, `PostTriggerStabilityTracker` |
-| `AEGIS/core/shadow_quant_tracker.py` | **Passive Intraday Quant Edges**: ATM straddle expansion, call/put skew, option lead-lag, 0-DTE charm | `ShadowQuantTracker`, `get_shadow_metrics()` |
 | `AEGIS/core/index_vwap_engine.py` | Constituent-volume weighted index VWAP poller and structural proximity gate | `IndexVWAPEngine`, `get_vwap_metrics()` |
-| `AEGIS/core/oi_builtup_gate.py` | 4-quadrant real-time Open Interest analysis and strike defense wall gate | `OIBuiltupGate`, `evaluate_gate()` |
+| `AEGIS/core/oi_builtup_gate.py` | Real-time Open Interest kinematics (dump-shield veto) + wall snapshot telemetry; 4-quadrant gate decommissioned 2026-10-24 | `OIBuiltupGate`, `update_tick()`, `get_oi_kinematics()`, `get_wall_snapshot()` |
 | `AEGIS/core/adaptive_micro_validator.py` | Adaptive Order Flow Energy (OFEE) validator with strict BOS momentum gate ($\ge 70.0$) | `AdaptiveMicroValidator`, `evaluate()` |
 | `AEGIS/core/directional_persistence.py` | Signed directional persistence tracking over rolling 60s window ($D_p \ge 0.70$) | `DirectionalPersistenceEngine`, `evaluate_persistence()` |
-| `AEGIS/core/hvg_engine.py` | **Dual-Timeframe Topological Engine (Shadow)**: 1m+5m strict HVG monotonic stack $O(N)$, T-1 causal freeze, anti-spoofing L2 shield | `HVGEngine`, `evaluate_phase_shift()`, `check_topological_sweep_reclaim()` |
 | `AEGIS/core/microstructure_scorer.py` | Empirical 0-100 logit model, 15 features, $T$-anchored micro-acceleration | `MicrostructureScorer`, `compute_score()` |
 | `AEGIS/core/instrument_repository.py` | SQLite WAL cache for instrument metadata and nearest-expiry resolution | `InstrumentRepository`, `resolve_weekly_options()` |
 | `AEGIS/core/outcome_telemetry.py` | Forward outcome tracking (30s, 60s, 180s, 300s MFE/MAE) with JSONL persistence | `OutcomeTelemetryEngine`, `register_entry()` |
-| `AEGIS/core/regime_chop_gate.py` | Directional displacement override, Kaufman KER, and variance ratio gate | `RegimeChopGate`, `get_regime_state()` |
-| `AEGIS/core/signal_state_machine.py` | Centralized 45s-aligned signal lifecycle FSM (OBSERVE $\to$ PRIMED $\to$ FIRED) | `SignalStateMachine`, `update_trigger()` |
 | `AEGIS/core/option_quality.py` | Option contract tradability filter (spread, top-5 depth, premium limits) | `OptionQualityEngine`, `qualify_option()` |
-| `AEGIS/core/entry_quality_engine.py` | Unified Entry Quality Score (EQS) composite calculator | `EntryQualityEngine`, `compute_eqs()` |
 | `AEGIS/core/shadow_boundary_observer.py` | **Autonomous Shadow Boundary Observer**: Zero-capital empirical paper-trader tracking First-Touch Pain Zone and 200 EMA rejections on OTM 5 strikes with 30s/60s/300s telemetry | `ShadowBoundaryObserver`, `on_1m_bar_close()`, `on_option_tick()` |
 | `AEGIS/config/settings.py` | Configuration binding for AEGIS runtime (`DATA_DIR=AEGIS/data`, `LOGS_DIR=AEGIS/logs`) | `get_runtime_paths("aegis")` |
+
+> **Decommissioned & Archived (2026-10-24, `AEGIS/_archive/decommissioned_2026-10/`):** `hvg_engine.py` (live 5m stealth veto eliminated), `ml_gatekeeper.py`, `catboost_paper_trader.py`, `time_bar_engine.py`, `signal_state_machine.py`, `regime_chop_gate.py`, `entry_quality_engine.py`, `oi_quotes_poller.py`, `volume_profile_engine.py`, `shadow_quant_tracker.py`, `causal_microstructure_pipeline.py` — ~10,000 lines of dead weight removed. Post-debloat core: `price_action_engine.py` 3,847 lines, `aegis_gamma_engine.py` 1,835 lines, `aegis_execution_manager.py` 2,438 lines.
 
 ---
 
@@ -256,7 +243,7 @@ A pure-Python, sub-5-microsecond gate wired **in parallel with Price Action trig
 
 ---
 
-## Deep-Dive: Volume Profile & Auction Market Theory (`AEGIS/core/volume_profile_engine.py`)
+## Deep-Dive: Volume Profile & Auction Market Theory (`volume_profile_engine.py` — [ARCHIVED 2026-10-24, historical reference])
 
 Passively models the continuous price-volume distribution (inspired by the Maxwell-Boltzmann distribution):
 
@@ -393,37 +380,42 @@ Monitored at 2 Hz by `_manage_open_trade()` (`aegis_execution_manager.py`):
 
 ---
 
-## Verification & Test Suite Matrix (254 Tests — 100% Green)
+## Verification & Test Suite Matrix (216 Tests — 100% Green)
 
-AEGIS Production Version 1.0 (v1.0 Locked) is certified by 254 active unit and integration tests across the repository:
+AEGIS Production Version 1.0 (v1.0 Locked) is certified by 216 active tests across the repository:
 
 ```powershell
-python -m pytest tests/ -q
-# Output: 254 passed in 165.00s (100% GREEN)
+python -m pytest tests -m "not slow" -q
+# Output: 214 passed in ~15s (100% GREEN — fast dev suite; slow replays deselected)
+
+python -m pytest tests -q
+# Output: 216 passed in ~92s (full suite incl. 1.8L-tick parquet replay parity)
 ```
 
 | Test Suite File | Tests | Key Invariants Verified |
 |---|---|---|
-| `tests/test_wyckoff_volume_engine.py` | 5 | Retracement volume dry-up, institutional dump veto, delta divergence bull trap veto, synthetic feed pass. |
-| `tests/test_volume_profile_engine.py` | 5 | Spot POC, 70% Value Area dual expansion, LVN detection, strike Call/Put POC tracking, microsecond hot-path benchmark. |
-| `tests/test_hvg_engine.py` | 46 | Dual-Timeframe (1m+5m) HVG, strict equality $O(N)$ stack, T-1 causal freeze, 5m alignment, 400ms L2 Wall Shield, Pillar 2 Topological Sweep. |
-| `tests/test_aegis_engine.py` | 14 | Gamma engine tick handling, Wyckoff parallel gate wiring, shadow ML routing, ATM shift, memory purging. |
-| `tests/test_price_action_engines.py` | 17 | 20 EMA Two-Touch, same-side pause, volatility squeeze breakout, bad-tick guard. |
-| `tests/test_aegis_adaptive_exits.py` | 18 | +4.0% resting TP, -12% disaster floor, stepped risk compression (+2% -> -3% SL, +3% -> 0% scratch), near-target lock (+3.5%), 3-min harvest, 0DTE stagnation trap, wick invalidation, 6m extension. |
-| `tests/test_aegis_integration_parity.py` | 22 | Backtest parity across 1.8L real ticks, execution manager alignment. |
-| `tests/test_composite_conviction_engine.py` | 10 | 4-domain scoring, continuous evaluation, delta trap penalty, $\ge 80.0$ threshold. |
-| `tests/test_quality_stack.py` | 8 | Institutional 3-slot daily policy, afternoon reserve, consecutive loss stop, daily loss cap. |
-| `tests/test_ml_gatekeeper.py` | 8 | CatBoost/LightGBM inference, zero heap allocation, threshold scoring, shadow mode. |
-| `tests/test_shadow_quant_tracker.py` | 7 | ATM straddle expansion, call/put skew, option lead-lag, charm window. |
-| `tests/test_oi_builtup_gate.py` | 9 | 4-quadrant OI classification, strike defense wall veto, unwind detection. |
+| `tests/test_wyckoff_volume_engine.py` | 16 | Retracement volume dry-up, institutional dump veto, delta divergence bull trap veto, synthetic feed pass. |
+| `tests/test_price_action_engines.py` | 43 | 20 EMA Two-Touch Dow structure, Mode A/B wiring, S/R registry, bad-tick guard. |
+| `tests/test_aegis_adaptive_exits.py` | 41 | +4.0% resting TP, -12% disaster floor, stepped risk compression, near-target lock, 0DTE stagnation trap, wick invalidation, 6m extension, Friday low-capital guard. |
+| `tests/test_aegis_engine.py` | 8 | Gamma engine tick handling, Wyckoff parallel gate wiring, ATM shift, memory purging. |
+| `tests/test_aegis_integration_parity.py` | 4 | Backtest parity across 1.8L real ticks (2 slow-marked replays + 2 data-dependent), execution manager alignment. |
+| `tests/test_composite_conviction_engine.py` | 11 | 4-domain scoring, continuous evaluation, delta trap penalty, >= 80.0 threshold. |
+| `tests/test_quality_stack.py` | 9 | Institutional 3-slot daily policy, consecutive loss stop, daily loss cap. |
+| `tests/test_oi_builtup_gate.py` | 5 | OI kinematics fresh-build / dumping / sparse fail-open, wall snapshot read-only. |
 | `tests/test_shoonya_session_coordination.py` | 6 | Shoonya session token adoption, peer lock coordination, fallback on failure. |
 | `tests/test_microstructure_scorer.py` | 6 | Microstructure logit model, 15 scalar features, latency metrics. |
-| `tests/test_key_levels_and_strike_selector.py` | 14 | PDH/PDL proximity veto, strike selection budget criteria. |
-| `tests/test_aegis_core_components.py` | 16 | Scorer, persistence engine, regime chop gate, option quality. |
-| `tests/test_adaptive_micro_validator.py` | 2 | Adaptive Order Flow Energy (OFEE), strict BOS momentum gate ($\ge 70.0$). |
-| `tests/test_system_wiring.py` | 2 | End-to-end component wiring, settings resolution, telemetry paths. |
-| `tests/test_shared_runtime_paths.py` | 2 | Runtime paths, common IPC delegation. |
-| **Total Test Suite** | **228** | **100% PASSED · ZERO FAILURES** |
+| `tests/test_key_levels_and_strike_selector.py` | 7 | PDH/PDL proximity veto, strike selection budget criteria. |
+| `tests/test_aegis_core_components.py` | 4 | Option quality, live component wiring. |
+| `tests/test_adaptive_micro_validator.py` | 11 | Adaptive Order Flow Energy (OFEE), strict BOS momentum gate (>= 70.0). |
+| `tests/test_aegis_v4_core.py` | 12 | FastMonotonicStack, Top5DepthGuard, Confirm15 state machines. |
+| `tests/test_argus_core_stack.py` | 10 | ARGUS shared-core stack (tick compiler, journals). |
+| `tests/test_shadow_boundary_observer.py` | 6 | First-touch Pain Zone / 200 EMA shadow trades, Mode B boundary tracking. |
+| `tests/test_mode_a_b_cushion_audit.py` | 5 | Mode A/B trailing SL cushion + structural buffer audits. |
+| `tests/test_band_veto_buffer.py` | 4 | Pain Zone band veto ATR buffer behavior. |
+| `tests/test_universe_side_split.py` | 4 | CE/PE universe robust split (single-sided feed protection). |
+| `tests/test_system_wiring.py` | 2 | End-to-end component wiring, settings resolution. |
+| `tests/test_shared_runtime_paths.py` | 2 | Runtime paths, common IPC delegation (protected kronos legacy branch). |
+| **Total Test Suite** | **216** | **100% PASSED — ZERO FAILURES** (fast 214 + slow parity 2) |
 
 ---
 

@@ -154,26 +154,29 @@ Canonical layout + repo-hygiene rules enforced in [`AGENTS.md`](AGENTS.md).
 quant-bot/
 ├── AGENTS.md                 # standing AI instructions (authoritative)
 ├── SYSTEM_ARCHITECTURE.md    # THIS file — the map
+├── SYSTEM_CONTEXT.md, SYSTEM_STATE.md, SYSTEM_GENESIS_AND_EVOLUTION.md, VPS_OPERATIONS.md
+├── CHANGELOG.md              # ordered engineering changelog
 ├── README.md
-├── AI_CHANGELOG.md
 ├── ecosystem.config.js       # PM2 app definitions
+├── pytest.ini                # pytest config (slow marker; testpaths=tests)
 ├── Oracle SSH keys/          # SSH key lives ONLY here (root)
+├── *_symbols.txt             # broker symbol master files (runtime, gitignored)
 ├── common/                   # shared library (§3)
-├── stock_order_flow/         # Engine 1 + its harness doc (+ docs/, archive/)
-│   └── stock_calibration.json  # Extracted calibration params (regime weights, thresholds, priors)
-├── astra_bot/                # Engine 2 + its harness doc (+ core/, execution/, archive/)
-├── unified_dashboard/        # Flask UI
+├── AEGIS/                    # Engine 1 (PRIMARY, LIVE) — options engine (v1.0 Locked)
+│   └── _archive/             # AEGIS evolution history + decommissioned_2026-10/ (11 dead modules)
+├── ARGUS/                    # Engine 2 (Secondary / Dormant) — HFT equities scalper
+├── unified_dashboard/        # Flask UI (Quant Console)
 ├── institutional_memory/     # constituents.json etc.
-├── scripts/                  # ad-hoc diagnostic / ops scripts
-├── tests/                    # pytest suite (must stay 100% green)
-├── _archive/                 # read-only history (kronos_bot/, shoonya_data_hub/, stale docs)
-└── venv/ (local), node_modules/ (local)        # not committed
+├── scripts/                  # curated operational + diagnostic scripts ONLY (16 files)
+├── scratch/                  # throwaway workspace — gitignored, never committed
+├── tests/                    # pytest suite (216 tests, 100% green; _archive/ holds retired tests)
+└── _archive/                 # read-only history — see ARCHIVE_MANIFEST.md (kronos_bot/, astra_bot_2026-10/, STRATOS/, 2026-10_scratch_research/, stale docs)
 ```
 - Engine-permanent files stay in that engine's folder; cross-engine only via `common/`.
-- Temp/scratch/scratch_state*.json never at repo root — keep scratch in `scratch/`.
+- Temp/scratch/scratch_state*.json never at repo root — keep scratch in `scratch/` (gitignored).
 - Legacy/backup copies go into the relevant engine's `archive/` or root `_archive/`, never loose in the engine dir.
-- **Universe Scanner** runs at 15-min intervals during market hours (not 16:05 only) — see `scripts/universe_scanner.py`.
-- **L2 Archiver** must start by 08:55 IST to capture 09:00-09:08 auction window.
+- `kronos_bot/` was deleted 2026-10-25 (history in `_archive/kronos_bot/`); `astra_bot/` was archived to `_archive/astra_bot_2026-10/` (legacy runtime data). Empty shells of both may reappear via the protected `get_runtime_paths("kronos")` test branch — gitignored, harmless.
+- Archived entries can be permanently deleted after ~2-3 months per `_archive/ARCHIVE_MANIFEST.md`.
 
 ---
 

@@ -28,7 +28,7 @@
 - Add `kronos_bot` back into `unified_dashboard` UI, brand lines, titles, or `CONSOLE_HTML`.
 - Add `kRONOS`, `Kronos`, or any kronos-marketing copy to dashboards, docs, or configs.
 - "Fix" failing tests by re-introducing kronos code, stubs, or packages.
-- Migrate kronos logic into `astra_bot` or `stock_order_flow` unless explicitly told otherwise.
+- Migrate kronos logic into `AEGIS` unless explicitly told otherwise.
 
 **Acceptable Kronos-related actions (and only these):**
 - Removing kronos references from active tests, dashboards, docs, or configs.
@@ -60,13 +60,13 @@ the `common/` shared branches alone and ask. Never add new kronos code.**
 
 ## ACTIVE ENGINES (Priority Order)
 
-1. **`AEGIS/`** (and `astra_bot/`) — **PRIMARY ACTIVE ENGINE (Core Focus)** — **AEGIS** (**A**utonomous **E**xecution & **G**amma **I**mbalance **S**ystem) — options strategy bot (Production Version 1.0 / v1.0 Locked).
+1. **`AEGIS/`** — **PRIMARY ACTIVE ENGINE (Core Focus)** — **AEGIS** (**A**utonomous **E**xecution & **G**amma **I**mbalance **S**ystem) — options strategy bot (Production Version 1.0 / v1.0 Locked).
    Architecture authority: `AEGIS/AEGIS_V1.0_ARCHITECTURE.md` (Production Version 1.0 Locked).
    - **Primary Focus**: All current development, telemetry review, and trading logic verification center on AEGIS.
    - **Architecture & Rules**: Conform all edits to `AEGIS/AEGIS_V1.0_ARCHITECTURE.md`:
      * **4 Macro Price Action Pillars + Hybrid Intra-Bar Execution**:
        - **Mode A (Rejection & Pierce / T:00s Close & T:50s Pre-Close)** for Pillar 1 (`20_ema_rejection`) & Pillar 2 (`micro_sweep_reclaim`).
-       - **Priority Mode B (In-Flight Mid-Bar Breakthrough Surge at T:08s–T:48s)** for Pillar 3 (`volatility_squeeze_breakout`) & Pillar 4 (`topological_prominence_breakout` + Dynamic S/R Registry), plus Pain Zone / 200 EMA boundaries.
+        - **Priority Mode B (In-Flight Mid-Bar Breakthrough Surge at T:08s–T:48s)** for Pillar 3 (`volatility_squeeze_breakout`) & Pillar 4 (`topological_prominence_breakout` + Dynamic S/R Registry). Live Mode B boundaries are **Squeeze Box + S/R Registry only**; Pain Zone / 200 EMA breakthroughs are tracked **exclusively** by the `ShadowBoundaryObserver` (shadow experiment).
      * **Dynamic Session S/R Level Registry (`StructuralLevel`)**: Monotonic `seq_idx` tracking, multi-touch boost (`+0.35`), dynamic post-excursion prominence, and Order Flow footprint.
      * **Scale-Invariant Day Extreme Runway Shield**: `min_runway_pts = max(1.25 * ATR_1m, 0.0008 * Spot)`.
      * **Single-Shot Clean Entry Mandate**: Atomic `0.75s` fill window, zero order chasing, immediate `_drain_signal_queue()`, powered by Rolling 5-Second Hot Strikes Pre-Staging Cache.
@@ -255,11 +255,13 @@ Rules every change must uphold:
 - **Legacy / backup copies** go in the relevant engine's `archive/` (e.g.
   `astra_bot/archive/`, `stock_order_flow/archive/`) or root `_archive/` — never
   loose alongside live engine files.
-- **Logs live in the engine's `logs/`** (e.g. `astra_bot/logs/astra_bot.log`),
+- **Logs live in the engine's `logs/`** (e.g. `AEGIS/logs/aegis.log`),
   never loose at root or in the engine top-level.
-- **Stray engine dirs from dead engines:** the live `kronos_bot/` directory (only
-  empty `data/` + `logs/`) is left to rot and not committed as a package —
-  see §DECOMMISSIONED above.
+- **Stray engine dirs from dead engines:** `kronos_bot/` was deleted on 2026-10-25
+  (empty husk; full history in `_archive/kronos_bot/`). Empty `astra_bot/` +
+  `kronos_bot/` shells may reappear after test runs — a mkdir side-effect of the
+  protected legacy branch in `common/runtime/paths.py` (`get_runtime_paths("kronos")`).
+  They are gitignored — never commit or populate them.
 
 ---
 

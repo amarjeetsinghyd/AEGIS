@@ -60,7 +60,9 @@ def get_data_dir() -> str:
         return env
     from common.runtime.paths import get_runtime_paths
 
-    name = os.environ.get("BOT_RUNTIME", "astra")
+    # Default fallback = the ACTIVE engine (AEGIS). The legacy "astra" runtime
+    # was archived on 2026-10-25; unconfigured processes must never resurrect it.
+    name = os.environ.get("BOT_RUNTIME", "aegis")
     return get_runtime_paths(name)["data_dir"]
 
 
@@ -72,5 +74,6 @@ def get_logs_dir() -> str:
         return env
     from common.runtime.paths import get_runtime_paths
 
-    name = os.environ.get("BOT_RUNTIME", "astra")
+    # Default fallback = the ACTIVE engine (AEGIS).
+    name = os.environ.get("BOT_RUNTIME", "aegis")
     return get_runtime_paths(name)["logs_dir"]
