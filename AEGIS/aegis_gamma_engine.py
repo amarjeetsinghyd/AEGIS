@@ -325,6 +325,20 @@ class AegisGammaEngine:
         self.last_basis_bps: float = 0.0
         self.futures_volume: float = 0.0
         self.futures_history: deque = deque(maxlen=300)  # (now_sec, fut_lp, basis_pts)
+        # SHADOW futures telemetry (2026-10-26): futures feed is telemetry-only,
+        # never gates. Tick-rate counters below exist solely to measure the live
+        # data speed of the futures contract before any future gate adoption.
+        self._fut_shadow_total_ticks: int = 0
+        self._fut_shadow_window_ticks: int = 0
+        self._fut_shadow_window_start: float = 0.0
+        self._fut_shadow_sym: str = ""
+
+        # Spot-level delta inflection trap window (2026-10-26): when ANY option
+        # symbol's L1 book shows a delta inflection flip against a direction,
+        # ALL entries in that direction are vetoed briefly. Per-strike checks
+        # alone miss the trap on thin-book execution strikes (hot strikes).
+        self._spot_inflection_veto_until: Dict[str, float] = {"UP": 0.0, "DOWN": 0.0}
+        self._spot_inflection_veto_window_sec: float = 45.0
 
         # Compatibility attribute (deprecated, kept for dashboard schema — see audit P2.10)
         self.gamma_tensor = np.zeros((2, N_STRIKES), dtype=np.float32)
@@ -719,13 +733,12 @@ class AegisGammaEngine:
                             # Pullback Archetypes (Pillar 1 & 2): Macro Structure (Spot vs VWAP & 20>50 EMA)
                             # establishes trend alignment. Pullbacks retrace counter-trend by definition,
                             # so spot-drift persistence is bypassed.
-                            # Breakout Archetypes (Pillar 3 & 4): 15s Futures Path Efficiency (V4 Final) or 60s fallback.
+                            # Breakout Archetypes (Pillar 3 & 4): 60s Spot Persistence.
+                            # 2026-10-26: futures 15s path-efficiency branch removed —
+                            # futures feed moved to SHADOW telemetry-only (data speed
+                            # measured, never gates; live P3/P4 persistence is spot-only).
                             if pillar in (3, 4):
-                                if self.v4_futures_buffer is not None and self.v4_futures_buffer.count >= 5:
-                                    drift_15, er_15, _ = self.v4_futures_buffer.get_window_metrics(15.0)
-                                    pers_score = float(np.clip(er_15, 0.0, 1.0))
-                                    pers_confirmed = bool(er_15 >= 0.50)
-                                elif self.persistence_engine:
+                                if self.persistence_engine:
                                     pers60_ok, pers60_score, pers60_m = self.persistence_engine.evaluate_persistence(
                                         direction,
                                         lookback_sec=60.0,
@@ -1093,7 +1106,7 @@ class AegisGammaEngine:
                                     return None
 
                                 # ─── Shield v2: delta inflection + OI kinematics ───
-                                _di_veto, _di_detail = self._delta_inflection_check(sym, direction)
+                                _di_veto, _di_detail = self._delta_inflection_check(sym, direction, now_sec)
                                 if _di_veto:
                                     self._di_vetoed += 1
                                     self._purge_impulse_memory(sym)
@@ -1254,14 +1267,26 @@ class AegisGammaEngine:
         except Exception as e:
             logger.error(f"AEGIS on_tick_parsed error: {e}", exc_info=True)
 
-    def _delta_inflection_check(self, sym: str, direction: str):
+    def _delta_inflection_check(self, sym: str, direction: str, now_sec: float = 0.0):
         """Delta inflection veto (Shield, added 2026-09-22).
 
         Compares mean L1 touch imbalance I1 = (b1-a1)/(b1+a1) of the first
         vs second half of the 30s tick history. A sign flip against the
         trade direction with magnitude >= 0.15 means aggression changed
         sides (trap warning). Returns (vetoed: bool, detail: str).
+
+        2026-10-26: flips now also open a short direction-wide trap window
+        so the veto propagates to every other strike (including thin-book
+        hot-strike execution symbols that never register the flip in their
+        own sparse history).
         """
+        now_eff = float(now_sec) if now_sec and now_sec > 0 else time.time()
+        _veto_until_map = getattr(self, "_spot_inflection_veto_until", None)
+        if not isinstance(_veto_until_map, dict):
+            _veto_until_map = {}
+            self._spot_inflection_veto_until = _veto_until_map
+        if now_eff < float(_veto_until_map.get(direction, 0.0) or 0.0):
+            return True, "spot_level_inflection_flip_active (direction-wide trap window)"
         hist = self.history_30s.get(sym) if hasattr(self, "history_30s") else None
         if not hist or len(hist) < 6:
             return False, "insufficient_history"
@@ -1283,6 +1308,10 @@ class AegisGammaEngine:
         flipped_against = (direction == "UP" and i1_early > 0 and i1_late < 0) or \
                           (direction == "DOWN" and i1_early < 0 and i1_late > 0)
         if flipped_against and flip_mag >= 0.15:
+            _veto_until_map[direction] = max(
+                float(_veto_until_map.get(direction, 0.0) or 0.0),
+                now_eff + getattr(self, "_spot_inflection_veto_window_sec", 45.0),
+            )
             return True, f"delta_inflection_flip {i1_early:+.2f}->{i1_late:+.2f} (mag {flip_mag:.2f})"
         return False, f"no_flip early={i1_early:+.2f} late={i1_late:+.2f}"
 
@@ -1381,10 +1410,40 @@ class AegisGammaEngine:
             return False
 
     def _on_futures_tick(self, sym: str, lp: float, tick: Any, now_sec: float):
-        """Processes active index futures ticks for Basis, volume, and lead-lag analysis."""
+        """SHADOW futures tick processor (2026-10-26).
+
+        Telemetry-only: measures the live data speed of the futures contract
+        and tracks basis/lead-lag stats for offline analysis. NEVER gates a
+        live decision. Candidate future gate uses (to be evaluated from the
+        shadow logs once tick rate is proven):
+          1. Basis divergence veto (futures basis z-score extreme vs spot move).
+          2. Lead-lag confirmation (futures leads spot by ~1 tick on breaks).
+          3. P3/P4 breakout confirmation via 15s futures path efficiency.
+        """
         if lp <= 0:
             return
         self.last_futures_price = lp
+
+        # ─── SHADOW Data-Speed Measurement (5-minute rolling window) ───
+        self._fut_shadow_total_ticks += 1
+        self._fut_shadow_window_ticks += 1
+        self._fut_shadow_sym = sym or self._fut_shadow_sym
+        if self._fut_shadow_window_start <= 0:
+            self._fut_shadow_window_start = now_sec
+            logger.info(f"[SHADOW FUTURES FEED] First tick received: {sym} @ {lp:.2f} — shadow data-speed measurement active (non-gating)")
+        if (now_sec - self._fut_shadow_window_start) >= 300.0:
+            window_sec = max(now_sec - self._fut_shadow_window_start, 1.0)
+            rate = self._fut_shadow_window_ticks / window_sec
+            basis_vals = [b for (_, _, b) in list(self.futures_history)[-self._fut_shadow_window_ticks:] if abs(b) < 1000.0]
+            basis_mean = (sum(basis_vals) / len(basis_vals)) if basis_vals else 0.0
+            logger.info(
+                f"[SHADOW FUTURES FEED] {self._fut_shadow_sym} | ticks_5m={self._fut_shadow_window_ticks} "
+                f"({rate:.2f}/s) | total={self._fut_shadow_total_ticks} | lp={lp:.2f} "
+                f"| basis_mean={basis_mean:+.2f}pts | verdict={'GATE_VIABLE' if rate >= 1.0 else 'TOO_SLOW_FOR_GATE'}"
+            )
+            self._fut_shadow_window_start = now_sec
+            self._fut_shadow_window_ticks = 0
+
         vol = float(getattr(tick, "vol", 0.0) or 0.0)
         self.futures_volume = vol
         if self.last_spot > 0:

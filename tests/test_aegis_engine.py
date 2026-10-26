@@ -207,3 +207,45 @@ def test_delta_inflection_fail_open_on_sparse_history():
     vetoed, detail = AegisGammaEngine._delta_inflection_check(_stub_with_history(rows), "SYM", "DOWN")
     assert not vetoed
     assert detail == "insufficient_history"
+
+
+def test_delta_inflection_propagates_direction_wide():
+    """2026-10-26: a flip detected on one symbol's L1 book opens a direction-wide
+    trap window — a second symbol with ALIGNED history must also be vetoed while
+    the window is open (thin-book hot-strike escape fixed)."""
+    flip_rows = [(float(i), 10.0, 10.0, 10.1, 800.0, 200.0) for i in range(6)]
+    flip_rows += [(float(i + 6), 10.0, 10.0, 10.1, 200.0, 800.0) for i in range(6)]
+    stub_a = _stub_with_history(flip_rows)
+    vetoed_a, detail_a = AegisGammaEngine._delta_inflection_check(stub_a, "SYM", "UP")
+    assert vetoed_a
+    assert "flip" in detail_a
+
+    # Second symbol: perfectly aligned buyer aggression — would pass alone,
+    # but must be vetoed by the direction-wide trap window opened above.
+    aligned_rows = [(float(i), 10.0, 10.0, 10.1, 800.0, 200.0) for i in range(12)]
+    stub_b = _stub_with_history(aligned_rows)
+    stub_b._spot_inflection_veto_until = stub_a._spot_inflection_veto_until
+    import time as _time
+    vetoed_b, detail_b = AegisGammaEngine._delta_inflection_check(stub_b, "SYM", "UP", _time.time())
+    assert vetoed_b
+    assert "trap window" in detail_b
+
+
+def test_delta_inflection_trap_window_expires():
+    """2026-10-26: the direction-wide window is time-boxed (45s default) — an
+    aligned symbol evaluated after expiry must pass again."""
+    import time as _time
+    flip_rows = [(float(i), 10.0, 10.0, 10.1, 800.0, 200.0) for i in range(6)]
+    flip_rows += [(float(i + 6), 10.0, 10.0, 10.1, 200.0, 800.0) for i in range(6)]
+    stub_a = _stub_with_history(flip_rows)
+    vetoed_a, _ = AegisGammaEngine._delta_inflection_check(stub_a, "SYM", "UP")
+    assert vetoed_a
+
+    now = _time.time()
+    # Artificially expire the window
+    stub_a._spot_inflection_veto_until["UP"] = now - 1.0
+    aligned_rows = [(float(i), 10.0, 10.0, 10.1, 800.0, 200.0) for i in range(12)]
+    stub_b = _stub_with_history(aligned_rows)
+    stub_b._spot_inflection_veto_until = stub_a._spot_inflection_veto_until
+    vetoed_b, detail_b = AegisGammaEngine._delta_inflection_check(stub_b, "SYM", "UP", now)
+    assert not vetoed_b

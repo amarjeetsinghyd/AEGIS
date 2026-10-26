@@ -46,8 +46,9 @@ AUCTION_LOG_INTERVAL = 2.0
 # Underlying cash-index tokens (Nifty 26000, Sensex 1, Nifty Midcap 99919000)
 UNDERLYING_TOKENS = {"26000", "1", "99919000"}
 
-# Active Index Futures tokens (Nifty 68407, Sensex 844615)
-FUTURES_TOKENS = {"68407", "844615"}
+# Futures classification is fully dynamic (2026-10-26): token metadata `is_futures`
+# or "FUT" in the symbol name. The previously hardcoded token IDs belonged to
+# expired contracts (NIFTY29SEP26F etc.) and were silently dead weight.
 
 # ─── Schema Definition (Options-Enriched) ───
 # Adds `oi` (open interest) and `kind` (0=index, 1=CE, 2=PE, 3=FUT) vs the equity archiver.
@@ -135,7 +136,7 @@ class AegisL2Archiver:
         self.tok_to_sym = {str(k): str(v) for k, v in token_to_symbol.items()}
         if token_map:
             self.token_meta = {str(k): v for k, v in token_map.items()}
-        self.target_tokens = set(self.tok_to_sym.keys()) | UNDERLYING_TOKENS | FUTURES_TOKENS
+        self.target_tokens = set(self.tok_to_sym.keys()) | UNDERLYING_TOKENS
         logger.info(
             f"AegisL2Archiver: token maps refreshed — now tracking {len(self.target_tokens)} tokens"
         )
@@ -263,7 +264,7 @@ class AegisL2Archiver:
             # Resolve kind + strike from token metadata
             meta = self.token_meta.get(tok, {})
             is_underlying = tok in UNDERLYING_TOKENS
-            is_futures = (tok in FUTURES_TOKENS) or (isinstance(meta, dict) and meta.get("is_futures", False)) or (sym and ("FUT" in sym.upper()))
+            is_futures = (isinstance(meta, dict) and meta.get("is_futures", False)) or (sym and ("FUT" in sym.upper()))
 
             if is_underlying:
                 kind = 0

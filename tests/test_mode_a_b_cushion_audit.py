@@ -125,13 +125,106 @@ def test_pillar_2_micro_sweep_mode_a_arming_and_piercing():
     assert setup["pa_setup_name"] == "micro_sweep_reclaim"
     assert setup["anchor_high"] == 22462.0
 
-    # 3. Bar N+1 at T+10s: spot pierces anchor_high (22462.0) -> Triggers Mode A Pierce!
+    # 3. Bar N+1 at T+10s: marginal single-tick pierce (0.5pt < 0.10xATR buffer)
+    #    must NOT consume the setup — that is the trap filter (2026-10-26).
     pa.last_price = 22462.5
-    ok, reason, details = pa.check_mode_a_pierce("UP", current_time=now + 13 * 60 + 10)
+    ok, reason, _ = pa.check_mode_a_pierce("UP", current_time=now + 13 * 60 + 10)
+    assert ok is False, "Marginal sub-buffer pierce must be filtered (trap signature)"
+    assert "PILLAR_2_SWEEP_UP" in pa._mode_a_armed_setups, "Setup must stay armed after sub-buffer touch"
+
+    # 4. Same bar at T+15s: spot extends 1.5pts beyond anchor (> buffer) -> Triggers Mode A Pierce!
+    pa.last_price = 22463.5
+    ok, reason, details = pa.check_mode_a_pierce("UP", current_time=now + 13 * 60 + 15)
     assert ok is True
     assert details["mode"] == "MODE_A_PIERCE"
     assert details["pillar"] == 2
     assert details["pa_setup_name"] == "micro_sweep_reclaim"
+
+
+def _arm_micro_sweep_pillar_2(pa, now):
+    """Arms a Pillar 2 micro-sweep CALL setup (shared fixture for Mode A gates)."""
+    for i in range(12):
+        b = OHLCBar(
+            ts_start=now + i * 60,
+            ts_end=now + (i + 1) * 60,
+            open=22460.0,
+            high=22465.0,
+            low=22450.0 + i * 1.0,
+            close=22458.0,
+            volume=50000.0,
+        )
+        pa.bars_1m.append(b)
+    sweep_bar = OHLCBar(
+        ts_start=now + 12 * 60,
+        ts_end=now + 13 * 60,
+        open=22458.0,
+        high=22462.0,
+        low=22445.0,
+        close=22460.0,
+        volume=80000.0,
+    )
+    pa.bars_1m.append(sweep_bar)
+    pa._evaluate_mode_a_arming(sweep_bar)
+    assert "PILLAR_2_SWEEP_UP" in pa._mode_a_armed_setups
+
+
+def test_mode_a_pierce_blocked_by_delta_harmony():
+    """2026-10-26: a valid buffered pierce with in-flight OFI against the direction
+    is blocked (delta_harmony_fail) — parity with Mode B ladders and T:50s pre-close."""
+    pa = PriceActionEngine()
+    pa.current_atr_1m = 10.0
+    now = 1792730040.0
+    _arm_micro_sweep_pillar_2(pa, now)
+
+    # In-flight flow: bull=1500, bear=7000 -> bull < 1.25x bear AND call_sell > call_buy
+    pa._opt_flow_1m = {
+        "call_buy_vol": 1000.0,
+        "call_sell_vol": 2000.0,
+        "put_buy_vol": 5000.0,
+        "put_sell_vol": 500.0,
+        "unclass_vol": 0.0,
+    }
+    pa.last_price = 22464.0  # 2.0pts beyond anchor — clears the pierce buffer
+    ok, reason, _ = pa.check_mode_a_pierce("UP", current_time=now + 13 * 60 + 10)
+    assert ok is False
+    assert reason == "delta_harmony_fail"
+
+
+def test_mode_a_pierce_passes_with_harmonious_flow():
+    """2026-10-26: harmonious in-flight flow (bull >= 1.25x bear, cb >= cs) lets a
+    buffered pierce fire — the gate must never blanket-block valid springs."""
+    pa = PriceActionEngine()
+    pa.current_atr_1m = 10.0
+    now = 1792730040.0
+    _arm_micro_sweep_pillar_2(pa, now)
+
+    # In-flight flow: bull=7000, bear=1000 -> 7.0x harmony, cb >= cs
+    pa._opt_flow_1m = {
+        "call_buy_vol": 6000.0,
+        "call_sell_vol": 500.0,
+        "put_buy_vol": 500.0,
+        "put_sell_vol": 1000.0,
+        "unclass_vol": 0.0,
+    }
+    pa.last_price = 22464.0
+    ok, reason, details = pa.check_mode_a_pierce("UP", current_time=now + 13 * 60 + 10)
+    assert ok is True
+    assert details["mode"] == "MODE_A_PIERCE"
+
+
+def test_mode_a_pierce_harmony_bypass_on_zero_flow():
+    """2026-10-26: zero classified option flow (synthetic tests / warmup) must
+    gracefully bypass the harmony gate per the pre-flight audit rule."""
+    pa = PriceActionEngine()
+    pa.current_atr_1m = 10.0
+    now = 1792730040.0
+    _arm_micro_sweep_pillar_2(pa, now)
+
+    pa._opt_flow_1m = {"call_buy_vol": 0.0, "call_sell_vol": 0.0, "put_buy_vol": 0.0, "put_sell_vol": 0.0, "unclass_vol": 0.0}
+    pa.last_price = 22464.0
+    ok, reason, details = pa.check_mode_a_pierce("UP", current_time=now + 13 * 60 + 10)
+    assert ok is True
+    assert details["mode"] == "MODE_A_PIERCE"
 
 
 def test_mode_b_breakthrough_pillar_3_and_pillar_4():

@@ -3366,6 +3366,29 @@ class PriceActionEngine:
                 return False
         return True
 
+    def _delta_harmony_ok(self, direction: str) -> bool:
+        """In-flight OFI delta harmony gate (2026-10-26).
+
+        Single source of truth for the institutional flow-harmony requirement
+        (spec §3), shared by the T:50s pre-close path and the Mode A T+0s
+        pierce path. Mode B ladders keep their inline 1.30x variant.
+        Gracefully bypasses when no option flow is classified (synthetic tests,
+        warmup) per the pre-flight audit rule: bull+bear <= 0 => True.
+        """
+        cb = float(self._opt_flow_1m.get("call_buy_vol", 0.0) or 0.0)
+        cs = float(self._opt_flow_1m.get("call_sell_vol", 0.0) or 0.0)
+        pb = float(self._opt_flow_1m.get("put_buy_vol", 0.0) or 0.0)
+        ps = float(self._opt_flow_1m.get("put_sell_vol", 0.0) or 0.0)
+        bull_flow = cb + ps
+        bear_flow = pb + cs
+        if bull_flow + bear_flow <= 0:
+            return True
+        if direction == "UP":
+            return bull_flow >= 1.25 * bear_flow and cb >= cs
+        if direction == "DOWN":
+            return bear_flow >= 1.25 * bull_flow and pb >= ps
+        return True
+
     def check_mode_a_pierce(
         self,
         direction: str,
@@ -3409,15 +3432,31 @@ class PriceActionEngine:
                 continue
 
             triggered = False
-            if s_dir == "UP" and spot >= anchor_h:
+            # Pierce Quality Buffer (2026-10-26): marginal single-tick pierces are
+            # the classic bull/bear-trap signature (trap case 2026-10-26 10:17:
+            # +0.75pt pierce immediately reversed). Scale-invariant excursion
+            # beyond the anchor is now required before Mode A consumes a setup.
+            pierce_buffer = max(0.10 * atr, 0.10)
+            if s_dir == "UP" and spot >= (anchor_h + pierce_buffer):
                 triggered = True
-            elif s_dir == "DOWN" and spot <= anchor_l:
+            elif s_dir == "DOWN" and spot <= (anchor_l - pierce_buffer):
                 triggered = True
 
             if triggered:
+                # OFI Delta Harmony Gate (2026-10-26): Mode A pierces now require
+                # in-flight institutional flow harmony (parity with Mode B ladders
+                # and the T:50s pre-close path). Consumes the setup on failure —
+                # the pierce fired but the order flow betrayed it.
+                if not self._delta_harmony_ok(direction):
+                    del self._mode_a_armed_setups[b_name]
+                    logger.info(
+                        f"[PriceActionEngine] [MODE_A_HARMONY_VETO] Pillar {pillar_num} {setup_name} {direction} "
+                        f"pierce at spot={spot:.2f} blocked: delta_harmony_fail (in-flight OFI against direction)"
+                    )
+                    return False, "delta_harmony_fail", {}
                 del self._mode_a_armed_setups[b_name]
                 b_open = round(self._curr_1m_bar.open, 2) if self._curr_1m_bar is not None else round(anchor_l if direction == "UP" else anchor_h, 2)
-                logger.info(f"[PriceActionEngine] [MODE_A_PIERCE] Pillar {pillar_num} {setup_name} {direction} Triggered at spot={spot:.2f} (T+{sec_in_min}s)")
+                logger.info(f"[PriceActionEngine] [MODE_A_PIERCE] Pillar {pillar_num} {setup_name} {direction} Triggered at spot={spot:.2f} (T+{sec_in_min}s, buffer={pierce_buffer:.2f}pts)")
                 return True, setup_name, {
                     "pillar": pillar_num,
                     "pa_setup_name": setup_name,
@@ -3459,19 +3498,9 @@ class PriceActionEngine:
         spot = self.last_price
         curr_rng = max(curr_bar.high - curr_bar.low, 0.5)
 
-        cb = float(self._opt_flow_1m.get("call_buy_vol", 0.0))
-        cs = float(self._opt_flow_1m.get("call_sell_vol", 0.0))
-        pb = float(self._opt_flow_1m.get("put_buy_vol", 0.0))
-        ps = float(self._opt_flow_1m.get("put_sell_vol", 0.0))
-        bull_flow = cb + ps
-        bear_flow = pb + cs
-
-        if direction == "UP":
-            if (bull_flow + bear_flow > 0) and not (bull_flow >= 1.25 * bear_flow and cb >= cs):
-                return False, "delta_harmony_fail", {}
-        elif direction == "DOWN":
-            if (bull_flow + bear_flow > 0) and not (bear_flow >= 1.25 * bull_flow and pb >= ps):
-                return False, "delta_harmony_fail", {}
+        # OFI Delta Harmony Gate (shared helper — single source of truth)
+        if not self._delta_harmony_ok(direction):
+            return False, "delta_harmony_fail", {}
 
         bar_idx = self._total_bars_seen
 

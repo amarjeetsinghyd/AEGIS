@@ -11,7 +11,7 @@ import threading
 import time
 from collections import deque
 from datetime import datetime, timedelta, time as dt_time
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 import numpy as np
 
@@ -353,6 +353,25 @@ class AegisExecutionManager:
             "exchange": "NFO",
         }
 
+    def _latest_option_book(self, symbol: str) -> Tuple[float, float, float, float]:
+        """Latest in-memory L1 book snapshot for an option symbol, read O(1) from
+        the gamma engine's rolling 30s tick history. Returns (ts, lp, bid, ask);
+        all zeros when the symbol has no live tick history (fail-open by design).
+        Row layout in gamma history_30s: (now_sec, lp, bp1, sp1, b1, a1).
+        """
+        try:
+            eng = self.aegis_engine
+            if eng is not None:
+                hist = getattr(eng, "history_30s", None)
+                if hist:
+                    rows = hist.get(symbol)
+                    if rows:
+                        row = rows[-1]
+                        return float(row[0]), float(row[1]), float(row[2]), float(row[3])
+        except Exception:
+            pass
+        return 0.0, 0.0, 0.0, 0.0
+
     def _refresh_hot_strikes_cache(self, now_epoch: float) -> None:
         """
         Event-driven rolling 5-second strike pre-stager.
@@ -656,6 +675,27 @@ class AegisExecutionManager:
             # Map signal direction to option type
             signal_type = "CALL" if direction == "UP" else "PUT"
 
+            # ─── Spot-Level Delta Inflection Trap Window (2026-10-26) ───
+            # Defense-in-depth: gamma's direction-wide trap window (opened when ANY
+            # option's L1 book flips aggression against the direction) is re-checked
+            # here at execution time to close the emit→execute race window.
+            _trap_until = 0.0
+            if self.aegis_engine is not None:
+                try:
+                    _trap_until = float(
+                        getattr(self.aegis_engine, "_spot_inflection_veto_until", {}).get(direction, 0.0) or 0.0
+                    )
+                except Exception:
+                    _trap_until = 0.0
+            if _trap_until > 0 and now_epoch < _trap_until:
+                logger.warning(
+                    f"[AegisEM] Entry blocked — spot-level delta inflection trap window active for {direction} "
+                    f"({int(_trap_until - now_epoch)}s remaining; recent L1 aggression flip against direction)"
+                )
+                self._rollback_slot()
+                self._drain_signal_queue(reason="spot_inflection_trap_window")
+                return
+
             # Retrieve actual underlying index spot price
             spot_price = float(signal.get("spot") or getattr(self.aegis_engine, "last_spot", 0.0) or 0.0)
             if spot_price <= 0.0:
@@ -669,7 +709,32 @@ class AegisExecutionManager:
                 and abs(spot_price - hot_cache.get("spot", 0.0)) <= 40.0
             ):
                 opt_row, raw_quantity, ltp = cached
-                logger.info(f"[AegisEM] Using PRE-STAGED/HOT strike for {signal_type}: {opt_row['symbol']} (latency <1ms)")
+                # ─── Hot-Strike Live Re-Validation (2026-10-26) ───
+                # Gates evaluated on signal symbols must be re-checked on the
+                # executed strike: premium floor + spread cap (V4 unprimed 1%-of-mid
+                # rule). Fail-open on stale/absent quotes — never block on missing data.
+                _rv_reject = None
+                _rv_ts, _rv_lp, _rv_bid, _rv_ask = self._latest_option_book(opt_row["symbol"])
+                if _rv_lp > 0 and (now_epoch - _rv_ts) <= 10.0:
+                    _pmin = float(params.get("premium_min", 0.0) or 0.0)
+                    if _pmin > 0 and _rv_lp < _pmin:
+                        _rv_reject = f"premium_too_low ({_rv_lp:.2f} < {_pmin:.2f})"
+                    elif _rv_bid > 0 and _rv_ask > 0:
+                        _rv_spread = _rv_ask - _rv_bid
+                        _rv_mid = (_rv_ask + _rv_bid) * 0.5
+                        if _rv_mid > 0 and (_rv_spread / _rv_mid) > 0.01:
+                            _rv_reject = f"spread_unprimed_cap ({_rv_spread:.2f} > 1.0% of mid {_rv_mid:.2f})"
+                if _rv_reject is not None:
+                    logger.warning(
+                        f"[AegisEM] Pre-staged hot strike {opt_row['symbol']} rejected on live re-validation: {_rv_reject}"
+                    )
+                    self._rollback_slot()
+                    self._drain_signal_queue(reason="hot_strike_revalidation_fail")
+                    return
+                logger.info(
+                    f"[AegisEM] Using PRE-STAGED/HOT strike for {signal_type}: {opt_row['symbol']} "
+                    f"(latency <1ms, re-validated: lp={_rv_lp:.2f}, bid={_rv_bid:.2f}, ask={_rv_ask:.2f})"
+                )
             else:
                 weekly_opts = getattr(self, "_cached_weekly_opts", None)
                 if weekly_opts is None or (hasattr(weekly_opts, "empty") and weekly_opts.empty):

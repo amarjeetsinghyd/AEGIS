@@ -287,13 +287,16 @@ def main():
             token_map[spot_token] = {'side': 0, 'strike': 0.0, 'is_index': True}
             logger.info(f"[AegisMain] Active instrument: {inst_name} | Spot Token: {spot_token} ({spot_sym}) | Strike Step: {strike_step}")
         
-        # 1b. Add Active Index Futures Token for Lead-Lag Tracking and L2 Archival
+        # 1b. Add Active Index Futures Token (SHADOW telemetry-only, 2026-10-26)
+        # Futures feed NEVER gates a live decision and never seeds live bar history.
+        # It exists solely for shadow data-speed measurement + basis/lead-lag stats
+        # to evaluate candidate future gate uses (see _on_futures_tick docstring).
         fut_token, fut_sym, fut_exch = fetcher.get_current_futures_token()
         if fut_token and fut_sym:
             fut_token = str(fut_token)
             token_to_symbol[fut_token] = fut_sym
             token_map[fut_token] = {'side': 0, 'strike': 0.0, 'is_futures': True}
-            logger.info(f"[AegisMain] Subscribed Active Futures: {fut_sym} (Token: {fut_token})")
+            logger.info(f"[AegisMain][SHADOW] Subscribed Active Futures: {fut_sym} (Token: {fut_token}) — telemetry-only, non-gating")
 
         # 2. Build token maps for AEGIS options. Retry until BOTH sides are present:
         # a single-side universe (partial searchscrip failure) blinds half the
@@ -387,16 +390,9 @@ def main():
                     except Exception as e_1m:
                         logger.debug(f"[AegisMain] 1m fetcher failed: {e_1m}")
 
-                    # Tier 3: If cash index returned 0 bars, seed from Active Futures (NFO) to ensure mature 20/50 EMA
-                    if seeded <= 0 and fut_token and fut_exch:
-                        try:
-                            df_fut = fetcher.get_historical_candles(fut_exch, fut_token, "ONE_MINUTE", days_back=5)
-                            if df_fut is not None and not df_fut.empty:
-                                candles_fut = df_fut.to_dict(orient="records") if hasattr(df_fut, "to_dict") else []
-                                seeded = pa_eng.seed_historical_bars(candles_fut)
-                                logger.info(f"[AegisMain][FUTURES-FALLBACK] Seeded {seeded} 1m bars from Active Futures {fut_sym} ({fut_exch}:{fut_token}).")
-                        except Exception as e_fut:
-                            logger.debug(f"[AegisMain] Futures 1m seeding failed: {e_fut}")
+                    # Tier 3 (REMOVED 2026-10-26): futures 1m seeding fallback eliminated.
+                    # Futures is shadow telemetry-only now — seeding live 20/50 EMA bars from
+                    # futures prices would corrupt the spot candle basis (premium drift).
 
                     # Tier 4: Fallback to 5-min cache if 1m sources were completely empty
                     if seeded <= 0:
@@ -539,12 +535,12 @@ def main():
                 broker.market_data_provider.subscribe([token], spot_exch, feed_type="t")
                 broker.market_data_provider.subscribe([token], spot_exch, feed_type="d")
                 
-                # Subscribe Futures Contract (NIFTY / SENSEX)
+                # Subscribe Futures Contract (NIFTY / SENSEX) — SHADOW telemetry-only
                 fut_token, fut_sym, fut_exch = fetcher.get_current_futures_token()
                 if fut_token:
                     broker.market_data_provider.subscribe([str(fut_token)], fut_exch, feed_type="t")
                     broker.market_data_provider.subscribe([str(fut_token)], fut_exch, feed_type="d")
-                    logger.info(f"[{name}] Subscribed to Futures Contract {fut_sym} ({fut_token}) on {fut_exch} (t+d)")
+                    logger.info(f"[{name}][SHADOW] Subscribed to Futures Contract {fut_sym} ({fut_token}) on {fut_exch} (t+d, telemetry-only, non-gating)")
 
                 weekly_opts = fetcher.get_weekly_option_tokens()
                 if not weekly_opts.empty:
