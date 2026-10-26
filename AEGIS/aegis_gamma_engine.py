@@ -1811,6 +1811,17 @@ class AegisGammaEngine:
             "futures_volume": self.futures_volume,
         }
 
+    def get_pain_zone_band(self) -> Tuple[float, float]:
+        """
+        True Pain Zone Band Envelope:
+          Upper Band = max(active_vwaps)
+          Lower Band = min(active_vwaps)
+        Returns (band_upper, band_lower) from PriceActionEngine single source.
+        """
+        if self.price_action_engine is not None:
+            return self.price_action_engine.get_pain_zone_band()
+        return 0.0, 0.0
+
     def close(self) -> None:
         """Gracefully flushes pending shadow telemetry and shuts down background resources."""
 

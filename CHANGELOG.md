@@ -3,8 +3,8 @@
 ## [Unreleased] - 2026-10-26 (Semantic Intent-to-Code Parity Audit & Adversarial Torture Testing)
 
 ### Added
-- **Adversarial Torture Suite `tests/test_intent_vs_code_adversarial.py` (28 tests)**: counter-example simulations proving the machine never trades against the human's Trading Intent — fake Pillar 1 breakout-from-below / breakdown-from-above proven blocked on all 3 trigger routes (Bar-Close, Mode A Arming, Mode A Pre-Close), Mode A Pillar 2 safety-stack parity, Mode B vs Pain Zone VWAP / 5m trend, in-flight option flow enrichment, and the T:60s exact-bucket Failed-Close Escape. Suite runs 100% green on both local and VPS Python.
-- **Pain Zone VWAP Alignment helper `_pain_zone_vwap_aligned()`** (`AEGIS/core/price_action_engine.py`): direction-selected substitute for the impossible native index VWAP (the index prints no volume) — **CALL** requires spot above the composite option-flow VWAP AND above the Trapped Call-Buyer line (`vwap_call_buy`); **PUT** requires spot below the composite AND below the Trapped Put-Buyer line (`vwap_put_buy`). Fail-open on warmup/missing lines, mirroring `band_veto_blocks` semantics.
+- **Adversarial Torture Suite `tests/test_intent_vs_code_adversarial.py` (29 tests)**: counter-example simulations proving the machine never trades against the human's Trading Intent — fake Pillar 1 breakout-from-below / breakdown-from-above proven blocked on all 3 trigger routes (Bar-Close, Mode A Arming, Mode A Pre-Close), Mode A Pillar 2 safety-stack parity, True Pain Zone 4-Line Envelope outside-band rule, Mode B vs 5m trend, in-flight option flow enrichment, and the T:60s exact-bucket Failed-Close Escape. Suite runs 100% green on local Python.
+- **True Pain Zone Band Geometry & Outside-Band Rule (`_pain_zone_vwap_aligned()` & `get_pain_zone_band()`)** (`AEGIS/core/price_action_engine.py` & `AEGIS/aegis_gamma_engine.py`): the 4 trapped-party option-flow VWAP lines (`vwap_call_buy`, `vwap_call_sell`, `vwap_put_buy`, `vwap_put_sell`) naturally form a tight cluster band: `Upper Band = max(active_vwaps)` and `Lower Band = min(active_vwaps)`. Strict Outside-Band Rule (आर-पार का नियम): **CALL** strictly requires `spot > Upper Band` (above all 4 lines); **PUT** strictly requires `spot < Lower Band` (below all 4 lines); spot inside the band is a neutral / no-trade zone for both directions. Composite VWAP eliminated in favor of direct 4-line min/max envelope. Fallback to single-line on warmup/synthetic mocks, fail-open when no lines.
 
 ### Fixed (8 Semantic Intent-to-Code Gaps)
 - **Pillar 1 Dow Anti-Breakout Veto now checks OPEN crossings** across all 3 loops (10-bar window, trend walk-back, orderly pullback) — a candle opening below the 20 EMA band and piercing up was bypassing the close-only veto (`breakout_from_below_veto`).
@@ -17,7 +17,7 @@
 - **Mode B Failed-Close Escape T:60s race**: the wall-clock monitor could judge the PRE-entry box bar (which closes inside the boundary by definition) before the entry candle's first post-boundary tick closed it — premature scratch of healthy breakouts. The escape now matches the exact entry-candle minute bucket (`MODE_B_FAILED_CLOSE_ESCAPE`).
 
 ### Tests
-- Suite **216 → 244** (28 new adversarial tests; fast dev suite 242 in ~13s, full suite 244 in ~95s — 100% PASSED on local; adversarial suite also 28/28 green on VPS Python).
+- Suite **216 → 245** (29 new adversarial tests; fast dev suite 243 in ~13s, full suite 245 in ~95s — 100% PASSED on local).
 
 ### Ops
 - Fixes deployed to VPS (`137.23.41.38`) at 03:50 IST (safe pre-market window): blob-verified file sync, `py_compile` OK, `aegis-bot` PM2 restarted and stable ahead of Monday 08:55 IST NIFTY 1-DTE wakeup.

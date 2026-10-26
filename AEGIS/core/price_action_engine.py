@@ -389,6 +389,16 @@ class PriceActionEngine:
             "zone_mid": zone_mid,
         }
 
+    def get_pain_zone_band(self, lot_size: Optional[float] = None, min_bars: Optional[int] = None) -> Tuple[float, float]:
+        """
+        True Pain Zone Band Geometry (4-Line Min-Max Envelope):
+          Upper Band = max(vwap_call_buy, vwap_call_sell, vwap_put_buy, vwap_put_sell)
+          Lower Band = min(vwap_call_buy, vwap_call_sell, vwap_put_buy, vwap_put_sell)
+        Returns (band_upper, band_lower). If warmup / lines <= 0, returns (0.0, 0.0).
+        """
+        pz = self.get_pain_zone_vwaps(lot_size=lot_size, min_bars=min_bars)
+        return float(pz.get("zone_top", 0.0) or 0.0), float(pz.get("zone_bottom", 0.0) or 0.0)
+
     # ATR buffer multiple for the absolute band veto (V4.1b). The raw zone is
     # razor-thin (~0.2-7 pts on NIFTY): gating on raw edges vetoes ~90% of ticks
     # and whole minutes single-sided on 1-2 pt margins. The buffer keeps the
@@ -421,38 +431,49 @@ class PriceActionEngine:
 
     def _pain_zone_vwap_aligned(self, direction: str, price: float, eff_vwap: float = 0.0) -> bool:
         """
-        Direction-Selected Pain Zone VWAP Alignment (intra-bar substitute for the
-        index VWAP — the index prints no native volume; every line here is an
-        option-flow weighted spot VWAP built from the 4 trapped-party streams).
+        True Pain Zone 4-Line Envelope Alignment (Outside-Band Rule).
+        The 4 trapped-party option-flow VWAP lines (vwap_call_buy, vwap_call_sell,
+        vwap_put_buy, vwap_put_sell) form a natural cluster band:
+            band_upper = max(active_vwaps)
+            band_lower = min(active_vwaps)
 
-          CALL: price must be ABOVE the composite option-flow VWAP (parity with the
-                bar-close pillar ladders) AND above the Trapped Call-Buyer line
-                (vwap_call_buy): below it, trapped call buyers sit overhead at
-                breakeven and sell into our entry.
-          PUT:  price must be BELOW the composite AND below the Trapped Put-Buyer
-                line (vwap_put_buy): above it, trapped put buyers bid dips back up.
+        Outside-Band Rule (आर-पार का नियम):
+          CALL: Spot must be strictly ABOVE the highest active VWAP line (spot > band_upper).
+          PUT:  Spot must be strictly BELOW the lowest active VWAP line (spot < band_lower).
+          Inside Band (band_lower <= spot <= band_upper): Neutral / No-Trade Zone (vetoed for both).
 
-        Each guard applies only when its line is available (> 0). Warmup /
-        missing lines always pass (fail-open), matching band_veto_blocks semantics.
+        No separate 5th composite VWAP is needed when active envelope lines exist.
+        Warmup / missing lines pass (fail-open), matching band_veto_blocks semantics.
+        If no option-flow lines are active yet but a synthetic/external vwap is provided,
+        falls back to single-line alignment (spot > vwap for CALL, spot < vwap for PUT).
         """
         try:
             if price <= 0:
                 return True
-            is_call = str(direction).upper() in ("UP", "CALL")
-            composite = float(eff_vwap) if eff_vwap > 0 else float(getattr(self, "current_vwap", 0.0) or 0.0)
+            is_call = str(direction).upper() in ("UP", "CALL", "CE", "C")
             pz = self.get_pain_zone_vwaps()
-            if is_call:
-                cb_line = float(pz.get("vwap_call_buy", 0.0) or 0.0)
-                if composite > 0 and price <= composite:
-                    return False
-                if cb_line > 0 and price <= cb_line:
-                    return False
-            else:
-                pb_line = float(pz.get("vwap_put_buy", 0.0) or 0.0)
-                if composite > 0 and price >= composite:
-                    return False
-                if pb_line > 0 and price >= pb_line:
-                    return False
+            cb = float(pz.get("vwap_call_buy", 0.0) or 0.0)
+            cs = float(pz.get("vwap_call_sell", 0.0) or 0.0)
+            pb = float(pz.get("vwap_put_buy", 0.0) or 0.0)
+            ps = float(pz.get("vwap_put_sell", 0.0) or 0.0)
+            active_vwaps = [x for x in (cb, cs, pb, ps) if x > 0]
+
+            if active_vwaps:
+                band_upper = max(active_vwaps)
+                band_lower = min(active_vwaps)
+                if is_call:
+                    return price > band_upper
+                else:
+                    return price < band_lower
+
+            # Fallback when no option-flow VWAP lines active yet (warmup / synthetic test mocks)
+            fallback_vwap = float(eff_vwap) if eff_vwap > 0 else float(getattr(self, "current_vwap", 0.0) or 0.0)
+            if fallback_vwap > 0:
+                if is_call:
+                    return price > fallback_vwap
+                else:
+                    return price < fallback_vwap
+
             return True
         except Exception:
             return True

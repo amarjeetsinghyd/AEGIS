@@ -12,8 +12,8 @@
 >    - Jawab **hamesha Devnagari script (देवनागरी लिपि)** mein hi dena hai, Devnagari aur English quant/technical terms ko naturally mix karke (जैसे: *"अमरजीत भाई, AEGIS ने Priority Mode B Mid-Bar Breakthrough डिटेक्ट किया है..."*). Pure Roman English ya Roman English script (Hinglish) mein reply nahi dena hai.
 > 2. **Readability & Ultra-Clean Presentation (पढ़ने में सबसे आसान)**:
 >    - Response ko padhne mein ultra-smooth aur easy banayein: short crisp paragraphs, clear bullet points, intuitive visual badges (🟢, 🔴, ⚡, 🛡️, 🚀), clear bold highlights. Complex dense wall-of-text bilkul nahi banana hai.
-> 3. **Proactive Generative UI Integration (जेनरेटिव UI का इस्तेमाल)**:
->    - Antigravity ki **`generative_ui`** skill ka proactive use karein. Jab bhi koi system architecture, trade setup, execution flow, Wyckoff concept, ya telemetry review explain karna ho, inline HTML cards (`<agent-embed src="file:///..."></agent-embed>`) ya standalone artifacts banayein. Tailwind CSS (`tailwindcss.min.js`) aur host theme tokens (`bg-[var(--card)]`, `text-[var(--foreground)]`, `border-[var(--border)]`) use karke beautiful, responsive widgets render karein.
+> 3. **Generative UI Policy (User-Requested Only)**:
+>    - Generative UI / HTML widgets proactively bina maange nahi banane hain. Inline cards ya UI artifacts tabhi banayein jab Amarjeet bhai explicitly unki demand karein.
 
 ---
 

@@ -190,6 +190,51 @@ class TestPainZoneVwapAlignment:
         assert pa._pain_zone_vwap_aligned("CALL", 22460.0) is True
         assert pa._pain_zone_vwap_aligned("PUT", 22460.0) is True
 
+    def test_true_pain_zone_4_line_envelope_min_max(self):
+        """
+        True Pain Zone Band Geometry (Amarjeet Bhai Mandate):
+          band_upper = max(all 4 active VWAPs)
+          band_lower = min(all 4 active VWAPs)
+        Spot must be strictly outside the envelope (आर-पार का नियम):
+          - CALL allowed ONLY when Spot > band_upper
+          - PUT allowed ONLY when Spot < band_lower
+          - Inside Band: Neutral / No-Trade zone (both vetoed)
+        """
+        pa = self._seeded()
+        # Set 4 active option-flow VWAP lines:
+        # Call Buy:  22460.0
+        # Call Sell: 22464.0  <- Highest active (band_upper)
+        # Put Buy:   22458.0
+        # Put Sell:  22455.0  <- Lowest active (band_lower)
+        pa._cum_cb_pv = 22460.0 * 20000.0
+        pa._cum_cb_vol = 20000.0
+        pa._cum_cs_pv = 22464.0 * 20000.0
+        pa._cum_cs_vol = 20000.0
+        pa._cum_pb_pv = 22458.0 * 20000.0
+        pa._cum_pb_vol = 20000.0
+        pa._cum_ps_pv = 22455.0 * 20000.0
+        pa._cum_ps_vol = 20000.0
+
+        band_upper, band_lower = pa.get_pain_zone_band()
+        assert band_upper == 22464.0
+        assert band_lower == 22455.0
+
+        # Case 1: Spot inside the cluster (22462.0)
+        # Above call_buy (22460.0), but below call_sell (22464.0).
+        # Must be BLOCKED for both CALL and PUT (Neutral Zone)!
+        assert pa._pain_zone_vwap_aligned("CALL", 22462.0) is False
+        assert pa._pain_zone_vwap_aligned("PUT", 22462.0) is False
+
+        # Case 2: Spot strictly above Upper Band (22465.0)
+        # CALL allowed, PUT blocked
+        assert pa._pain_zone_vwap_aligned("CALL", 22465.0) is True
+        assert pa._pain_zone_vwap_aligned("PUT", 22465.0) is False
+
+        # Case 3: Spot strictly below Lower Band (22454.0)
+        # PUT allowed, CALL blocked
+        assert pa._pain_zone_vwap_aligned("PUT", 22454.0) is True
+        assert pa._pain_zone_vwap_aligned("CALL", 22454.0) is False
+
 
 # ═══════════════════════════════════════════════════════════════
 # SCENARIO 1: Fake Pillar 1 Breakout-from-Below (CALL)
