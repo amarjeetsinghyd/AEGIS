@@ -773,7 +773,9 @@ class AegisGammaEngine:
                             energy_score = 100.0
                             micro_m = {}
                             time_since_close = (now_sec - anchor_T) if (anchor_T and anchor_T > 0) else 0.0
-                            if use_anchor and self.adaptive_micro_validator and self.scorer:
+                            # Mode B In-Flight Breakthroughs validate live order flow in PriceActionEngine (_opt_flow_1m delta >= 1.30x);
+                            # retrospective anchor_T option buffer evaluation is strictly bypassed for Mode B.
+                            if not is_mode_b and use_anchor and self.adaptive_micro_validator and self.scorer:
                                 buf = self.scorer.history.get(sym, [])
                                 is_bos_break = pa_details.get("rejection_type") in ("bos_breakout_confirmation", "bos_breakdown_confirmation")
                                 micro_ok = False
@@ -869,7 +871,7 @@ class AegisGammaEngine:
                                 tot_ask_depth = micro_m.get("tot_ask_depth", tot_ask_depth)
                                 bp1 = micro_m.get("bp1", bp1)
                                 sp1 = micro_m.get("sp1", sp1)
-                            elif not use_anchor:
+                            elif not is_mode_b and not use_anchor:
                                 # Stale-T unit-test fallback: basic depth wall and spread checks
                                 tot_depth = tot_bid_depth + tot_ask_depth
                                 if tot_depth > 0:

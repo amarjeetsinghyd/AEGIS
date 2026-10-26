@@ -3991,9 +3991,8 @@ class PriceActionEngine:
                     if curr_bar.open <= box_high and spot >= (box_high + min_clearance):
                         body_ratio = (spot - curr_bar.open) / max(curr_rng, 0.1)
                         upper_wick = curr_bar.high - spot
-                        trend_ok = not (self.ema_20_1m < self.ema_50_1m and self.ema_20_1m > 0 and self.ema_50_1m > 0)
                         ok_struct, _, _ = self._check_structural_obstacle("CALL", spot, check_day_extremes=True)
-                        if body_ratio >= 0.65 and upper_wick <= (0.05 * atr) and trend_ok and ok_struct:
+                        if body_ratio >= 0.65 and upper_wick <= (0.05 * atr) and ok_struct:
                             if (bull_flow + bear_flow <= 0) or (bull_flow >= 1.30 * bear_flow and cb > cs):
                                 last_spot_cnt = getattr(self, "_mode_b_p3_up_last_tick", -1)
                                 last_spot_time = getattr(self, "_mode_b_p3_up_last_time", 0.0)
@@ -4026,9 +4025,8 @@ class PriceActionEngine:
                     if curr_bar.open >= box_low and spot <= (box_low - min_clearance):
                         body_ratio = (curr_bar.open - spot) / max(curr_rng, 0.1)
                         lower_wick = spot - curr_bar.low
-                        trend_ok = not (self.ema_20_1m > self.ema_50_1m and self.ema_20_1m > 0 and self.ema_50_1m > 0)
                         ok_struct, _, _ = self._check_structural_obstacle("PUT", spot, check_day_extremes=True)
-                        if body_ratio >= 0.65 and lower_wick <= (0.05 * atr) and trend_ok and ok_struct:
+                        if body_ratio >= 0.65 and lower_wick <= (0.05 * atr) and ok_struct:
                             if (bull_flow + bear_flow <= 0) or (bear_flow >= 1.30 * bull_flow and pb > ps):
                                 last_spot_cnt = getattr(self, "_mode_b_p3_down_last_tick", -1)
                                 last_spot_time = getattr(self, "_mode_b_p3_down_last_time", 0.0)
@@ -4094,9 +4092,8 @@ class PriceActionEngine:
                     if curr_bar.open <= r_lvl.price and spot >= (r_lvl.price + min_clearance):
                         body_ratio = (spot - curr_bar.open) / max(curr_rng, 0.1)
                         upper_wick = curr_bar.high - spot
-                        trend_ok = not (self.ema_20_1m < self.ema_50_1m and self.ema_20_1m > 0 and self.ema_50_1m > 0)
                         ok_struct, _, _ = self._check_structural_obstacle("CALL", spot, ignore_pivots_below=r_lvl.price, check_day_extremes=True)
-                        if body_ratio >= 0.65 and upper_wick <= (0.05 * atr) and trend_ok and trend_5m_bullish_mb and ok_struct:
+                        if body_ratio >= 0.65 and upper_wick <= (0.05 * atr) and trend_5m_bullish_mb and ok_struct:
                             if (bull_flow + bear_flow <= 0) or (bull_flow >= 1.30 * bear_flow and cb > cs):
                                 matched_any = True
                                 last_spot_cnt = getattr(self, "_mode_b_p4_up_last_tick", -1)
@@ -4152,9 +4149,8 @@ class PriceActionEngine:
                     if curr_bar.open >= s_lvl.price and spot <= (s_lvl.price - min_clearance):
                         body_ratio = (curr_bar.open - spot) / max(curr_rng, 0.1)
                         lower_wick = spot - curr_bar.low
-                        trend_ok = not (self.ema_20_1m > self.ema_50_1m and self.ema_20_1m > 0 and self.ema_50_1m > 0)
                         ok_struct, _, _ = self._check_structural_obstacle("PUT", spot, ignore_pivots_above=s_lvl.price, check_day_extremes=True)
-                        if body_ratio >= 0.65 and lower_wick <= (0.05 * atr) and trend_ok and trend_5m_bearish_mb and ok_struct:
+                        if body_ratio >= 0.65 and lower_wick <= (0.05 * atr) and trend_5m_bearish_mb and ok_struct:
                             if (bull_flow + bear_flow <= 0) or (bear_flow >= 1.30 * bull_flow and pb > ps):
                                 matched_any = True
                                 last_spot_cnt = getattr(self, "_mode_b_p4_down_last_tick", -1)

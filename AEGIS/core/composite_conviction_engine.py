@@ -630,7 +630,13 @@ class CompositeConvictionEngine:
         """
         # ─── Intra-Bar Mode A / Mode B Priority Fast-Path ───
         mode_val = str((pa_details or {}).get("mode", "")).upper()
-        if setup_name.startswith(("mode_b_", "mode_a_")) or mode_val.startswith(("MODE_A", "MODE_B")):
+        s_name_upper = str(setup_name).upper()
+        if (
+            setup_name.startswith(("mode_b_", "mode_a_"))
+            or mode_val.startswith(("MODE_A", "MODE_B"))
+            or "MODE_B" in s_name_upper
+            or "MODE_A" in s_name_upper
+        ):
             return ConvictionResult(
                 total_score=85.0,
                 is_approved=True,
