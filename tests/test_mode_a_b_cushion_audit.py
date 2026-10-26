@@ -527,3 +527,93 @@ def test_mode_b_no_upper_cap_triggers_late_in_candle():
     assert details2["trigger_sec"] == 53
 
 
+def test_check_n1_wyckoff_gate_logic():
+    """Verify check_n1_wyckoff_gate passes normal & high-conviction rejections and vetoes dumps & swamps."""
+    pa = PriceActionEngine()
+
+    # 1. Volume Dry-Up Pass (< 0.80x)
+    fp_dry = {
+        "n1_vol": 6000.0,
+        "n1_baseline_vol": 10000.0,
+        "n1_vol_dryup": True,
+        "n1_stopping_vol": False,
+        "n1_bulls": 2000.0,
+        "n1_bears": 1000.0,
+        "n1_net_delta": 1000.0,
+    }
+    ok, r = pa.check_n1_wyckoff_gate("CALL", fp_dry)
+    assert ok is True
+    assert r == "wyckoff_n1_gate_passed"
+
+    # 2. Normal Baseline Volume Pass (0.95x, between 0.80 and 1.24x)
+    fp_norm = {
+        "n1_vol": 9500.0,
+        "n1_baseline_vol": 10000.0,
+        "n1_vol_dryup": False,
+        "n1_stopping_vol": False,
+        "n1_bulls": 1500.0,
+        "n1_bears": 1200.0,
+        "n1_net_delta": 300.0,
+    }
+    ok, r = pa.check_n1_wyckoff_gate("CALL", fp_norm)
+    assert ok is True
+    assert r == "wyckoff_n1_gate_passed"
+
+    # 3. Stopping Volume Absorption Pass (>= 1.25x with absorption)
+    fp_stopping = {
+        "n1_vol": 14000.0,
+        "n1_baseline_vol": 10000.0,
+        "n1_vol_dryup": False,
+        "n1_stopping_vol": True,
+        "n1_bulls": 5000.0,
+        "n1_bears": 2000.0,
+        "n1_net_delta": 3000.0,
+    }
+    ok, r = pa.check_n1_wyckoff_gate("CALL", fp_stopping)
+    assert ok is True
+    assert r == "wyckoff_n1_gate_passed"
+
+    # 4. Heavy Volume Dump Veto (>= 1.25x without stopping volume / absorption)
+    fp_dump = {
+        "n1_vol": 15000.0,
+        "n1_baseline_vol": 10000.0,
+        "n1_vol_dryup": False,
+        "n1_stopping_vol": False,
+        "n1_bulls": 1000.0,
+        "n1_bears": 1000.0,
+        "n1_net_delta": 0.0,
+    }
+    ok, r = pa.check_n1_wyckoff_gate("CALL", fp_dump)
+    assert ok is False
+    assert r == "wyckoff_n1_unabsorbed_volume_dump"
+
+    # 5. Opposing Delta Swamp Veto on CALL (bears swamping bulls: net_delta < 0, bears > 1.5 * bulls)
+    fp_swamp_call = {
+        "n1_vol": 9000.0,
+        "n1_baseline_vol": 10000.0,
+        "n1_vol_dryup": False,
+        "n1_stopping_vol": False,
+        "n1_bulls": 1000.0,
+        "n1_bears": 3000.0,  # 3x bulls
+        "n1_net_delta": -2000.0,
+    }
+    ok, r = pa.check_n1_wyckoff_gate("CALL", fp_swamp_call)
+    assert ok is False
+    assert r == "wyckoff_n1_opposing_put_delta_swamp"
+
+    # 6. Opposing Delta Swamp Veto on PUT (bulls swamping bears: net_delta > 0, bulls > 1.5 * bears)
+    fp_swamp_put = {
+        "n1_vol": 9000.0,
+        "n1_baseline_vol": 10000.0,
+        "n1_vol_dryup": False,
+        "n1_stopping_vol": False,
+        "n1_bulls": 3500.0,  # 3.5x bears
+        "n1_bears": 1000.0,
+        "n1_net_delta": 2500.0,
+    }
+    ok, r = pa.check_n1_wyckoff_gate("PUT", fp_swamp_put)
+    assert ok is False
+    assert r == "wyckoff_n1_opposing_call_delta_swamp"
+
+
+

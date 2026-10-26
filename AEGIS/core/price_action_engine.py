@@ -1921,6 +1921,44 @@ class PriceActionEngine:
             "n1_stopping_vol": stopping_vol,
         }
 
+    def check_n1_wyckoff_gate(self, direction: str, n1_fp: Dict[str, Any]) -> Tuple[bool, str]:
+        """
+        Smart Protective Hard Gate on Candle N-1 Wyckoff Footprint (Pillar 1 20 EMA Rejection):
+        1. High-Conviction Pass: (Volume Dry-Up < 0.80x) OR (Stopping Volume >= 1.25x with absorption).
+        2. Normal Baseline Pass: Volume between 0.80x and 1.24x baseline with standard hammer geometry passes.
+        3. Strict Dump Veto: If volume expanded >= 1.25x baseline without absorption, it is an
+           institutional liquidation dump piercing through 20 EMA.
+        4. Opposing Delta Swamp Veto: If net institutional option delta heavily opposes trade direction
+           (bears swamping bulls on CALL, or bulls swamping bears on PUT).
+        """
+        n1_vol = float(n1_fp.get("n1_vol", 0.0) or 0.0)
+        base_vol = float(n1_fp.get("n1_baseline_vol", 1.0) or 1.0)
+        is_stopping = bool(n1_fp.get("n1_stopping_vol", False))
+        bulls = float(n1_fp.get("n1_bulls", 0.0) or 0.0)
+        bears = float(n1_fp.get("n1_bears", 0.0) or 0.0)
+        net_delta = float(n1_fp.get("n1_net_delta", 0.0) or 0.0)
+
+        # ─── VETO 1: Heavy Volume Dump without Absorption ───
+        # When volume spikes >= 1.25x baseline, Wyckoff law mandates that it MUST be Stopping Volume.
+        # Spiking volume that lacks stopping volume indicates institutional sellers dumping through 20 EMA!
+        if base_vol > 0 and n1_vol >= (1.25 * base_vol) and not is_stopping:
+            return False, "wyckoff_n1_unabsorbed_volume_dump"
+
+        # ─── VETO 2: Opposing Synthetic Net Delta Swamp ───
+        # Active only when non-trivial options flow is present (bulls + bears >= 500)
+        if (bulls + bears) >= 500.0:
+            is_up = direction.upper() in ("UP", "CALL")
+            if is_up:
+                # On CALL: if net delta is negative and bear flow swamps bull flow by > 1.50x
+                if net_delta < 0 and bears > (1.50 * max(bulls, 1.0)):
+                    return False, "wyckoff_n1_opposing_put_delta_swamp"
+            else:
+                # On PUT: if net delta is positive and bull flow swamps bear flow by > 1.50x
+                if net_delta > 0 and bulls > (1.50 * max(bears, 1.0)):
+                    return False, "wyckoff_n1_opposing_call_delta_swamp"
+
+        return True, "wyckoff_n1_gate_passed"
+
     def check_20_ema_rejection(
         self,
         direction: str,
@@ -2099,8 +2137,17 @@ class PriceActionEngine:
 
             sl_price = round(min(bar.low, dow.touch_2) - buffer_pts, 2)
             n1_fp = self.compute_n1_footprint(bar, atr)
+            ok_n1, r_n1 = self.check_n1_wyckoff_gate("CALL", n1_fp)
+            if not ok_n1:
+                logger.info(
+                    f"[PriceActionEngine] [20_EMA_N1_VETO] Pillar 1 CALL Blocked: {r_n1} | "
+                    f"Vol={n1_fp['n1_vol']:.0f} (Base={n1_fp['n1_baseline_vol']:.0f}), "
+                    f"NetDelta={n1_fp['n1_net_delta']:+.0f}, StoppingVol={n1_fp['n1_stopping_vol']}"
+                )
+                return False, r_n1, {"n1_footprint": n1_fp}
+
             logger.info(
-                f"[PriceActionEngine] [20_EMA_SHADOW_FOOTPRINT] Pillar 1 CALL | "
+                f"[PriceActionEngine] [20_EMA_N1_CONFIRMED] Pillar 1 CALL | "
                 f"Vol={n1_fp['n1_vol']:.0f} (Base={n1_fp['n1_baseline_vol']:.0f}, Dry={n1_fp['n1_vol_dryup']}), "
                 f"NetDelta={n1_fp['n1_net_delta']:+.0f}, StoppingVol={n1_fp['n1_stopping_vol']}"
             )
@@ -2241,8 +2288,17 @@ class PriceActionEngine:
 
             sl_price = round(max(bar.high, dow.touch_2) + buffer_pts, 2)
             n1_fp = self.compute_n1_footprint(bar, atr)
+            ok_n1, r_n1 = self.check_n1_wyckoff_gate("PUT", n1_fp)
+            if not ok_n1:
+                logger.info(
+                    f"[PriceActionEngine] [20_EMA_N1_VETO] Pillar 1 PUT Blocked: {r_n1} | "
+                    f"Vol={n1_fp['n1_vol']:.0f} (Base={n1_fp['n1_baseline_vol']:.0f}), "
+                    f"NetDelta={n1_fp['n1_net_delta']:+.0f}, StoppingVol={n1_fp['n1_stopping_vol']}"
+                )
+                return False, r_n1, {"n1_footprint": n1_fp}
+
             logger.info(
-                f"[PriceActionEngine] [20_EMA_SHADOW_FOOTPRINT] Pillar 1 PUT | "
+                f"[PriceActionEngine] [20_EMA_N1_CONFIRMED] Pillar 1 PUT | "
                 f"Vol={n1_fp['n1_vol']:.0f} (Base={n1_fp['n1_baseline_vol']:.0f}, Dry={n1_fp['n1_vol_dryup']}), "
                 f"NetDelta={n1_fp['n1_net_delta']:+.0f}, StoppingVol={n1_fp['n1_stopping_vol']}"
             )
@@ -3289,24 +3345,28 @@ class PriceActionEngine:
 
             if uptrend_ok and vwap_ok and came_from_above and band_tested and rej_geom and dow.is_valid and ok_struct and self._check_wyckoff_harmony("UP", bar):
                 n1_fp = self.compute_n1_footprint(bar, atr)
-                self._mode_a_armed_setups["PILLAR_1_EMA_UP"] = {
-                    "direction": "UP",
-                    "pillar": 1,
-                    "pa_setup_name": "20_ema_rejection",
-                    "anchor_high": bar.high,
-                    "anchor_low": bar.low,
-                    "boundary_level": band_high,
-                    "armed_bar_idx": bar_idx,
-                    "armed_ts": self.last_ts,
-                    "n1_footprint": n1_fp,
-                }
-                self._mode_a_last_trigger_bar_idx["P1_EMA20_UP"] = bar_idx
-                logger.info(
-                    f"[PriceActionEngine] [MODE_A_ARMED] Pillar 1 20 EMA CALL Pullback Rejection Armed | "
-                    f"AnchorHigh: {bar.high:.2f} | Shadow N-1 Footprint: Vol={n1_fp['n1_vol']:.0f} "
-                    f"(Base={n1_fp['n1_baseline_vol']:.0f}, Dry={n1_fp['n1_vol_dryup']}), "
-                    f"NetDelta={n1_fp['n1_net_delta']:+.0f}, StoppingVol={n1_fp['n1_stopping_vol']}"
-                )
+                ok_n1, r_n1 = self.check_n1_wyckoff_gate("UP", n1_fp)
+                if not ok_n1:
+                    logger.info(f"[PriceActionEngine] [MODE_A_ARM_BLOCKED] Pillar 1 20 EMA CALL rejected by N-1 Wyckoff gate: {r_n1}")
+                else:
+                    self._mode_a_armed_setups["PILLAR_1_EMA_UP"] = {
+                        "direction": "UP",
+                        "pillar": 1,
+                        "pa_setup_name": "20_ema_rejection",
+                        "anchor_high": bar.high,
+                        "anchor_low": bar.low,
+                        "boundary_level": band_high,
+                        "armed_bar_idx": bar_idx,
+                        "armed_ts": self.last_ts,
+                        "n1_footprint": n1_fp,
+                    }
+                    self._mode_a_last_trigger_bar_idx["P1_EMA20_UP"] = bar_idx
+                    logger.info(
+                        f"[PriceActionEngine] [MODE_A_ARMED] Pillar 1 20 EMA CALL Pullback Rejection Armed | "
+                        f"AnchorHigh: {bar.high:.2f} | N-1 Footprint: Vol={n1_fp['n1_vol']:.0f} "
+                        f"(Base={n1_fp['n1_baseline_vol']:.0f}, Dry={n1_fp['n1_vol_dryup']}), "
+                        f"NetDelta={n1_fp['n1_net_delta']:+.0f}, StoppingVol={n1_fp['n1_stopping_vol']}"
+                    )
 
         # ─── 2. Pillar 1: PUT 20 EMA Pullback Rejection Arming ───
         last_p1_down_idx = self._mode_a_last_trigger_bar_idx.get("P1_EMA20_DOWN", -100)
@@ -3322,24 +3382,28 @@ class PriceActionEngine:
 
             if downtrend_ok and vwap_ok and came_from_below and band_tested and rej_geom and dow.is_valid and ok_struct and self._check_wyckoff_harmony("DOWN", bar):
                 n1_fp = self.compute_n1_footprint(bar, atr)
-                self._mode_a_armed_setups["PILLAR_1_EMA_DOWN"] = {
-                    "direction": "DOWN",
-                    "pillar": 1,
-                    "pa_setup_name": "20_ema_rejection",
-                    "anchor_high": bar.high,
-                    "anchor_low": bar.low,
-                    "boundary_level": band_low,
-                    "armed_bar_idx": bar_idx,
-                    "armed_ts": self.last_ts,
-                    "n1_footprint": n1_fp,
-                }
-                self._mode_a_last_trigger_bar_idx["P1_EMA20_DOWN"] = bar_idx
-                logger.info(
-                    f"[PriceActionEngine] [MODE_A_ARMED] Pillar 1 20 EMA PUT Pullback Rejection Armed | "
-                    f"AnchorLow: {bar.low:.2f} | Shadow N-1 Footprint: Vol={n1_fp['n1_vol']:.0f} "
-                    f"(Base={n1_fp['n1_baseline_vol']:.0f}, Dry={n1_fp['n1_vol_dryup']}), "
-                    f"NetDelta={n1_fp['n1_net_delta']:+.0f}, StoppingVol={n1_fp['n1_stopping_vol']}"
-                )
+                ok_n1, r_n1 = self.check_n1_wyckoff_gate("DOWN", n1_fp)
+                if not ok_n1:
+                    logger.info(f"[PriceActionEngine] [MODE_A_ARM_BLOCKED] Pillar 1 20 EMA PUT rejected by N-1 Wyckoff gate: {r_n1}")
+                else:
+                    self._mode_a_armed_setups["PILLAR_1_EMA_DOWN"] = {
+                        "direction": "DOWN",
+                        "pillar": 1,
+                        "pa_setup_name": "20_ema_rejection",
+                        "anchor_high": bar.high,
+                        "anchor_low": bar.low,
+                        "boundary_level": band_low,
+                        "armed_bar_idx": bar_idx,
+                        "armed_ts": self.last_ts,
+                        "n1_footprint": n1_fp,
+                    }
+                    self._mode_a_last_trigger_bar_idx["P1_EMA20_DOWN"] = bar_idx
+                    logger.info(
+                        f"[PriceActionEngine] [MODE_A_ARMED] Pillar 1 20 EMA PUT Pullback Rejection Armed | "
+                        f"AnchorLow: {bar.low:.2f} | N-1 Footprint: Vol={n1_fp['n1_vol']:.0f} "
+                        f"(Base={n1_fp['n1_baseline_vol']:.0f}, Dry={n1_fp['n1_vol_dryup']}), "
+                        f"NetDelta={n1_fp['n1_net_delta']:+.0f}, StoppingVol={n1_fp['n1_stopping_vol']}"
+                    )
 
         # ─── 3. Pillar 2: CALL Micro-Sweep & Reclaim Arming ───
         last_p2_up_idx = self._mode_a_last_trigger_bar_idx.get("P2_SWEEP_UP", -100)
