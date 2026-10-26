@@ -247,8 +247,10 @@ class TestCompositeConvictionEngine:
             option_delta=0.35,
         )
 
-        assert res_divergent.breakdown["flow_details"]["fut_divergence_penalty"] == -6.0
-        assert res_aligned.total_score > res_divergent.total_score + 9.0
+        # In production v1.0, external futures feeds are permanently MUTED per operator directive.
+        # Divergence penalty is zeroed and futures_muted is True to eliminate reliance on dead futures tokens.
+        assert res_divergent.breakdown["flow_details"]["futures_muted"] is True
+        assert res_divergent.breakdown["flow_details"]["fut_divergence_penalty"] == 0.0
 
     def test_scale_invariance_nifty_vs_sensex(self, engine):
         """
