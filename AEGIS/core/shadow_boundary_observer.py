@@ -344,14 +344,21 @@ class ShadowBoundaryObserver:
             return
 
         bar_idx = bar_count
+        bars = getattr(self.pa_engine, "bars_1m", [])
+        if not bars:
+            return
+        prior_bar = bars[-1]
 
-        # 1. Pain Zone Breakthrough
+        # 1. Pain Zone Rejection-Breakout (LRRB)
+        # Prior bar tested Pain Zone level, live candle breaks prior bar extreme (Strict 1-Bar Expiry)
         pz_top, pz_bot = self._get_pain_zone_levels(atr)
         if pz_top > 0 and pz_bot > 0:
-            last_trig = self.last_trigger_bar_idx.get("PAIN_ZONE_BREAKTHROUGH", -100)
+            last_trig = self.last_trigger_bar_idx.get("PAIN_ZONE_REJECTION_BREAKOUT", -100)
             if (bar_idx - last_trig) >= 3:
-                # Bullish Breakthrough: Open <= pz_top, live spot >= pz_top + min_clearance
-                if curr_bar.open <= pz_top and spot >= (pz_top + min_clearance):
+                # Bullish Rejection Breakout: Prior (or current) bar tested Pain Zone Top, live spot breaks prior bar High
+                pz_up_tested = (prior_bar.low <= pz_top + 0.25 * atr and prior_bar.close >= pz_bot - 0.25 * atr) or (curr_bar.low <= pz_top + 0.25 * atr)
+                pz_up_action = (prior_bar.close <= prior_bar.open) or ((prior_bar.close - prior_bar.low) >= 0.15 * max(prior_bar.high - prior_bar.low, 0.1))
+                if pz_up_tested and pz_up_action and spot >= (prior_bar.high + min_clearance):
                     body_ratio = (spot - curr_bar.open) / max(curr_rng, 0.1)
                     upper_wick = curr_bar.high - spot
                     if body_ratio >= 0.65 and upper_wick <= (0.05 * atr):
@@ -359,15 +366,18 @@ class ShadowBoundaryObserver:
                             self._mode_b_pz_up_ticks = getattr(self, "_mode_b_pz_up_ticks", 0) + 1
                             if self._mode_b_pz_up_ticks >= 2:
                                 self._mode_b_pz_up_ticks = 0
-                                self.last_trigger_bar_idx["PAIN_ZONE_BREAKTHROUGH"] = bar_idx
-                                logger.info(f"[SHADOW_INTRABAR_SURGE] PAIN_ZONE_BREAKTHROUGH CALL | Spot: {spot:.2f} > Top: {pz_top:.2f} at T+{sec_in_min}s")
-                                self._open_shadow_trade("PAIN_ZONE_BREAKTHROUGH", "UP", spot, curr_bar.high, curr_bar.low, now_sec)
+                                self.last_trigger_bar_idx["PAIN_ZONE_REJECTION_BREAKOUT"] = bar_idx
+                                lowest_low = min(prior_bar.low, curr_bar.low)
+                                logger.info(f"[SHADOW_INTRABAR_SURGE] PAIN_ZONE_REJECTION_BREAKOUT CALL | Spot: {spot:.2f} > AnchorHigh: {prior_bar.high:.2f} at T+{sec_in_min}s")
+                                self._open_shadow_trade("PAIN_ZONE_REJECTION_BREAKOUT", "UP", spot, prior_bar.high, lowest_low, now_sec)
                                 return
                 else:
                     self._mode_b_pz_up_ticks = 0
 
-                # Bearish Breakthrough: Open >= pz_bot, live spot <= pz_bot - min_clearance
-                if curr_bar.open >= pz_bot and spot <= (pz_bot - min_clearance):
+                # Bearish Rejection Breakdown: Prior (or current) bar tested Pain Zone Bottom, live spot breaks prior bar Low
+                pz_dn_tested = (prior_bar.high >= pz_bot - 0.25 * atr and prior_bar.close <= pz_top + 0.25 * atr) or (curr_bar.high >= pz_bot - 0.25 * atr)
+                pz_dn_action = (prior_bar.close >= prior_bar.open) or ((prior_bar.high - prior_bar.close) >= 0.15 * max(prior_bar.high - prior_bar.low, 0.1))
+                if pz_dn_tested and pz_dn_action and spot <= (prior_bar.low - min_clearance):
                     body_ratio = (curr_bar.open - spot) / max(curr_rng, 0.1)
                     lower_wick = spot - curr_bar.low
                     if body_ratio >= 0.65 and lower_wick <= (0.05 * atr):
@@ -375,20 +385,24 @@ class ShadowBoundaryObserver:
                             self._mode_b_pz_down_ticks = getattr(self, "_mode_b_pz_down_ticks", 0) + 1
                             if self._mode_b_pz_down_ticks >= 2:
                                 self._mode_b_pz_down_ticks = 0
-                                self.last_trigger_bar_idx["PAIN_ZONE_BREAKTHROUGH"] = bar_idx
-                                logger.info(f"[SHADOW_INTRABAR_SURGE] PAIN_ZONE_BREAKTHROUGH PUT | Spot: {spot:.2f} < Bot: {pz_bot:.2f} at T+{sec_in_min}s")
-                                self._open_shadow_trade("PAIN_ZONE_BREAKTHROUGH", "DOWN", spot, curr_bar.high, curr_bar.low, now_sec)
+                                self.last_trigger_bar_idx["PAIN_ZONE_REJECTION_BREAKOUT"] = bar_idx
+                                highest_high = max(prior_bar.high, curr_bar.high)
+                                logger.info(f"[SHADOW_INTRABAR_SURGE] PAIN_ZONE_REJECTION_BREAKOUT PUT | Spot: {spot:.2f} < AnchorLow: {prior_bar.low:.2f} at T+{sec_in_min}s")
+                                self._open_shadow_trade("PAIN_ZONE_REJECTION_BREAKOUT", "DOWN", spot, highest_high, prior_bar.low, now_sec)
                                 return
                 else:
                     self._mode_b_pz_down_ticks = 0
 
-        # 2. 200 EMA Breakthrough
+        # 2. 200 EMA Rejection-Breakout (LRRB)
+        # Prior bar tested 200 EMA level, live candle breaks prior bar extreme (Strict 1-Bar Expiry)
         ema200 = float(getattr(self.pa_engine, "ema_200_1m", 0.0) or 0.0)
         if ema200 > 0:
-            last_trig_ema = self.last_trigger_bar_idx.get("EMA_200_BREAKTHROUGH", -100)
+            last_trig_ema = self.last_trigger_bar_idx.get("EMA_200_REJECTION_BREAKOUT", -100)
             if (bar_idx - last_trig_ema) >= 3:
-                # Bullish cross above 200 EMA
-                if curr_bar.open <= ema200 and spot >= (ema200 + min_clearance):
+                # Bullish Rejection Breakout: Prior (or current) bar tested 200 EMA, live spot breaks prior bar High
+                ema_up_tested = (prior_bar.low <= ema200 + 0.25 * atr and prior_bar.high >= ema200 - 0.25 * atr) or (curr_bar.low <= ema200 + 0.25 * atr)
+                ema_up_action = (prior_bar.close <= prior_bar.open) or ((prior_bar.close - prior_bar.low) >= 0.15 * max(prior_bar.high - prior_bar.low, 0.1))
+                if ema_up_tested and ema_up_action and spot >= (prior_bar.high + min_clearance):
                     body_ratio = (spot - curr_bar.open) / max(curr_rng, 0.1)
                     upper_wick = curr_bar.high - spot
                     if body_ratio >= 0.65 and upper_wick <= (0.05 * atr):
@@ -396,15 +410,18 @@ class ShadowBoundaryObserver:
                             self._mode_b_ema_up_ticks = getattr(self, "_mode_b_ema_up_ticks", 0) + 1
                             if self._mode_b_ema_up_ticks >= 2:
                                 self._mode_b_ema_up_ticks = 0
-                                self.last_trigger_bar_idx["EMA_200_BREAKTHROUGH"] = bar_idx
-                                logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_200_BREAKTHROUGH CALL | Spot: {spot:.2f} > EMA200: {ema200:.2f} at T+{sec_in_min}s")
-                                self._open_shadow_trade("EMA_200_BREAKTHROUGH", "UP", spot, curr_bar.high, curr_bar.low, now_sec)
+                                self.last_trigger_bar_idx["EMA_200_REJECTION_BREAKOUT"] = bar_idx
+                                lowest_low = min(prior_bar.low, curr_bar.low)
+                                logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_200_REJECTION_BREAKOUT CALL | Spot: {spot:.2f} > AnchorHigh: {prior_bar.high:.2f} at T+{sec_in_min}s")
+                                self._open_shadow_trade("EMA_200_REJECTION_BREAKOUT", "UP", spot, prior_bar.high, lowest_low, now_sec)
                                 return
                 else:
                     self._mode_b_ema_up_ticks = 0
 
-                # Bearish cross below 200 EMA
-                if curr_bar.open >= ema200 and spot <= (ema200 - min_clearance):
+                # Bearish Rejection Breakdown: Prior (or current) bar tested 200 EMA from below, live spot breaks prior bar Low
+                ema_dn_tested = (prior_bar.high >= ema200 - 0.25 * atr and prior_bar.low <= ema200 + 0.25 * atr) or (curr_bar.high >= ema200 - 0.25 * atr)
+                ema_dn_action = (prior_bar.close >= prior_bar.open) or ((prior_bar.high - prior_bar.close) >= 0.15 * max(prior_bar.high - prior_bar.low, 0.1))
+                if ema_dn_tested and ema_dn_action and spot <= (prior_bar.low - min_clearance):
                     body_ratio = (curr_bar.open - spot) / max(curr_rng, 0.1)
                     lower_wick = spot - curr_bar.low
                     if body_ratio >= 0.65 and lower_wick <= (0.05 * atr):
@@ -412,9 +429,10 @@ class ShadowBoundaryObserver:
                             self._mode_b_ema_down_ticks = getattr(self, "_mode_b_ema_down_ticks", 0) + 1
                             if self._mode_b_ema_down_ticks >= 2:
                                 self._mode_b_ema_down_ticks = 0
-                                self.last_trigger_bar_idx["EMA_200_BREAKTHROUGH"] = bar_idx
-                                logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_200_BREAKTHROUGH PUT | Spot: {spot:.2f} < EMA200: {ema200:.2f} at T+{sec_in_min}s")
-                                self._open_shadow_trade("EMA_200_BREAKTHROUGH", "DOWN", spot, curr_bar.high, curr_bar.low, now_sec)
+                                self.last_trigger_bar_idx["EMA_200_REJECTION_BREAKOUT"] = bar_idx
+                                highest_high = max(prior_bar.high, curr_bar.high)
+                                logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_200_REJECTION_BREAKOUT PUT | Spot: {spot:.2f} < AnchorLow: {prior_bar.low:.2f} at T+{sec_in_min}s")
+                                self._open_shadow_trade("EMA_200_REJECTION_BREAKOUT", "DOWN", spot, highest_high, prior_bar.low, now_sec)
                                 return
                 else:
                     self._mode_b_ema_down_ticks = 0
