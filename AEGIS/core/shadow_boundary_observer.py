@@ -288,8 +288,8 @@ class ShadowBoundaryObserver:
     def _check_inflight_breakthrough(self, spot: float, now_sec: float) -> None:
         """
         Mode B: Live In-Flight Intra-Bar Breakthrough Surge with 4-Point Trap Filter.
-        Triggers when an active forming 1-minute candle breaks through the Pain Zone or 200 EMA
-        with strong directional expansion mid-bar between T:08s and T:48s.
+        Triggers when an active forming 1-minute candle breaks through the Pain Zone, 200 EMA,
+        or 20 EMA with strong directional expansion from T:08s onwards (upper cap removed per user mandate).
         """
         if self.pa_engine is None:
             return
@@ -298,8 +298,8 @@ class ShadowBoundaryObserver:
             return
 
         sec_in_min = int(now_sec % 60)
-        # Active intra-bar expansion window (between 8s and 48s)
-        if not (8 <= sec_in_min <= 48):
+        # Active intra-bar expansion window (from 8s onwards, upper cap removed)
+        if sec_in_min < 8:
             return
 
         atr = getattr(self.pa_engine, "current_atr_1m", 10.0) or 10.0

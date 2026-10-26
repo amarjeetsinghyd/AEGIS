@@ -3772,11 +3772,11 @@ class PriceActionEngine:
         Triggers strictly on:
           1. Pillar 3: Volatility Squeeze Box Breakout (3-4 bar tight compression).
           2. Pillar 4: Dynamic S/R Registry Breakout (with Day Extreme Runway Shield).
-        Active mid-bar between T:08s and T:48s.
+        Active mid-bar from T:08s onwards (upper cap removed per user mandate).
         """
         now_sec = current_time if current_time > 0 else self.last_ts
         sec_in_min = int(now_sec % 60)
-        if not (8 <= sec_in_min <= 48):
+        if sec_in_min < 8:
             return False, "outside_mode_b_window", {}
 
         curr_bar = self._curr_1m_bar

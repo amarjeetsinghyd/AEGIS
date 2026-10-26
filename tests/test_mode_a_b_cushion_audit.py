@@ -466,3 +466,64 @@ def test_compute_n1_footprint_and_20_ema_shadow_telemetry():
     assert fp2["n1_stopping_vol"] is True
     assert fp2["n1_vol_dryup"] is False
 
+
+def test_mode_b_no_upper_cap_triggers_late_in_candle():
+    """Verify that Mode B triggers without an upper cap (e.g. at T:53s) while preserving T < 8s noise guard."""
+    pa = PriceActionEngine()
+    pa.current_atr_1m = 10.0
+    now = 1792730040.0  # Divisible by 60
+
+    # 4 tight bars forming a squeeze box between 22450 and 22458 (Range = 8.0 pts <= 1.25x ATR)
+    for i in range(4):
+        b = OHLCBar(
+            ts_start=now + i * 60,
+            ts_end=now + (i + 1) * 60,
+            open=22452.0,
+            high=22458.0,
+            low=22450.0,
+            close=22455.0,
+            volume=20000.0,
+            tick_count=40,
+        )
+        pa.bars_1m.append(b)
+
+    # Forming bar at T:52s (previously blocked by <= 48s cap)
+    curr_bar = OHLCBar(
+        ts_start=now + 4 * 60,
+        ts_end=now + 5 * 60,
+        open=22455.0,
+        high=22463.0,
+        low=22454.0,
+        close=22462.5,
+        volume=30000.0,
+        tick_count=35,
+    )
+    pa._curr_1m_bar = curr_bar
+    pa.last_price = 22462.5
+    pa._opt_flow_1m = {
+        "call_buy_vol": 100000.0,
+        "call_sell_vol": 20000.0,
+        "put_buy_vol": 10000.0,
+        "put_sell_vol": 5000.0,
+    }
+
+    # Early guard check: At T:05s, outside_mode_b_window is enforced
+    ok_early, reason_early, _ = pa.check_mode_b_breakthrough("UP", current_time=now + 4 * 60 + 5)
+    assert ok_early is False
+    assert reason_early == "outside_mode_b_window"
+
+    # Late breakthrough check: At T:52s, it awaits 2nd tick
+    ok1, reason1, _ = pa.check_mode_b_breakthrough("UP", current_time=now + 4 * 60 + 52)
+    assert ok1 is False
+    assert reason1 == "awaiting_second_tick"
+
+    # At T:53s, 2nd tick triggers Mode B successfully!
+    curr_bar.tick_count += 1
+    ok2, reason2, details2 = pa.check_mode_b_breakthrough("UP", current_time=now + 4 * 60 + 53)
+    assert ok2 is True
+    assert details2["pillar"] == 3
+    assert details2["pa_setup_name"] == "volatility_squeeze_breakout"
+    assert details2["mode"] == "MODE_B_INFLIGHT_BREAKTHROUGH"
+    assert details2["trigger_sec"] == 53
+
+

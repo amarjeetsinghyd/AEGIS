@@ -1,7 +1,7 @@
 # AEGIS — Autonomous Execution & Gamma Imbalance System (Version 1.0 Production Locked)
 
 **Architecture Authority — Code-Grounded Definitive Specification**  
-**Version:** Production 1.0 (v1.0 Production Locked — Priority Mode B In-Flight Mid-Bar Breakthrough Surge [T:08s–T:48s] + 4 Macro Price Action Pillars + Absolute Pain Zone VWAP Band + Wyckoff Volume & OFI Delta Gate + Single-Shot Clean Entry Mandate [No Chasing] + Universal Entry Candle Low/High Invalidation + Friday 4-DTE +3.0% TP Calibration — Live)  
+**Version:** Production 1.0 (v1.0 Production Locked — Priority Mode B In-Flight Mid-Bar Breakthrough Surge [T:08s onwards / No Upper Cap] + 4 Macro Price Action Pillars + Absolute Pain Zone VWAP Band + Wyckoff Volume & OFI Delta Gate + Single-Shot Clean Entry Mandate [No Chasing] + Universal Entry Candle Low/High Invalidation + Friday 4-DTE +3.0% TP Calibration — Live)  
 **Status:** ACTIVE · PM2 `aegis-bot` · `AEGIS/aegis_main.py:87`  
 **Host:** Oracle Cloud `opc@137.23.41.38` · `ecosystem.config.js:3` · `cwd=/home/opc`  
 **Instruments:** NIFTY (Mon [1 DTE], Tue [0 DTE], Fri [4 DTE], NFO, strike step 50, lot 65) · SENSEX (Wed [1 DTE], Thu [0 DTE], BFO, strike step 100, lot 20)  
@@ -11,7 +11,7 @@
 
 > ⚠️ **CRITICAL GOVERNANCE LAWS (DO NOT ALTER ARBITRARILY):**  
 > 1. **Price Action Primary & Mode B Golden Middle Path Law**: AEGIS operates strictly on a **Macro Price Action Primary Trigger** across 4 canonical pillars and Priority Mode B In-Flight Breakthrough:
->    - **Priority Mode B (In-Flight Breakthrough Surge)**: Mid-bar entry between **T:08s and T:48s** when forming candle pierces pre-mapped boundary (Pain Zone Top/Bottom, 200 EMA Ribbon, Squeeze Box, S&R) with sweet-spot range ($0.35 \times \text{ATR} \le \text{Range} \le 1.20 \times \text{ATR}$), body ratio $\ge 65\%$, leading wick $\le 0.05 \times \text{ATR}$, 2-tick boundary persistence, and live option delta dominance $\ge 1.30\times$ (or spot tick rate $\ge 1.5$ ticks/sec). Enters ahead of retail, filling resting +4.0% Maker TP before or as candle closes.
+>    - **Priority Mode B (In-Flight Breakthrough Surge)**: Mid-bar entry from **T:08s onwards (no upper cap)** when forming candle pierces pre-mapped boundary (Pain Zone Top/Bottom, 200 EMA Ribbon, Squeeze Box, S&R) with sweet-spot range ($0.35 \times \text{ATR} \le \text{Range} \le 1.20 \times \text{ATR}$), body ratio $\ge 65\%$, leading wick $\le 0.05 \times \text{ATR}$, 2-tick boundary persistence, and live option delta dominance $\ge 1.30\times$ (or spot tick rate $\ge 1.5$ ticks/sec). Enters ahead of retail, filling resting +4.0% Maker TP before or as candle closes.
 >    - **Pillar 1**: 20 EMA Pullback & Momentum Rejection (`20_ema_rejection` — `price_action_engine.py`, Bar close T:00s with pre-staged strikes & T:50s early entry).
 >    - **Pillar 2**: Liquidity Sweep & Reclaim (`micro_sweep_reclaim` 5-bar Turtle Soup stop-hunt reclaim + parallel shadow topological sweep).
 >    - **Pillar 3**: Volatility Squeeze to Expansion Breakout (`volatility_squeeze_breakout` — $O(1)$ metric ATR box compression).

@@ -66,7 +66,7 @@ the `common/` shared branches alone and ask. Never add new kronos code.**
    - **Architecture & Rules**: Conform all edits to `AEGIS/AEGIS_V1.0_ARCHITECTURE.md`:
      * **4 Macro Price Action Pillars + Hybrid Intra-Bar Execution**:
        - **Mode A (Rejection & Pierce / T:00s Close & T:50s Pre-Close)** for Pillar 1 (`20_ema_rejection`) & Pillar 2 (`micro_sweep_reclaim`).
-        - **Priority Mode B (In-Flight Mid-Bar Breakthrough Surge at T:08s–T:48s)** for Pillar 3 (`volatility_squeeze_breakout`) & Pillar 4 (`topological_prominence_breakout` + Dynamic S/R Registry). Live Mode B boundaries are **Squeeze Box + S/R Registry only**; Pain Zone / 200 EMA breakthroughs are tracked **exclusively** by the `ShadowBoundaryObserver` (shadow experiment).
+        - **Priority Mode B (In-Flight Mid-Bar Breakthrough Surge from T:08s onwards / No Upper Cap)** for Pillar 3 (`volatility_squeeze_breakout`) & Pillar 4 (`topological_prominence_breakout` + Dynamic S/R Registry). Live Mode B boundaries are **Squeeze Box + S/R Registry only**; Pain Zone / 200 EMA breakthroughs are tracked **exclusively** by the `ShadowBoundaryObserver` (shadow experiment).
      * **Dynamic Session S/R Level Registry (`StructuralLevel`)**: Monotonic `seq_idx` tracking, multi-touch boost (`+0.35`), dynamic post-excursion prominence, and Order Flow footprint.
      * **Scale-Invariant Day Extreme Runway Shield**: `min_runway_pts = max(1.25 * ATR_1m, 0.0008 * Spot)`.
      * **Single-Shot Clean Entry Mandate**: Atomic `0.75s` fill window, zero order chasing, immediate `_drain_signal_queue()`, powered by Rolling 5-Second Hot Strikes Pre-Staging Cache.
@@ -94,9 +94,9 @@ Shared library: `common/` (broker / execution / market / ipc / runtime / config 
 ### 1. Macro Price Action 4 Pillars (Primary Triggers)
 * **Pillar 1 (`20_ema_rejection`)**: Classical Dow Theory `HL2` (CALL) / `LH2` (PUT) 2nd-touch confirmation into 20 EMA High-Low Band + Mode A execution.
 * **Pillar 2 (`micro_sweep_reclaim`)**: 5-bar liquidity sweep & reclaim + Mode A execution (with 11:15–13:00 IST Lunch Chop Veto).
-* **Pillar 3 (`volatility_squeeze_breakout`)**: 3–4 bar tight box (`<= 1.25x ATR`) expansion breakout + Mode B In-Flight Surge (`T:08s–T:48s`) + Anti-Climax Cap (`<= 1.35x ATR`).
+* **Pillar 3 (`volatility_squeeze_breakout`)**: 3–4 bar tight box (`<= 1.25x ATR`) expansion breakout + Mode B In-Flight Surge (`T:08s onwards / No Upper Cap`) + Anti-Climax Cap (`<= 1.35x ATR`).
 * **Pillar 4 (`topological_prominence_breakout`)**: Priority 1 Dynamic S/R Registry Breakout + Priority 2 `T-2` 0-D Prominence Hub (`FastMonotonicStack`), governed by Mode B In-Flight Surge, Day Extreme Runway Rule, and Wyckoff Stopping Volume Veto (`hvg_engine` and its 5m structural veto are permanently DECOMMISSIONED & ARCHIVED).
-* **Priority Mode B (`check_mode_b_breakthrough`)**: Mid-bar entry between `T:08s` and `T:48s` on sweet-spot range (`0.35x–1.20x ATR`), body $\ge 65\%$, leading wick $\le 0.05 \times \text{ATR}$, 2-tick boundary persistence, and live `_opt_flow_1m` delta $\ge 1.30\times$ (or spot tick rate $\ge 1.5$ ticks/sec). Enters ahead of retail, filling resting +4.0% Maker TP (+3.0% on Friday) before or as candle closes.
+* **Priority Mode B (`check_mode_b_breakthrough`)**: Mid-bar entry from `T:08s onwards (No Upper Cap)` on sweet-spot range (`0.35x–1.20x ATR`), body $\ge 65\%$, leading wick $\le 0.05 \times \text{ATR}$, 2-tick boundary persistence, and live `_opt_flow_1m` delta $\ge 1.30\times$ (or spot tick rate $\ge 1.5$ ticks/sec). Enters ahead of retail, filling resting +4.0% Maker TP (+3.0% on Friday) before or as candle closes.
 
 ### 2. Absolute Pain Zone VWAP Band (v1.0 Production Early Veto)
 * Single unified veto before pillars:

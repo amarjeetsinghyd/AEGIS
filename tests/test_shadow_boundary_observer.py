@@ -372,4 +372,57 @@ def test_shadow_ema20_rejection_and_n1_footprint():
     assert trade.n1_net_delta == pytest.approx(2300.0)
 
 
+def test_shadow_breakthrough_late_in_candle_no_upper_cap():
+    """Verify shadow breakthrough triggers at T:54s (no 48s upper cap) and respects T < 8s noise guard."""
+    mock_pae = MagicMock()
+    mock_pae.current_atr_1m = 10.0
+    mock_pae.ema_200_1m = 22400.0
+    mock_pae.ema_20_1m = 22500.0
+    mock_pae.get_pain_zone_vwaps.return_value = {"zone_top": 0.0, "zone_bottom": 0.0}
+
+    prior_bar = MagicMock()
+    prior_bar.high = 22506.0
+    prior_bar.low = 22495.0
+    prior_bar.close = 22504.0
+    prior_bar.open = 22498.0
+    prior_bar.volume = 3000.0
+    prior_bar.call_buy_vol = 2000.0
+    prior_bar.call_sell_vol = 200.0
+    prior_bar.put_buy_vol = 500.0
+    prior_bar.put_sell_vol = 1000.0
+
+    mock_pae.bars_1m = [prior_bar]
+
+    forming_bar = MagicMock()
+    forming_bar.tick_count = 50
+    forming_bar.open = 22501.0
+    forming_bar.high = 22515.2
+    forming_bar.low = 22500.5
+    forming_bar.close = 22515.0
+    forming_bar.volume = 5000.0
+
+    mock_pae._curr_1m_bar = forming_bar
+    mock_pae._opt_flow_1m = {"call_buy_vol": 8000.0, "put_buy_vol": 500.0}
+
+    observer = ShadowBoundaryObserver(price_action_engine=mock_pae, strike_step=50.0, log_dir="scratch")
+    observer.current_atm_strike = 22500.0
+    observer.strike_to_symbol = {(0, 22750.0): "NIFTY_22750_CE"}
+    observer.option_cache = {"NIFTY_22750_CE": 45.0}
+
+    # At T:04s (early noise window: sec_in_min = 4 < 8), breakthrough is ignored
+    now_base = 1700000040.0
+    observer._check_inflight_breakthrough(spot=22515.0, now_sec=now_base + 4.0)
+    assert len(observer.active_trades) == 0
+
+    # At T:54s (late candle: sec_in_min = 54, previously blocked by <= 48s cap)
+    late_sec = now_base + 54.0
+    observer._check_inflight_breakthrough(spot=22515.0, now_sec=late_sec)
+    assert len(observer.active_trades) == 0  # 1st tick awaiting
+
+    observer._check_inflight_breakthrough(spot=22515.0, now_sec=late_sec + 0.2)
+    assert len(observer.active_trades) == 1
+    assert observer.active_trades[0].boundary == "EMA_20_REJECTION_BREAKOUT"
+
+
+
 
