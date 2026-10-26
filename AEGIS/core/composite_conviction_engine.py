@@ -4,7 +4,7 @@ AEGIS Composite Conviction Engine — Unified 0-100 Continuous Evaluation Framew
 Replaces rigid, binary boolean gates with continuous multi-domain conviction scoring:
     Domain 1: Structure & Runway (30 pts) — Swing geometry, EMA alignment, obstacle distance
     Domain 2: PA Impulse & Volume (30 pts) — Candle displacement, edge close, ATR expansion, volume surge
-    Domain 3: Flow & Futures Momentum (25 pts) — Persistence Dp, touch I1, futures price & basis expansion
+    Domain 3: Flow & Real-Time Order Flow Momentum (25 pts) — Persistence Dp (12 pts), touch I1 & Live OFI Delta (13 pts) [Futures Muted]
     Domain 4: Contract & Feasibility (15 pts) — Sweet-spot delta (0.25-0.45), tight bid-ask spread
 
 Thresholds:
@@ -447,127 +447,82 @@ class CompositeConvictionEngine:
         direction: str,
         persistence_dp: float,
         touch_i1: float,
-        delta_fut_60s_bps: float,
-        delta_basis_60s_bps: float,
+        delta_fut_60s_bps: float = 0.0,
+        delta_basis_60s_bps: float = 0.0,
         setup_name: str = "",
         wyckoff_details: Optional[Dict[str, Any]] = None,
     ) -> Tuple[float, Dict[str, Any]]:
         """
-        Domain 3: Flow & Futures Momentum (Max 25 pts raw) — Wyckoff Wired
-        - Directional Persistence Dp: +8 to 0 pts (Wyckoff-aware)
-        - Touch Aggression I1 & OFI: +7 to 0 pts
-        - Active Futures Lead-Lag Momentum: +6 to -6 pts penalty
-        - Futures Basis Expansion: +4 to 0 pts
+        Domain 3: Flow & Real-Time Order Flow Momentum (Max 25 pts raw) — Wyckoff & OFI Wired
+        - Directional Persistence Dp: +12 to 0 pts (Pure Spot Price Stability)
+        - Touch Aggression I1 & Live OFI Delta: +13 to 0 pts (Option Order Flow Dominance)
+        - Futures Metrics: MUTED per operator directive (0 pts, zero reliance on external futures feeds)
         """
         is_up = direction.upper() in ("UP", "CALL")
 
         wyckoff_confirmed = bool((wyckoff_details or {}).get("wyckoff_confirmed", False))
-        absorption = float((wyckoff_details or {}).get("absorption_score") or (wyckoff_details or {}).get("absorption_ratio") or 0.0)
-        vdr = float((wyckoff_details or {}).get("vdr", 0.0))
-        ofi = float((wyckoff_details or {}).get("opt_delta_flow") or (wyckoff_details or {}).get("ofi_delta") or (wyckoff_details or {}).get("synthetic_net_delta") or 0.0)
+        ofi = float(
+            (wyckoff_details or {}).get("opt_delta_flow")
+            or (wyckoff_details or {}).get("ofi_delta")
+            or (wyckoff_details or {}).get("synthetic_net_delta")
+            or 0.0
+        )
 
-        # 1. Directional Persistence / Institutional Reclaim (8 pts max)
+        # 1. Directional Persistence / Spot Trend Stability (12 pts max)
         if persistence_dp >= 0.65:
-            dp_pts = 8.0
+            dp_pts = 12.0
         elif wyckoff_confirmed and setup_name in ("micro_sweep_reclaim", "20_ema_rejection"):
-            dp_pts = 7.0
+            dp_pts = 10.5
         elif persistence_dp >= 0.50 or wyckoff_confirmed:
-            dp_pts = 6.0
+            dp_pts = 9.0
         elif persistence_dp >= 0.40:
-            dp_pts = 3.0
+            dp_pts = 5.0
         else:
             dp_pts = 0.0
 
-        # 2. Touch Aggression / Option Flow Imbalance (7 pts max)
+        # 2. Touch Aggression / Option Flow Imbalance & Live OFI (13 pts max)
         if is_up:
             if touch_i1 >= 0.10:
-                i1_pts = 7.0
+                i1_pts = 13.0
             elif touch_i1 >= 0.0:
-                i1_pts = 4.0
+                i1_pts = 9.0
             elif touch_i1 >= -0.20:
-                i1_pts = 2.0
+                i1_pts = 5.0
             else:
                 i1_pts = 0.0
         else:
             if touch_i1 <= -0.10:
-                i1_pts = 7.0
+                i1_pts = 13.0
             elif touch_i1 <= 0.0:
-                i1_pts = 4.0
+                i1_pts = 9.0
             elif touch_i1 <= 0.20:
-                i1_pts = 2.0
+                i1_pts = 5.0
             else:
                 i1_pts = 0.0
 
         if wyckoff_confirmed:
             ofi_aligned = (ofi > 0) if is_up else (ofi < 0)
             if ofi_aligned or ofi != 0:
-                i1_pts = max(i1_pts, 6.0)
+                i1_pts = max(i1_pts, 11.0)
 
-        # 3. Active Futures Lead-Lag Momentum (6 pts max)
-        # Scale-invariant: 1 bps = 0.01% price displacement in futures
-        fut_pts = 2.0  # Neutral
+        # 3. Futures Metrics: MUTED permanently per operator directive (zero REST/WS load)
+        fut_pts = 0.0
+        basis_pts = 0.0
         fut_divergence_penalty = 0.0
-        if is_up:
-            if delta_fut_60s_bps >= 1.0:
-                fut_pts = 6.0
-            elif delta_fut_60s_bps > 0.0:
-                fut_pts = 4.0
-            elif delta_fut_60s_bps >= -1.0:
-                fut_pts = 2.0
-            elif delta_fut_60s_bps < -2.0:
-                # Severe divergence: futures dumping while spot bounces -> fakeout trap!
-                fut_pts = -6.0
-                fut_divergence_penalty = -6.0
-            else:
-                fut_pts = 0.0
-        else:
-            if delta_fut_60s_bps <= -1.0:
-                fut_pts = 6.0
-            elif delta_fut_60s_bps < 0.0:
-                fut_pts = 4.0
-            elif delta_fut_60s_bps <= 1.0:
-                fut_pts = 2.0
-            elif delta_fut_60s_bps > 2.0:
-                # Severe divergence: futures rallying while spot falls -> fakeout trap!
-                fut_pts = -6.0
-                fut_divergence_penalty = -6.0
-            else:
-                fut_pts = 0.0
 
-        # 4. Futures Basis Expansion (4 pts max)
-        if is_up:
-            if delta_basis_60s_bps > 0.2:
-                basis_pts = 4.0
-            elif delta_basis_60s_bps >= -0.2:
-                basis_pts = 2.0
-            else:
-                basis_pts = 0.0
-        else:
-            if delta_basis_60s_bps < -0.2:
-                basis_pts = 4.0
-            elif delta_basis_60s_bps <= 0.2:
-                basis_pts = 2.0
-            else:
-                basis_pts = 0.0
-
-        # Passive Futures Feed Proxy via Wyckoff Option-Flow
-        if delta_fut_60s_bps == 0.0 and delta_basis_60s_bps == 0.0 and wyckoff_confirmed:
-            fut_pts = 5.0
-            basis_pts = 3.0
-
-        raw_score = max(0.0, min(25.0, dp_pts + i1_pts + fut_pts + basis_pts))
+        raw_score = max(0.0, min(25.0, dp_pts + i1_pts))
         details = {
             "persistence_dp": round(persistence_dp, 3),
             "dp_pts": dp_pts,
             "touch_i1": round(touch_i1, 3),
             "i1_pts": i1_pts,
-            "delta_fut_60s_bps": round(delta_fut_60s_bps, 2),
-            "fut_pts": fut_pts,
-            "fut_divergence_penalty": fut_divergence_penalty,
-            "delta_basis_60s_bps": round(delta_basis_60s_bps, 2),
-            "basis_pts": basis_pts,
+            "delta_fut_60s_bps": 0.0,
+            "fut_pts": 0.0,
+            "fut_divergence_penalty": 0.0,
+            "delta_basis_60s_bps": 0.0,
+            "basis_pts": 0.0,
             "raw_flow": round(raw_score, 2),
-            "wyckoff_flow_proxy": (delta_fut_60s_bps == 0.0 and delta_basis_60s_bps == 0.0 and wyckoff_confirmed),
+            "futures_muted": True,
         }
         return raw_score, details
 
@@ -656,8 +611,16 @@ class CompositeConvictionEngine:
             )
 
         # Bug #1 Fix — The Newborn Bar Evaluation Guard
+        # If evaluating an intra-bar breakout or live forming candle, judge the real-time forming bar
+        # Never replace with last_closed if it's an intra-bar trigger or has developed expansion!
+        is_intrabar = (
+            setup_name.startswith(("mode_b_", "mode_a_"))
+            or mode_val.startswith(("MODE_A", "MODE_B"))
+            or "MODE_B" in s_name_upper
+            or "MODE_A" in s_name_upper
+        )
         bar = current_bar or (prior_bars[-1] if prior_bars else None)
-        if prior_bars:
+        if prior_bars and not is_intrabar:
             last_closed = prior_bars[-1]
             if current_bar is not None and current_bar is not last_closed:
                 c_rng = max(getattr(current_bar, "high", spot_price) - getattr(current_bar, "low", spot_price), 0.0)
@@ -676,7 +639,13 @@ class CompositeConvictionEngine:
         b_open = float(getattr(bar, "open", spot_price) if bar else spot_price)
         b_high = float(getattr(bar, "high", spot_price) if bar else spot_price)
         b_low = float(getattr(bar, "low", spot_price) if bar else spot_price)
-        b_close = float(getattr(bar, "close", spot_price) if bar else spot_price)
+        # Real-time forming candle anatomy: close is the current live spot price!
+        if bar is current_bar and spot_price > 0:
+            b_close = float(spot_price)
+            b_high = max(b_high, spot_price)
+            b_low = min(b_low, spot_price)
+        else:
+            b_close = float(getattr(bar, "close", spot_price) if bar else spot_price)
         b_vol = float(getattr(bar, "volume", 1.0) if bar else 1.0)
 
         # 1. Domain 1: Structure & Runway (30 pts max raw)
