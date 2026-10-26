@@ -737,7 +737,12 @@ class AegisGammaEngine:
                             # 2026-10-26: futures 15s path-efficiency branch removed —
                             # futures feed moved to SHADOW telemetry-only (data speed
                             # measured, never gates; live P3/P4 persistence is spot-only).
-                            if pillar in (3, 4):
+                            # Mode B In-Flight Breakthroughs (Pillar 3 & 4 mid-bar surge): Bypassed.
+                            # Mode B emerges from resting/consolidation bases; its impulse is validated
+                            # live in the forming candle via 2-tick boundary clearance + OFI delta harmony.
+                            # Mode A Bar-Close Breakouts (Pillar 3 & 4 completed bars): 60s Spot Persistence.
+                            is_mode_b = (pa_details.get("mode") == "MODE_B_INFLIGHT_BREAKTHROUGH")
+                            if pillar in (3, 4) and not is_mode_b:
                                 if self.persistence_engine:
                                     pers60_ok, pers60_score, pers60_m = self.persistence_engine.evaluate_persistence(
                                         direction,

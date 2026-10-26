@@ -3714,9 +3714,9 @@ class PriceActionEngine:
         spot = self.last_price
         curr_rng = curr_bar.high - curr_bar.low
 
-        # Sweet-Spot Range Filter: 0.35x to 1.20x ATR
-        if curr_rng < (0.35 * atr) or curr_rng > (1.20 * atr):
-            return False, "range_outside_sweet_spot", {}
+        # Activity Floor Filter: at least 0.20x ATR to avoid single-tick micro noise
+        if curr_rng < (0.20 * atr):
+            return False, "range_sub_threshold", {}
 
         cb = float(self._opt_flow_1m.get("call_buy_vol", 0.0))
         cs = float(self._opt_flow_1m.get("call_sell_vol", 0.0))
@@ -3866,8 +3866,7 @@ class PriceActionEngine:
                 candidates.sort(key=lambda l: (l.touch_count * 0.5 + l.prominence), reverse=True)
                 matched_any = False
                 for r_lvl in candidates:
-                    origin_dist = abs(curr_bar.open - r_lvl.price)
-                    if origin_dist <= (0.35 * atr) and curr_bar.open <= r_lvl.price and spot >= (r_lvl.price + min_clearance):
+                    if curr_bar.open <= r_lvl.price and spot >= (r_lvl.price + min_clearance):
                         body_ratio = (spot - curr_bar.open) / max(curr_rng, 0.1)
                         upper_wick = curr_bar.high - spot
                         trend_ok = not (self.ema_20_1m < self.ema_50_1m and self.ema_20_1m > 0 and self.ema_50_1m > 0)
@@ -3925,8 +3924,7 @@ class PriceActionEngine:
                 candidates.sort(key=lambda l: (l.touch_count * 0.5 + l.prominence), reverse=True)
                 matched_any = False
                 for s_lvl in candidates:
-                    origin_dist = abs(curr_bar.open - s_lvl.price)
-                    if origin_dist <= (0.35 * atr) and curr_bar.open >= s_lvl.price and spot <= (s_lvl.price - min_clearance):
+                    if curr_bar.open >= s_lvl.price and spot <= (s_lvl.price - min_clearance):
                         body_ratio = (curr_bar.open - spot) / max(curr_rng, 0.1)
                         lower_wick = spot - curr_bar.low
                         trend_ok = not (self.ema_20_1m > self.ema_50_1m and self.ema_20_1m > 0 and self.ema_50_1m > 0)

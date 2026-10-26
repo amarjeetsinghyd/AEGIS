@@ -330,3 +330,77 @@ def test_mode_a_pre_close_early_entry():
     assert details["pillar"] == 1
     assert details["pa_setup_name"] == "20_ema_rejection"
     assert details["trigger_sec"] == 52
+
+
+def test_mode_b_p4_triggers_with_larger_origin_dist_and_expansion():
+    """Verify that Mode B P4 triggers cleanly when open is 6pts below resistance and range expands."""
+    from AEGIS.core.price_action_engine import StructuralLevel
+    pa = PriceActionEngine()
+    pa.current_atr_1m = 10.0
+    now = 1792730040.0
+
+    # Feed 15 base bars (wide range so P3 squeeze box is bypassed)
+    for i in range(15):
+        b = OHLCBar(
+            ts_start=now + i * 60,
+            ts_end=now + (i + 1) * 60,
+            open=22445.0 + i * 1.0,
+            high=22450.0 + i * 1.0,  # Max high = 22464.0 (below resistance 22465.0)
+            low=22435.0 + i * 1.0,   # Wide 15pt range (> 1.25x ATR)
+            close=22448.0 + i * 1.0,
+            volume=50000.0,
+        )
+        pa.bars_1m.append(b)
+
+    pa.ema_20_1m = 22460.0
+    pa.ema_50_1m = 22450.0
+    pa.day_high = 22550.0  # Clear runway to Day High
+
+    # Add a resistance level at 22465.0
+    res = StructuralLevel(
+        level_type="RESISTANCE",
+        price=22465.0,
+        ts_created=now + 5 * 60,
+        prominence=2.5,
+        bar_idx=5,
+        seq_idx=5,
+        touch_count=2,
+    )
+    pa.session_levels.append(res)
+    pa._total_bars_seen = 15
+
+    # Forming bar at T:25s:
+    # Opens at 22459.0 (6.0 pts below resistance, which would fail old 0.35 * ATR = 3.5 pts!)
+    # Surges to 22475.0 (Range = 16.0 pts > 1.20 * ATR = 12.0 pts!)
+    forming_bar = OHLCBar(
+        ts_start=now + 15 * 60,
+        ts_end=now + 16 * 60,
+        open=22459.0,
+        high=22475.0,
+        low=22459.0,
+        close=22474.8,
+        volume=80000.0,
+        tick_count=20,
+    )
+    pa._curr_1m_bar = forming_bar
+    pa.last_price = 22474.8  # Well above 22465.0 + min_clearance and upper_wick <= 0.05 * atr
+    pa._opt_flow_1m = {
+        "call_buy_vol": 150000.0,
+        "call_sell_vol": 30000.0,
+        "put_buy_vol": 10000.0,
+        "put_sell_vol": 10000.0,
+    }
+
+    # Tick 1:
+    ok1, reason1, _ = pa.check_mode_b_breakthrough("UP", current_time=now + 15 * 60 + 25)
+    assert ok1 is False
+    assert reason1 == "awaiting_second_tick"
+
+    # Tick 2: (0.3s later)
+    forming_bar.tick_count += 1
+    ok2, reason2, details = pa.check_mode_b_breakthrough("UP", current_time=now + 15 * 60 + 25.3)
+    assert ok2 is True
+    assert details["pillar"] == 4
+    assert details["pa_setup_name"] == "topological_prominence_breakout"
+    assert details["mode"] == "MODE_B_INFLIGHT_BREAKTHROUGH"
+    assert details["boundary_level"] == 22465.0
