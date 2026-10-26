@@ -1,5 +1,26 @@
 # Changelog
 
+## [Unreleased] - 2026-10-26 (Pillar 2 Dynamic S/R Registry Re-Anchoring, Mode B 48s Upper Cap Removal & Pillar 1 Wyckoff Smart Gate)
+
+### Added
+- **Pillar 2 (`micro_sweep_reclaim`) Dynamic S/R Level Registry & Day Extreme Re-Anchoring** (`AEGIS/core/price_action_engine.py`):
+  - Completely re-anchored Liquidity Sweep detection and Mode A arming to the **Dynamic S/R Registry (`self.session_levels`)** and Day Extremes (Previous Day High / Low, `PDH` / `PDL`), eliminating noisy 5-bar swing wiggles.
+  - Implemented `_find_swept_sr_level()` resolving Priority 1: `SR_REGISTRY` (`SUPPORT` for CALL, `RESISTANCE` for PUT) with scale-invariant sweep depth and multi-touch prominence.
+  - Recorded rich telemetry in trade details: `sweep_source` (`SR_REGISTRY` vs `DAY_EXTREME`), `swept_level`, `level_prominence`, and `level_touches`.
+  - Maintained graceful 5-bar fallback solely for early-morning bootstrap before intraday session levels form.
+- **Pillar 1 (`20_ema_rejection`) Wyckoff Candle $N-1$ Smart Safe Gate** (`AEGIS/core/price_action_engine.py` & `AEGIS/core/wyckoff_volume_engine.py`):
+  - Added preceding candle $N-1$ micro-footprint verification for Volume Dry-Up ($VDR \le 0.85$ or $VR \le 0.70$), Synthetic Net Option Delta Absorption, and Stopping Volume ($Lower Wick \ge 40\%$ with volume surge).
+  - Implemented Smart Safe OR/AND gate: if candle $N-1$ Wyckoff footprint confirms, or if standard VDR/OFI delta confirms, setup passes cleanly without false self-vetos.
+
+### Changed
+- **Universal Removal of 48s Upper Cap on Priority Mode B Breakthroughs**:
+  - Eliminated the arbitrary 48-second upper ceiling (`T:08s–T:48s` $\to$ `T:08s onwards / No Upper Cap`) universally across Pillar 3 (`volatility_squeeze_breakout`), Pillar 4 (`topological_prominence_breakout`), and `ShadowBoundaryObserver`.
+  - In-flight breakouts occurring in the final seconds of candle formation (T:49s–T:58s) with verified momentum, minimal leading wick, and order-flow velocity are now executed in-flight ahead of retail bar-close crowds.
+- **Sub-50ms Execution Latency & Zero-Chasing Verification**:
+  - Re-audited and confirmed sub-50ms execution path: rolling 5-second hot-strikes pre-staging cache (0ms lookup), single-shot 0.75s atomic limit fill window, zero order chasing/modification, and instant signal queue draining on any rejection.
+- **Weekly Index Switching & Lifecycle Parity**:
+  - Re-verified self-contained intraday S/R lifecycle: clean daily reset prevents cross-instrument pollution (NIFTY vs SENSEX) and weekend gap distortions, while PDH/PDL anchors are permanently loaded from 09:14 AM boot.
+
 ## [Unreleased] - 2026-10-26 (Semantic Intent-to-Code Parity Audit & Adversarial Torture Testing)
 
 ### Added

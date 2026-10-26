@@ -41,19 +41,19 @@ engine's harness document — it overrides everything here for that engine.**
 
 ### 2.1 Engine 1 (Primary) — AEGIS (Autonomous Execution & Gamma Imbalance System) — Production Version 1.0 (v1.0 Locked) LIVE
 **Current Production Configuration (Calibrated, Audited & Verified):**
-- **Macro Price Action Primary Trigger (`PriceActionEngine`):** Pure price action is the primary trigger across 4 scalper pillars (P1 20 EMA Pullback, P2 Liquidity Sweep & Reclaim, P3 Volatility Squeeze Breakout, P4 0-D Prominence Hub Breakout).
+- **Macro Price Action Primary Trigger & Priority Mode B (`PriceActionEngine`):** Pure price action primary trigger across 4 scalper pillars (P1 20 EMA Pullback with Wyckoff Candle $N-1$ Smart Gate, P2 Dynamic S/R Registry & Day Extreme Sweep & Reclaim, P3 Volatility Squeeze Breakout, P4 Dynamic S/R & Prominence Hub Breakout) + **Priority Mode B In-Flight Mid-Bar Breakthrough Surge (`T:08s onwards / No Upper Cap`)**.
 - **Absolute Pain Zone VWAP Band (v1.0 Production Early Veto):** Spot above Upper Band $\implies$ CALL only; Spot below Lower Band $\implies$ PUT only; inside Band $\implies$ Discarded.
-- **Wyckoff Volume & Order Flow Delta Engine (`wyckoff_volume_engine.py`):** Effort vs Result, Volume Dry-Up Ratio (VDR $\ge 1.0$), Absorption pin wick, and Delta Harmony (Call Buy vs Put Buy with $\ge 2.0\times$ ratio).
+- **Wyckoff Volume & Order Flow Delta Engine (`wyckoff_volume_engine.py`):** Effort vs Result, Volume Dry-Up Ratio ($VDR \ge 1.0$), Absorption pin wick, and Delta Harmony (Call Buy vs Put Buy with $\ge 1.30\times$ ratio).
 - **Weekly Trading Calendar & DTE Schedule:**
   - **Monday**: NIFTY (**1 DTE**) [NFO, step 50, lot 65]
   - **Tuesday**: NIFTY (**0 DTE** Expiry Day) [NFO, step 50, lot 65]
   - **Wednesday**: SENSEX (**1 DTE**) [BFO, step 100, lot 20]
   - **Thursday**: SENSEX (**0 DTE** Expiry Day) [BFO, step 100, lot 20]
-  - **Friday**: NIFTY (**4 DTE**) [NFO, step 50, lot 65]
+  - **Friday**: NIFTY (**4 DTE**) [NFO, step 50, lot 65] — *Disabled by default (Deep Sleep Mode)*
   - *(Saturday / Sunday: Market Closed, no bot trading)*
-- **Standalone CatBoost Paper Trader & 100% Shadow ML:** Real-time ML flow evaluation in risk-free virtual execution loop.
-- **Volume Profile & Auction Market Theory Engine:** Real-time Spot POC, 70% Value Area (VAH/VAL), and Low-Volume Node (LVN) frictionless air pockets.
-- **Adaptive Stepped Exits & Permanent Target Discipline:** -12% disaster floor $\to$ Step 1 (-3% SL @ +3.0% peak) $\to$ Step 2 (0.0% cost-shield @ +3.5% peak) $\to$ Step 3 (0.8% near-target lock) $\to$ Strict +4.0% Maker TP (₹0.05 tick rounded; never greed 5%–6%) $\to$ 15:08:00 CAS force-flatten.
+- **Single-Shot Clean Entry (Zero Chasing Mandate):** 0.75s atomic fill window, instant signal queue draining, zero order chasing/modification.
+- **Deterministic Edge (ML Decommissioned):** CatBoost ML, Volume Profile, and HVG engines permanently decommissioned and archived.
+- **Adaptive Stepped Exits & Permanent Target Discipline:** -12% disaster floor $\to$ Step 1 (-3% SL @ +3.0% peak) $\to$ Step 2 (0.0% cost-shield @ +3.5% peak) $\to$ Step 3 (0.8% near-target lock) $\to$ Strict +4.0% Maker TP (Friday calibrated to +3.0%; never greed 5%–6%) $\to$ 15:08:00 CAS force-flatten.
 - **Full Architecture Authority:** [`AEGIS/AEGIS_V1.0_ARCHITECTURE.md`](AEGIS/AEGIS_V1.0_ARCHITECTURE.md) (Production Version 1.0 Locked).
 
 ### 2.2 Engine 2 (Secondary / Deprioritized) — ARGUS (Algorithmic Real-Time Granular Ultra-Microstructure Scalper v4.0)

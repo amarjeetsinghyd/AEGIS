@@ -78,9 +78,9 @@ flowchart TD
         BAND -->|Blocked| DROP["Instant Discard & Purge<br/>(return None)"]
         BAND -->|Passed| PA_CHECK{"Price Action Setup?<br/>(evaluate_setup)"}
         PA_CHECK -->|No Setup| DROP
-        PA_CHECK -->|Mode B Breakthrough| PB["Mode B: In-Flight Mid-Bar Breakthrough (T:08s–T:48s)<br/>• Boundary Pierce (Squeeze Box, S/R Registry — live) + (Pain Zone, 200 EMA — ShadowBoundaryObserver only)<br/>• Sweet-Spot Range 0.35x–1.20x ATR, Body ≥ 65%<br/>• 2-Tick Persistence, Live Opt Delta ≥ 1.30x"]
-        PA_CHECK -->|Pillar 1| P1["Pillar 1: 20 EMA Pullback & Momentum Rejection (Mode A)<br/>• Classical Dow HL2/LH2 2nd-Touch Confirmation<br/>• 20 EMA Wick Rejection, Close Edge ≥ 0.60<br/>• Upper Wick ≤ 15% (Two-Bar ≤ 18%)"]
-        PA_CHECK -->|Pillar 2| P2["Pillar 2: Liquidity Sweep & Reclaim (Mode A)<br/>• 5-Bar Turtle Soup Stop-Hunt Reclaim<br/>• Lower Wick ≥ 35% & ≥ 1.25x Upper Wick<br/>• Upper Wick ≤ 15%, Close Edge ≥ 0.55"]
+        PA_CHECK -->|Mode B Breakthrough| PB["Mode B: In-Flight Mid-Bar Breakthrough (T:08s onwards / No Upper Cap)<br/>• Boundary Pierce (Squeeze Box, S/R Registry — live) + (Pain Zone, 200 EMA — ShadowBoundaryObserver only)<br/>• Sweet-Spot Range 0.35x–1.20x ATR, Body ≥ 65%<br/>• 2-Tick Persistence, Live Opt Delta ≥ 1.30x"]
+        PA_CHECK -->|Pillar 1| P1["Pillar 1: 20 EMA Pullback & Momentum Rejection (Mode A)<br/>• Classical Dow HL2/LH2 2nd-Touch Confirmation<br/>• 20 EMA Wick Rejection, Close Edge ≥ 0.60<br/>• Wyckoff Candle N-1 Smart Safe Gate (Dry-Up/Delta/Absorption)"]
+        PA_CHECK -->|Pillar 2| P2["Pillar 2: Liquidity Sweep & Reclaim (Mode A)<br/>• Dynamic S/R Registry & Day Extreme (PDH/PDL) Stop-Hunt Reclaim<br/>• Lower Wick ≥ 35% & ≥ 1.25x Upper Wick<br/>• Upper Wick ≤ 15%, Close Edge ≥ 0.55"]
         PA_CHECK -->|Pillar 3| P3["Pillar 3: Volatility Squeeze Breakout<br/>• 3-4 Bar Box Compression (≤1.25x ATR)<br/>• Expansion Breakout, Anti-Climax Cap ≤ 1.35x ATR<br/>• Body ≥ 35% of Range, Close Edge ≥ 0.55"]
         PA_CHECK -->|Pillar 4| P4["Pillar 4: Topological Prominence Breakout<br/>• Priority 1: Dynamic Session S/R Level Registry Breakout<br/>• Priority 2: T-2 0-D Prominence Hub (π ≥ 1.75)<br/>• Day Extreme Runway Shield (min 1.25x ATR / 8 bps)"]
         PB & P1 & P2 & P3 & P4 --> SINGLE_ADM{"Single Admission Policy<br/>(Deterministic First-Hit Resolution)"}
@@ -290,10 +290,10 @@ Passively models the continuous price-volume distribution (inspired by the Maxwe
 
 AEGIS employs a **Hybrid Intra-Bar Execution Architecture**:
 - **Mode A (Reversal / Retest / Sweep)**: Evaluates finalized 1-minute bars at **T:00s** (with pre-staged strikes & **T:50s–T:58s** pre-close confirmation) for **Pillar 1** (`20_ema_rejection`) and **Pillar 2** (`micro_sweep_reclaim`).
-- **Priority Mode B (In-Flight Breakthrough Surge)**: Evaluates live forming bars mid-bar between **T:08s and T:48s** for **Pillar 3** (`volatility_squeeze_breakout`), **Pillar 4** (`topological_prominence_breakout` + Dynamic S/R Registry), Absolute Pain Zone boundaries, and 200 EMA Ribbon pierces.
+- **Priority Mode B (In-Flight Breakthrough Surge)**: Evaluates live forming bars mid-bar from **T:08s onwards (no upper cap)** for **Pillar 3** (`volatility_squeeze_breakout`), **Pillar 4** (`topological_prominence_breakout` + Dynamic S/R Registry), Absolute Pain Zone boundaries, and 200 EMA Ribbon pierces.
 
 ### Priority Mode B: In-Flight Mid-Bar Breakthrough Surge (`check_mode_b_breakthrough`)
-- **Execution Window**: Evaluated strictly mid-bar between **T:08s and T:48s** on active forming tick stream.
+- **Execution Window**: Evaluated strictly mid-bar from **T:08s onwards (no upper cap)** on active forming tick stream.
 - **Sweet-Spot Range**: Forming candle range must be within $0.35 \times \text{ATR}_{1m} \le \text{Range} \le 1.20 \times \text{ATR}_{1m}$ (avoids both micro-noise and exhausted anti-climax bars).
 - **Body Ratio**: Solid directional candle body $\ge 65\%$ of range with minimal leading wick ($\le 0.05 \times \text{ATR}_{1m}$).
 - **Boundary Persistence**: Minimum 2 consecutive ticks maintaining price beyond the breached level (Pain Zone, 200 EMA Ribbon, Squeeze Box High/Low, or Session S/R Level).
@@ -310,11 +310,13 @@ AEGIS employs a **Hybrid Intra-Bar Execution Architecture**:
   - $HL_2$ (2nd Touch): Retests 20 EMA High-Low Band with $HL_2 > HL_1$.
 - **Candlestick Rejection**: Lower wick $\ge 33\%$ (Hammer) or Bullish Expansion body $\ge 40\%$, closing away from 20 EMA Band.
 - **Live Piercing Invalidation Guard**: Forming price cannot pierce below 20 EMA Low Band during entry evaluation.
+- **Wyckoff Candle $N-1$ Smart Safe Gate**: Evaluates preceding candle $N-1$ footprint for Volume Dry-Up ($VDR \le 0.85$ or $VR \le 0.70$), Synthetic Net Option Delta Absorption, and Stopping Volume ($Lower Wick \ge 40\%$ with volume surge). If any of these Wyckoff traits confirm or if standard VDR/OFI confirms, the setup is approved.
 - **12s Bar Freshness Gate**: Entry window cutoff at $\le 12.0$s after bar open (with Mode A T:50s pre-close staging).
 
 ### 2. Pillar 2: Liquidity Sweep & Reclaim (`micro_sweep_reclaim`)
-- **5-Bar Extreme Sweep**: Price dips below previous 5-bar swing low (CALL) or above swing high (PUT).
+- **Priority 1: Dynamic S/R Registry & Day Extreme (PDH/PDL) Sweep**: Price sweeps below active registered `StructuralLevel` Support or Previous Day Low (CALL) / pierces above active Resistance or Previous Day High (PUT). Eliminates random 5-bar wiggles in no-man's land.
 - **Instant Reclaim**: Bar closes back inside the level with rejection wick $\ge 35\%$ and lower wick $\ge 1.25\times$ upper wick (for CALLs).
+- **Graceful Bootstrapping Fallback**: Falls back to local 5-bar swing only during early morning minutes before session levels are registered.
 - **Lunch Chop Veto**: Blocked between 11:15 IST and 13:00 IST to prevent whipsaws during low-volume midday drift.
 - **Wyckoff Spring Equivalent**: Stop-loss flush followed by immediate institutional reclaim.
 

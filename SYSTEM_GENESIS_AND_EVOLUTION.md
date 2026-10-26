@@ -27,7 +27,8 @@ timeline
     October 05, 2026 : Epoch III: Squeeze Breakout & Target Mandate : Trade #19 (+3.70% in 11s) : Strict +4.0% Maker TP Discipline : 84.2% Win Rate (16/19 Wins)
     October 07, 2026 : Epoch III: Universal Structural Invalidation : Removal of 9-EMA Choke : Trades #21-#23 (100% Win/BE Rate) : Entry Candle Low/High Defense
     October 14, 2026 : Epoch III: 0-DTE ML Decommissioning : 18-Day CatBoost Trial (46.4% WR) Shut Down : 100% Deterministic Price Action & Wyckoff Edge
-    October 22, 2026 : Epoch III: The Golden Middle Path : Mode B In-Flight Mid-Bar Breakthrough (T:08s-T:48s) : 0.75s Single-Shot No-Chasing : Friday 4-DTE +3.0% Calibration
+    October 22, 2026 : Epoch III: The Golden Middle Path : Mode B In-Flight Mid-Bar Breakthrough : 0.75s Single-Shot No-Chasing : Friday 4-DTE +3.0% Calibration
+    October 26, 2026 : Epoch III: S/R Registry Sweeps & Mode B Unleashed : 48s Upper Cap Removed : Pillar 2 Re-anchored to Dynamic S/R & PDH/PDL : Candle N-1 Wyckoff Smart Gate
 ```
 
 ---
@@ -800,6 +801,30 @@ To ensure mathematical symmetry across the entire execution stack, the structura
 
 ---
 
+### 7.33 The S/R Registry Sweep & Uncapped Mode B Evolution (26 October 2026)
+
+Guided directly by the founder's first-principles interrogation, four pivotal refinements transformed the signal accuracy and execution agility of AEGIS:
+
+1. **Universal Elimination of the 48-Second Upper Cap on Priority Mode B Breakthroughs**:
+   - The artificial ceiling confining Mode B entries between T:08s and T:48s was discarded universally across Pillar 3 (`volatility_squeeze_breakout`), Pillar 4 (`topological_prominence_breakout`), and the `ShadowBoundaryObserver`.
+   - Breakthroughs piercing confirmed structural boundaries late in candle formation (T:49s–T:58s) with verified momentum, tight leading wicks ($\le 0.05 \times \text{ATR}$), and order flow delta velocity ($\ge 1.30\times$) are entered in-flight, beating retail bar-close stampedes.
+
+2. **Pillar 2 Re-Anchoring to the Dynamic S/R Registry & Day Extremes (PDH/PDL)**:
+   - Pillar 2 (`micro_sweep_reclaim`) previously triggered on naive 5-bar swing wiggles in intermediate chop.
+   - Re-architected `_find_swept_sr_level()` to strictly map stop-hunt sweeps against verified **`StructuralLevel` nodes (`SUPPORT` / `RESISTANCE`)** and **Day Extremes (PDH / PDL)**.
+   - Synchronized with Mode A pre-close arming, ensuring sweeps only execute when institutional liquidity pools are flushed and reclaimed.
+
+3. **Pillar 1 Wyckoff Candle $N-1$ Smart Safe Gate**:
+   - Enhanced 20 EMA pullbacks by analyzing preceding candle $N-1$ order flow: Volume Dry-Up ($VDR \le 0.85$), Synthetic Net Option Delta Absorption, and Stopping Volume ($Lower Wick \ge 40\%$ with volume surge).
+   - Wired via a Smart Safe OR/AND gate, guaranteeing zero internal veto collisions while boosting entry precision.
+
+4. **Self-Contained Daily Session Lifecycle & Latency Integrity**:
+   - Re-verified that weekly calendar rotation between NIFTY (Mon/Tue) and SENSEX (Wed/Thu) requires daily in-memory S/R isolation to prevent cross-index contamination.
+   - Confirmed permanent 09:14 AM PDH/PDL macro seeding from broker daily charts, providing immediate structural anchors at the 09:15:00 opening bell.
+   - Re-audited sub-50ms execution latency: 5s pre-staged hot strikes, single-shot 0.75s atomic fill window, and zero order chasing.
+
+---
+
 ## 8. The Founder's Modus Operandi & AI Collaboration
 
 The evolution of Quant-Bot reflects a unique human-machine synergy:
@@ -817,8 +842,8 @@ The evolution of Quant-Bot reflects a unique human-machine synergy:
 | **Execution Host** | Local Windows PC (PM2) | Local PC / Initial Cloud testing | Oracle Cloud Infrastructure (OCI) Linux VPS (`137.23.41.38`) | Oracle Cloud Infrastructure (OCI) Linux VPS (`137.23.41.38`) | Oracle Cloud Infrastructure (OCI) Linux VPS (`137.23.41.38`) | **Oracle Cloud Linux VPS (`opc@137.23.41.38`)** + PM2 (`aegis-bot`, `unified-dashboard`) |
 | **Broker Seam** | AngelOne / Shoonya REST | Shoonya REST + WebSocket | Shoonya NorenApi (Zero-Brokerage) + AngelOne fallback | Shoonya NorenApi (Zero-Brokerage) + AngelOne fallback | Shoonya NorenApi (Zero-Brokerage) + AngelOne fallback | **Shoonya NorenApi (Zero-Brokerage, Static IP, Single Session, Token Cache)** |
 | **Market Data Feed** | 50-stock REST $\to$ Tick ZMQ | Tick-by-tick WS + Parquet | Zero-Copy L1 + L2 (Top-5 Depth) WebSocket Streaming | Zero-Copy L1 + L2 Full 5-Level Depth Quotes Streaming | Zero-Copy L1 + L2 Full 5-Level Depth Quotes Streaming | **Zero-Copy L1 + L2 Full 5-Level Depth Quotes Streaming across ATM $\pm 15$ Strikes (62 Tokens CE+PE)** |
-| **Primary Signal Trigger** | 1-min 9 EMA x VWAP + VFI | 5-min `Kronos-base` Transformer Delta | Dual-Timeframe (1m+5m) HVG Topological Price Action | 5D Sliding Window Rough Path Signature Inflection ($\hat{S}^{\le 3}$) | Pure Price Action Quadrinity + 12s Freshness + $0.85\times\text{ATR}$ S/R Clear + Live Invalidation | **Pure Price Action 4 Pillars + Priority Mode B Mid-Bar In-Flight Breakthrough (T:08s–T:48s) + Absolute Pain Zone Band Early Directional Veto** |
-| **Pillar 4 Logic** | N/A | Naive 3-Bar BOS | $O(N)$ Monotonic Stack HVG Phase Shift | Discounted Banach Contraction + Cross-Lévy Area ($\mathcal{A}^{LL}, \mathcal{A}^{PF}$) | Rough Path Signature Inflection + Dual-Timeframe HVG Shadow | **Topological Prominence Hub / Break of Structure ($O(N)$ Stack, Prominence $> 1.80$, $20\,\text{EMA} < 50\,\text{EMA}$ Trend Filter)** |
+| **Primary Signal Trigger** | 1-min 9 EMA x VWAP + VFI | 5-min `Kronos-base` Transformer Delta | Dual-Timeframe (1m+5m) HVG Topological Price Action | 5D Sliding Window Rough Path Signature Inflection ($\hat{S}^{\le 3}$) | Pure Price Action Quadrinity + 12s Freshness + $0.85\times\text{ATR}$ S/R Clear + Live Invalidation | **Pure Price Action 4 Pillars + Priority Mode B Mid-Bar In-Flight Breakthrough (T:08s onwards / No Upper Cap) + Absolute Pain Zone Band Early Directional Veto** |
+| **Pillar 4 Logic** | N/A | Naive 3-Bar BOS | $O(N)$ Monotonic Stack HVG Phase Shift | Discounted Banach Contraction + Cross-Lévy Area ($\mathcal{A}^{LL}, \mathcal{A}^{PF}$) | Rough Path Signature Inflection + Dual-Timeframe HVG Shadow | **Priority 1: Dynamic Session S/R Level Registry Breakout + Priority 2: Topological Prominence Hub ($O(N)$ Stack, Prominence $> 1.80$, Day Extreme Runway Shield)** |
 | **Order Flow Role** | Candidate Delta ($>0$) Gate | Vectorized Net Delta OI Kinematics | 2-Second Rolling Anti-Spoof L2 Wall Shield (Validator) | Price-Indexed Queue Depletion Hazard Model + Sweep Attribution | 17-Feature CatBoost Classifier + Dual-Track Paper Trader + Adaptive Daily Median Gatekeeper | **Deterministic Wyckoff Volume ($VDR \ge 1.0$) + OFI Delta Gate ($\ge 1.30\times$ Imbalance) + In-Flight Option Flow Velocity + ML Decommissioned (100% Deterministic Edge)** |
 | **Execution Routing** | Fixed Market Orders | Aggressive Taker Fill | Market with Slippage Checks | Latency-Aware Adapter (Passive Limit vs IOC vs Adverse Abort) | Live Shoonya LMT/NRML + Instant 10s Stability Check | **Live Shoonya LMT/NRML + Single-Shot Clean 0.75s Entry (Zero Chasing Mandate) + Immediate Queue Draining + Strict 1-Lot Maker TP** |
 | **Exits** | 10% Fixed TP, 3-min Gamma Stall | 2-Phase Trailing HWM, Theta Abort | Claude's 4-Pillar Adaptive Exits (Maker TP, Noise Trailing, 15:08 CAS) | Claude's 4-Pillar Adaptive Exits + Post-Fill Edge Analytics | Normalized Stepped Risk Compression (+2% $\to$ -3% SL, +3% $\to$ 0% Cost-Shield, +3.5% $\to$ 0.5% Near-Target Lock) + +4% Maker TP + 9-EMA Structural + 5m Timeout | **Universal Entry Candle Low/High $\pm$ 0.10 ATR Invalidation + Adaptive Stepped Shield: -12% Floor $\to$ Step 1 Safety Net (-3% SL @ $+3.0\%$) $\to$ Step 2 Cost-Shield (0.0% @ $+3.5\%$) $\to$ Near-Target Lock $\to$ Maker TP (+4.0% Mon–Thu, +3.0% Fri DTE 4) + 15:08 CAS** |
