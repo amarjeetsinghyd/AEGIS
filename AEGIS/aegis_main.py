@@ -26,7 +26,7 @@ from AEGIS.execution.data_fetcher import DataFetcher, is_call_symbol, split_opti
 from AEGIS.aegis_execution_manager import AegisExecutionManager
 from AEGIS.aegis_gamma_engine import AegisGammaEngine, create_aegis_engine
 from AEGIS.l2_options_archiver import attach_aegis_archiver
-from ARGUS.tick_compiler import TickCompiler
+from common.market.tick_compiler import TickCompiler
 
 logger = get_logger("aegis_main")
 
