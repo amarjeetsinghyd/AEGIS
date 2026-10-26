@@ -282,33 +282,41 @@ class CompositeConvictionEngine:
         if is_up:
             ema_aligned = (ema_20 > ema_50) if (ema_20 > 0 and ema_50 > 0) else True
             vwap_aligned = (spot_price > vwap) if vwap > 0 else True
-            if setup_name in ("micro_sweep_reclaim", "20_ema_rejection"):
-                if ema_aligned or vwap_aligned:
-                    ema_vwap_pts = 5.0
-                elif setup_name == "micro_sweep_reclaim":
-                    ema_vwap_pts = 4.0
-                else:
-                    ema_vwap_pts = 2.0
-            else:
+            if setup_name == "20_ema_rejection":
                 if ema_aligned and vwap_aligned:
                     ema_vwap_pts = 5.0
                 elif ema_aligned or vwap_aligned:
                     ema_vwap_pts = 3.0
+                else:
+                    ema_vwap_pts = 1.0
+            else:
+                # S/R Reactions & Breakouts (Pillar 2 Sweep, Pillar 3 Squeeze, Pillar 4 S/R Breakout):
+                # Never penalize for lagging 20/50 EMA cross; VWAP alignment provides full directional compliance.
+                if vwap_aligned:
+                    ema_vwap_pts = 5.0
+                elif ema_aligned:
+                    ema_vwap_pts = 4.0
+                else:
+                    ema_vwap_pts = 2.0
         else:
             ema_aligned = (ema_20 < ema_50) if (ema_20 > 0 and ema_50 > 0) else True
             vwap_aligned = (spot_price < vwap) if vwap > 0 else True
-            if setup_name in ("micro_sweep_reclaim", "20_ema_rejection"):
-                if ema_aligned or vwap_aligned:
-                    ema_vwap_pts = 5.0
-                elif setup_name == "micro_sweep_reclaim":
-                    ema_vwap_pts = 4.0
-                else:
-                    ema_vwap_pts = 2.0
-            else:
+            if setup_name == "20_ema_rejection":
                 if ema_aligned and vwap_aligned:
                     ema_vwap_pts = 5.0
                 elif ema_aligned or vwap_aligned:
                     ema_vwap_pts = 3.0
+                else:
+                    ema_vwap_pts = 1.0
+            else:
+                # S/R Reactions & Breakouts (Pillar 2 Sweep, Pillar 3 Squeeze, Pillar 4 S/R Breakout):
+                # Never penalize for lagging 20/50 EMA cross; VWAP alignment provides full directional compliance.
+                if vwap_aligned:
+                    ema_vwap_pts = 5.0
+                elif ema_aligned:
+                    ema_vwap_pts = 4.0
+                else:
+                    ema_vwap_pts = 2.0
 
         raw_score = max(0.0, min(30.0, swing_pts + runway_pts + ema_vwap_pts))
         details = {

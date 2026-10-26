@@ -2709,10 +2709,6 @@ class PriceActionEngine:
             if current_vwap > 0 and bar.close >= current_vwap:
                 return False, "above_vwap", {}
 
-            # Strict EMA Trend Alignment: Cannot short squeeze breakout when 20 EMA > 50 EMA (BULL_CLEAR)
-            if self.ema_20_1m > 0 and self.ema_50_1m > 0 and self.ema_20_1m > self.ema_50_1m:
-                return False, "bull_overlap_ema_disallowed", {}
-
             bar_range = bar.high - bar.low
             if bar_range <= 0:
                 return False, "zero_range", {}
@@ -2795,10 +2791,6 @@ class PriceActionEngine:
         elif direction.upper() in ("UP", "CALL"):
             if current_vwap > 0 and bar.close <= current_vwap:
                 return False, "below_vwap", {}
-
-            # Strict EMA Trend Alignment: Cannot buy squeeze breakout when 20 EMA < 50 EMA (BEAR_OVERLAP)
-            if self.ema_20_1m > 0 and self.ema_50_1m > 0 and self.ema_20_1m < self.ema_50_1m:
-                return False, "bear_overlap_ema_disallowed", {}
 
             bar_range = bar.high - bar.low
             if bar_range <= 0:
