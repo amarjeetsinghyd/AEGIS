@@ -2054,6 +2054,10 @@ class PriceActionEngine:
                 return False, r_wflow, det_wflow
 
             sl_price = round(min(bar.low, dow.touch_2) - buffer_pts, 2)
+            cb_b = float(getattr(bar, "call_buy_vol", 0.0) or 0.0)
+            cs_b = float(getattr(bar, "call_sell_vol", 0.0) or 0.0)
+            pb_b = float(getattr(bar, "put_buy_vol", 0.0) or 0.0)
+            ps_b = float(getattr(bar, "put_sell_vol", 0.0) or 0.0)
             details = {
                 "pa_setup_name": "20_ema_rejection",
                 "pillar": 1,
@@ -2081,6 +2085,12 @@ class PriceActionEngine:
                 "bar_close": round(bar.close, 2),
                 "sl_price": sl_price,
                 "buffer_pts": round(buffer_pts, 2),
+                "n1_footprint": {
+                    "n1_vol": round(float(getattr(bar, "volume", 0.0) or 0.0), 1),
+                    "n1_net_delta": round((cb_b + ps_b) - (pb_b + cs_b), 1),
+                    "n1_bulls": round(cb_b + ps_b, 1),
+                    "n1_bears": round(pb_b + cs_b, 1),
+                },
             }
             details.update(det_wflow)
             return True, f"20_ema_call_hl2_rejection ({sig_type})", details
@@ -2189,6 +2199,10 @@ class PriceActionEngine:
                 return False, r_wflow, det_wflow
 
             sl_price = round(max(bar.high, dow.touch_2) + buffer_pts, 2)
+            cb_b = float(getattr(bar, "call_buy_vol", 0.0) or 0.0)
+            cs_b = float(getattr(bar, "call_sell_vol", 0.0) or 0.0)
+            pb_b = float(getattr(bar, "put_buy_vol", 0.0) or 0.0)
+            ps_b = float(getattr(bar, "put_sell_vol", 0.0) or 0.0)
             details = {
                 "pa_setup_name": "20_ema_rejection",
                 "pillar": 1,
@@ -2216,6 +2230,12 @@ class PriceActionEngine:
                 "bar_close": round(bar.close, 2),
                 "sl_price": sl_price,
                 "buffer_pts": round(buffer_pts, 2),
+                "n1_footprint": {
+                    "n1_vol": round(float(getattr(bar, "volume", 0.0) or 0.0), 1),
+                    "n1_net_delta": round((cb_b + ps_b) - (pb_b + cs_b), 1),
+                    "n1_bulls": round(cb_b + ps_b, 1),
+                    "n1_bears": round(pb_b + cs_b, 1),
+                },
             }
             details.update(det_wflow)
             return True, f"20_ema_put_lh2_rejection ({sig_type})", details

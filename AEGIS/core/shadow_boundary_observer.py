@@ -64,6 +64,13 @@ class ShadowTrade:
     opt_peak_mfe_pct: float = 0.0
     opt_peak_mae_pct: float = 0.0
     
+    # N-1 Testing Candle Wyckoff & Order Flow Footprint (Empirical Shadow Tracking)
+    n1_vol: float = 0.0
+    n1_baseline_vol: float = 0.0
+    n1_vol_dryup: bool = False
+    n1_net_delta: float = 0.0
+    n1_stopping_vol: bool = False
+    
     # State & Outcome
     captured_30s: bool = False
     captured_60s: bool = False
@@ -348,6 +355,7 @@ class ShadowBoundaryObserver:
         if not bars:
             return
         prior_bar = bars[-1]
+        n1_fp = self._compute_n1_footprint(prior_bar, atr)
 
         # 1. Pain Zone Rejection-Breakout (LRRB)
         # Prior bar tested Pain Zone level, live candle breaks prior bar extreme (Strict 1-Bar Expiry)
@@ -369,7 +377,7 @@ class ShadowBoundaryObserver:
                                 self.last_trigger_bar_idx["PAIN_ZONE_REJECTION_BREAKOUT"] = bar_idx
                                 lowest_low = min(prior_bar.low, curr_bar.low)
                                 logger.info(f"[SHADOW_INTRABAR_SURGE] PAIN_ZONE_REJECTION_BREAKOUT CALL | Spot: {spot:.2f} > AnchorHigh: {prior_bar.high:.2f} at T+{sec_in_min}s")
-                                self._open_shadow_trade("PAIN_ZONE_REJECTION_BREAKOUT", "UP", spot, prior_bar.high, lowest_low, now_sec)
+                                self._open_shadow_trade("PAIN_ZONE_REJECTION_BREAKOUT", "UP", spot, prior_bar.high, lowest_low, now_sec, n1_fp)
                                 return
                 else:
                     self._mode_b_pz_up_ticks = 0
@@ -388,7 +396,7 @@ class ShadowBoundaryObserver:
                                 self.last_trigger_bar_idx["PAIN_ZONE_REJECTION_BREAKOUT"] = bar_idx
                                 highest_high = max(prior_bar.high, curr_bar.high)
                                 logger.info(f"[SHADOW_INTRABAR_SURGE] PAIN_ZONE_REJECTION_BREAKOUT PUT | Spot: {spot:.2f} < AnchorLow: {prior_bar.low:.2f} at T+{sec_in_min}s")
-                                self._open_shadow_trade("PAIN_ZONE_REJECTION_BREAKOUT", "DOWN", spot, highest_high, prior_bar.low, now_sec)
+                                self._open_shadow_trade("PAIN_ZONE_REJECTION_BREAKOUT", "DOWN", spot, highest_high, prior_bar.low, now_sec, n1_fp)
                                 return
                 else:
                     self._mode_b_pz_down_ticks = 0
@@ -413,7 +421,7 @@ class ShadowBoundaryObserver:
                                 self.last_trigger_bar_idx["EMA_200_REJECTION_BREAKOUT"] = bar_idx
                                 lowest_low = min(prior_bar.low, curr_bar.low)
                                 logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_200_REJECTION_BREAKOUT CALL | Spot: {spot:.2f} > AnchorHigh: {prior_bar.high:.2f} at T+{sec_in_min}s")
-                                self._open_shadow_trade("EMA_200_REJECTION_BREAKOUT", "UP", spot, prior_bar.high, lowest_low, now_sec)
+                                self._open_shadow_trade("EMA_200_REJECTION_BREAKOUT", "UP", spot, prior_bar.high, lowest_low, now_sec, n1_fp)
                                 return
                 else:
                     self._mode_b_ema_up_ticks = 0
@@ -432,10 +440,54 @@ class ShadowBoundaryObserver:
                                 self.last_trigger_bar_idx["EMA_200_REJECTION_BREAKOUT"] = bar_idx
                                 highest_high = max(prior_bar.high, curr_bar.high)
                                 logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_200_REJECTION_BREAKOUT PUT | Spot: {spot:.2f} < AnchorLow: {prior_bar.low:.2f} at T+{sec_in_min}s")
-                                self._open_shadow_trade("EMA_200_REJECTION_BREAKOUT", "DOWN", spot, highest_high, prior_bar.low, now_sec)
+                                self._open_shadow_trade("EMA_200_REJECTION_BREAKOUT", "DOWN", spot, highest_high, prior_bar.low, now_sec, n1_fp)
                                 return
                 else:
                     self._mode_b_ema_down_ticks = 0
+
+        # 3. 20 EMA Rejection-Breakout (LRRB Shadow Observer)
+        # Prior bar tested 20 EMA level, live candle breaks prior bar extreme (Strict 1-Bar Expiry)
+        ema20 = float(getattr(self.pa_engine, "ema_20_1m", 0.0) or 0.0)
+        if ema20 > 0:
+            last_trig_ema20 = self.last_trigger_bar_idx.get("EMA_20_REJECTION_BREAKOUT", -100)
+            if (bar_idx - last_trig_ema20) >= 3:
+                # Bullish Rejection Breakout: Prior (or current) bar tested 20 EMA from above, live spot breaks prior bar High
+                ema20_up_tested = (prior_bar.low <= ema20 + 0.25 * atr and prior_bar.high >= ema20 - 0.25 * atr) or (curr_bar.low <= ema20 + 0.25 * atr)
+                ema20_up_action = (prior_bar.close <= prior_bar.open) or ((prior_bar.close - prior_bar.low) >= 0.15 * max(prior_bar.high - prior_bar.low, 0.1))
+                if ema20_up_tested and ema20_up_action and spot >= (prior_bar.high + min_clearance):
+                    body_ratio = (spot - curr_bar.open) / max(curr_rng, 0.1)
+                    upper_wick = curr_bar.high - spot
+                    if body_ratio >= 0.65 and upper_wick <= (0.05 * atr):
+                        if self._check_wyckoff_harmony("UP", curr_bar):
+                            self._mode_b_ema20_up_ticks = getattr(self, "_mode_b_ema20_up_ticks", 0) + 1
+                            if self._mode_b_ema20_up_ticks >= 2:
+                                self._mode_b_ema20_up_ticks = 0
+                                self.last_trigger_bar_idx["EMA_20_REJECTION_BREAKOUT"] = bar_idx
+                                lowest_low = min(prior_bar.low, curr_bar.low)
+                                logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_20_REJECTION_BREAKOUT CALL | Spot: {spot:.2f} > AnchorHigh: {prior_bar.high:.2f} at T+{sec_in_min}s")
+                                self._open_shadow_trade("EMA_20_REJECTION_BREAKOUT", "UP", spot, prior_bar.high, lowest_low, now_sec, n1_fp)
+                                return
+                else:
+                    self._mode_b_ema20_up_ticks = 0
+
+                # Bearish Rejection Breakdown: Prior (or current) bar tested 20 EMA from below, live spot breaks prior bar Low
+                ema20_dn_tested = (prior_bar.high >= ema20 - 0.25 * atr and prior_bar.low <= ema20 + 0.25 * atr) or (curr_bar.high >= ema20 - 0.25 * atr)
+                ema20_dn_action = (prior_bar.close >= prior_bar.open) or ((prior_bar.high - prior_bar.close) >= 0.15 * max(prior_bar.high - prior_bar.low, 0.1))
+                if ema20_dn_tested and ema20_dn_action and spot <= (prior_bar.low - min_clearance):
+                    body_ratio = (curr_bar.open - spot) / max(curr_rng, 0.1)
+                    lower_wick = spot - curr_bar.low
+                    if body_ratio >= 0.65 and lower_wick <= (0.05 * atr):
+                        if self._check_wyckoff_harmony("DOWN", curr_bar):
+                            self._mode_b_ema20_down_ticks = getattr(self, "_mode_b_ema20_down_ticks", 0) + 1
+                            if self._mode_b_ema20_down_ticks >= 2:
+                                self._mode_b_ema20_down_ticks = 0
+                                self.last_trigger_bar_idx["EMA_20_REJECTION_BREAKOUT"] = bar_idx
+                                highest_high = max(prior_bar.high, curr_bar.high)
+                                logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_20_REJECTION_BREAKOUT PUT | Spot: {spot:.2f} < AnchorLow: {prior_bar.low:.2f} at T+{sec_in_min}s")
+                                self._open_shadow_trade("EMA_20_REJECTION_BREAKOUT", "DOWN", spot, highest_high, prior_bar.low, now_sec, n1_fp)
+                                return
+                else:
+                    self._mode_b_ema20_down_ticks = 0
 
     def _evaluate_boundary_arming(self, spot: float, now_sec: float) -> None:
         """Evaluates boundary rejection on latest closed 1m candle and arms Mode A."""
@@ -508,6 +560,49 @@ class ShadowBoundaryObserver:
                     self.last_trigger_bar_idx[b_name] = bar_idx
                     logger.info(f"[SHADOW_ARMED] {b_name} PUT Rejection Armed | AnchorLow: {bar.low:.2f} | Await in-flight pierce")
 
+    def _compute_n1_footprint(self, prior_bar: Any, atr: float) -> Dict[str, Any]:
+        """
+        Computes Wyckoff Volume & Order Flow Footprint on testing candle N-1:
+          1. Volume Dry-Up (Supply/Demand exhaustion)
+          2. Synthetic Net Delta: (Call_Buy + Put_Sell) - (Put_Buy + Call_Sell)
+          3. Stopping Volume (Effort vs Result: high volume into support with small range)
+        """
+        bars = getattr(self.pa_engine, "bars_1m", [])
+        n_bars = len(bars)
+        start_idx = max(0, n_bars - 21)
+        # Exclude prior_bar (which is bars[-1]) from baseline
+        sample_vols = [float(getattr(bars[i], "volume", 0.0) or 0.0) for i in range(start_idx, max(0, n_bars - 1))]
+        pos_vols = [v for v in sample_vols if v > 0]
+        base_vol = (sum(pos_vols) / len(pos_vols)) if pos_vols else 1.0
+
+        n1_vol = float(getattr(prior_bar, "volume", 0.0) or 0.0)
+        cb = float(getattr(prior_bar, "call_buy_vol", 0.0) or 0.0)
+        cs = float(getattr(prior_bar, "call_sell_vol", 0.0) or 0.0)
+        pb = float(getattr(prior_bar, "put_buy_vol", 0.0) or 0.0)
+        ps = float(getattr(prior_bar, "put_sell_vol", 0.0) or 0.0)
+
+        # 1. Volume Dry-Up: volume is lower than 80% of baseline (proves sellers/buyers exhausted)
+        vol_dryup = (n1_vol < 0.80 * base_vol) if (base_vol > 0 and n1_vol > 0) else False
+
+        # 2. Synthetic Net Delta: Bulls (CB + PS) vs Bears (PB + CS)
+        bulls = cb + ps
+        bears = pb + cs
+        net_delta = bulls - bears
+
+        # 3. Stopping Volume: Volume expanded >= 1.25x baseline, but candle range stayed <= 0.80x ATR
+        c_range = float(getattr(prior_bar, "high", 0.0) - getattr(prior_bar, "low", 0.0))
+        stopping_vol = (n1_vol >= 1.25 * base_vol and c_range <= 0.80 * atr) if base_vol > 0 else False
+
+        return {
+            "n1_vol": round(n1_vol, 1),
+            "n1_baseline_vol": round(base_vol, 1),
+            "n1_vol_dryup": vol_dryup,
+            "n1_net_delta": round(net_delta, 1),
+            "n1_bulls": round(bulls, 1),
+            "n1_bears": round(bears, 1),
+            "n1_stopping_vol": stopping_vol,
+        }
+
     def _get_pain_zone_levels(self, atr: float) -> Tuple[float, float]:
         """Fetches live Pain Zone levels directly from PriceActionEngine single source."""
         try:
@@ -549,9 +644,10 @@ class ShadowBoundaryObserver:
         spot: float,
         anchor_high: float,
         anchor_low: float,
-        now_sec: float
+        now_sec: float,
+        n1_fp: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Creates a new OTM 5 paper trade with sub-minute telemetry."""
+        """Creates a new OTM 5 paper trade with sub-minute telemetry and N-1 Wyckoff footprint."""
         opt_sym, opt_strike, opt_side = self.select_otm5_symbol(direction, spot)
         opt_lp = self.option_cache.get(opt_sym, 0.0)
         if opt_lp <= 0.0:
@@ -565,7 +661,8 @@ class ShadowBoundaryObserver:
         spot_sl = (anchor_low - invalidation_cushion) if direction == "UP" else (anchor_high + invalidation_cushion)
         tp_price = opt_lp * 1.04 if opt_lp > 0 else 0.0
         sl_price = opt_lp * 0.88 if opt_lp > 0 else 0.0
-        
+
+        n1 = n1_fp or {}
         trade = ShadowTrade(
             trade_id=trade_id,
             boundary=boundary,
@@ -582,13 +679,20 @@ class ShadowBoundaryObserver:
             opt_entry=opt_lp,
             opt_tp_price=tp_price,
             opt_sl_price=sl_price,
+            n1_vol=float(n1.get("n1_vol", 0.0)),
+            n1_baseline_vol=float(n1.get("n1_baseline_vol", 0.0)),
+            n1_vol_dryup=bool(n1.get("n1_vol_dryup", False)),
+            n1_net_delta=float(n1.get("n1_net_delta", 0.0)),
+            n1_stopping_vol=bool(n1.get("n1_stopping_vol", False)),
         )
         
         self.active_trades.append(trade)
         logger.info(
             f"⚡ [SHADOW_ENTRY] {boundary} {direction} Triggered @ {time_str} | "
             f"Spot: {spot:.2f} (SL: {spot_sl:.2f}) | "
-            f"OTM5: {opt_sym} @ ₹{opt_lp:.2f} (TP +4%: ₹{tp_price:.2f}, SL -12%: ₹{sl_price:.2f})"
+            f"OTM5: {opt_sym} @ ₹{opt_lp:.2f} (TP +4%: ₹{tp_price:.2f}, SL -12%: ₹{sl_price:.2f}) | "
+            f"N-1 Footprint: Vol={trade.n1_vol:.0f} (Base={trade.n1_baseline_vol:.0f}, Dry={trade.n1_vol_dryup}) "
+            f"NetDelta={trade.n1_net_delta:+.0f} StoppingVol={trade.n1_stopping_vol}"
         )
 
     def _close_trade(self, trade: ShadowTrade, now_sec: float, exit_reason: str, outcome: str) -> None:
@@ -607,7 +711,8 @@ class ShadowBoundaryObserver:
             f"Option: Peak MFE +{trade.opt_peak_mfe_pct:.1f}%, MAE {trade.opt_peak_mae_pct:.1f}% | "
             f"Spot: Peak MFE +{trade.spot_peak_mfe:.1f}pts, MAE {trade.spot_peak_mae:.1f}pts | "
             f"30s Move: Opt {trade.opt_mfe_30s_pct:+.1f}%, Spot {trade.spot_mfe_30s:+.1f}pts | "
-            f"60s Move: Opt {trade.opt_mfe_60s_pct:+.1f}%, Spot {trade.spot_mfe_60s:+.1f}pts"
+            f"60s Move: Opt {trade.opt_mfe_60s_pct:+.1f}%, Spot {trade.spot_mfe_60s:+.1f}pts | "
+            f"N-1 Footprint: NetDelta={trade.n1_net_delta:+.0f}, Dry={trade.n1_vol_dryup}, StopVol={trade.n1_stopping_vol}"
         )
         
         # Save to disk

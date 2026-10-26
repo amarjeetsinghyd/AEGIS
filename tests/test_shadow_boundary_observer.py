@@ -305,3 +305,71 @@ def test_rejection_breakout_strict_1bar_expiry():
     assert len(observer.active_trades) == 0  # Expired, clean rejection!
 
 
+def test_shadow_ema20_rejection_and_n1_footprint():
+    """Verify that ShadowBoundaryObserver tracks 20 EMA Rejection Breakouts with N-1 Wyckoff Footprint."""
+    mock_pae = MagicMock()
+    # Baseline history with 10,000 volume average
+    base_bars = []
+    for _ in range(20):
+        b = MagicMock()
+        b.volume = 10000.0
+        base_bars.append(b)
+
+    # N-1 testing candle touching 20 EMA at 22500.0
+    # Shows Volume Dry-Up (3000 < 0.80 * 10000) and Positive Net Delta (Call Buy 2000 + Put Sell 1000 > Put Buy 500)
+    prior_bar = MagicMock()
+    prior_bar.open = 22505.0
+    prior_bar.high = 22506.0
+    prior_bar.low = 22498.0  # Tested 20 EMA at 22500
+    prior_bar.close = 22501.0
+    prior_bar.volume = 3000.0
+    prior_bar.call_buy_vol = 2000.0
+    prior_bar.call_sell_vol = 200.0
+    prior_bar.put_buy_vol = 500.0
+    prior_bar.put_sell_vol = 1000.0
+    base_bars.append(prior_bar)
+
+    # Next bar (N) breaks prior bar High (22506.0 + clearance = 22508.0)
+    forming_bar = MagicMock()
+    forming_bar.tick_count = 50
+    forming_bar.open = 22501.0
+    forming_bar.high = 22515.2
+    forming_bar.low = 22500.5
+    forming_bar.close = 22515.0
+    forming_bar.volume = 5000.0
+    forming_bar.call_buy_vol = 8000.0
+    forming_bar.put_buy_vol = 500.0
+
+    mock_pae.bars_1m = base_bars
+    mock_pae._curr_1m_bar = forming_bar
+    mock_pae._opt_flow_1m = {"call_buy_vol": 8000.0, "put_buy_vol": 500.0}
+    mock_pae.get_pain_zone_vwaps.return_value = {"zone_top": 0.0, "zone_bottom": 0.0}
+    mock_pae.current_atr_1m = 10.0
+    mock_pae.ema_200_1m = 22400.0
+    mock_pae.ema_20_1m = 22500.0
+
+    observer = ShadowBoundaryObserver(price_action_engine=mock_pae, strike_step=50.0, log_dir="scratch")
+    observer.current_atm_strike = 22500.0
+    observer.strike_to_symbol = {(0, 22750.0): "NIFTY_22750_CE"}
+    observer.option_cache = {"NIFTY_22750_CE": 45.0}
+
+    now_sec = 1700000000.0 + 10.0  # sec_in_min = 30s
+    # Tick 1
+    observer._check_inflight_breakthrough(spot=22515.0, now_sec=now_sec)
+    assert len(observer.active_trades) == 0
+
+    # Tick 2 -> Fires EMA_20_REJECTION_BREAKOUT
+    observer._check_inflight_breakthrough(spot=22515.0, now_sec=now_sec + 0.2)
+    assert len(observer.active_trades) == 1
+    trade = observer.active_trades[0]
+    assert trade.boundary == "EMA_20_REJECTION_BREAKOUT"
+    assert trade.direction == "UP"
+
+    # Verify N-1 Wyckoff Footprint Telemetry
+    assert trade.n1_vol == pytest.approx(3000.0)
+    assert trade.n1_vol_dryup is True
+    # Net Delta = (CB 2000 + PS 1000) - (PB 500 + CS 200) = 3000 - 700 = +2300
+    assert trade.n1_net_delta == pytest.approx(2300.0)
+
+
+
