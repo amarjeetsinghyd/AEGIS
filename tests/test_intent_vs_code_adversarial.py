@@ -591,6 +591,11 @@ def _make_mode_b_em(monkeypatch):
                 open=22452.0, high=22457.5, low=22455.0, close=22456.0, volume=50000.0,
             )
         )
+    # Mock disk persistence to prevent unit tests from polluting live production state
+    monkeypatch.setattr(AegisExecutionManager, "_save_active_context", lambda self: None)
+    monkeypatch.setattr(AegisExecutionManager, "_load_active_context", lambda self: None)
+    monkeypatch.setattr(AegisExecutionManager, "_append_history", lambda self, *args, **kwargs: None)
+
     broker = MagicMock()
     # Neutralize the quote path: float(MagicMock()) == 1.0 would nuke the leg
     # premium to -87% and fire the Premium Hard SL disaster floor spuriously.
