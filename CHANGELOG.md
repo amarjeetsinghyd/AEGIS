@@ -1,5 +1,28 @@
 # Changelog
 
+## [Unreleased] - 2026-10-26 (Semantic Intent-to-Code Parity Audit & Adversarial Torture Testing)
+
+### Added
+- **Adversarial Torture Suite `tests/test_intent_vs_code_adversarial.py` (28 tests)**: counter-example simulations proving the machine never trades against the human's Trading Intent — fake Pillar 1 breakout-from-below / breakdown-from-above proven blocked on all 3 trigger routes (Bar-Close, Mode A Arming, Mode A Pre-Close), Mode A Pillar 2 safety-stack parity, Mode B vs Pain Zone VWAP / 5m trend, in-flight option flow enrichment, and the T:60s exact-bucket Failed-Close Escape. Suite runs 100% green on both local and VPS Python.
+- **Pain Zone VWAP Alignment helper `_pain_zone_vwap_aligned()`** (`AEGIS/core/price_action_engine.py`): direction-selected substitute for the impossible native index VWAP (the index prints no volume) — **CALL** requires spot above the composite option-flow VWAP AND above the Trapped Call-Buyer line (`vwap_call_buy`); **PUT** requires spot below the composite AND below the Trapped Put-Buyer line (`vwap_put_buy`). Fail-open on warmup/missing lines, mirroring `band_veto_blocks` semantics.
+
+### Fixed (8 Semantic Intent-to-Code Gaps)
+- **Pillar 1 Dow Anti-Breakout Veto now checks OPEN crossings** across all 3 loops (10-bar window, trend walk-back, orderly pullback) — a candle opening below the 20 EMA band and piercing up was bypassing the close-only veto (`breakout_from_below_veto`).
+- **Pillar 1 expansion open gate**: `is_bullish_expansion` / `is_bearish_expansion` accepted big-body candles piercing from the wrong side; new `breakout_from_below_open_veto` / `breakdown_from_above_open_veto` gates require the rejection candle to open inside the band or on the correct side.
+- **Mode A Pre-Close Dow validation judged the WRONG bar**: the forming candle is not yet in `bars_1m`, so `_validate_dow_hl2_lh2_structure` was validating the previous closed bar as touch2 — new `virtual_bar` parameter makes Pre-Close judge the LIVE forming candle.
+- **Mode A Pillar 2 was missing 3 safety layers** vs the main ladder: `min_sweep_depth`, Pain Zone VWAP alignment and the Structural Obstacle Shield (plus opposite-wick caps and wick dominance) are now enforced identically in Arming and Pre-Close.
+- **Mode B ignored its `external_vwap` parameter entirely** — spot could fire a breakout against the composite option-flow VWAP. The gate is now live (`below_vwap` / `above_vwap`).
+- **Mode B Pillar 4 lacked the 5m structural alignment gate** enforced by the bar-close `check_topological_prominence_breakout` ladder — parity restored (`trend_5m_bullish_mb` / `trend_5m_bearish_mb`).
+- **In-flight signals carried zero option flow**: option flow attaches to the candle only at `_on_1m_bar_close`, so Mode A / Mode B `pa_details` shipped `bull_flow` / `bear_flow` / `opt_total_vol` = 0 into conviction scoring — `get_relative_bar_metrics` now overlays the live `_opt_flow_1m` accumulator on the forming bar.
+- **Mode B Failed-Close Escape T:60s race**: the wall-clock monitor could judge the PRE-entry box bar (which closes inside the boundary by definition) before the entry candle's first post-boundary tick closed it — premature scratch of healthy breakouts. The escape now matches the exact entry-candle minute bucket (`MODE_B_FAILED_CLOSE_ESCAPE`).
+
+### Tests
+- Suite **216 → 244** (28 new adversarial tests; fast dev suite 242 in ~13s, full suite 244 in ~95s — 100% PASSED on local; adversarial suite also 28/28 green on VPS Python).
+
+### Ops
+- Fixes deployed to VPS (`137.23.41.38`) at 03:50 IST (safe pre-market window): blob-verified file sync, `py_compile` OK, `aegis-bot` PM2 restarted and stable ahead of Monday 08:55 IST NIFTY 1-DTE wakeup.
+- VPS git repo object store repaired and re-synced to `origin/main` (see commit history for details).
+
 ## [Unreleased] - 2026-10-25 (Monorepo Zero-Entropy Cleanup, Core De-Bloat, Friday Deep Sleep & Local–VPS Parity)
 
 ### Added

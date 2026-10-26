@@ -380,16 +380,16 @@ Monitored at 2 Hz by `_manage_open_trade()` (`aegis_execution_manager.py`):
 
 ---
 
-## Verification & Test Suite Matrix (216 Tests — 100% Green)
+## Verification & Test Suite Matrix (244 Tests — 100% Green)
 
-AEGIS Production Version 1.0 (v1.0 Locked) is certified by 216 active tests across the repository:
+AEGIS Production Version 1.0 (v1.0 Locked) is certified by 244 active tests across the repository:
 
 ```powershell
 python -m pytest tests -m "not slow" -q
-# Output: 214 passed in ~15s (100% GREEN — fast dev suite; slow replays deselected)
+# Output: 242 passed in ~13s (100% GREEN — fast dev suite; slow replays deselected)
 
 python -m pytest tests -q
-# Output: 216 passed in ~92s (full suite incl. 1.8L-tick parquet replay parity)
+# Output: 244 passed in ~95s (full suite incl. 1.8L-tick parquet replay parity)
 ```
 
 | Test Suite File | Tests | Key Invariants Verified |
@@ -415,7 +415,23 @@ python -m pytest tests -q
 | `tests/test_universe_side_split.py` | 4 | CE/PE universe robust split (single-sided feed protection). |
 | `tests/test_system_wiring.py` | 2 | End-to-end component wiring, settings resolution. |
 | `tests/test_shared_runtime_paths.py` | 2 | Runtime paths, common IPC delegation (protected kronos legacy branch). |
-| **Total Test Suite** | **216** | **100% PASSED — ZERO FAILURES** (fast 214 + slow parity 2) |
+| `tests/test_intent_vs_code_adversarial.py` | 28 | Semantic Intent-to-Code Parity adversarial torture suite: fake Pillar 1 breakout/breakdown counter-examples proven blocked on all 3 routes (Bar-Close, Mode A Arming/Pierce/Pre-Close), Dow open-side veto, Mode A Pillar 2 safety-stack parity, Mode B Pain Zone VWAP + 5m trend gates, in-flight `_opt_flow_1m` enrichment, exact-bucket T:60s Failed-Close Escape. |
+| **Total Test Suite** | **244** | **100% PASSED — ZERO FAILURES** (fast 242 + slow parity 2) |
+
+---
+
+## Semantic Intent-to-Code Parity Audit (2026-10-26)
+
+Adversarial counter-example audit that eliminated every gap between the human's Trading Intent and the machine's implementation. Each rule below is proven by a dedicated counter-example test in `tests/test_intent_vs_code_adversarial.py`:
+
+1. **Pillar 1 Open-Side Anti-Breakout Veto**: `_validate_dow_hl2_lh2_structure` now vetoes candles whose **OPEN** crosses the opposite side of the 20 EMA Band (not only the close) across all three loops (10-bar window, trend walk-back, orderly pullback). A candle opening below the band and piercing up is a breakout, never a pullback rejection (`breakout_from_below_veto` / `breakdown_from_above_veto`).
+2. **Pillar 1 Expansion Open Gate**: `check_20_ema_rejection` rejects expansion candles that opened across the band (`breakout_from_below_open_veto` / `breakdown_from_above_open_veto`) — a rejection candle must open inside the band or on the correct side.
+3. **Pre-Close Virtual Forming Bar**: `_validate_dow_hl2_lh2_structure` accepts a `virtual_bar` — Mode A Pre-Close (T:50s–T:58s) now judges the Dow HL2/LH2 chain on the LIVE forming candle instead of the previous closed bar.
+4. **Mode A Pillar 2 Full Parity**: Arming + Pre-Close enforce the identical safety stack as the main `check_micro_sweep_reclaim` ladder: `min_sweep_depth`, opposite-wick caps ($\le 15\%$), wick dominance ($\ge 1.25\times$), Structural Obstacle Shield, and Pain Zone VWAP alignment.
+5. **Pain Zone VWAP Alignment (`_pain_zone_vwap_aligned`)**: the index prints no native volume — every "VWAP" is an option-flow weighted spot VWAP from the 4 trapped-party streams. **CALL** requires spot above the composite option-flow VWAP **and** above the Trapped Call-Buyer line (`vwap_call_buy`); **PUT** requires spot below the composite **and** below the Trapped Put-Buyer line (`vwap_put_buy`). Warmup/missing lines fail-open (mirrors `band_veto_blocks`). Enforced in Mode A Arming/Pierce/Pre-Close and Mode B (`below_vwap` / `above_vwap` — the previously ignored `external_vwap` parameter is now live).
+6. **Mode B Pillar 4 5m Trend Gate**: Mode B S/R Registry breakout now enforces the same 5m structural alignment as the bar-close `check_topological_prominence_breakout` ladder.
+7. **In-Flight Option Flow Enrichment**: `get_relative_bar_metrics` overlays the live `_opt_flow_1m` accumulator on the forming bar — Mode A / Mode B signals carry real `bull_flow` / `bear_flow` / `opt_total_vol` into conviction scoring (option flow attaches to the candle only at `_on_1m_bar_close`).
+8. **Mode B Failed-Close Escape (Exact Bucket Matching)**: `MODE_B_FAILED_CLOSE_ESCAPE` judges the exact entry candle via minute-bucket matching — never the pre-entry box bar (which closes inside the boundary by definition) during the T:60s tick race.
 
 ---
 
