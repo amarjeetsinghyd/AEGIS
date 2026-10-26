@@ -616,4 +616,64 @@ def test_check_n1_wyckoff_gate_logic():
     assert r == "wyckoff_n1_opposing_call_delta_swamp"
 
 
+def test_micro_sweep_sr_registry_mapping():
+    """Verify that Pillar 2 micro-sweep maps to active StructuralLevel Support/Resistance from the Registry."""
+    from AEGIS.core.price_action_engine import StructuralLevel
+    pa = PriceActionEngine()
+    pa.current_atr_1m = 10.0
+    now = 1792730040.0
+
+    # 1. Register a multi-touch Structural Support at 22480.0
+    support = StructuralLevel(
+        level_type="SUPPORT",
+        price=22480.0,
+        ts_created=now - 600,
+        prominence=2.5,
+        bar_idx=5,
+        seq_idx=5,
+        touch_count=2,
+    )
+    pa.session_levels.append(support)
+    pa._total_bars_seen = 15
+
+    # Feed 10 base bars
+    for i in range(10):
+        pa.bars_1m.append(OHLCBar(
+            ts_start=now - (10 - i) * 60,
+            ts_end=now - (9 - i) * 60,
+            open=22485.0,
+            high=22490.0,
+            low=22482.0,
+            close=22486.0,
+            volume=10000.0,
+            tick_count=50,
+        ))
+
+    # Sweep Bar: opens at 22484.0, plunges to 22474.0 (pierces 22480 by 6 pts > min_sweep),
+    # then closes at 22486.0 (> 22480 support, 83% lower wick)
+    sweep_bar = OHLCBar(
+        ts_start=now,
+        ts_end=now + 60,
+        open=22484.0,
+        high=22488.0,
+        low=22474.0,
+        close=22486.0,
+        volume=15000.0,
+        tick_count=60,
+    )
+    pa.bars_1m.append(sweep_bar)
+    pa.last_price = 22486.0
+
+    # Execute Pillar 2 check
+    ok, reason, details = pa.check_micro_sweep_reclaim("CALL", current_vwap=22470.0, current_time=now + 65.0)
+    assert ok is True
+    assert details["pillar"] == 2
+    assert details["pa_setup_name"] == "micro_sweep_reclaim"
+    assert details["sweep_source"] == "SR_REGISTRY"
+    assert details["swept_level"] == 22480.0
+    assert details["level_touches"] == 2
+    assert details["level_prominence"] == 2.5
+
+
+
 

@@ -13,7 +13,7 @@
 > 1. **Price Action Primary & Mode B Golden Middle Path Law**: AEGIS operates strictly on a **Macro Price Action Primary Trigger** across 4 canonical pillars and Priority Mode B In-Flight Breakthrough:
 >    - **Priority Mode B (In-Flight Breakthrough Surge)**: Mid-bar entry from **T:08s onwards (no upper cap)** when forming candle pierces pre-mapped boundary (Pain Zone Top/Bottom, 200 EMA Ribbon, Squeeze Box, S&R) with sweet-spot range ($0.35 \times \text{ATR} \le \text{Range} \le 1.20 \times \text{ATR}$), body ratio $\ge 65\%$, leading wick $\le 0.05 \times \text{ATR}$, 2-tick boundary persistence, and live option delta dominance $\ge 1.30\times$ (or spot tick rate $\ge 1.5$ ticks/sec). Enters ahead of retail, filling resting +4.0% Maker TP before or as candle closes.
 >    - **Pillar 1**: 20 EMA Pullback & Momentum Rejection (`20_ema_rejection` — `price_action_engine.py`, Bar close T:00s with pre-staged strikes & T:50s early entry).
->    - **Pillar 2**: Liquidity Sweep & Reclaim (`micro_sweep_reclaim` 5-bar Turtle Soup stop-hunt reclaim + parallel shadow topological sweep).
+>    - **Pillar 2**: Liquidity Sweep & Reclaim (`micro_sweep_reclaim` Priority 1 Dynamic S/R Registry & Day Extreme [PDH/PDL] stop-hunt reclaim + parallel shadow topological sweep).
 >    - **Pillar 3**: Volatility Squeeze to Expansion Breakout (`volatility_squeeze_breakout` — $O(1)$ metric ATR box compression).
 >    - **Pillar 4**: 0-D Prominence Hub Structural Breakout (`check_topological_prominence_breakout` via `FastMonotonicStack`, $\hat{\pi} \ge 1.75$, $VR_t \ge 1.4$ Volume Ratio vs 60m median volume, 5m structural trend alignment).
 > 2. **Absolute Pain Zone VWAP Band Law**: Single unified directional veto before pillars:

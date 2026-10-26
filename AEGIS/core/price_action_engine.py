@@ -2336,6 +2336,60 @@ class PriceActionEngine:
 
         return False, "unknown_direction", {}
 
+    def _find_swept_sr_level(
+        self,
+        direction: str,
+        bar: Any,
+        min_sweep_depth: float,
+        atr: float,
+    ) -> Optional[StructuralLevel]:
+        """
+        Maps a candidate sweep candle to an active Structural Support (CALL) or Resistance (PUT)
+        from self.session_levels or Day Extremes (PDH/PDL).
+        """
+        is_up = direction.upper() in ("UP", "CALL")
+        target_type = "SUPPORT" if is_up else "RESISTANCE"
+
+        candidates = [
+            lvl for lvl in self.session_levels
+            if lvl.level_type == target_type
+            and not lvl.is_broken
+            and ((self._total_bars_seen - lvl.seq_idx) >= 2 or (getattr(bar, "ts_start", 0) - lvl.ts_created) >= 120.0)
+        ]
+
+        # Include Previous Day Extremes (PDL / PDH) if not already in session_levels
+        if is_up and self.pdl > 0 and not any(abs(l.price - self.pdl) < 2.0 for l in candidates):
+            candidates.append(
+                StructuralLevel(level_type="SUPPORT", price=self.pdl, ts_created=0.0, prominence=2.0, bar_idx=0, touch_count=2)
+            )
+        elif (not is_up) and self.pdh > 0 and not any(abs(l.price - self.pdh) < 2.0 for l in candidates):
+            candidates.append(
+                StructuralLevel(level_type="RESISTANCE", price=self.pdh, ts_created=0.0, prominence=2.0, bar_idx=0, touch_count=2)
+            )
+
+        # Sort by institutional strength: touch_count and prominence
+        candidates.sort(key=lambda l: (l.touch_count * 0.5 + l.prominence), reverse=True)
+
+        for lvl in candidates:
+            if is_up:
+                # Candle must open near/above support, plunge below by min_sweep_depth, and close back above
+                if (
+                    bar.open >= (lvl.price - 0.35 * atr)
+                    and bar.low <= (lvl.price - min_sweep_depth)
+                    and bar.close > lvl.price
+                ):
+                    return lvl
+            else:
+                # Candle must open near/below resistance, surge above by min_sweep_depth, and close back below
+                if (
+                    bar.open <= (lvl.price + 0.35 * atr)
+                    and bar.high >= (lvl.price + min_sweep_depth)
+                    and bar.close < lvl.price
+                ):
+                    return lvl
+
+        return None
+
     def check_micro_sweep_reclaim(
         self,
         direction: str,
@@ -2399,11 +2453,23 @@ class PriceActionEngine:
 
         # Lookback prior 5 closed bars (excluding current bar)
         prior_bars = list(self.bars_1m)[-(lookback_bars + 1):-1]
-        sw_low = min(b.low for b in prior_bars)
-        sw_high = max(b.high for b in prior_bars)
-
         buffer_pts = max(5.0, (ref_spot / 24000.0) * 5.0)
         min_sweep_depth = max(1.5, (ref_spot / 24000.0) * 1.5, 0.08 * _atr_ref)
+
+        # ─── Priority 1: Dynamic Session S/R Level Registry Mapping ───
+        sr_lvl = self._find_swept_sr_level(direction, bar, min_sweep_depth, _atr_ref)
+        if sr_lvl is not None:
+            sw_low = sr_lvl.price if direction.upper() in ("UP", "CALL") else bar.low
+            sw_high = sr_lvl.price if direction.upper() in ("DOWN", "PUT") else bar.high
+            sweep_source = "SR_REGISTRY"
+            level_prominence = sr_lvl.prominence
+            level_touches = sr_lvl.touch_count
+        else:
+            sw_low = min(b.low for b in prior_bars)
+            sw_high = max(b.high for b in prior_bars)
+            sweep_source = "FALLBACK_LOCAL_SWING"
+            level_prominence = 1.0
+            level_touches = 1
 
         # Live Spot Sanity Guard
         if self.last_price > 0:
@@ -2470,6 +2536,10 @@ class PriceActionEngine:
                 details = {
                     "pa_setup_name": "micro_sweep_reclaim",
                     "pillar": 2,
+                    "sweep_source": sweep_source,
+                    "swept_level": round(sw_low, 2),
+                    "level_prominence": level_prominence,
+                    "level_touches": level_touches,
                     "swing_low": round(sw_low, 2),
                     "sweep_depth": round(sw_low - bar.low, 2),
                     "min_sweep_depth": round(min_sweep_depth, 2),
@@ -2536,6 +2606,10 @@ class PriceActionEngine:
                 details = {
                     "pa_setup_name": "micro_sweep_reclaim",
                     "pillar": 2,
+                    "sweep_source": sweep_source,
+                    "swept_level": round(sw_high, 2),
+                    "level_prominence": level_prominence,
+                    "level_touches": level_touches,
                     "swing_high": round(sw_high, 2),
                     "bar_open": round(bar.open, 2),
                     "bar_high": round(bar.high, 2),
@@ -3417,11 +3491,18 @@ class PriceActionEngine:
                 if dt_bar is not None:
                     is_lunch_chop = (dt_time(11, 15, 0) <= dt_bar.time() <= dt_time(13, 0, 0))
             if not is_lunch_chop:
-                prior_5 = list(self.bars_1m)[-6:-1]
-                swept_low = min(b.low for b in prior_5)
-                # Parity with check_micro_sweep_reclaim: minimum sweep depth
+                # Parity with check_micro_sweep_reclaim: minimum sweep depth & S/R Registry Mapping
                 ref_spot_2 = self.last_price if self.last_price > 0 else (bar.close if bar.close > 0 else 24000.0)
                 min_sweep_depth = max(1.5, (ref_spot_2 / 24000.0) * 1.5, 0.08 * atr)
+                sr_lvl_up = self._find_swept_sr_level("CALL", bar, min_sweep_depth, atr)
+                if sr_lvl_up is not None:
+                    swept_low = sr_lvl_up.price
+                    sweep_source_label = f"S/R Support {sr_lvl_up.price:.2f} (Touches={sr_lvl_up.touch_count})"
+                else:
+                    prior_5 = list(self.bars_1m)[-6:-1]
+                    swept_low = min(b.low for b in prior_5)
+                    sweep_source_label = f"Local 5-Bar Low {swept_low:.2f}"
+
                 swept_and_reclaimed = (bar.low <= (swept_low - min_sweep_depth)) and (bar.close > swept_low)
                 sweep_geom = (
                     (lower_wick_ratio >= 0.35)
@@ -3446,7 +3527,7 @@ class PriceActionEngine:
                             "armed_ts": self.last_ts,
                         }
                         self._mode_a_last_trigger_bar_idx["P2_SWEEP_UP"] = bar_idx
-                        logger.info(f"[PriceActionEngine] [MODE_A_ARMED] Pillar 2 Micro-Sweep CALL Armed | SweptLow: {swept_low:.2f} | AnchorHigh: {bar.high:.2f}")
+                        logger.info(f"[PriceActionEngine] [MODE_A_ARMED] Pillar 2 Micro-Sweep CALL Armed | Level: {sweep_source_label} | AnchorHigh: {bar.high:.2f}")
 
         # ─── 4. Pillar 2: PUT Micro-Sweep & Reclaim Arming ───
         last_p2_down_idx = self._mode_a_last_trigger_bar_idx.get("P2_SWEEP_DOWN", -100)
@@ -3460,11 +3541,18 @@ class PriceActionEngine:
                 if dt_bar is not None:
                     is_lunch_chop = (dt_time(11, 15, 0) <= dt_bar.time() <= dt_time(13, 0, 0))
             if not is_lunch_chop:
-                prior_5 = list(self.bars_1m)[-6:-1]
-                swept_high = max(b.high for b in prior_5)
-                # Parity with check_micro_sweep_reclaim: minimum sweep depth
+                # Parity with check_micro_sweep_reclaim: minimum sweep depth & S/R Registry Mapping
                 ref_spot_2d = self.last_price if self.last_price > 0 else (bar.close if bar.close > 0 else 24000.0)
                 min_sweep_depth_dn = max(1.5, (ref_spot_2d / 24000.0) * 1.5, 0.08 * atr)
+                sr_lvl_dn = self._find_swept_sr_level("PUT", bar, min_sweep_depth_dn, atr)
+                if sr_lvl_dn is not None:
+                    swept_high = sr_lvl_dn.price
+                    sweep_source_label_dn = f"S/R Resistance {sr_lvl_dn.price:.2f} (Touches={sr_lvl_dn.touch_count})"
+                else:
+                    prior_5 = list(self.bars_1m)[-6:-1]
+                    swept_high = max(b.high for b in prior_5)
+                    sweep_source_label_dn = f"Local 5-Bar High {swept_high:.2f}"
+
                 swept_and_reclaimed = (bar.high >= (swept_high + min_sweep_depth_dn)) and (bar.close < swept_high)
                 sweep_geom = (
                     (upper_wick_ratio >= 0.35)
@@ -3489,7 +3577,7 @@ class PriceActionEngine:
                             "armed_ts": self.last_ts,
                         }
                         self._mode_a_last_trigger_bar_idx["P2_SWEEP_DOWN"] = bar_idx
-                        logger.info(f"[PriceActionEngine] [MODE_A_ARMED] Pillar 2 Micro-Sweep PUT Armed | SweptHigh: {swept_high:.2f} | AnchorLow: {bar.low:.2f}")
+                        logger.info(f"[PriceActionEngine] [MODE_A_ARMED] Pillar 2 Micro-Sweep PUT Armed | Level: {sweep_source_label_dn} | AnchorLow: {bar.low:.2f}")
 
     def _check_wyckoff_harmony(self, direction: str, bar: Any) -> bool:
         """Verifies institutional order flow delta harmony (no opposing liquidation dump)."""

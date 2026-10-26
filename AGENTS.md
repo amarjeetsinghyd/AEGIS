@@ -93,7 +93,7 @@ Shared library: `common/` (broker / execution / market / ipc / runtime / config 
 
 ### 1. Macro Price Action 4 Pillars (Primary Triggers)
 * **Pillar 1 (`20_ema_rejection`)**: Classical Dow Theory `HL2` (CALL) / `LH2` (PUT) 2nd-touch confirmation into 20 EMA High-Low Band + Mode A execution.
-* **Pillar 2 (`micro_sweep_reclaim`)**: 5-bar liquidity sweep & reclaim + Mode A execution (with 11:15–13:00 IST Lunch Chop Veto).
+* **Pillar 2 (`micro_sweep_reclaim`)**: Priority 1 Dynamic S/R Registry & Day Extreme (PDH/PDL) Liquidity Sweep & Reclaim (eliminates random 5-bar noise) + Mode A execution (with 11:15–13:00 IST Lunch Chop Veto).
 * **Pillar 3 (`volatility_squeeze_breakout`)**: 3–4 bar tight box (`<= 1.25x ATR`) expansion breakout + Mode B In-Flight Surge (`T:08s onwards / No Upper Cap`) + Anti-Climax Cap (`<= 1.35x ATR`).
 * **Pillar 4 (`topological_prominence_breakout`)**: Priority 1 Dynamic S/R Registry Breakout + Priority 2 `T-2` 0-D Prominence Hub (`FastMonotonicStack`), governed by Mode B In-Flight Surge, Day Extreme Runway Rule, and Wyckoff Stopping Volume Veto (`hvg_engine` and its 5m structural veto are permanently DECOMMISSIONED & ARCHIVED).
 * **Priority Mode B (`check_mode_b_breakthrough`)**: Mid-bar entry from `T:08s onwards (No Upper Cap)` on sweet-spot range (`0.35x–1.20x ATR`), body $\ge 65\%$, leading wick $\le 0.05 \times \text{ATR}$, 2-tick boundary persistence, and live `_opt_flow_1m` delta $\ge 1.30\times$ (or spot tick rate $\ge 1.5$ ticks/sec). Enters ahead of retail, filling resting +4.0% Maker TP (+3.0% on Friday) before or as candle closes.
