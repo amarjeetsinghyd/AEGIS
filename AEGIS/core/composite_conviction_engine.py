@@ -159,12 +159,16 @@ class CompositeConvictionEngine:
         """
         is_up = direction.upper() in ("UP", "CALL")
         eff_atr = max(atr, 1.0)
+        s_name_lower = setup_name.lower()
+        is_sweep = "sweep" in s_name_lower or "reclaim" in s_name_lower
+        is_rejection = "rejection" in s_name_lower or "20_ema" in s_name_lower or "pullback" in s_name_lower
+        is_sweep_or_rejection = is_sweep or is_rejection or setup_name in ("micro_sweep_reclaim", "20_ema_rejection", "albrooks_2legged_pullback")
 
         # 1. Swing Geometry Evaluation (15 pts max)
         swing_pts = 5.0  # Neutral default
         swing_reason = "neutral"
 
-        if setup_name in ("micro_sweep_reclaim", "20_ema_rejection", "albrooks_2legged_pullback"):
+        if is_sweep_or_rejection:
             # Case A — Pullback & Sweep Setups: Do NOT penalize lower highs / lower lows.
             # A dip/pullback into the key level is mandatory for these setups.
             # Since PriceActionEngine already validated the sweep reclaim or EMA rejection, award full points.
@@ -181,9 +185,11 @@ class CompositeConvictionEngine:
             is_lower_lows = (l3 < l2) and (l2 <= l1)
 
             # Case B — Breakout Setups
-            if setup_name in (
-                "volatility_squeeze_breakout",
-                "topological_prominence_breakout",
+            if (
+                setup_name in ("volatility_squeeze_breakout", "topological_prominence_breakout")
+                or "squeeze" in s_name_lower
+                or "prominence" in s_name_lower
+                or "breakout" in s_name_lower
             ):
                 ref_high = max(b1.high, b2.high)
                 ref_low = min(b1.low, b2.low)
@@ -279,10 +285,11 @@ class CompositeConvictionEngine:
 
         # 3. EMA & VWAP Alignment (5 pts max)
         ema_vwap_pts = 0.0
+        is_p1_rejection = (is_rejection and not is_sweep) or setup_name == "20_ema_rejection"
         if is_up:
             ema_aligned = (ema_20 > ema_50) if (ema_20 > 0 and ema_50 > 0) else True
             vwap_aligned = (spot_price > vwap) if vwap > 0 else True
-            if setup_name == "20_ema_rejection":
+            if is_p1_rejection:
                 if ema_aligned and vwap_aligned:
                     ema_vwap_pts = 5.0
                 elif ema_aligned or vwap_aligned:
@@ -301,7 +308,7 @@ class CompositeConvictionEngine:
         else:
             ema_aligned = (ema_20 < ema_50) if (ema_20 > 0 and ema_50 > 0) else True
             vwap_aligned = (spot_price < vwap) if vwap > 0 else True
-            if setup_name == "20_ema_rejection":
+            if is_p1_rejection:
                 if ema_aligned and vwap_aligned:
                     ema_vwap_pts = 5.0
                 elif ema_aligned or vwap_aligned:
@@ -368,10 +375,15 @@ class CompositeConvictionEngine:
 
         pa_wick_ratio = float((pa_details or {}).get("wick_ratio", 0.0))
         eff_wick = max(favorable_wick, pa_wick_ratio)
+        s_name_lower = setup_name.lower()
+        is_sweep = "sweep" in s_name_lower or "reclaim" in s_name_lower
+        is_rejection = "rejection" in s_name_lower or "20_ema" in s_name_lower or "pullback" in s_name_lower
+        is_sweep_or_rejection = is_sweep or is_rejection or setup_name in ("micro_sweep_reclaim", "20_ema_rejection", "albrooks_2legged_pullback")
 
         # 1. Candle Anatomy (12 pts max)
-        if setup_name in ("micro_sweep_reclaim", "20_ema_rejection", "albrooks_2legged_pullback"):
+        if is_sweep_or_rejection:
             # Reward EITHER strong rejection wick OR strong expansion body
+            # (Liquidity sweep & EMA rejection candles inherently have long tails/wicks that absorbed retail stops)
             if eff_wick >= 0.33 or body_pct >= 0.50:
                 body_pts = 12.0
             elif eff_wick >= 0.25 or body_pct >= 0.35:
@@ -394,7 +406,7 @@ class CompositeConvictionEngine:
         if adverse_wick > 0.40:
             close_pts = -4.0
             wick_penalty = -4.0
-        elif close_edge >= 0.70 or (setup_name in ("micro_sweep_reclaim", "20_ema_rejection") and eff_wick >= 0.35 and close_edge >= 0.55):
+        elif close_edge >= 0.70 or (is_sweep_or_rejection and eff_wick >= 0.35 and close_edge >= 0.55):
             close_pts = 8.0
         elif close_edge >= 0.55:
             close_pts = 6.0
@@ -469,9 +481,10 @@ class CompositeConvictionEngine:
         )
 
         # 1. Directional Persistence / Spot Trend Stability (12 pts max)
+        is_sweep_rejection = any(k in setup_name.lower() for k in ("sweep", "reclaim", "rejection", "20_ema"))
         if persistence_dp >= 0.65:
             dp_pts = 12.0
-        elif wyckoff_confirmed and setup_name in ("micro_sweep_reclaim", "20_ema_rejection"):
+        elif wyckoff_confirmed and (setup_name in ("micro_sweep_reclaim", "20_ema_rejection") or is_sweep_rejection):
             dp_pts = 10.5
         elif persistence_dp >= 0.50 or wyckoff_confirmed:
             dp_pts = 9.0
@@ -704,7 +717,19 @@ class CompositeConvictionEngine:
         )
 
         # 5. Apply Setup-Specific Weight Profiles
-        weights = self.SETUP_WEIGHT_PROFILES.get(setup_name, self.DEFAULT_WEIGHTS)
+        profile_key = setup_name
+        if profile_key not in self.SETUP_WEIGHT_PROFILES:
+            s_low = setup_name.lower()
+            if "sweep" in s_low or "reclaim" in s_low:
+                profile_key = "micro_sweep_reclaim"
+            elif "20_ema" in s_low or "rejection" in s_low:
+                profile_key = "20_ema_rejection"
+            elif "squeeze" in s_low:
+                profile_key = "volatility_squeeze_breakout"
+            elif "prominence" in s_low or "topological" in s_low:
+                profile_key = "topological_prominence_breakout"
+
+        weights = self.SETUP_WEIGHT_PROFILES.get(profile_key, self.DEFAULT_WEIGHTS)
         w_struct = weights["structure"]
         w_impulse = weights["impulse"]
         w_flow = weights["flow"]
