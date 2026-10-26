@@ -33,7 +33,6 @@ try:
     from AEGIS.core.composite_conviction_engine import (
         CompositeConvictionEngine,
         ConvictionResult,
-        AdaptiveMicroValidator,
     )
     from AEGIS.core.directional_persistence import DirectionalPersistenceEngine
     from AEGIS.core.option_quality import OptionQualityEngine
@@ -50,7 +49,6 @@ except ImportError:
         from core.composite_conviction_engine import (
             CompositeConvictionEngine,
             ConvictionResult,
-            AdaptiveMicroValidator,
         )
         from core.directional_persistence import DirectionalPersistenceEngine
         from core.option_quality import OptionQualityEngine
@@ -160,10 +158,8 @@ class AegisGammaEngine:
             self.scorer = None
 
         # ─── Order Flow Energy Validator (OFEE) ───
-        if AdaptiveMicroValidator is not None:
-            self.adaptive_micro_validator = AdaptiveMicroValidator(min_pass_score=60.0)
-        else:
-            self.adaptive_micro_validator = None
+        # Decommissioned & merged directly into CompositeConvictionEngine (Zero-Entropy Architecture)
+        self.adaptive_micro_validator = None
 
         # Decoupled legacy chop gate: wiring cut per user instruction
 
@@ -770,113 +766,48 @@ class AegisGammaEngine:
                                 pers_score = float(pa_details.get("dp_micro", 1.0))
                                 pers_confirmed = True
 
-                            # 2. ADAPTIVE ORDER FLOW ENERGY VALIDATOR (OFEE)
-                            # Evaluates Price Momentum (40 pts), Buyer Aggression I1 (35 pts), Velocity & Depth (25 pts)
-                            # Pass condition: Total Energy Score >= 60.0 / 100.
-                            # BOS-breakout confirmations use the strict momentum gate
-                            # (>= 70.0 + aligned touch + accelerating close + no deep wall).
-                            # Weak break = no momentum = instant discard.
+                            # 2. MICROSTRUCTURE EXTRACTION & SANITY CIRCUIT BREAKERS
+                            # Zero-Entropy Architecture: Order flow momentum is scored strictly by
+                            # CompositeConvictionEngine (>= 80.0 threshold). The redundant 60-point
+                            # energy gate is fully eliminated. Only hard liquidity circuit breakers
+                            # (spread blowout > 2.5%, ghost book < 200, severe flush < -1.5%) veto early.
                             energy_score = 100.0
                             micro_m = {}
                             time_since_close = (now_sec - anchor_T) if (anchor_T and anchor_T > 0) else 0.0
-                            # Mode B In-Flight Breakthroughs validate live order flow in PriceActionEngine (_opt_flow_1m delta >= 1.30x);
-                            # retrospective anchor_T option buffer evaluation is strictly bypassed for Mode B.
-                            if not is_mode_b and use_anchor and self.adaptive_micro_validator and self.scorer:
+                            if not is_mode_b and use_anchor and self.conviction_engine and self.scorer:
                                 buf = self.scorer.history.get(sym, [])
-                                is_bos_break = pa_details.get("rejection_type") in ("bos_breakout_confirmation", "bos_breakdown_confirmation")
-                                micro_ok = False
-
-                                # 1) Pre-close check across previous 60 seconds [T-60, T]:
-                                # Check trailing 30s [T-30, T], full candle 60s [T-60, T], and first half [T-60, T-30]
-                                if use_anchor and anchor_T is not None and anchor_T > 0:
-                                    micro_ok, energy_score, micro_m = self.adaptive_micro_validator.evaluate(
-                                        target_sym=sym,
+                                if buf:
+                                    micro_m = self.conviction_engine.extract_micro_metrics(
                                         tick_buffer=buf,
                                         anchor_T=anchor_T,
-                                        direction=direction,
-                                        pillar=pillar,
-                                        strict_bos=is_bos_break,
                                         lookback_sec=30.0,
                                     )
-                                    if not micro_ok:
-                                        # Check full 60s candle lookback [T-60, T] (earlier surge during candle formation)
-                                        micro_60_ok, energy_60, micro_60_m = self.adaptive_micro_validator.evaluate(
-                                            target_sym=sym,
+                                    # Fallback: check 60s lookback if 30s was invalid
+                                    if not micro_m.get("is_valid", True):
+                                        micro_60_m = self.conviction_engine.extract_micro_metrics(
                                             tick_buffer=buf,
                                             anchor_T=anchor_T,
-                                            direction=direction,
-                                            pillar=pillar,
-                                            strict_bos=is_bos_break,
                                             lookback_sec=60.0,
                                         )
-                                        if micro_60_ok:
-                                            micro_ok = True
-                                            energy_score = energy_60
+                                        if micro_60_m.get("is_valid", True):
                                             micro_m = micro_60_m
-                                    if not micro_ok:
-                                        # Also check first half of candle [T-60, T-30]
-                                        micro_h1_ok, energy_h1, micro_h1_m = self.adaptive_micro_validator.evaluate(
-                                            target_sym=sym,
-                                            tick_buffer=buf,
-                                            anchor_T=anchor_T - 30.0,
-                                            direction=direction,
-                                            pillar=pillar,
-                                            strict_bos=is_bos_break,
-                                            lookback_sec=30.0,
+
+                                    # Hard Circuit Breaker Check (Liquid market sanity floor)
+                                    if not micro_m.get("is_valid", True):
+                                        self._purge_impulse_memory(sym)
+                                        self._throttled_veto_log(
+                                            "v3_circuit_breaker",
+                                            f"[V3 CIRCUIT BREAKER] {sym} ({direction}) {pa_setup_name} P{pillar} blocked: "
+                                            f"{micro_m.get('reason')} (ret={micro_m.get('micro_ret_30s', 0.0):+.4f}, "
+                                            f"spread={micro_m.get('spread_pct', 0.0):.2f}%, depth={micro_m.get('tot_depth', 0)})"
                                         )
-                                        if micro_h1_ok:
-                                            micro_ok = True
-                                            energy_score = energy_h1
-                                            micro_m = micro_h1_m
+                                        return None
 
-                                # 2) Live trailing window [now_sec-30, now_sec] / [now_sec-60, now_sec] within 60s of candle close:
-                                # if flow hadn't arrived in the past 60s, wait up to 60s for post-breakout flow confirmation
-                                if not micro_ok and (0.0 <= time_since_close <= 60.0 or not use_anchor):
-                                    live_ok, live_energy, live_micro_m = self.adaptive_micro_validator.evaluate(
-                                        target_sym=sym,
-                                        tick_buffer=buf,
-                                        anchor_T=now_sec,
-                                        direction=direction,
-                                        pillar=pillar,
-                                        strict_bos=is_bos_break,
-                                        lookback_sec=30.0,
-                                    )
-                                    if not live_ok:
-                                        live_60_ok, live_60_energy, live_60_micro_m = self.adaptive_micro_validator.evaluate(
-                                            target_sym=sym,
-                                            tick_buffer=buf,
-                                            anchor_T=now_sec,
-                                            direction=direction,
-                                            pillar=pillar,
-                                            strict_bos=is_bos_break,
-                                            lookback_sec=60.0,
-                                        )
-                                        if live_60_ok:
-                                            live_ok = True
-                                            live_energy = live_60_energy
-                                            live_micro_m = live_60_micro_m
-
-                                    if live_ok:
-                                        micro_ok = True
-                                        energy_score = live_energy
-                                        micro_m = live_micro_m
-
-                                if not micro_ok:
-                                    self._purge_impulse_memory(sym)
-                                    self._throttled_veto_log(
-                                        "v3_drop_energy",
-                                        f"[V3 DROP ENERGY] {sym} ({direction}) {pa_setup_name} P{pillar} failed energy: "
-                                        f"{micro_m.get('reason')} (Score={energy_score:.1f}/100, "
-                                        f"ret={micro_m.get('micro_ret_30s', 0.0):+.4f}, "
-                                        f"I1={micro_m.get('touch_i1', 0.0):+.2f}, ticks={micro_m.get('n_ticks', 0)})"
-                                    )
-                                    return None
-
-                                # Update depth and prices from validated slice
-                                tot_bid_depth = micro_m.get("tot_bid_depth", tot_bid_depth)
-                                tot_ask_depth = micro_m.get("tot_ask_depth", tot_ask_depth)
-                                bp1 = micro_m.get("bp1", bp1)
-                                sp1 = micro_m.get("sp1", sp1)
+                                    # Update depth and quotes from verified slice
+                                    tot_bid_depth = micro_m.get("tot_bid_depth", tot_bid_depth)
+                                    tot_ask_depth = micro_m.get("tot_ask_depth", tot_ask_depth)
+                                    bp1 = micro_m.get("bp1", bp1)
+                                    sp1 = micro_m.get("sp1", sp1)
                             elif not is_mode_b and not use_anchor:
                                 # Stale-T unit-test fallback: basic depth wall and spread checks
                                 tot_depth = tot_bid_depth + tot_ask_depth
@@ -969,19 +900,15 @@ class AegisGammaEngine:
 
                                     if not conviction_res.is_approved:
                                         # 1) Pre-Close 60s Lookback [T-60, T]:
-                                        # Check if flow during the entire prior 60s candle formation approves conviction
-                                        if use_anchor and anchor_T is not None and anchor_T > 0 and self.adaptive_micro_validator and self.scorer:
+                                        # Check if flow during the entire prior 60s candle formation approves conviction (>= 80.0)
+                                        if use_anchor and anchor_T is not None and anchor_T > 0 and self.scorer and self.conviction_engine:
                                             buf = self.scorer.history.get(sym, [])
-                                            past_60_ok, past_60_energy, past_60_m = self.adaptive_micro_validator.evaluate(
-                                                target_sym=sym,
+                                            past_60_m = self.conviction_engine.extract_micro_metrics(
                                                 tick_buffer=buf,
                                                 anchor_T=anchor_T,
-                                                direction=direction,
-                                                pillar=pillar,
-                                                strict_bos=is_bos_break,
                                                 lookback_sec=60.0,
                                             )
-                                            if past_60_ok:
+                                            if past_60_m.get("is_valid", True):
                                                 past_conv_res = self.conviction_engine.compute_conviction_score(
                                                     direction=direction,
                                                     setup_name=pa_setup_name,
@@ -1008,7 +935,6 @@ class AegisGammaEngine:
                                                 if past_conv_res.is_approved:
                                                     conviction_res = past_conv_res
                                                     micro_m = past_60_m
-                                                    energy_score = past_60_energy
                                                     logger.info(
                                                         f"[AEGIS V3 PRE-CLOSE 60S FIRED] {sym} ({direction}) {pa_setup_name} "
                                                         f"order flow confirmed from prior 60s candle | "
@@ -1019,31 +945,22 @@ class AegisGammaEngine:
                                         # 2) 60s Asynchronous Order Flow Confirmation Window (Future):
                                         # If pre-close conviction failed, evaluate live trailing flow [now_sec-30, now_sec] / [now_sec-60, now_sec]
                                         # within 60s of candle close to confirm post-breakout surge
-                                        if 0.0 < time_since_close <= 60.0 and self.adaptive_micro_validator and self.scorer:
+                                        if 0.0 < time_since_close <= 60.0 and self.scorer and self.conviction_engine:
                                             buf = self.scorer.history.get(sym, [])
-                                            live_ok, live_energy, live_micro_m = self.adaptive_micro_validator.evaluate(
-                                                target_sym=sym,
+                                            live_micro_m = self.conviction_engine.extract_micro_metrics(
                                                 tick_buffer=buf,
                                                 anchor_T=now_sec,
-                                                direction=direction,
-                                                pillar=pillar,
-                                                strict_bos=is_bos_break,
                                                 lookback_sec=30.0,
                                             )
+                                            live_energy = 100.0
+                                            live_ok = live_micro_m.get("is_valid", True)
                                             if not live_ok:
-                                                live_60_ok, live_60_energy, live_60_micro_m = self.adaptive_micro_validator.evaluate(
-                                                    target_sym=sym,
+                                                live_micro_m = self.conviction_engine.extract_micro_metrics(
                                                     tick_buffer=buf,
                                                     anchor_T=now_sec,
-                                                    direction=direction,
-                                                    pillar=pillar,
-                                                    strict_bos=is_bos_break,
                                                     lookback_sec=60.0,
                                                 )
-                                                if live_60_ok:
-                                                    live_ok = True
-                                                    live_energy = live_60_energy
-                                                    live_micro_m = live_60_micro_m
+                                                live_ok = live_micro_m.get("is_valid", True)
 
                                             if live_ok:
                                                 live_conv_res = self.conviction_engine.compute_conviction_score(
