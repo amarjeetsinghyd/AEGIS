@@ -300,9 +300,12 @@ class ShadowBoundaryObserver:
             atr = 10.0
 
         curr_rng = curr_bar.high - curr_bar.low
-        # 1. Sweet-Spot Range Filter: never trigger on tiny noise (<0.35x ATR) or climax (>1.20x ATR)
-        if curr_rng < (0.35 * atr) or curr_rng > (1.20 * atr):
+        # 1. Activity Floor Filter: at least 0.20x ATR to avoid single-tick micro noise (upper cap removed for explosive breakouts)
+        if curr_rng < (0.20 * atr):
             return
+
+        # Scale-Invariant Clearance Buffer (consistent with PriceActionEngine)
+        min_clearance = max(2.0, (spot / 24000.0) * 2.0, 0.08 * atr)
 
         # 2. In-Flight Option Flow & Spot Tick Arrival Rate
         tick_rate = curr_bar.tick_count / max(float(sec_in_min), 1.0)
@@ -347,8 +350,8 @@ class ShadowBoundaryObserver:
         if pz_top > 0 and pz_bot > 0:
             last_trig = self.last_trigger_bar_idx.get("PAIN_ZONE_BREAKTHROUGH", -100)
             if (bar_idx - last_trig) >= 3:
-                # Bullish Breakthrough: Open <= pz_top, live spot >= pz_top + 0.15*atr
-                if curr_bar.open <= pz_top and spot >= (pz_top + 0.15 * atr):
+                # Bullish Breakthrough: Open <= pz_top, live spot >= pz_top + min_clearance
+                if curr_bar.open <= pz_top and spot >= (pz_top + min_clearance):
                     body_ratio = (spot - curr_bar.open) / max(curr_rng, 0.1)
                     upper_wick = curr_bar.high - spot
                     if body_ratio >= 0.65 and upper_wick <= (0.05 * atr):
@@ -363,8 +366,8 @@ class ShadowBoundaryObserver:
                 else:
                     self._mode_b_pz_up_ticks = 0
 
-                # Bearish Breakthrough: Open >= pz_bot, live spot <= pz_bot - 0.15*atr
-                if curr_bar.open >= pz_bot and spot <= (pz_bot - 0.15 * atr):
+                # Bearish Breakthrough: Open >= pz_bot, live spot <= pz_bot - min_clearance
+                if curr_bar.open >= pz_bot and spot <= (pz_bot - min_clearance):
                     body_ratio = (curr_bar.open - spot) / max(curr_rng, 0.1)
                     lower_wick = spot - curr_bar.low
                     if body_ratio >= 0.65 and lower_wick <= (0.05 * atr):
@@ -385,7 +388,7 @@ class ShadowBoundaryObserver:
             last_trig_ema = self.last_trigger_bar_idx.get("EMA_200_BREAKTHROUGH", -100)
             if (bar_idx - last_trig_ema) >= 3:
                 # Bullish cross above 200 EMA
-                if curr_bar.open <= ema200 and spot >= (ema200 + 0.15 * atr):
+                if curr_bar.open <= ema200 and spot >= (ema200 + min_clearance):
                     body_ratio = (spot - curr_bar.open) / max(curr_rng, 0.1)
                     upper_wick = curr_bar.high - spot
                     if body_ratio >= 0.65 and upper_wick <= (0.05 * atr):
@@ -401,7 +404,7 @@ class ShadowBoundaryObserver:
                     self._mode_b_ema_up_ticks = 0
 
                 # Bearish cross below 200 EMA
-                if curr_bar.open >= ema200 and spot <= (ema200 - 0.15 * atr):
+                if curr_bar.open >= ema200 and spot <= (ema200 - min_clearance):
                     body_ratio = (curr_bar.open - spot) / max(curr_rng, 0.1)
                     lower_wick = spot - curr_bar.low
                     if body_ratio >= 0.65 and lower_wick <= (0.05 * atr):
@@ -507,8 +510,11 @@ class ShadowBoundaryObserver:
 
     def _check_wyckoff_harmony(self, direction: str, bar: Any) -> bool:
         """Verifies institutional order flow delta harmony (no opposing liquidation dump)."""
-        cb = float(getattr(bar, "call_buy_vol", 0.0) or 0.0)
-        pb = float(getattr(bar, "put_buy_vol", 0.0) or 0.0)
+        opt_flow = getattr(self.pa_engine, "_opt_flow_1m", {}) if self.pa_engine else {}
+        if not isinstance(opt_flow, dict):
+            opt_flow = {}
+        cb = float(opt_flow.get("call_buy_vol", 0.0) or getattr(bar, "call_buy_vol", 0.0) or 0.0)
+        pb = float(opt_flow.get("put_buy_vol", 0.0) or getattr(bar, "put_buy_vol", 0.0) or 0.0)
         
         # If option flow volume is active
         if cb > 1000.0 or pb > 1000.0:
@@ -536,7 +542,9 @@ class ShadowBoundaryObserver:
         time_str = time.strftime("%H:%M:%S", time.localtime(now_sec))
         trade_id = f"SHADOW_{boundary}_{direction}_{int(now_sec)}"
         
-        spot_sl = (anchor_low - 2.0) if direction == "UP" else (anchor_high + 2.0)
+        atr = getattr(self.pa_engine, "current_atr_1m", 10.0) or 10.0
+        invalidation_cushion = max(2.0, (spot / 24000.0) * 2.0, 0.10 * atr)
+        spot_sl = (anchor_low - invalidation_cushion) if direction == "UP" else (anchor_high + invalidation_cushion)
         tp_price = opt_lp * 1.04 if opt_lp > 0 else 0.0
         sl_price = opt_lp * 0.88 if opt_lp > 0 else 0.0
         
