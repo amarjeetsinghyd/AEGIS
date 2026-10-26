@@ -84,9 +84,9 @@ class TestCompositeConvictionEngine:
         assert res.sizing_tier == "FULL_SIZE"
         assert res.recommended_tp_pct == 0.050
         assert res.sub_scores["structure"] >= 20.0
-        assert res.sub_scores["impulse"] >= 25.0
-        assert res.sub_scores["flow"] >= 25.0
-        assert res.sub_scores["contract"] == 15.0
+        assert res.sub_scores["impulse"] >= 20.0
+        assert res.sub_scores["flow"] >= 20.0
+        assert res.sub_scores["contract"] == 25.0
 
     def test_exhausted_lower_highs_scores_below_threshold(self, engine):
         """
@@ -193,11 +193,11 @@ class TestCompositeConvictionEngine:
             spread_pct=0.30,
         )
 
-        # Domain 4 neutralized: both return full 15.0 contract score
-        assert res_trap.sub_scores["contract"] == 15.0, (
-            "Domain 4 neutralized — delta=0.02 should now get full 15.0 contract score"
+        # Domain 4 neutralized: both return full 25.0 contract score
+        assert res_trap.sub_scores["contract"] == 25.0, (
+            "Domain 4 neutralized — delta=0.02 should now get full 25.0 contract score"
         )
-        assert res_sweet.sub_scores["contract"] == 15.0
+        assert res_sweet.sub_scores["contract"] == 25.0
         # Both setups have identical non-contract inputs → same total score
         assert res_trap.total_score == res_sweet.total_score
         # Delta is still logged in breakdown for telemetry
@@ -430,10 +430,10 @@ class TestCompositeConvictionEngine:
         assert res.is_approved is True
         assert res.total_score >= 85.0
         assert res.sizing_tier == "FULL_SIZE"
-        assert res.sub_scores["structure"] >= 25.0
-        assert res.sub_scores["impulse"] >= 25.0
+        assert res.sub_scores["structure"] >= 20.0
+        assert res.sub_scores["impulse"] >= 20.0
         assert res.sub_scores["flow"] >= 20.0
-        assert res.sub_scores["contract"] == 15.0
+        assert res.sub_scores["contract"] == 25.0
 
     def test_pillar_1_20_ema_rejection_with_wick_scores_approved(self, engine):
         """
@@ -484,7 +484,7 @@ class TestCompositeConvictionEngine:
         assert res.is_approved is True
         assert res.total_score >= 80.0
         assert res.breakdown["structure_details"]["swing_reason"] == "validated_pullback_reclaim"
-        assert res.sub_scores["structure"] >= 25.0
+        assert res.sub_scores["structure"] >= 20.0
 
     def test_newborn_bar_protection_on_bar_close(self, engine):
         """
@@ -523,6 +523,6 @@ class TestCompositeConvictionEngine:
         )
 
         # Impulse score should be evaluated against setup_bar (60 pt range, 300 vol), NOT newborn (0.5 pt range, 1 vol)
-        assert res.sub_scores["impulse"] >= 25.0
+        assert res.sub_scores["impulse"] >= 20.0
         assert res.total_score >= 85.0
 

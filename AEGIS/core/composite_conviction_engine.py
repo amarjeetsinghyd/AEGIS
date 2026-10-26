@@ -1,16 +1,15 @@
 """
 AEGIS Composite Conviction Engine — Unified 0-100 Continuous Evaluation Framework.
-
-Replaces rigid, binary boolean gates with continuous multi-domain conviction scoring:
-    Domain 1: Structure & Runway (30 pts) — Swing geometry, EMA alignment, obstacle distance
-    Domain 2: PA Impulse & Volume (30 pts) — Candle displacement, edge close, ATR expansion, volume surge
-    Domain 3: Flow & Real-Time Order Flow Momentum (25 pts) — Persistence Dp (12 pts), touch I1 & Live OFI Delta (13 pts) [Futures Muted]
-    Domain 4: Contract & Feasibility (15 pts) — Sweet-spot delta (0.25-0.45), tight bid-ask spread
+Zero-Entropy De-bloated Architecture (25-25-25-25 Model):
+    Domain 1: Structure & Spot Trend Persistence (25 pts) — Dp persistence, swing geometry, runway
+    Domain 2: PA Impulse & Velocity (25 pts) — Candle displacement, edge close, tick intensity, volume surge
+    Domain 3: Flow & Order Flow Momentum (25 pts) — Touch Aggression I1 (13 pts), Live OFI Delta & Dp (12 pts) [Futures Muted]
+    Domain 4: Contract & Liquidity Feasibility (25 pts) — Delta Sweet-Spot (15 pts), Spread & Depth (10 pts)
 
 Thresholds:
     >= 85.0: FULL_SIZE (2 lots, expanded target)
-    75.0 - 84.9: STANDARD_SIZE (1 lot, standard target)
-    < 75.0: BLOCKED (rejected with itemized audit breakdown)
+    80.0 - 84.9: STANDARD_SIZE (1 lot, standard target)
+    < 80.0: BLOCKED (rejected with itemized audit breakdown)
 
 Pure Python, zero heavy imports — hot-path safe (O(1) per call).
 Scale-invariant: all distances normalized via ATR and basis points (bps).
@@ -280,56 +279,51 @@ class CompositeConvictionEngine:
         )
         return metrics
 
-    # Default baseline weights (sum to 100.0)
+    # Default baseline weights (sum to 100.0) — Zero-Entropy 25-25-25-25 Model
     DEFAULT_WEIGHTS = {
-        "structure": 30.0,
-        "impulse": 30.0,
+        "structure": 25.0,
+        "impulse": 25.0,
         "flow": 25.0,
-        "contract": 15.0,
+        "contract": 25.0,
     }
 
     # Setup-specific weight profiles (each sums to 100.0)
     SETUP_WEIGHT_PROFILES = {
-        # Pillar 1: 20 EMA Pullback puts premium on structural trend health
         "20_ema_rejection": {
-            "structure": 35.0,
+            "structure": 25.0,
             "impulse": 25.0,
             "flow": 25.0,
-            "contract": 15.0,
+            "contract": 25.0,
         },
-        # Pillar 2: Micro-Sweep Reclaim balanced
         "micro_sweep_reclaim": {
-            "structure": 30.0,
-            "impulse": 30.0,
+            "structure": 25.0,
+            "impulse": 25.0,
             "flow": 25.0,
-            "contract": 15.0,
+            "contract": 25.0,
         },
         "albrooks_2legged_pullback": {
-            "structure": 30.0,
-            "impulse": 30.0,
+            "structure": 25.0,
+            "impulse": 25.0,
             "flow": 25.0,
-            "contract": 15.0,
+            "contract": 25.0,
         },
-        # Pillar 3: Volatility Squeeze breakout demands massive candle displacement
         "volatility_squeeze_breakout": {
             "structure": 25.0,
-            "impulse": 35.0,
+            "impulse": 25.0,
             "flow": 25.0,
-            "contract": 15.0,
+            "contract": 25.0,
         },
-        # Pillar 4: Topological Network Phase Shift Breakout (Shadow)
         "hvg_network_phase_shift": {
-            "structure": 30.0,
-            "impulse": 30.0,
+            "structure": 25.0,
+            "impulse": 25.0,
             "flow": 25.0,
-            "contract": 15.0,
+            "contract": 25.0,
         },
-        # Pillar 4 (V4 Final): 0-D Prominence Hub Structural Breakout
         "topological_prominence_breakout": {
-            "structure": 30.0,
-            "impulse": 30.0,
+            "structure": 25.0,
+            "impulse": 25.0,
             "flow": 25.0,
-            "contract": 15.0,
+            "contract": 25.0,
         },
     }
 
@@ -401,15 +395,15 @@ class CompositeConvictionEngine:
         is_rejection = "rejection" in s_name_lower or "20_ema" in s_name_lower or "pullback" in s_name_lower
         is_sweep_or_rejection = is_sweep or is_rejection or setup_name in ("micro_sweep_reclaim", "20_ema_rejection", "albrooks_2legged_pullback")
 
-        # 1. Swing Geometry Evaluation (15 pts max)
-        swing_pts = 5.0  # Neutral default
+        # 1. Swing Geometry Evaluation (12 pts max)
+        swing_pts = 4.0  # Neutral default
         swing_reason = "neutral"
 
         if is_sweep_or_rejection:
             # Case A — Pullback & Sweep Setups: Do NOT penalize lower highs / lower lows.
             # A dip/pullback into the key level is mandatory for these setups.
             # Since PriceActionEngine already validated the sweep reclaim or EMA rejection, award full points.
-            swing_pts = 15.0
+            swing_pts = 12.0
             swing_reason = "validated_pullback_reclaim"
         elif len(prior_bars) >= 3:
             b1, b2, b3 = prior_bars[-3], prior_bars[-2], prior_bars[-1]
@@ -432,27 +426,27 @@ class CompositeConvictionEngine:
                 ref_low = min(b1.low, b2.low)
                 check_price = max(spot_price, b3.close) if is_up else min(spot_price, b3.close)
                 if is_up and check_price > ref_high:
-                    swing_pts = 15.0
+                    swing_pts = 12.0
                     swing_reason = "breakout_structure_expansion"
                 elif (not is_up) and check_price < ref_low:
-                    swing_pts = 15.0
+                    swing_pts = 12.0
                     swing_reason = "breakout_structure_expansion"
                 elif is_up:
                     if is_higher_highs and is_higher_lows:
-                        swing_pts = 15.0
+                        swing_pts = 12.0
                         swing_reason = "bullish_hh_hl"
                     elif is_higher_lows or b3.close > b2.close:
-                        swing_pts = 10.0
+                        swing_pts = 8.0
                         swing_reason = "bullish_hl"
                     else:
                         swing_pts = 0.0
                         swing_reason = "breakout_compression_neutral"
                 else:
                     if is_lower_lows and is_lower_highs:
-                        swing_pts = 15.0
+                        swing_pts = 12.0
                         swing_reason = "bearish_ll_lh"
                     elif is_lower_highs or b3.close < b2.close:
-                        swing_pts = 10.0
+                        swing_pts = 8.0
                         swing_reason = "bearish_lh"
                     else:
                         swing_pts = 0.0
@@ -461,64 +455,64 @@ class CompositeConvictionEngine:
                 # Case C — Fallback / General
                 if is_up:
                     if is_higher_highs and is_higher_lows:
-                        swing_pts = 15.0
+                        swing_pts = 12.0
                         swing_reason = "bullish_hh_hl"
                     elif is_higher_lows or b3.close > b2.close:
-                        swing_pts = 10.0
+                        swing_pts = 8.0
                         swing_reason = "bullish_hl"
                     elif is_lower_highs:
                         # Distribution top / lower highs warning!
-                        swing_pts = -15.0
+                        swing_pts = -12.0
                         swing_reason = "exhaustion_lower_highs"
                     elif is_lower_lows:
-                        swing_pts = -10.0
+                        swing_pts = -8.0
                         swing_reason = "bearish_lower_lows"
                 else:
                     if is_lower_lows and is_lower_highs:
-                        swing_pts = 15.0
+                        swing_pts = 12.0
                         swing_reason = "bearish_ll_lh"
                     elif is_lower_highs or b3.close < b2.close:
-                        swing_pts = 10.0
+                        swing_pts = 8.0
                         swing_reason = "bearish_lh"
                     elif is_higher_highs:
                         # Rally bottom / higher highs warning!
-                        swing_pts = -15.0
+                        swing_pts = -12.0
                         swing_reason = "exhaustion_higher_highs"
                     elif is_higher_lows:
-                        swing_pts = -10.0
+                        swing_pts = -8.0
                         swing_reason = "bullish_higher_lows"
 
-        # 2. Runway to Key Obstacles (10 pts max)
-        runway_pts = 10.0
+        # 2. Runway to Key Obstacles (8 pts max)
+        runway_pts = 8.0
         runway_dist = 999.0
         if is_up:
             if pdh > 0 and pdh > spot_price:
                 runway_dist = (pdh - spot_price) / eff_atr
                 if runway_dist >= 1.5:
-                    runway_pts = 10.0
+                    runway_pts = 8.0
                 elif runway_dist >= 1.0:
-                    runway_pts = 7.0
+                    runway_pts = 5.0
                 elif runway_dist >= 0.6:
-                    runway_pts = 4.0
+                    runway_pts = 3.0
                 else:
                     runway_pts = 0.0  # Trapped directly under PDH resistance
             elif pdh > 0 and spot_price >= pdh:
                 # Already broken above PDH -> open sky breakout!
-                runway_pts = 10.0
+                runway_pts = 8.0
         else:
             if pdl > 0 and pdl < spot_price:
                 runway_dist = (spot_price - pdl) / eff_atr
                 if runway_dist >= 1.5:
-                    runway_pts = 10.0
+                    runway_pts = 8.0
                 elif runway_dist >= 1.0:
-                    runway_pts = 7.0
+                    runway_pts = 5.0
                 elif runway_dist >= 0.6:
-                    runway_pts = 4.0
+                    runway_pts = 3.0
                 else:
                     runway_pts = 0.0  # Trapped directly above PDL support
             elif pdl > 0 and spot_price <= pdl:
                 # Already broken below PDL -> open sky breakdown!
-                runway_pts = 10.0
+                runway_pts = 8.0
 
         # 3. EMA & VWAP Alignment (5 pts max)
         ema_vwap_pts = 0.0
@@ -562,7 +556,7 @@ class CompositeConvictionEngine:
                 else:
                     ema_vwap_pts = 2.0
 
-        raw_score = max(0.0, min(30.0, swing_pts + runway_pts + ema_vwap_pts))
+        raw_score = max(0.0, min(25.0, swing_pts + runway_pts + ema_vwap_pts))
         details = {
             "swing_pts": swing_pts,
             "swing_reason": swing_reason,
@@ -617,49 +611,49 @@ class CompositeConvictionEngine:
         is_rejection = "rejection" in s_name_lower or "20_ema" in s_name_lower or "pullback" in s_name_lower
         is_sweep_or_rejection = is_sweep or is_rejection or setup_name in ("micro_sweep_reclaim", "20_ema_rejection", "albrooks_2legged_pullback")
 
-        # 1. Candle Anatomy (12 pts max)
+        # 1. Candle Anatomy (10 pts max)
         if is_sweep_or_rejection:
             # Reward EITHER strong rejection wick OR strong expansion body
             # (Liquidity sweep & EMA rejection candles inherently have long tails/wicks that absorbed retail stops)
             if eff_wick >= 0.33 or body_pct >= 0.50:
-                body_pts = 12.0
+                body_pts = 10.0
             elif eff_wick >= 0.25 or body_pct >= 0.35:
-                body_pts = 9.0
+                body_pts = 7.5
             else:
-                body_pts = 5.0
+                body_pts = 4.0
         else:
             # Breakout Setups (P3, P4, BOS)
             if body_pct >= 0.55:
-                body_pts = 12.0
+                body_pts = 10.0
             elif body_pct >= 0.40:
-                body_pts = 9.0
+                body_pts = 7.5
             elif body_pct >= 0.25:
-                body_pts = 6.0
+                body_pts = 5.0
             else:
                 body_pts = 2.0
 
-        # 2. Edge Close / Wick Rejection (8 pts max)
+        # 2. Edge Close / Wick Rejection (7 pts max)
         wick_penalty = 0.0
         if adverse_wick > 0.40:
             close_pts = -4.0
             wick_penalty = -4.0
         elif close_edge >= 0.70 or (is_sweep_or_rejection and eff_wick >= 0.35 and close_edge >= 0.55):
-            close_pts = 8.0
+            close_pts = 7.0
         elif close_edge >= 0.55:
-            close_pts = 6.0
+            close_pts = 5.0
         else:
-            close_pts = 3.0
+            close_pts = 2.5
 
-        # 3. Range Expansion vs ATR (5 pts max)
+        # 3. Range Expansion vs ATR (4 pts max)
         range_atr = rng / eff_atr
         if range_atr >= 0.90:
-            range_pts = 5.0
-        elif range_atr >= 0.55:
             range_pts = 4.0
+        elif range_atr >= 0.55:
+            range_pts = 3.0
         else:
-            range_pts = 2.0
+            range_pts = 1.5
 
-        # 4. Volume / Institutional Participation (5 pts max)
+        # 4. Volume / Institutional Participation (4 pts max)
         vol_ratio = (bar_volume / vol_sma10) if vol_sma10 > 0 else 1.0
         pa_vr = float((pa_details or {}).get("vr_t", 0.0))
         wyckoff_vdr = float((wyckoff_details or {}).get("vdr", 0.0))
@@ -668,13 +662,13 @@ class CompositeConvictionEngine:
         wyckoff_conf = bool((wyckoff_details or {}).get("wyckoff_confirmed", False))
 
         if eff_vol_ratio >= 1.2 or wyckoff_conf:
-            vol_pts = 5.0
+            vol_pts = 4.0
         elif eff_vol_ratio >= 0.9:
-            vol_pts = 3.5
+            vol_pts = 3.0
         else:
-            vol_pts = 2.0
+            vol_pts = 1.5
 
-        raw_score = max(0.0, min(30.0, body_pts + close_pts + range_pts + vol_pts))
+        raw_score = max(0.0, min(25.0, body_pts + close_pts + range_pts + vol_pts))
         details = {
             "body_pct": round(body_pct, 3),
             "body_pts": body_pts,
@@ -782,28 +776,19 @@ class CompositeConvictionEngine:
         spread_pct: float,
     ) -> Tuple[float, Dict[str, Any]]:
         """
-        Domain 4: Contract & Feasibility (Max 15 pts raw)
-
-        NOTE (2026-09-22): Delta sweet-spot scoring (0.25-0.45) is NEUTRALIZED for
-        0DTE affordable index options. On expiry day, affordable OTM puts have delta
-        < 0.10 (theta-decayed), and near-ATM puts have delta > 0.55 (ITM territory).
-        No naturally affordable 0DTE strike lands in the 0.25-0.45 band, causing
-        systematic contract_drag across all valid setups. The budget constraint in
-        StrikeSelector already enforces contract selection; delta gating here is
-        redundant and counterproductive for testing-phase 0DTE index option trading.
-
-        Both delta and spread return full marks. Domain 4 still participates in
-        telemetry (abs_delta logged) so data is collected for future recalibration.
+        Domain 4: Contract Quality & Liquidity (Max 25 pts raw) — Zero-Entropy Scaled
+        - Delta: 15.0 pts (sweet-spot 0.25-0.45 or neutralized 0DTE floor)
+        - Spread Tightness: 10.0 pts (liquid index options)
         """
         abs_delta = abs(delta)
 
-        # 1. Delta — neutralized: full marks always (0DTE index options, see note above)
-        delta_pts = 10.0
+        # 1. Delta — 15 pts max (neutralized floor for affordable 0DTE index options)
+        delta_pts = 15.0
 
-        # 2. Spread Tightness — neutralized: full marks always (index options always tight)
-        spread_pts = 5.0
+        # 2. Spread Tightness — 10 pts max (index options always tight)
+        spread_pts = 10.0
 
-        raw_score = 15.0
+        raw_score = 25.0
         details = {
             "abs_delta": round(abs_delta, 3),
             "delta_pts": delta_pts,
@@ -972,11 +957,11 @@ class CompositeConvictionEngine:
         w_flow = weights["flow"]
         w_contract = weights["contract"]
 
-        # Normalize raw scores to the setup weights
-        scaled_struct = raw_struct * (w_struct / 30.0)
-        scaled_impulse = raw_impulse * (w_impulse / 30.0)
+        # Normalize raw scores to the setup weights (each 25.0 max)
+        scaled_struct = raw_struct * (w_struct / 25.0)
+        scaled_impulse = raw_impulse * (w_impulse / 25.0)
         scaled_flow = raw_flow * (w_flow / 25.0)
-        scaled_contract = raw_contract * (w_contract / 15.0)
+        scaled_contract = raw_contract * (w_contract / 25.0)
 
         total_score = round(max(0.0, min(100.0, scaled_struct + scaled_impulse + scaled_flow + scaled_contract)), 1)
 
