@@ -404,3 +404,65 @@ def test_mode_b_p4_triggers_with_larger_origin_dist_and_expansion():
     assert details["pa_setup_name"] == "topological_prominence_breakout"
     assert details["mode"] == "MODE_B_INFLIGHT_BREAKTHROUGH"
     assert details["boundary_level"] == 22465.0
+
+
+def test_compute_n1_footprint_and_20_ema_shadow_telemetry():
+    """Verify compute_n1_footprint calculates volume dry-up, synthetic net delta, and stopping volume."""
+    pa = PriceActionEngine()
+    now = datetime.now().timestamp()
+    
+    # Seed 20 historical bars with baseline volume 10,000
+    for i in range(20):
+        b = OHLCBar(
+            ts_start=now - (20 - i) * 60,
+            ts_end=now - (19 - i) * 60,
+            open=22400.0,
+            high=22410.0,
+            low=22395.0,
+            close=22405.0,
+            volume=10000.0,
+            tick_count=50,
+        )
+        pa.bars_1m.append(b)
+
+    # Test Case 1: Volume Dry-Up (vol = 5000 < 0.80 * 10000 = 8000)
+    dry_bar = OHLCBar(
+        ts_start=now,
+        ts_end=now + 60,
+        open=22400.0,
+        high=22405.0,
+        low=22398.0,
+        close=22402.0,
+        volume=5000.0,
+        tick_count=20,
+    )
+    dry_bar.call_buy_vol = 3000.0
+    dry_bar.call_sell_vol = 500.0
+    dry_bar.put_buy_vol = 400.0
+    dry_bar.put_sell_vol = 1000.0
+    pa.bars_1m.append(dry_bar)
+
+    fp = pa.compute_n1_footprint(dry_bar, atr=10.0)
+    assert fp["n1_vol"] == 5000.0
+    assert fp["n1_baseline_vol"] == 10000.0
+    assert fp["n1_vol_dryup"] is True
+    # Net Delta: (CB 3000 + PS 1000) - (PB 400 + CS 500) = 4000 - 900 = 3100
+    assert fp["n1_net_delta"] == 3100.0
+    assert fp["n1_stopping_vol"] is False
+
+    # Test Case 2: Stopping Volume (vol = 15000 >= 1.25 * 10000, range = 5 <= 0.80 * 10 = 8)
+    stopping_bar = OHLCBar(
+        ts_start=now + 60,
+        ts_end=now + 120,
+        open=22400.0,
+        high=22404.0,
+        low=22399.0,
+        close=22402.0,
+        volume=15000.0,
+        tick_count=80,
+    )
+    pa.bars_1m.append(stopping_bar)
+    fp2 = pa.compute_n1_footprint(stopping_bar, atr=10.0)
+    assert fp2["n1_stopping_vol"] is True
+    assert fp2["n1_vol_dryup"] is False
+
