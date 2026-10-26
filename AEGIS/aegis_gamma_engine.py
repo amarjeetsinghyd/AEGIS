@@ -30,28 +30,34 @@ from common.config import get_data_dir
 try:
     from AEGIS.core.price_action_engine import PriceActionEngine
     from AEGIS.core.microstructure_scorer import MicrostructureScorer
-    from AEGIS.core.adaptive_micro_validator import AdaptiveMicroValidator
+    from AEGIS.core.composite_conviction_engine import (
+        CompositeConvictionEngine,
+        ConvictionResult,
+        AdaptiveMicroValidator,
+    )
     from AEGIS.core.directional_persistence import DirectionalPersistenceEngine
     from AEGIS.core.option_quality import OptionQualityEngine
     from AEGIS.core.outcome_telemetry import OutcomeTelemetryEngine
     from AEGIS.core.oi_builtup_gate import OIBuiltupGate
     from AEGIS.core.index_vwap_engine import IndexVWAPEngine
     from AEGIS.core.quality_stack import QualitySlotPolicy, PostTriggerStabilityTracker
-    from AEGIS.core.composite_conviction_engine import CompositeConvictionEngine, ConvictionResult
     from AEGIS.core.wyckoff_volume_engine import WyckoffVolumeEngine
     from AEGIS.core.shadow_boundary_observer import ShadowBoundaryObserver
 except ImportError:
     try:
         from core.price_action_engine import PriceActionEngine
         from core.microstructure_scorer import MicrostructureScorer
-        from core.adaptive_micro_validator import AdaptiveMicroValidator
+        from core.composite_conviction_engine import (
+            CompositeConvictionEngine,
+            ConvictionResult,
+            AdaptiveMicroValidator,
+        )
         from core.directional_persistence import DirectionalPersistenceEngine
         from core.option_quality import OptionQualityEngine
         from core.outcome_telemetry import OutcomeTelemetryEngine
         from core.oi_builtup_gate import OIBuiltupGate
         from core.index_vwap_engine import IndexVWAPEngine
         from core.quality_stack import QualitySlotPolicy, PostTriggerStabilityTracker
-        from core.composite_conviction_engine import CompositeConvictionEngine, ConvictionResult
         from core.wyckoff_volume_engine import WyckoffVolumeEngine
         from core.shadow_boundary_observer import ShadowBoundaryObserver
     except ImportError:

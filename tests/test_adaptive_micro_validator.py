@@ -11,7 +11,7 @@ Verifies:
 """
 
 import pytest
-from AEGIS.core.adaptive_micro_validator import AdaptiveMicroValidator
+from AEGIS.core.composite_conviction_engine import AdaptiveMicroValidator
 
 
 def _make_tick(ts, lp, bp1, sp1, b1=100, a1=100, b2=100, a2=100, b3=100, a3=100, b4=100, a4=100, b5=100, a5=100):

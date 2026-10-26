@@ -128,9 +128,10 @@ Shared library: `common/` (broker / execution / market / ipc / runtime / config 
 * **EOD CAS Flush**: 15:08:00 IST force flattens all open inventory.
 
 ### 6. Component Operational State (Live vs Shadow vs Decommissioned)
-* **LIVE**: 4 Price Action Pillars, Absolute Pain Zone Band, Wyckoff Volume & OFI Delta Gate, Composite Conviction Engine ($\ge 80$), Adaptive Exits, StrikeSelector, Futures Basis & Lead-Lag Tracking, OIBuiltupGate & OI Kinematics Veto, AdaptiveMicroValidator, MicrostructureScorer.
+* **LIVE**: 4 Price Action Pillars, Absolute Pain Zone Band, Wyckoff Volume & OFI Delta Gate, Composite Conviction Engine ($\ge 80$, unified microstructure scorer), Adaptive Exits, StrikeSelector, Futures Basis & Lead-Lag Tracking, OIBuiltupGate & OI Kinematics Veto, MicrostructureScorer.
 * **SHADOW**: Single active shadow observer: `ShadowBoundaryObserver` (Absolute Pain Zone & 200 EMA breakout analytics).
 * **DECOMMISSIONED & ARCHIVED (`AEGIS/_archive/decommissioned_2026-10/`)**:
+  - `adaptive_micro_validator.py`: Merged into `composite_conviction_engine.py` and archived (zero-entropy consolidation).
   - `hvg_engine.py`: Decommissioned and archived (its live 5m stealth veto `check_5m_structural_alignment` in `_check_structural_obstacle` permanently eliminated).
   - `volume_profile_engine.py`: Decommissioned and archived.
   - `shadow_quant_tracker.py`: Decommissioned and archived.
