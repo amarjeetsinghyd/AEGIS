@@ -4124,10 +4124,16 @@ class PriceActionEngine:
                 if direction == "UP":
                     last_p2 = self._mode_a_last_trigger_bar_idx.get("P2_SWEEP_UP", -100)
                     if (bar_idx - last_p2) >= 3:
-                        swept_low = min(b.low for b in prior_5)
-                        # Parity with check_micro_sweep_reclaim: minimum sweep depth
+                        # Priority 1: Check Dynamic S/R Registry & Previous Day Levels
                         ref_spot_pc = self.last_price if self.last_price > 0 else (spot if spot > 0 else 24000.0)
                         min_sweep_depth_pc = max(1.5, (ref_spot_pc / 24000.0) * 1.5, 0.08 * atr)
+                        sr_lvl = self._find_swept_sr_level("CALL", curr_bar, min_sweep_depth_pc, atr)
+                        if sr_lvl is not None:
+                            swept_low = sr_lvl.price
+                            sweep_src = "SR_REGISTRY"
+                        else:
+                            swept_low = min(b.low for b in prior_5)
+                            sweep_src = "LOCAL_5BAR"
                         swept_and_reclaimed = (curr_bar.low <= (swept_low - min_sweep_depth_pc)) and (spot > swept_low)
                         lower_wick = min(curr_bar.open, spot) - curr_bar.low
                         lower_wick_ratio = lower_wick / curr_rng
@@ -4145,12 +4151,13 @@ class PriceActionEngine:
                             ok_struct_pc, _, _ = self._check_structural_obstacle("CALL", spot)
                             if ok_struct_pc:
                                 self._mode_a_last_trigger_bar_idx["P2_SWEEP_UP"] = bar_idx
-                                logger.info(f"[PriceActionEngine] [MODE_A_PRECLOSE] Pillar 2 Micro-Sweep CALL Triggered at spot={spot:.2f} (T+{sec_in_min}s)")
+                                logger.info(f"[PriceActionEngine] [MODE_A_PRECLOSE] Pillar 2 Micro-Sweep CALL Triggered at spot={spot:.2f} ({sweep_src}) (T+{sec_in_min}s)")
                                 return True, "micro_sweep_reclaim", {
                                     "pillar": 2,
                                     "pa_setup_name": "micro_sweep_reclaim",
                                     "mode": "MODE_A_PRECLOSE",
-                                    "boundary": "MICRO_SWEEP_LOW",
+                                    "sweep_source": sweep_src,
+                                    "boundary": "SR_REGISTRY_SUPPORT" if sweep_src == "SR_REGISTRY" else "MICRO_SWEEP_LOW",
                                     "boundary_level": round(swept_low, 2),
                                     "sl_price": round(curr_bar.low - 0.15 * atr, 2),
                                     "trigger_sec": sec_in_min,
@@ -4163,10 +4170,16 @@ class PriceActionEngine:
                 elif direction == "DOWN":
                     last_p2 = self._mode_a_last_trigger_bar_idx.get("P2_SWEEP_DOWN", -100)
                     if (bar_idx - last_p2) >= 3:
-                        swept_high = max(b.high for b in prior_5)
-                        # Parity with check_micro_sweep_reclaim: minimum sweep depth
+                        # Priority 1: Check Dynamic S/R Registry & Previous Day Levels
                         ref_spot_pcd = self.last_price if self.last_price > 0 else (spot if spot > 0 else 24000.0)
                         min_sweep_depth_pcd = max(1.5, (ref_spot_pcd / 24000.0) * 1.5, 0.08 * atr)
+                        sr_lvl = self._find_swept_sr_level("PUT", curr_bar, min_sweep_depth_pcd, atr)
+                        if sr_lvl is not None:
+                            swept_high = sr_lvl.price
+                            sweep_src = "SR_REGISTRY"
+                        else:
+                            swept_high = max(b.high for b in prior_5)
+                            sweep_src = "LOCAL_5BAR"
                         swept_and_reclaimed = (curr_bar.high >= (swept_high + min_sweep_depth_pcd)) and (spot < swept_high)
                         upper_wick = curr_bar.high - max(curr_bar.open, spot)
                         upper_wick_ratio = upper_wick / curr_rng
@@ -4184,12 +4197,13 @@ class PriceActionEngine:
                             ok_struct_pcd, _, _ = self._check_structural_obstacle("PUT", spot)
                             if ok_struct_pcd:
                                 self._mode_a_last_trigger_bar_idx["P2_SWEEP_DOWN"] = bar_idx
-                                logger.info(f"[PriceActionEngine] [MODE_A_PRECLOSE] Pillar 2 Micro-Sweep PUT Triggered at spot={spot:.2f} (T+{sec_in_min}s)")
+                                logger.info(f"[PriceActionEngine] [MODE_A_PRECLOSE] Pillar 2 Micro-Sweep PUT Triggered at spot={spot:.2f} ({sweep_src}) (T+{sec_in_min}s)")
                                 return True, "micro_sweep_reclaim", {
                                     "pillar": 2,
                                     "pa_setup_name": "micro_sweep_reclaim",
                                     "mode": "MODE_A_PRECLOSE",
-                                    "boundary": "MICRO_SWEEP_HIGH",
+                                    "sweep_source": sweep_src,
+                                    "boundary": "SR_REGISTRY_RESISTANCE" if sweep_src == "SR_REGISTRY" else "MICRO_SWEEP_HIGH",
                                     "boundary_level": round(swept_high, 2),
                                     "sl_price": round(curr_bar.high + 0.15 * atr, 2),
                                     "trigger_sec": sec_in_min,
