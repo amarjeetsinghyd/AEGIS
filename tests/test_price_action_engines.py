@@ -1484,3 +1484,21 @@ def test_freak_preopen_settlement_spike_filtered_in_levels_and_runway():
     assert ok is False
     assert reason == "insufficient_runway_to_day_high"
     assert details["day_high"] == 73423.0
+
+
+def test_fast_monotonic_stack_prominence():
+    """Verify 0-D prominence calculation on a synthetic peak via PriceActionEngine."""
+    import numpy as np
+    from AEGIS.core.price_action_engine import FastMonotonicStack
+
+    stack = FastMonotonicStack(capacity=128)
+    atr = 10.0
+
+    # Prices with a clear prominent peak at index 5
+    prices = np.array([100.0, 102.0, 105.0, 108.0, 115.0, 140.0, 112.0, 107.0, 104.0, 101.0], dtype=np.float64)
+    target_idx = 5
+
+    pi_hat = stack.compute_prominence(prices, target_idx, atr)
+    assert pi_hat >= 1.75
+    assert pi_hat == pytest.approx(4.0, abs=0.1)
+

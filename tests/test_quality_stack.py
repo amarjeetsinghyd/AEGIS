@@ -9,8 +9,11 @@ import time
 import pytest
 from datetime import datetime
 
-from AEGIS.core.quality_stack import QualitySlotPolicy, PostTriggerStabilityTracker
-from AEGIS.aegis_execution_manager import AegisExecutionManager
+from AEGIS.execution.aegis_execution_manager import (
+    QualitySlotPolicy,
+    PostTriggerStabilityTracker,
+    AegisExecutionManager,
+)
 
 
 def test_quality_slot_policy_max_trades_limit():

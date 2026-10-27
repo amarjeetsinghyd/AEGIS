@@ -23,16 +23,182 @@ from datetime import datetime, time as dt_time, timezone, timedelta
 _IST = timezone(timedelta(hours=5, minutes=30))
 from collections import deque
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Final
 
 import numpy as np
-try:
-    from AEGIS.core.aegis_v4_core import FastMonotonicStack
-except ImportError:
-    try:
-        from core.aegis_v4_core import FastMonotonicStack
-    except ImportError:
-        FastMonotonicStack = None
+
+
+class FastDualEnvelopeHVG:
+    """
+    O(N) zero-allocation Dual-Envelope Monotonic Stack for Horizontal Visibility Graph (HVG).
+    Operates strictly across pre-allocated integer arrays using C-style indexing pointers.
+    Computes:
+      - Upper Visibility Envelope on Spot 1m Highs (Resistance network).
+      - Lower Inverted Visibility Envelope on Spot 1m Lows (Support network).
+      - Horizontal visibility spans: w_i = min(R_i, N) - max(L_i, 0).
+      - Compression state: median(w) < 0.35 * N.
+      - Relative Prominence: deg_i / (mean_deg + 1e-9).
+    """
+    __slots__ = (
+        "capacity", "stack_indices", "left_bounds", "right_bounds",
+        "visibility_spans", "deg_upper", "deg_lower"
+    )
+
+    def __init__(self, capacity: int = 128) -> None:
+        self.capacity: int = capacity
+        self.stack_indices: np.ndarray = np.zeros(capacity, dtype=np.int32)
+        self.left_bounds: np.ndarray = np.zeros(capacity, dtype=np.int32)
+        self.right_bounds: np.ndarray = np.zeros(capacity, dtype=np.int32)
+        self.visibility_spans: np.ndarray = np.zeros(capacity, dtype=np.int32)
+        self.deg_upper: np.ndarray = np.zeros(capacity, dtype=np.int32)
+        self.deg_lower: np.ndarray = np.zeros(capacity, dtype=np.int32)
+
+    def compute_upper_envelope(self, highs: np.ndarray, n: int) -> Tuple[np.ndarray, np.ndarray, float]:
+        """
+        Upper Visibility Envelope on Highs (Resistance Network).
+        Returns: (degrees, visibility_spans, median_visibility_span)
+        """
+        if n <= 0:
+            return self.deg_upper[:0], self.visibility_spans[:0], 0.0
+
+        n_clamped = min(n, self.capacity)
+
+        # 1. Left Bounds (nearest j < i with highs[j] >= highs[i])
+        stack_ptr = 0
+        for i in range(n_clamped):
+            val = highs[i]
+            while stack_ptr > 0 and highs[self.stack_indices[stack_ptr - 1]] < val:
+                stack_ptr -= 1
+            self.left_bounds[i] = self.stack_indices[stack_ptr - 1] if stack_ptr > 0 else -1
+            self.stack_indices[stack_ptr] = i
+            stack_ptr += 1
+
+        # 2. Right Bounds (nearest j > i with highs[j] >= highs[i])
+        stack_ptr = 0
+        for i in range(n_clamped - 1, -1, -1):
+            val = highs[i]
+            while stack_ptr > 0 and highs[self.stack_indices[stack_ptr - 1]] < val:
+                stack_ptr -= 1
+            self.right_bounds[i] = self.stack_indices[stack_ptr - 1] if stack_ptr > 0 else n_clamped
+            self.stack_indices[stack_ptr] = i
+            stack_ptr += 1
+
+        # 3. Horizontal Visibility Spans: w_i = min(R_i, N) - max(L_i, 0)
+        for i in range(n_clamped):
+            r = min(int(self.right_bounds[i]), n_clamped)
+            l = max(int(self.left_bounds[i]), 0)
+            self.visibility_spans[i] = r - l
+
+        # 4. Strict HVG Degrees on Highs in O(N)
+        self.deg_upper[:n_clamped].fill(0)
+        stack_ptr = 0
+        for i in range(n_clamped):
+            val = highs[i]
+            while stack_ptr > 0 and highs[self.stack_indices[stack_ptr - 1]] < val:
+                top_idx = self.stack_indices[stack_ptr - 1]
+                stack_ptr -= 1
+                self.deg_upper[i] += 1
+                self.deg_upper[top_idx] += 1
+            if stack_ptr > 0:
+                top_idx = self.stack_indices[stack_ptr - 1]
+                self.deg_upper[i] += 1
+                self.deg_upper[top_idx] += 1
+                if highs[top_idx] == val:
+                    stack_ptr -= 1
+            self.stack_indices[stack_ptr] = i
+            stack_ptr += 1
+
+        med_span = float(np.median(self.visibility_spans[:n_clamped]))
+        return self.deg_upper[:n_clamped], self.visibility_spans[:n_clamped], med_span
+
+    def compute_lower_envelope(self, lows: np.ndarray, n: int) -> Tuple[np.ndarray, np.ndarray, float]:
+        """
+        Lower Inverted Visibility Envelope on Lows (Support Network).
+        Returns: (degrees, visibility_spans, median_visibility_span)
+        """
+        if n <= 0:
+            return self.deg_lower[:0], self.visibility_spans[:0], 0.0
+
+        n_clamped = min(n, self.capacity)
+
+        # 1. Left Bounds (nearest j < i with lows[j] <= lows[i])
+        stack_ptr = 0
+        for i in range(n_clamped):
+            val = lows[i]
+            while stack_ptr > 0 and lows[self.stack_indices[stack_ptr - 1]] > val:
+                stack_ptr -= 1
+            self.left_bounds[i] = self.stack_indices[stack_ptr - 1] if stack_ptr > 0 else -1
+            self.stack_indices[stack_ptr] = i
+            stack_ptr += 1
+
+        # 2. Right Bounds (nearest j > i with lows[j] <= lows[i])
+        stack_ptr = 0
+        for i in range(n_clamped - 1, -1, -1):
+            val = lows[i]
+            while stack_ptr > 0 and lows[self.stack_indices[stack_ptr - 1]] > val:
+                stack_ptr -= 1
+            self.right_bounds[i] = self.stack_indices[stack_ptr - 1] if stack_ptr > 0 else n_clamped
+            self.stack_indices[stack_ptr] = i
+            stack_ptr += 1
+
+        # 3. Horizontal Visibility Spans: w_i = min(R_i, N) - max(L_i, 0)
+        for i in range(n_clamped):
+            r = min(int(self.right_bounds[i]), n_clamped)
+            l = max(int(self.left_bounds[i]), 0)
+            self.visibility_spans[i] = r - l
+
+        # 4. Strict HVG Degrees on Lows in O(N)
+        self.deg_lower[:n_clamped].fill(0)
+        stack_ptr = 0
+        for i in range(n_clamped):
+            val = lows[i]
+            while stack_ptr > 0 and lows[self.stack_indices[stack_ptr - 1]] > val:
+                top_idx = self.stack_indices[stack_ptr - 1]
+                stack_ptr -= 1
+                self.deg_lower[i] += 1
+                self.deg_lower[top_idx] += 1
+            if stack_ptr > 0:
+                top_idx = self.stack_indices[stack_ptr - 1]
+                self.deg_lower[i] += 1
+                self.deg_lower[top_idx] += 1
+                if lows[top_idx] == val:
+                    stack_ptr -= 1
+            self.stack_indices[stack_ptr] = i
+            stack_ptr += 1
+
+        med_span = float(np.median(self.visibility_spans[:n_clamped]))
+        return self.deg_lower[:n_clamped], self.visibility_spans[:n_clamped], med_span
+
+    def compute_prominence(self, prices: np.ndarray, target_idx: int, atr: float) -> float:
+        """
+        0-D Persistence Prominence calculation for a local extremum.
+        pi_hat = |P_hub - Saddle| / ATR
+        """
+        n: int = len(prices)
+        if n < 3 or target_idx <= 0 or target_idx >= n - 1 or atr <= 1e-6:
+            return 0.0
+
+        hub_val: float = prices[target_idx]
+        is_peak: bool = (hub_val > prices[target_idx - 1]) and (hub_val > prices[target_idx + 1])
+        is_trough: bool = (hub_val < prices[target_idx - 1]) and (hub_val < prices[target_idx + 1])
+
+        if not (is_peak or is_trough):
+            return 0.0
+
+        if is_peak:
+            left_min = float(np.min(prices[:target_idx]))
+            right_min = float(np.min(prices[target_idx + 1:]))
+            key_saddle = min(left_min, right_min)
+            return abs(hub_val - key_saddle) / atr
+        else:
+            left_max = float(np.max(prices[:target_idx]))
+            right_max = float(np.max(prices[target_idx + 1:]))
+            key_saddle = max(left_max, right_max)
+            return abs(hub_val - key_saddle) / atr
+
+
+# Direct alias
+FastMonotonicStack = FastDualEnvelopeHVG
 
 try:
     from common.logger import get_logger

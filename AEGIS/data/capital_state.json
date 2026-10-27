@@ -1,4 +1,6 @@
 {
     "available_funds": 1.0,
-    "locked_withdrawal_amount": 0.0
+    "locked_withdrawal_amount": 0.0,
+    "mode": "LIVE",
+    "updated_at": "2026-10-27T19:04:56.356052"
 }

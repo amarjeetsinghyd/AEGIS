@@ -36,9 +36,8 @@ try:
     )
     from AEGIS.core.option_quality import OptionQualityEngine
     from AEGIS.core.outcome_telemetry import OutcomeTelemetryEngine
-    from AEGIS.core.oi_builtup_gate import OIBuiltupGate
     from AEGIS.core.index_vwap_engine import IndexVWAPEngine
-    from AEGIS.core.quality_stack import QualitySlotPolicy, PostTriggerStabilityTracker
+    from AEGIS.execution.aegis_execution_manager import QualitySlotPolicy, PostTriggerStabilityTracker
     from AEGIS.core.wyckoff_volume_engine import WyckoffVolumeEngine
     from AEGIS.core.shadow_boundary_observer import ShadowBoundaryObserver
 except ImportError:
@@ -51,9 +50,8 @@ except ImportError:
         )
         from core.option_quality import OptionQualityEngine
         from core.outcome_telemetry import OutcomeTelemetryEngine
-        from core.oi_builtup_gate import OIBuiltupGate
         from core.index_vwap_engine import IndexVWAPEngine
-        from core.quality_stack import QualitySlotPolicy, PostTriggerStabilityTracker
+        from execution.aegis_execution_manager import QualitySlotPolicy, PostTriggerStabilityTracker
         from core.wyckoff_volume_engine import WyckoffVolumeEngine
         from core.shadow_boundary_observer import ShadowBoundaryObserver
     except ImportError:
@@ -64,7 +62,6 @@ except ImportError:
         AdaptiveMicroValidator = None
         OptionQualityEngine = None
         OutcomeTelemetryEngine = None
-        OIBuiltupGate = None
         IndexVWAPEngine = None
         ShadowBoundaryObserver = None
         QualitySlotPolicy = None
@@ -73,22 +70,7 @@ except ImportError:
 # ─── Resilient optional imports (hardening 2026-09-21: each isolated so one
 # missing/stale module on a deploy target can never kill engine init; every
 # consumer already guards `is not None`) ───
-try:
-    from AEGIS.core.aegis_v4_core import (
-        FastTickRingBuffer,
-        Direction as V4Direction,
-        FastMonotonicStack,
-    )
-except ImportError:
-    try:
-        from core.aegis_v4_core import (
-            FastTickRingBuffer,
-            FastMonotonicStack,
-        )
-    except ImportError:
-        FastTickRingBuffer = None
-        V4Direction = None
-        FastMonotonicStack = None
+
 
 logger = get_logger("aegis_gamma")
 
@@ -198,21 +180,7 @@ class AegisGammaEngine:
         self._veto_log_suppressed: Dict[str, int] = {}
         self._veto_log_interval_sec = float(os.getenv("AEGIS_VETO_LOG_INTERVAL_SEC", "60.0"))
         self.outcome_telemetry = OutcomeTelemetryEngine(log_dir=telemetry_dir) if OutcomeTelemetryEngine is not None else None
-        self.oi_gate = OIBuiltupGate(
-            strike_step=self.strike_step,
-            unwind_window_sec=180.0,
-            zone1_strike_dist=0.40,
-            zone2_strike_dist=1.00,
-            zone1_unwind_speed_pct=-1.0,
-            zone2_unwind_speed_pct=-0.5,
-            require_builtup_confirmation=False,
-            enabled=True,
-        ) if OIBuiltupGate is not None else None
-
-        # ─── OI Shield telemetry counters (visibility only — gates untouched) ───
-        # Tracks how often kinematics/delta/wall shields arm, skip (fail-open
-        # on thin history) or veto. Exposed via get_oi_telemetry() for the
-        # live state and the 15-minute wall snapshot log.
+        self.oi_gate = None
         self._oi_kin_armed = 0
         self._oi_kin_skipped = 0
         self._oi_kin_vetoed = 0
@@ -287,7 +255,7 @@ class AegisGammaEngine:
 
 
         # ─── AEGIS V4.0 Futures RingBuffer (Passive Telemetry) ───
-        self.v4_futures_buffer = FastTickRingBuffer(size=256) if FastTickRingBuffer is not None else None
+        self.v4_futures_buffer = None
         # Decommissioned 2026-10-27 (Logic De-bloat): Top5DepthGuard eliminated.
         # Order-book depth & spread are fully verified by CompositeConvictionEngine.
         self.top5_depth_guard = None
@@ -473,11 +441,6 @@ class AegisGammaEngine:
             hist_30s.append((now_sec, lp, bp1, sp1, b1, a1))
             while hist_30s and hist_30s[0][0] < cutoff_30s:
                 hist_30s.popleft()
-
-            if self.oi_gate and strike > 0 and side in (0, 1):
-                kind = 1 if side == 0 else 2
-                oi_val = float(getattr(tick, "oi", 0.0) or 0.0)
-                self.oi_gate.update_tick(sym, strike, kind, lp, oi_val, now_sec)
 
             curr_b_depth = b1 + b2 + b3 + b4 + b5
             curr_a_depth = a1 + a2 + a3 + a4 + a5
@@ -1019,14 +982,6 @@ class AegisGammaEngine:
                                                              f"[DELTA INFLECTION VETO] {sym} ({direction}) "
                                                              f"{pa_setup_name} blocked: {_di_detail}")
                                     return None
-                                # OI Kinematics live veto permanently decommissioned (NSE updates OI every 3m, not tick-by-tick).
-                                # OIBuiltupGate is preserved purely for passive telemetry & wall snapshot logging.
-                                if self.oi_gate is not None:
-                                    _oi_vel, _oi_acc, _oi_n = self.oi_gate.get_oi_kinematics(sym, now_sec)
-                                    if _oi_n >= 2:
-                                        self._oi_kin_armed += 1
-                                    else:
-                                        self._oi_kin_skipped += 1
 
                                 # ─── EXECUTION COMMIT & IMMEDIATE DISPATCH (<0.8ms from Tick) ───
                                 if self.slot_policy and slot_admit:
@@ -1331,11 +1286,6 @@ class AegisGammaEngine:
             self.last_basis_pts = lp - self.last_spot
             self.last_basis_bps = (self.last_basis_pts / self.last_spot) * 10000.0
             self.futures_history.append((now_sec, lp, self.last_basis_pts))
-
-        if self.v4_futures_buffer is not None:
-            bid = float(getattr(tick, "bp1", 0.0) or lp)
-            ask = float(getattr(tick, "sp1", 0.0) or lp)
-            self.v4_futures_buffer.push(now_sec, lp, vol, bid, ask)
 
     @staticmethod
     def is_plausible_spot_tick(lp: float, ref_lp: float, gap_sec: float) -> bool:
