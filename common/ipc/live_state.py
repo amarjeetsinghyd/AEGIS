@@ -65,7 +65,7 @@ _DEFAULT_KRONOS = {
     "engine": "kronos",
 }
 
-# AEGIS V2.0 live-state schema (Gamma Burst Engine)
+# AEGIS V1.0 live-state schema (Gamma Burst Engine)
 # Keys mirror AegisGammaEngine.get_state_summary() + execution manager state.
 _DEFAULT_AEGIS = {
     "timestamp": "",

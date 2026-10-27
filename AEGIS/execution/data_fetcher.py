@@ -160,18 +160,7 @@ class DataFetcher:
         else:
             return "NIFTY", "NFO"
 
-    def get_current_futures_token(self):
-        name, exch_seg = self.get_active_instrument()
-        try:
-            res = self.repo.get_futures_token(ACTIVE_BROKER, name, exch_seg)
-            if res:
-                return res[0], res[1], exch_seg
-        except Exception as e:
-            logger.warning(f"Error querying futures token from repo: {e}")
 
-        # Repo-driven query fallback: never return hardcoded expired contracts
-        logger.warning(f"[DataFetcher] Could not query active Futures token for {name} on {exch_seg} from repo.")
-        return None, None, None
 
     def get_cash_index_token(self):
         name, exch_seg = self.get_active_instrument()

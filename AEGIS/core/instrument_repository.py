@@ -150,44 +150,7 @@ class InstrumentRepository:
             row = cursor.fetchone()
             return row['broker_token'] if row else None
 
-    def get_futures_token(self, broker_name: str, name: str, exch_seg: str) -> Optional[Tuple[str, str]]:
-        """Query nearest future contract details."""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT m.broker_token, i.symbol, i.expiry
-                FROM instruments i
-                JOIN broker_mappings m ON i.instrument_id = m.instrument_id
-                WHERE m.broker_name = ? AND i.name = ? AND i.exch_seg = ? AND i.instrumenttype = 'FUTIDX'
-            """, (broker_name.upper(), name.upper(), exch_seg.upper()))
-            
-            rows = cursor.fetchall()
-            if not rows:
-                return None
-                
-            future_contracts = []
-            for r in rows:
-                try:
-                    # Try both Angel (28JUL2026) and Shoonya (28-JUL-2026) expiry formats
-                    try:
-                        expiry_dt = datetime.strptime(r['expiry'], '%d-%b-%Y')
-                    except ValueError:
-                        expiry_dt = datetime.strptime(r['expiry'], '%d%b%Y')
-                    future_contracts.append((expiry_dt, r['broker_token'], r['symbol']))
-                except ValueError:
-                    pass
-            
-            if not future_contracts:
-                return None
-                
-            now = datetime.now()
-            valid_futures = [f for f in future_contracts if f[0] >= now]
-            if not valid_futures:
-                return None
-                
-            # Return nearest expiry
-            nearest = min(valid_futures, key=lambda x: x[0])
-            return nearest[1], nearest[2]  # (token, symbol)
+
 
     def get_weekly_option_tokens(self, broker_name: str, name: str, exch_seg: str) -> List[Dict[str, Any]]:
         """Query nearest weekly option tokens list."""

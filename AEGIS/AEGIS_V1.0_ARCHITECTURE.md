@@ -38,10 +38,12 @@
 >      $$\text{CALL SL} = \text{Entry Candle Low} - (0.10 \times \text{ATR})$$
 >      $$\text{PUT SL} = \text{Entry Candle High} + (0.10 \times \text{ATR})$$
 >    - Evaluated strictly against the cash index spot price, fully immunizing trades from option spread widening and order book spoofing.
-> 7. **Composite Conviction Continuous Scoring Law**: Replaces rigid, binary boolean gating with continuous 0–100 multi-domain scoring (`composite_conviction_engine.py`). Sizing & admission:
->    - $\ge 80.0$: Admitted with standard **1 Lot (+4.0% Maker TP, +3.0% Friday)**.
->    - $< 80.0$: Blocked by conviction threshold.
->    - Intra-bar `mode_b_` setups awarded approved **85.0** score.
+> 7. **Composite Conviction Continuous Scoring Law**: Replaces rigid, binary boolean gating with continuous 0–100 dual-profile microstructure scoring (`composite_conviction_engine.py`). Zero-Entropy 40-35-25 model (upstream spot structure retired to 0.0 pts):
+>    - **Dual-Profile Microstructure**: Evaluates dedicated **Mode B Profile** (Touch Aggression $I_1$ 40 pts, Live Tick Arrival Intensity 35 pts, Spread Tradability 25 pts) for mid-bar breakouts and **Mode A Profile** (Order Book Support & Deep Pressure 40 pts, 30s Option Return Velocity 35 pts, Contract Tradability & Depth 25 pts) for bar-close rejections.
+>    - **Consolidated Microstructure & Circuit Breakers**: `AdaptiveMicroValidator` is 100% merged into `CompositeConvictionEngine` (redundant 60-pt gate eliminated; hard circuit breakers for spread blowout > 2.5%, ghost book < 200 depth, severe dump < -1.5% embedded).
+>    - $\ge 85.0$: Admitted as `FULL_SIZE` (2 Lots, +4.0% Maker TP, +3.0% Friday).
+>    - $80.0 - 84.9$: Admitted as `STANDARD_SIZE` (1 Lot, +4.0% Maker TP, +3.0% Friday).
+>    - $< 80.0$: Blocked by conviction threshold with itemized audit drag (`aggression_drag`, `momentum_drag`, `tick_rate_drag`, `tradability_drag`).
 > 8. **Decommissioned Machine Learning Law (14 October 2026)**:
 >    - CatBoost ML Gatekeeper & Standalone CatBoost Paper Trader are **PERMANENTLY DECOMMISSIONED & DISABLED** (18-day trial proved 46.4% win-rate inferior to 84%+ deterministic price action).
 > 9. **Pre-Trade Abort Slot Rollback Law**:
@@ -100,13 +102,13 @@ flowchart TD
         V_VWAP -->|Inside band or wrong side| DROP
         V_VWAP -->|Above band=UP only, Below band=DOWN only| ANCHOR["Event-Bound Anchor T<br/>(Strict [T-60, T] and [T-30, T] Slices)"]
         
-        ANCHOR --> V_MICRO{"Adaptive Order Flow Energy (OFEE)<br/>(Score ≥ 60/100, Strict BOS ≥ 70)"}
-        V_MICRO -->|Energy Stalled| DROP
+        ANCHOR --> C_BREAK{"Hard Micro Circuit Breakers<br/>(Spread > 2.5%, Depth < 200, Dump < -1.5%)"}
+        C_BREAK -->|Liquidity Blown / Dump| DROP
         
-        V_MICRO -->|Passed| CCE["Composite Conviction Engine (0-100)<br/>• Domain 1: Structure & Runway (30 pts)<br/>• Domain 2: Impulse & Volume (30 pts)<br/>• Domain 3: Flow & Futures (25 pts)<br/>• Domain 4: Contract Feasibility (15 pts)"]
+        C_BREAK -->|Passed| CCE["Composite Conviction Engine (0-100)<br/>• Zero-Entropy 40-35-25 Microstructure Model<br/>• Mode B: Aggression I1 (40) + Tick Rate (35) + Spread (25)<br/>• Mode A: Book Support (40) + 30s Ret (35) + Depth (25)<br/>• AdaptiveMicroValidator 100% Merged"]
         
         CCE --> C_CHECK{"Conviction Score Check<br/>(Score ≥ 80.0?)"}
-        C_CHECK -->|Score < 80.0| DROP
+        C_CHECK -->|Score < 80.0 (Itemized Drag)| DROP
         
         C_CHECK -->|Score ≥ 80.0| Q_SLOT["Quality Slot Policy (3 Slots/Day)<br/>• Slot 1, 2, 3: Full-Day Agile Quality Sizing<br/>• Dynamic Hurdle: Beat Prev Score<br/>• Loss Guard: Consec Loss ≤ 2, Daily Cap ₹2k"]
         Q_SLOT -->|No Slot Available| DROP
@@ -183,11 +185,11 @@ All active non-archive modules within `AEGIS/` mapped with exact lines, responsi
 | `AEGIS/aegis_execution_manager.py` | Execution daemon, order routing, strict 1-lot maker TP (+4.0%), pre-trade rollback, 15:08 CAS flatten | `AegisExecutionManager`, `_manage_open_trade()`, `_rollback_slot()`, `_chase_exit_thread()` |
 | `AEGIS/core/price_action_engine.py` | **Primary Macro Trigger**: 1m OHLC bars, 20/50/200 EMA, ATR(14), Pain Zone band single source (`get_pain_zone_vwaps()` → zone_top / zone_bottom), Priority Mode B Mid-Bar In-Flight Breakthrough (`check_mode_b_breakthrough`), Mode A Pierce (`check_mode_a_pierce`), 4 active pillars (P1 20 EMA, P2 Liquidity Sweep, P3 Vol Squeeze, P4 0-D Prominence Hub Breakout) | `PriceActionEngine`, `evaluate_setup()`, `check_mode_b_breakthrough()`, `check_mode_a_pierce()`, `check_20_ema_rejection()`, `check_micro_sweep_reclaim()`, `check_topological_prominence_breakout()` |
 | `AEGIS/core/wyckoff_volume_engine.py` | **Wyckoff Volume & Delta Gate**: Effort vs Result, Volume Dry-Up Ratio (VDR), Absorption pin wick, Delta Harmony (Call Buy vs Put Buy) | `WyckoffVolumeEngine`, `evaluate()` |
-| `AEGIS/core/composite_conviction_engine.py` | **Continuous 0–100 Evaluator & Consolidated Microstructure Gate**: 4 orthogonal domains (Spot Persistence, Tick Intensity, Order Flow Aggression, Contract Quality) with integrated OFEE momentum & circuit breakers ($\ge 80.0 \to 1\text{ Lot}, +4.0\%\text{ TP}$) | `CompositeConvictionEngine`, `AdaptiveMicroValidator`, `ConvictionResult`, `compute_conviction_score()` |
+| `AEGIS/core/composite_conviction_engine.py` | **Continuous 0–100 Dual-Profile Evaluator & Consolidated Microstructure Gate**: Zero-entropy 40-35-25 model (upstream spot structure retired to 0.0 pts as verified by PA). Mode B Profile (Touch Aggression $I_1$ 40 pts, Live Tick Rate 35 pts, Spread 25 pts) & Mode A Profile (Order Book Support & Deep Pressure 40 pts, 30s Option Return 35 pts, Depth 25 pts). Embedded hard circuit breakers (spread blowout > 2.5%, ghost book < 200, severe dump < -1.5%). `AdaptiveMicroValidator` 100% merged. Thresholds: $\ge 80.0 \to 1\text{ Lot}$, $\ge 85.0 \to 2\text{ Lots}$, $< 80.0 \to \text{Blocked}$. | `CompositeConvictionEngine`, `AdaptiveMicroValidator`, `ConvictionResult`, `compute_conviction_score()` |
 | `AEGIS/core/quality_stack.py` | **Institutional 3-Slot Daily Policy**: Full-day agile sizing (14:45 lockout removed), dynamic score hurdle, stability tracker | `QualitySlotPolicy`, `PostTriggerStabilityTracker` |
 | `AEGIS/core/index_vwap_engine.py` | Constituent-volume weighted index VWAP poller and structural proximity gate | `IndexVWAPEngine`, `get_vwap_metrics()` |
-| `AEGIS/core/oi_builtup_gate.py` | Real-time Open Interest kinematics (dump-shield veto) + wall snapshot telemetry; 4-quadrant gate decommissioned 2026-10-24 | `OIBuiltupGate`, `update_tick()`, `get_oi_kinematics()`, `get_wall_snapshot()` |
-| `AEGIS/core/directional_persistence.py` | Signed directional persistence tracking over rolling 60s window ($D_p \ge 0.70$) | `DirectionalPersistenceEngine`, `evaluate_persistence()` |
+| `AEGIS/core/oi_builtup_gate.py` | Passive Open Interest wall snapshot telemetry & depth profiling; live entry blocking kinematics veto decommissioned 2026-10-27 (NSE publishes OI every 3m, not tick-by-tick) | `OIBuiltupGate`, `update_tick()`, `get_wall_snapshot()` |
+| `AEGIS/core/directional_persistence.py` | Rolling 60s directional persistence tracking; live spot tick-counting veto decommissioned 2026-10-27 (redundant with `PriceActionEngine` candle geometry) | `DirectionalPersistenceEngine`, `evaluate_persistence()` |
 | `AEGIS/core/microstructure_scorer.py` | Empirical 0-100 logit model, 15 features, $T$-anchored micro-acceleration & raw tick buffer history | `MicrostructureScorer`, `compute_score()` |
 | `AEGIS/core/instrument_repository.py` | SQLite WAL cache for instrument metadata and nearest-expiry resolution | `InstrumentRepository`, `resolve_weekly_options()` |
 | `AEGIS/core/outcome_telemetry.py` | Forward outcome tracking (30s, 60s, 180s, 300s MFE/MAE) with JSONL persistence | `OutcomeTelemetryEngine`, `register_entry()` |
@@ -195,7 +197,7 @@ All active non-archive modules within `AEGIS/` mapped with exact lines, responsi
 | `AEGIS/core/shadow_boundary_observer.py` | **Autonomous Shadow Boundary Observer**: Zero-capital empirical paper-trader tracking First-Touch Pain Zone and 200 EMA rejections on OTM 5 strikes with 30s/60s/300s telemetry | `ShadowBoundaryObserver`, `on_1m_bar_close()`, `on_option_tick()` |
 | `AEGIS/config/settings.py` | Configuration binding for AEGIS runtime (`DATA_DIR=AEGIS/data`, `LOGS_DIR=AEGIS/logs`) | `get_runtime_paths("aegis")` |
 
-> **Decommissioned & Archived (2026-10, `AEGIS/_archive/decommissioned_2026-10/`):** `adaptive_micro_validator.py` (merged into `composite_conviction_engine.py`), `hvg_engine.py` (live 5m stealth veto eliminated), `ml_gatekeeper.py`, `catboost_paper_trader.py`, `time_bar_engine.py`, `signal_state_machine.py`, `regime_chop_gate.py`, `entry_quality_engine.py`, `oi_quotes_poller.py`, `volume_profile_engine.py`, `shadow_quant_tracker.py`, `causal_microstructure_pipeline.py` — ~10,000 lines of dead weight removed. Post-debloat core: `price_action_engine.py` 3,847 lines, `aegis_gamma_engine.py` 1,835 lines, `aegis_execution_manager.py` 2,438 lines.
+> **Decommissioned & Archived (2026-10, `AEGIS/_archive/decommissioned_2026-10/`):** `top5_depth_guard` (redundant BBO micro-guard eliminated 2026-10-27; false INVALID_QUOTES on trade ticks cut), `oi_kinematics live veto` (NSE 3m polling latency eliminated from entry path 2026-10-27), `directional_persistence tick veto` (redundant with candle geometry eliminated 2026-10-27), `adaptive_micro_validator.py` (merged into `composite_conviction_engine.py`), `hvg_engine.py` (live 5m stealth veto eliminated), `ml_gatekeeper.py`, `catboost_paper_trader.py`, `time_bar_engine.py`, `signal_state_machine.py`, `regime_chop_gate.py`, `entry_quality_engine.py`, `oi_quotes_poller.py`, `volume_profile_engine.py`, `shadow_quant_tracker.py`, `causal_microstructure_pipeline.py` — ~10,000 lines of dead weight removed. Post-debloat core: `price_action_engine.py` 3,847 lines, `aegis_gamma_engine.py` 1,796 lines, `aegis_execution_manager.py` 2,518 lines.
 
 ---
 
@@ -242,7 +244,64 @@ A pure-Python, sub-5-microsecond gate wired **in parallel with Price Action trig
 
 ---
 
-## Deep-Dive: Volume Profile & Auction Market Theory (`volume_profile_engine.py` — [ARCHIVED 2026-10-24, historical reference])
+## Deep-Dive: Composite Conviction Engine & Dual-Profile Microstructure Gate (`AEGIS/core/composite_conviction_engine.py`)
+
+A pure-Python, zero-allocation microsecond engine executing continuous 0–100 institutional conviction scoring and consolidating raw tick-buffer extraction and sanity circuit breakers.
+
+### 1. Zero-Entropy Consolidated Architecture
+- **Upstream Structure Retirment**: Domain 1 (Spot Structure) is set to `0.0 pts` because Dow Theory HL2/LH2, S/R levels, 20 EMA, VWAP Pain Zone, and PDH/PDL Runway are already 100% verified upstream by `PriceActionEngine`. Redundant scoring loops have been completely eliminated.
+- **AdaptiveMicroValidator Full Merger**: Standalone `AdaptiveMicroValidator` and its redundant 60-point energy gate have been decommissioned. Raw tick-buffer metrics extraction (`extract_micro_metrics`), Level-1 touch imbalance $I_1$, $L_3-L_5$ deep book pressure, and sanity circuit breakers now execute directly inside `CompositeConvictionEngine`.
+- **Hard Sanity Circuit Breakers**:
+  - `spread_pct > 2.5%` $\implies$ `circuit_breaker_spread_blowout` (instant abort)
+  - `tot_depth < 200` $\implies$ `circuit_breaker_ghost_book` (instant abort)
+  - `micro_ret < -1.5%` (<-0.015) $\implies$ `circuit_breaker_severe_dump` (instant abort)
+
+### 2. Dual-Profile Scoring Framework (40-35-25 Model)
+
+#### Profile B: Mode B In-Flight Breakthrough Surge (Pillar 3 & Pillar 4)
+Active from `T:08s onwards / No Upper Cap` during candle formation, focusing on instantaneous breakout velocity, ask sweeps, and tape speed:
+1. **Touch Aggression & Ask Sweep $I_1$ (40 pts max)**:
+   - Evaluates effective Level 1 imbalance: $I_1 = (b_1 - a_1)/(b_1 + a_1 + 10^{-4})$ (direction-aligned).
+   - $I_1 \ge +0.20 \implies 40.0\text{ pts}$ (aggressive institutional bid support / ask sweep)
+   - $I_1 \ge +0.08 \implies 34.0\text{ pts}$ (healthy top-of-book buying)
+   - $I_1 \ge -0.05 \implies 28.0\text{ pts}$ (neutral/balanced book)
+   - $I_1 \ge -0.20 \implies 16.0\text{ pts}$ (mild opposing book drag)
+   - $I_1 < -0.20 \implies 0.0\text{ pts}$ (opposing ask wall $\implies$ `aggression_drag`)
+   - *Wyckoff OFI Floor*: When Wyckoff is confirmed and OFI delta is aligned, score is granted a safe floor of $\ge 34.0\text{ pts}$.
+2. **Live Tick Arrival Intensity (35 pts max)**:
+   - Evaluates arrival rate ($\text{ticks/sec}$) from forming candle:
+   - $\text{Rate} \ge 1.5\text{ ticks/sec} \implies 35.0\text{ pts}$ (institutional rapid-fire sweep)
+   - $\text{Rate} \ge 0.8\text{ ticks/sec} \implies 28.0\text{ pts}$ (steady active institutional flow)
+   - $\text{Rate} \ge 0.4\text{ ticks/sec} \implies 22.0\text{ pts}$ (normal baseline liquidity)
+   - $\text{Rate} < 0.4\text{ ticks/sec} \implies 12.0\text{ pts}$ (sluggish arrival $\implies$ `tick_rate_drag`)
+3. **Contract Tradability & Spread (25 pts max)**:
+   - Bid-ask spread percentage: $\text{Spread} \le 0.50\% \implies 25.0\text{ pts}$; $\le 1.00\% \implies 20.0\text{ pts}$; $\le 1.50\% \implies 12.0\text{ pts}$; $\le 2.50\% \implies 5.0\text{ pts}$; $> 2.50\% \implies 0.0\text{ pts}$ (blowout).
+
+#### Profile A: Mode A Structural Rejection & Close (Pillar 1 & Pillar 2)
+Active at `T:50s Pre-Close` or `T:00s Close`, focusing on sustained book absorption and option return velocity:
+1. **Order Book Support & OFI Delta (40 pts max)**:
+   - Evaluates Level 1 imbalance $I_1$ plus Deep Book Pressure ($I_3, I_4, I_5$ average).
+   - $I_1 \ge +0.15$ and $\text{Deep Pressure} \ge -0.10 \implies 40.0\text{ pts}$ (top and deep book absorption)
+   - $I_1 \ge +0.05 \implies 34.0\text{ pts}$
+   - $I_1 \ge -0.10 \implies 26.0\text{ pts}$
+   - $I_1 \ge -0.20 \implies 16.0\text{ pts}$
+   - $I_1 < -0.20 \implies 0.0\text{ pts}$ (`aggression_drag`)
+   - *Wyckoff OFI Floor*: Wyckoff confirmed + aligned OFI guarantees $\ge 34.0\text{ pts}$ ($\ge 32.0\text{ pts}$ if neutral).
+2. **Option Premium Return Velocity (`micro_ret`) (35 pts max)**:
+   - 30-second option price return: $\text{micro\_ret} = (\text{Mid}_T - \text{Mid}_{T-30s}) / \text{Mid}_{T-30s}$.
+   - $\text{micro\_ret} \ge +0.8\% (+0.008) \implies 35.0\text{ pts}$ (explosive ignition)
+   - $\text{micro\_ret} \ge +0.3\% (+0.003) \implies 30.0\text{ pts}$ (positive momentum)
+   - $\text{micro\_ret} \ge -0.1\% (-0.001) \implies 25.0\text{ pts}$ (flat/stable base)
+   - $\text{micro\_ret} \ge -0.5\% (-0.005) \implies 14.0\text{ pts}$ (mild theta decay)
+   - $\text{micro\_ret} < -0.5\% \implies 0.0\text{ pts}$ (option dumping $\implies$ `momentum_drag`)
+3. **Contract Tradability & Book Depth Support (25 pts max)**:
+   - $\text{Spread} \le 1.00\% \implies 25.0\text{ pts}$; $\le 1.50\% \implies 15.0\text{ pts}$; $> 1.50\% \implies 5.0\text{ pts}$.
+   - $\text{Spread} > 2.50\%$ or $\text{Total Depth} < 200 \implies 0.0\text{ pts}$ (ghost book / blowout).
+
+### 3. Admission Hurdles & Sizing Tiers
+- **$\ge 85.0$ Total Score**: `FULL_SIZE` (2 Lots, +4.0% Maker TP, +3.0% Fri)
+- **$80.0 - 84.9$ Total Score**: `STANDARD_SIZE` (1 Lot, +4.0% Maker TP, +3.0% Fri)
+- **$< 80.0$ Total Score**: `BLOCKED` with itemized audit drags (`aggression_drag`, `momentum_drag`, `tick_rate_drag`, `tradability_drag`)
 
 Passively models the continuous price-volume distribution (inspired by the Maxwell-Boltzmann distribution):
 

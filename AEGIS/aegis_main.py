@@ -1,5 +1,5 @@
 # aegis_main.py
-# AEGIS V2.0 — Main WebSocket Wiring & Orchestration
+# AEGIS V1.0 — Main WebSocket Wiring & Orchestration
 # Connects Shoonya L2 feed → AEGIS Engine → Execution Manager
 
 import os
@@ -58,12 +58,7 @@ def perform_premarket_handshake(broker, fetcher):
                 broker.market_data_provider.subscribe(opt_tokens, exch_seg, feed_type="d")
                 logger.info(f"[{name}] Subscribed to Cash Index ({spot_exch}) + {len(opt_tokens)} {exch_seg} Options (t+d)")
 
-            # Subscribe Active Index Futures Token
-            fut_token, fut_sym, fut_exch = fetcher.get_current_futures_token()
-            if fut_token and hasattr(broker, "market_data_provider"):
-                broker.market_data_provider.subscribe([str(fut_token)], fut_exch, feed_type="t")
-                broker.market_data_provider.subscribe([str(fut_token)], fut_exch, feed_type="d")
-                logger.info(f"[{name}] Subscribed to Active Futures {fut_sym} ({fut_token}) on {fut_exch} (t+d)")
+
     except Exception as e:
         logger.error(f"Pre-market WebSocket setup warning: {e}")
 
@@ -79,8 +74,7 @@ def _build_edges_snapshot(aegis_engine, trader):
             snap["macro"] = {
                 "spot": round(float(state.get("spot", 0.0) or 0.0), 1),
                 "atm": round(float(state.get("atm_strike", 0.0) or 0.0), 0),
-                "fut": round(float(state.get("futures_price", 0.0) or 0.0), 1),
-                "basis_pts": round(float(state.get("basis_pts", 0.0) or 0.0), 1),
+
                 "ema20": round(float(getattr(eng, "ema_20_1m", 0.0) or 0.0), 1) if eng else 0.0,
                 "ema50": round(float(getattr(eng, "ema_50_1m", 0.0) or getattr(eng, "ema_50_1m_live", 0.0) or 0.0), 1) if eng else 0.0,
                 "atr": round(float(getattr(eng, "current_atr_1m", 0.0) or 0.0), 2) if eng else 0.0,
@@ -165,10 +159,7 @@ def build_minute_digest(now, aegis_engine, trader, spot_price):
         else:
             seg.append(f"Spot:{eng_spot:.0f}")
         seg.append(f"ATM:{state['atm_strike']:.0f}")
-        if state.get('futures_price', 0) > 0:
-            basis_pts = state.get('basis_pts', 0.0)
-            basis_bps = state.get('basis_bps', 0.0)
-            seg.append(f"Fut:{state['futures_price']:.0f}(Basis:{basis_pts:+.1f}pts/{basis_bps:+.1f}bps)")
+
 
         # ─── Price Action Engine: 20/50 EMA, Zone Discipline, VWAP & PA Pillars ───
         pae = getattr(aegis_engine, 'price_action_engine', None) or getattr(aegis_engine, 'time_bar_engine', None)
@@ -258,7 +249,7 @@ def build_minute_digest(now, aegis_engine, trader, spot_price):
 
 def main():
     logger.info("==============================================")
-    logger.info("STARTING AEGIS V2.0 GAMMA BURST ENGINE")
+    logger.info("STARTING AEGIS V1.0 GAMMA BURST ENGINE")
     logger.info("==============================================")
     
     # Silence verbose submodules
@@ -287,16 +278,7 @@ def main():
             token_map[spot_token] = {'side': 0, 'strike': 0.0, 'is_index': True}
             logger.info(f"[AegisMain] Active instrument: {inst_name} | Spot Token: {spot_token} ({spot_sym}) | Strike Step: {strike_step}")
         
-        # 1b. Add Active Index Futures Token (SHADOW telemetry-only, 2026-10-26)
-        # Futures feed NEVER gates a live decision and never seeds live bar history.
-        # It exists solely for shadow data-speed measurement + basis/lead-lag stats
-        # to evaluate candidate future gate uses (see _on_futures_tick docstring).
-        fut_token, fut_sym, fut_exch = fetcher.get_current_futures_token()
-        if fut_token and fut_sym:
-            fut_token = str(fut_token)
-            token_to_symbol[fut_token] = fut_sym
-            token_map[fut_token] = {'side': 0, 'strike': 0.0, 'is_futures': True}
-            logger.info(f"[AegisMain][SHADOW] Subscribed Active Futures: {fut_sym} (Token: {fut_token}) — telemetry-only, non-gating")
+
 
         # 2. Build token maps for AEGIS options. Retry until BOTH sides are present:
         # a single-side universe (partial searchscrip failure) blinds half the
@@ -493,9 +475,7 @@ def main():
         _, opt_exch_seg = fetcher.get_active_instrument()
         if spot_token and spot_sym:
             compiler.subscribe([spot_token], spot_exch)
-        if fut_token and fut_sym:
-            compiler.subscribe([str(fut_token)], fut_exch)
-        opt_only = [t for t in token_to_symbol.keys() if str(t) not in (str(spot_token), str(fut_token or ""))]
+        opt_only = [t for t in token_to_symbol.keys() if str(t) != str(spot_token)]
         if opt_only:
             compiler.subscribe(opt_only, opt_exch_seg)
         logger.info(f"[AegisMain] Tick feed wired: Shoonya → TickCompiler → AEGIS Engine ({len(token_to_symbol)} instruments)")
@@ -510,7 +490,7 @@ def main():
         else:
             logger.warning("[AegisMain] AEGIS archiver failed to attach — raw options data NOT persisted")
         
-        logger.info("AEGIS V2.0 Core initialized successfully")
+        logger.info("AEGIS V1.0 Core initialized successfully")
         
     except Exception as e:
         logger.critical(f"Initialization failed: {e}", exc_info=True)
@@ -535,25 +515,18 @@ def main():
                 broker.market_data_provider.subscribe([token], spot_exch, feed_type="t")
                 broker.market_data_provider.subscribe([token], spot_exch, feed_type="d")
                 
-                # Subscribe Futures Contract (NIFTY / SENSEX) — SHADOW telemetry-only
-                fut_token, fut_sym, fut_exch = fetcher.get_current_futures_token()
-                if fut_token:
-                    broker.market_data_provider.subscribe([str(fut_token)], fut_exch, feed_type="t")
-                    broker.market_data_provider.subscribe([str(fut_token)], fut_exch, feed_type="d")
-                    logger.info(f"[{name}][SHADOW] Subscribed to Futures Contract {fut_sym} ({fut_token}) on {fut_exch} (t+d, telemetry-only, non-gating)")
-
                 weekly_opts = fetcher.get_weekly_option_tokens()
                 if not weekly_opts.empty:
                     opt_tokens = [str(t) for t in weekly_opts['token'].tolist()]
                     broker.market_data_provider.subscribe(opt_tokens, exch_seg, feed_type="t")
                     broker.market_data_provider.subscribe(opt_tokens, exch_seg, feed_type="d")
-                    logger.info(f"[{name}] Subscribed to Cash Index + Futures + {len(opt_tokens)} Options (t+d)")
+                    logger.info(f"[{name}] Subscribed to Cash Index + {len(opt_tokens)} Options (t+d)")
         except Exception as e:
             logger.error(f"Startup subscription warning: {e}")
     elif is_pre_market(now_dt):
         perform_premarket_handshake(broker, fetcher)
     
-    logger.info("AEGIS V2.0 Bot is ready and running!")
+    logger.info("AEGIS V1.0 Bot is ready and running!")
     
     # ─── Dynamic Subscription Management ───
     last_minute = datetime.now().minute
@@ -655,10 +628,7 @@ def main():
                                 mdp.subscribe([str(spot_tok)], spot_exch, feed_type="t")
                                 mdp.subscribe([str(spot_tok)], spot_exch, feed_type="d")
 
-                                fut_tok, fut_sym, fut_exch = fetcher.get_current_futures_token()
-                                if fut_tok:
-                                    mdp.subscribe([str(fut_tok)], fut_exch, feed_type="t")
-                                    mdp.subscribe([str(fut_tok)], fut_exch, feed_type="d")
+
                             except Exception:
                                 pass
 
@@ -756,7 +726,7 @@ def main():
             time.sleep(5)
     
     # ─── Graceful Shutdown ───
-    logger.info("Shutting down AEGIS V2.0...")
+    logger.info("Shutting down AEGIS V1.0...")
     # Stop VWAP background poller first (no new REST volume polls during teardown)
     try:
         vwap_eng = getattr(aegis_engine, "vwap_engine", None)
@@ -781,7 +751,7 @@ def main():
         logger.info("Flushing AEGIS L2 Options Archiver final partition...")
         aegis_archiver.shutdown()
         logger.info("AEGIS archiver flush complete.")
-    logger.info("AEGIS V2.0 stopped cleanly")
+    logger.info("AEGIS V1.0 stopped cleanly")
 
 if __name__ == "__main__":
     # Import market calendar functions here to avoid circular imports

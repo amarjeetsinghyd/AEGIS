@@ -1,5 +1,5 @@
 # aegis_gamma_engine.py
-# AEGIS V2.0 — Empirical Microstructure Impulse Engine
+# AEGIS V1.0 — Empirical Microstructure Impulse Engine
 # Reverse-engineered from 812 real >=10% clean option impulse moves (NIFTY & SENSEX)
 # Zero-allocation hot path, O(1) continuous confidence scoring (0 to 100).
 
@@ -79,7 +79,6 @@ except ImportError:
 try:
     from AEGIS.core.aegis_v4_core import (
         FastTickRingBuffer,
-        Top5DepthGuard,
         Direction as V4Direction,
         FastMonotonicStack,
     )
@@ -87,12 +86,10 @@ except ImportError:
     try:
         from core.aegis_v4_core import (
             FastTickRingBuffer,
-            Top5DepthGuard,
             FastMonotonicStack,
         )
     except ImportError:
         FastTickRingBuffer = None
-        Top5DepthGuard = None
         V4Direction = None
         FastMonotonicStack = None
 
@@ -299,9 +296,11 @@ class AegisGammaEngine:
             self.shadow_boundary_observer.option_cache = self.option_cache
 
 
-        # ─── AEGIS V4.0 Futures RingBuffer & Top-5 Depth Guard (Pillar 4 / Micro Guard) ───
+        # ─── AEGIS V4.0 Futures RingBuffer (Passive Telemetry) ───
         self.v4_futures_buffer = FastTickRingBuffer(size=256) if FastTickRingBuffer is not None else None
-        self.top5_depth_guard = Top5DepthGuard(history_len=30) if Top5DepthGuard is not None else None
+        # Decommissioned 2026-10-27 (Logic De-bloat): Top5DepthGuard eliminated.
+        # Order-book depth & spread are fully verified by CompositeConvictionEngine.
+        self.top5_depth_guard = None
 
         # Fill & Edge tracking
         self.fill_latency_buf = np.zeros(500, dtype=np.float32)
@@ -416,10 +415,7 @@ class AegisGammaEngine:
             if not info:
                 return
 
-            # Route futures token to live Basis and Lead-Lag tracking (do not score as option)
-            if info.get("is_futures"):
-                self._on_futures_tick(sym, lp, tick, now_sec)
-                return
+
 
             side = info["side"]          # 0=CE, 1=PE
             strike = float(info["strike"])
@@ -438,7 +434,9 @@ class AegisGammaEngine:
             live_tick_rate = len(ring) / 30.0
 
             # Extract Level 1-5 Depth - Scalar O(1) Math (Invariant I1)
-            if hasattr(tick, "bp") and hasattr(tick, "sp") and len(tick.bp) >= 5 and len(tick.sp) >= 5:
+            tick_bp = getattr(tick, "bp", None)
+            tick_sp = getattr(tick, "sp", None)
+            if tick_bp is not None and tick_sp is not None and len(tick_bp) >= 5 and len(tick_sp) >= 5:
                 bp1 = float(tick.bp[0])
                 bp2 = float(tick.bp[1])
                 bp3 = float(tick.bp[2])
@@ -529,6 +527,12 @@ class AegisGammaEngine:
                 self.scorer.update_tick(sym, now_sec, lp, bp1, sp1, b1, a1, b2, a2, b3, a3, b4, a4, b5, a5, vol=vol_val)
 
                 direction = "UP" if side == 0 else "DOWN"  # 0=CE -> UP, 1=PE -> DOWN
+
+                # Entry Candidate Gate: Only tradable strikes (within 8 steps of ATM) evaluate entry setups.
+                # Deep OTM strikes (e.g. 21500 PE when ATM is 22700) are tracked 100% for Option Flow
+                # (OFI, PCR, Delta above), but must NEVER trigger trade entry or depth guard vetoes!
+                if self.current_atm_strike > 0.0 and abs(strike - self.current_atm_strike) > (8 * self.strike_step):
+                    return None
 
                 # ─── Phase 1 (V4.1b): Absolute Pain Zone Band Veto ───
                 # Vetoes entry trade consideration for opposing direction while
@@ -738,33 +742,12 @@ class AegisGammaEngine:
                             # Breakout Archetypes (Pillar 3 & 4): 60s Spot Persistence.
                             # 2026-10-26: futures 15s path-efficiency branch removed —
                             # futures feed moved to SHADOW telemetry-only (data speed
-                            # measured, never gates; live P3/P4 persistence is spot-only).
-                            # Mode B In-Flight Breakthroughs (Pillar 3 & 4 mid-bar surge): Bypassed.
-                            # Mode B emerges from resting/consolidation bases; its impulse is validated
-                            # live in the forming candle via 2-tick boundary clearance + OFI delta harmony.
-                            # Mode A Bar-Close Breakouts (Pillar 3 & 4 completed bars): 60s Spot Persistence.
+                            # Macro structure and candle geometry (Body >= 65%, edge, wicks, ATR expansion)
+                            # are verified directly by PriceActionEngine. Legacy 60s tick-counting spot persistence
+                            # veto is permanently decommissioned (Zero-Entropy Logic De-bloat).
                             is_mode_b = (pa_details.get("mode") == "MODE_B_INFLIGHT_BREAKTHROUGH")
-                            if pillar in (3, 4) and not is_mode_b:
-                                if self.persistence_engine:
-                                    pers60_ok, pers60_score, pers60_m = self.persistence_engine.evaluate_persistence(
-                                        direction,
-                                        lookback_sec=60.0,
-                                        min_threshold=0.70,
-                                        max_allowed_opposite=2,
-                                        anchor_ts_sec=anchor_arg,
-                                    )
-                                    if not pers60_ok and pers60_m.get("reason") not in ("warmup_zero_obs_permissive", "warmup_aligned_permissive"):
-                                        self._purge_impulse_memory(sym)
-                                        self._throttled_veto_log("v3_drop_60s", f"[V3 DROP 60s] {sym} ({direction}) {pa_setup_name} failed persistence at T={anchor_T:.0f}: {pers60_m.get('reason')} (Dp60={pers60_score:.2f})")
-                                        return None
-                                    pers_score = float(pers60_score)
-                                    pers_confirmed = bool(pers60_ok)
-                                else:
-                                    pers_score = 1.0
-                                    pers_confirmed = True
-                            else:
-                                pers_score = float(pa_details.get("dp_micro", 1.0))
-                                pers_confirmed = True
+                            pers_score = float(pa_details.get("dp_micro", 1.0))
+                            pers_confirmed = True
 
                             # 2. MICROSTRUCTURE EXTRACTION & SANITY CIRCUIT BREAKERS
                             # Zero-Entropy Architecture: Order flow momentum is scored strictly by
@@ -896,6 +879,7 @@ class AegisGammaEngine:
                                         spread_pct=float(spread_val or (micro_m.get("spread_pct", 0.5))),
                                         pa_details=pa_details,
                                         wyckoff_details=wyckoff_context,
+                                        micro_metrics=micro_m,
                                     )
 
                                     if not conviction_res.is_approved:
@@ -931,6 +915,7 @@ class AegisGammaEngine:
                                                     spread_pct=float(spread_val or (past_60_m.get("spread_pct", 0.5))),
                                                     pa_details=pa_details,
                                                     wyckoff_details=wyckoff_context,
+                                                    micro_metrics=past_60_m,
                                                 )
                                                 if past_conv_res.is_approved:
                                                     conviction_res = past_conv_res
@@ -985,6 +970,7 @@ class AegisGammaEngine:
                                                     spread_pct=float(spread_val or (live_micro_m.get("spread_pct", 0.5))),
                                                     pa_details=pa_details,
                                                     wyckoff_details=wyckoff_context,
+                                                    micro_metrics=live_micro_m,
                                                 )
                                                 if live_conv_res.is_approved:
                                                     conviction_res = live_conv_res
@@ -1002,10 +988,9 @@ class AegisGammaEngine:
                                             "conviction_veto",
                                             f"[CONVICTION VETO] {sym} ({direction}) {pa_setup_name} blocked: "
                                             f"Score {conviction_res.total_score:.1f}/100 < {self.conviction_engine.min_approval_score:.1f} ({conviction_res.reason}) | "
-                                            f"Struct: {conviction_res.sub_scores.get('structure', 0)} | "
-                                            f"Impulse: {conviction_res.sub_scores.get('impulse', 0)} | "
-                                            f"Flow: {conviction_res.sub_scores.get('flow', 0)} | "
-                                            f"Contract: {conviction_res.sub_scores.get('contract', 0)}"
+                                            f"Aggression: {conviction_res.sub_scores.get('touch_aggression', conviction_res.sub_scores.get('flow', 0))} | "
+                                            f"Momentum: {conviction_res.sub_scores.get('micro_momentum', conviction_res.sub_scores.get('impulse', 0))} | "
+                                            f"Contract: {conviction_res.sub_scores.get('contract_tradability', conviction_res.sub_scores.get('contract', 0))}"
                                         )
                                         return None
 
@@ -1035,7 +1020,7 @@ class AegisGammaEngine:
                                     )
                                     return None
 
-                                # ─── Shield v2: delta inflection + OI kinematics ───
+                                # ─── Delta Inflection Trap Shield ───
                                 _di_veto, _di_detail = self._delta_inflection_check(sym, direction, now_sec)
                                 if _di_veto:
                                     self._di_vetoed += 1
@@ -1044,38 +1029,14 @@ class AegisGammaEngine:
                                                              f"[DELTA INFLECTION VETO] {sym} ({direction}) "
                                                              f"{pa_setup_name} blocked: {_di_detail}")
                                     return None
+                                # OI Kinematics live veto permanently decommissioned (NSE updates OI every 3m, not tick-by-tick).
+                                # OIBuiltupGate is preserved purely for passive telemetry & wall snapshot logging.
                                 if self.oi_gate is not None:
                                     _oi_vel, _oi_acc, _oi_n = self.oi_gate.get_oi_kinematics(sym, now_sec)
                                     if _oi_n >= 2:
                                         self._oi_kin_armed += 1
-                                        _oi_dumping = (_oi_vel < -1.0) or (_oi_vel < 0 and _oi_acc < -0.5)
-                                        if _oi_dumping:
-                                            self._oi_kin_vetoed += 1
-                                            self._purge_impulse_memory(sym)
-                                            self._throttled_veto_log(
-                                                "oi_kinematics_veto",
-                                                f"[OI KINEMATICS VETO] {sym} ({direction}) {pa_setup_name} "
-                                                f"blocked: fresh dumping vel={_oi_vel:.2f}%/min acc={_oi_acc:+.2f}")
-                                            return None
                                     else:
                                         self._oi_kin_skipped += 1
-
-                                # ─── V4 DEFENSIVE TOP-5 DEPTH GUARD (BBO Micro-Price Skew + Spread Veto) ───
-                                if self.top5_depth_guard is not None:
-                                    bids_mat = np.array([
-                                        [bp1, b1], [bp2, b2], [bp3, b3], [bp4, b4], [bp5, b5]
-                                    ], dtype=np.float64)
-                                    asks_mat = np.array([
-                                        [sp1, a1], [sp2, a2], [sp3, a3], [sp4, a4], [sp5, a5]
-                                    ], dtype=np.float64)
-                                    dir_enum = V4Direction.BULLISH if direction == "UP" else V4Direction.BEARISH
-                                    guard_ok, guard_reason = self.top5_depth_guard.validate_execution(
-                                        dir_enum, bids_mat, asks_mat
-                                    )
-                                    if not guard_ok:
-                                        self._purge_impulse_memory(sym)
-                                        self._throttled_veto_log("v4_depth_guard_veto", f"[V4 DEPTH GUARD VETO] {sym} ({direction}) blocked: {guard_reason}")
-                                        return None
 
                                 # ─── EXECUTION COMMIT & IMMEDIATE DISPATCH (<0.8ms from Tick) ───
                                 if self.slot_policy and slot_admit:

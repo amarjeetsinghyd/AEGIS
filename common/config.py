@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import os
 from typing import Optional
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Lot sizes — SEBI-mandated as of 2026-07
 NIFTY_LOT_SIZE = 65
@@ -29,7 +32,10 @@ OI_REVERSAL_MIN_HOLD_SEC = 60.0
 # LIVE switch: ONLY via explicit VPS env (AEGIS_LIVE_TRADING=TRUE).
 # Default stays False (PAPER) so local runs, tests, and fresh clones can
 # never place real orders by accident. Flip ONLY with human approval.
-ENABLE_LIVE_BROKERAGE_EXECUTION = os.getenv("AEGIS_LIVE_TRADING", "False").upper() == "TRUE"
+ENABLE_LIVE_BROKERAGE_EXECUTION = (
+    os.getenv("AEGIS_LIVE_TRADING", "").upper() == "TRUE"
+    or os.getenv("ENABLE_LIVE_BROKERAGE_EXECUTION", "False").upper() == "TRUE"
+)
 BROKER = os.getenv("BROKER", "SHOONYA").upper()
 
 _runtime_name: Optional[str] = None

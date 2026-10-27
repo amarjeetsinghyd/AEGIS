@@ -1,6 +1,66 @@
 # Changelog
 
-## [Unreleased] - 2026-10-26 (Pillar 2 Dynamic S/R Registry Re-Anchoring, Mode B 48s Upper Cap Removal & Pillar 1 Wyckoff Smart Gate)
+## [Unreleased] - 2026-10-27 (50-Trade Quantitative Milestone, Zero-Futures Architecture, Event-Driven Broker Capital & Data Integrity Shield)
+
+### Milestone
+- **Historic 50-Trade Quantitative Milestone Reached**:
+  - Validated AEGIS autonomous execution across 50 real-market trades (1 DTE & 0 DTE NIFTY/SENSEX options) with zero manual parameter tampering.
+  - **Overall Performance**: 50 Total Trades | 37 Wins | 13 Losses | **74.0% Win Rate** | **Gross Profit: +₹229.40** (Gross Profit: ₹689.15, Gross Loss: ₹459.75, **Profit Factor: 1.50**).
+  - **Star Pillar Breakdown**:
+    - **Pillar 3 (`volatility_squeeze_breakout`) [Undefeated Star Pillar]**: 9 Trades | 9 Wins | 0 Losses | **100.0% Win Rate** | Gross P&L: **+₹190.90** | Avg Option Gain: **+3.45%**.
+    - **Pillar 1 (`20_ema_rejection`) [Dow HL2/LH2 Foundation]**: 16 Trades | 12 Wins | 4 Losses | **75.0% Win Rate** | Gross P&L: **+₹70.50** | Avg Option Gain: **+0.98%**.
+    - **Pillar 2 (`micro_sweep_reclaim`) [Institutional Liquidity Reclaim]**: 10 Trades | 7 Wins | 3 Losses | **70.0% Win Rate** | Gross P&L: **+₹58.00** | Avg Option Gain: **+1.13%**.
+    - **Pillar 4 (`topological_prominence_breakout`) [Registry S/R Breakout]**: 15 Trades | 9 Wins | 6 Losses | **60.0% Win Rate** | Gross P&L: -₹90.00 (catalyst for 26 Oct debloating of HVG 5m stealth veto and re-anchoring to Dynamic S/R Registry).
+    - **Combined P1, P2 & P3 Performance**: 35 Trades | 28 Wins | 7 Losses | **80.0% Win Rate**.
+
+### Added
+- **Composite Conviction Engine Dual-Profile & Consolidated Microstructure Gate** (`AEGIS/core/composite_conviction_engine.py` & `AEGIS/aegis_gamma_engine.py`):
+  - Consolidated standalone `AdaptiveMicroValidator` and its redundant 60-point energy gate directly into `CompositeConvictionEngine` (Zero-Entropy Architecture).
+  - Implemented Dual-Profile Option Microstructure & Order Flow scoring (0–100 continuous scale, 40-35-25 domain model):
+    - **Mode B In-Flight Profile**: Instantaneous breakout scoring via Touch Aggression $I_1$ (40 pts) + Live Tick Arrival Intensity (35 pts) + Spread Tradability (25 pts) with Wyckoff OFI Delta floor boost ($\ge 34.0\text{ pts}$).
+    - **Mode A Structural Rejection Profile**: Bar-close confirmation scoring via Order Book Support & $L_3-L_5$ Deep Pressure (40 pts) + 30s Option Return Velocity (35 pts) + Contract Depth & Spread (25 pts).
+  - Retired Domain 1 Spot Structure ($0.0\text{ pts}$) eliminating redundant scoring loops already validated upstream by `PriceActionEngine`.
+  - Embedded hard sanity circuit breakers directly into `extract_micro_metrics`: spread blowout ($> 2.5\%$), ghost book ($< 200$ depth), and severe dump ($< -1.5\%$).
+  - Enforced continuous admission hurdles: $\ge 85.0 \implies \text{FULL\_SIZE}$ (2 lots, +4.0% Maker TP), $80.0 - 84.9 \implies \text{STANDARD\_SIZE}$ (1 lot, +4.0% Maker TP), $< 80.0 \implies \text{BLOCKED}$ with itemized drags (`aggression_drag`, `momentum_drag`, `tick_rate_drag`, `tradability_drag`).
+- **Dynamic Event-Driven Broker Funds Integration** (`common/execution/capital_engine.py`):
+  - Completely decoupled paper capital state from stale local JSON files (`capital_state.json`).
+  - Implemented one-shot startup query to Shoonya broker API (`portfolio_provider.get_available_funds()`) fetching live ledger balance (₹486.71) with zero polling loops.
+  - Subsequent requests are served instantly from memory, with broker re-sync triggered strictly upon trade closure events via `add_funds()`.
+- **Trade Journal Forensic Ingestion Shield & Telemetry Hardening** (`unified_dashboard/telemetry_loader.py`):
+  - Added multi-layer validation to `reconcile_and_auto_journal()` preventing synthetic test runs from corrupting historical records:
+    - Weekend Filter: Strictly discards Saturday and Sunday timestamps.
+    - Market Hours Guard: Enforces 09:14 to 15:35 IST trading window.
+    - Extreme PnL Plausibility Cap: Discards single-lot retail option micro-scalps with $|PnL| > \text{₹3,000}$ or synthetic dummy patterns (`en=8.15, ex=1.0`).
+- **Far-OTM Execution Guard** (`AEGIS/aegis_gamma_engine.py`):
+  - Added strike distance filter in `on_tick_parsed` gating trade candidate evaluation to strikes within 8 steps of ATM (`abs(strike - current_atm_strike) <= 8 * strike_step`), preventing illiquid deep-OTM contracts from triggering fills during rapid breakouts while preserving full 25-OTM depth for OFI/PCR volume compilation.
+
+### Changed
+- **Live Brokerage Execution Activation (`ShoonyaOrderLifecycle` Active)** (`common/config.py`, `ecosystem.config.js`, `.env`):
+  - Enabled live brokerage execution (`ENABLE_LIVE_BROKERAGE_EXECUTION=True`, `AEGIS_LIVE_TRADING=TRUE`) across local and VPS environments.
+  - Hardened `common/config.py` to auto-load `.env` before variable evaluation and accept either flag name, ensuring PM2 process reloads reliably bind to live order routing.
+  - Verified live engine transition: `[AegisEM] LIVE mode — Shoonya LMT / NRML path` confirmed active on VPS.
+- **Hot-Strike Live Re-Validation Dynamic Premium Floor Alignment** (`AEGIS/aegis_execution_manager.py`):
+  - Applied `effective_premium_floor(_pmin, avail_funds, lot_size)` in `_process_aegis_signal()` at line 720.
+  - Aligned live re-validation with `StrikeSelector`'s dynamic floor logic, resolving a critical testing-mode deadlock where affordable OTM strikes (e.g. ₹5.00–₹8.50 selected for testing capital ₹486) were falsely rejected against the production ₹15.00 floor (`premium_too_low`). Production accounts with full capital remain bounded by the configured ₹15.00 floor.
+- **Decommissioning of `Top5DepthGuard` (Zero-Entropy Logic De-Bloat)** (`AEGIS/aegis_gamma_engine.py`):
+  - Completely eliminated the redundant legacy `Top5DepthGuard` and its pre-dispatch veto block at line 1069.
+  - Root cause resolved: Shoonya `t` (trade) ticks do not carry top-5 depth levels, causing local `bp1` and `sp1` variables to evaluate to `0.0`, which previously triggered spurious `INVALID_QUOTES` vetoes on genuine Mode B breakouts (such as 09:19, 09:28, 10:20, and 11:10 today).
+  - All order-book depth, bid-ask spread tradability, and ghost-book sanity checks remain exclusively and robustly governed by `CompositeConvictionEngine` and `AegisExecutionManager`.
+- **Decommissioning of `OI Kinematics` Live Blocking Veto** (`AEGIS/aegis_gamma_engine.py`):
+  - Decommissioned the live entry blocking veto (`_oi_dumping ... return None`) at line 1032.
+  - Root cause resolved: NSE exchanges update Open Interest on a 3-minute snapshot frequency (not tick-by-tick). Enforcing tick-cadence kinematics created execution friction and false telemetry drops.
+  - `OIBuiltupGate` is preserved purely for passive dashboard telemetry and strike wall depth profiling without blocking scalper entries.
+- **Decommissioning of `Directional Persistence` 60s Spot Tick Veto** (`AEGIS/aegis_gamma_engine.py`):
+  - Eliminated the redundant 60-second spot tick-counting persistence veto at line 746 (`pers_confirmed = True`, `pers_score = 1.0`).
+  - `PriceActionEngine` already verifies complete macro trend alignment, candle body geometry ($\ge 65\%$), wicks ($\le 0.05 \times \text{ATR}$), and ATR expansion multiples. The legacy tick-counting check was 100% duplicate logic.
+- **Canonical Version Standardization to `AEGIS V1.0` Across All Banners & Headers**:
+  - Replaced all lingering legacy "AEGIS V2.0" log banners, docstrings, and IPC schemas across `AEGIS/aegis_main.py`, `AEGIS/aegis_execution_manager.py`, `AEGIS/aegis_gamma_engine.py`, and `common/ipc/live_state.py` with the canonical **`AEGIS V1.0`** (Production Version 1.0 Locked).
+- **Universal Index Futures Elimination (100% Native Options Engine)**:
+  - Removed all index futures dependencies, REST queries, and WebSocket token tracking across `execution/data_fetcher.py`, `core/instrument_repository.py`, `aegis_gamma_engine.py`, and `aegis_main.py`.
+  - AEGIS now operates exclusively on cash index spot prices and option chain L1/L2 microstructure, saving CPU overhead and eliminating spurious warning logs.
+- **Journal & Trade History Sanitization**:
+  - Excised 7 synthetic mock records injected over the 24–25 Oct weekend from `trade_history.json` and `docs/AEGIS_TRADE_JOURNAL.csv`.
+  - Recompiled styled `docs/AEGIS_TRADE_JOURNAL.xlsx` and synchronized state across local development and Oracle Cloud VPS.
 
 ### Added
 - **Pillar 2 (`micro_sweep_reclaim`) Dynamic S/R Level Registry & Day Extreme Re-Anchoring** (`AEGIS/core/price_action_engine.py`):

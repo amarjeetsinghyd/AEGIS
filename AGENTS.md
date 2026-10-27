@@ -197,6 +197,30 @@ Before writing or modifying ANY strategy, gatekeeper, or execution code, every A
 
 ---
 
+## ⚡ VERSION CONTROL & CHANGE TRACKING (JUJUTSU / JJ PROTOCOL)
+
+> **Jujutsu (`jj`) is the primary version control layer for all AI agents and contributors in this repo.**
+> The repository is co-located with Git (`.jj/` backed by `.git/`). GitHub sees standard Git commits, but local operations are snapshot-based, frictionless, and instantaneous.
+
+### 1. Zero-Friction Agent Commits (No Ceremony, No Untracked Files)
+- **Automatic Working Copy Snapshot**: Every file modification is automatically tracked in the working copy commit (`@`).
+- **No `git add` required**: Never run `git add` or worry about untracked files; everything is captured in real-time.
+- **Commit Messages (`describe`) Are Optional**: You do NOT need to run `jj describe` for micro-changes or scratch work. Commits can remain anonymous during development.
+- **Starting a New Clean State**: When starting a distinct logical task, simply run `jj new`. This automatically archives the current working copy and opens a clean new commit.
+
+### 2. Pushing & Human Traceability
+- When preparing to push changes to GitHub remote (`origin/main`), assign a concise descriptive summary:
+  ```powershell
+  jj describe -m "feat(AEGIS): <concise summary>"
+  jj git push
+  ```
+
+### 3. Instant Rollback & Hygiene Gate (`jj undo`)
+- **Instant Rollback**: If an AI agent or test creates unintended side-effects or dirty edits, execute `jj undo` to immediately revert the last operation.
+- **Operation History**: Run `jj op log` to inspect operational history if audit is required.
+
+---
+
 ## SHOONYA / NORENAPI RULES (broker seam)
 
 - **Mandatory 90-Day Password Rotation Schedule**:

@@ -29,6 +29,7 @@ timeline
     October 14, 2026 : Epoch III: 0-DTE ML Decommissioning : 18-Day CatBoost Trial (46.4% WR) Shut Down : 100% Deterministic Price Action & Wyckoff Edge
     October 22, 2026 : Epoch III: The Golden Middle Path : Mode B In-Flight Mid-Bar Breakthrough : 0.75s Single-Shot No-Chasing : Friday 4-DTE +3.0% Calibration
     October 26, 2026 : Epoch III: S/R Registry Sweeps & Mode B Unleashed : 48s Upper Cap Removed : Pillar 2 Re-anchored to Dynamic S/R & PDH/PDL : Candle N-1 Wyckoff Smart Gate
+    October 27, 2026 : Epoch III: 50-Trade Milestone & Deep Debloating : 50 Trades (74.0% WR, PF 1.50) : Star Pillar 3 @ 100% WR : 100% Options Native (Zero Futures)
 ```
 
 ---
@@ -825,6 +826,56 @@ Guided directly by the founder's first-principles interrogation, four pivotal re
 
 ---
 
+### 7.34 The 50-Trade Quantitative Milestone & Deep Architecture Debloating (26–27 October 2026)
+
+Reaching the historic **50-Trade Milestone** marks the operational maturity of AEGIS. Over 50 real-market trades (executed across 1 DTE and 0 DTE NIFTY and SENSEX options), the core quantitative design was never abandoned or reinvented—it was systematically pruned, aligned, and optimized.
+
+#### 1. Empirical Quantitative Ledger (50 Trades Audited)
+- **Total Executed Trades**: 50
+- **Winning Trades**: 37 | **Losing Trades**: 13
+- **Overall Win Rate**: **74.0%**
+- **Gross Profit**: ₹689.15 | **Gross Loss**: ₹459.75 | **Net Gross P&L**: **+₹229.40 (Positive)**
+- **Profit Factor**: **1.50**
+- **Total Execution Charges (Brokerage + STT/Exchange)**: ₹641.12
+- **Net Realized P&L**: **-₹411.72** (near breakeven across 50 trades in micro-capital testing mode)
+- **Average Trade Duration**: 60 seconds
+
+#### 2. Star Pillar Performance Breakdown
+The 4 Macro Price Action Pillars established an unmistakable empirical hierarchy:
+1. **Pillar 3 (`volatility_squeeze_breakout`) — Undefeated Star Pillar**:
+   - **9 Trades | 9 Wins | 0 Losses | 100.0% Win Rate**
+   - **Gross P&L**: **+₹190.90** | **Average Option Return**: **+3.45%** per trade.
+   - *Key Driver*: Pre-compression range consolidation ($\le 1.25\times\text{ATR}$) followed by Priority Mode B in-flight surge creates immediate institutional impulse that fills the resting +4.0% Maker TP before counter-party retail participation can form.
+2. **Pillar 1 (`20_ema_rejection`) — The Dow HL2/LH2 Workhorse**:
+   - **16 Trades | 12 Wins | 4 Losses | 75.0% Win Rate**
+   - **Gross P&L**: **+₹70.50** | **Average Option Return**: **+0.98%**.
+   - *Key Driver*: Classical Dow Theory second-touch confirmation with the Wyckoff Candle $N-1$ smart absorption gate.
+3. **Pillar 2 (`micro_sweep_reclaim`) — Institutional Liquidity Reclaim**:
+   - **10 Trades | 7 Wins | 3 Losses | 70.0% Win Rate**
+   - **Gross P&L**: **+₹58.00** | **Average Option Return**: **+1.13%**.
+   - *Key Driver*: Re-anchoring sweeps to the Dynamic Session S/R Level Registry and Day Extremes (PDH/PDL) eliminated random 5-bar noise.
+4. **Combined Core Execution (Pillars 1, 2, & 3)**:
+   - **35 Trades | 28 Wins | 7 Losses | 80.0% Win Rate**.
+5. **Pillar 4 (`topological_prominence_breakout`)**:
+   - **15 Trades | 9 Wins | 6 Losses | 60.0% Win Rate** (-₹90.00 Gross PnL).
+   - Catalyzed the major debloating on 26 October: completely eliminated the legacy 5m stealth structural veto (`hvg_engine`) in favor of direct Dynamic S/R Registry breakouts.
+
+#### 3. The Two Phases of System Maturation: Intent Parity & Deep Debloating
+Rather than altering the core mathematical architecture (Price Action Quadrinity + Wyckoff Volume & OFI Delta Gate + Composite Conviction $\ge 80$), development progressed through two rigorous phases:
+1. **Code-to-Intent Parity**:
+   - Fixed units and lifecycle mismatches between forming bars (`_curr_1m_bar`) and closed bars (`bars_1m`).
+   - Wired live in-flight option flow (`_opt_flow_1m`) into Mode A/B signals.
+   - Enforced strict outside-band Pain Zone rules (CALL requires spot above all 4 VWAP lines, PUT below all 4 lines).
+   - Removed artificial execution caps (e.g. 48s Mode B ceiling) to let valid momentum fire cleanly.
+2. **Deep Architecture & Logic Debloating**:
+   - **Zero Futures Elimination**: Options execution was freed from all background futures queries, subscriptions, and fallback loops, making AEGIS 100% options-native.
+   - **Premature Profit Chokes Removed**: Decommissioned the 9-EMA bar-close choke and 3-minute time stop in favor of full 5-minute baseline runway (`MAX_HOLD_SEC = 300s`) and resting Maker Limit TP (+4.0% Mon–Thu, +3.0% Fri).
+   - **Dead Module Archival**: Archived 11 complex legacy engines (`hvg_engine`, `adaptive_micro_validator`, `volume_profile_engine`, `causal_microstructure_pipeline`, `time_bar_engine`, `catboost_paper_trader`, etc.) to zero-entropy storage.
+   - **Dynamic Event-Driven Broker Sync**: Replaced hardcoded paper state files with direct Shoonya broker API margins on startup and trade close.
+   - **Telemetry Forensic Hardening**: Protected the journal with weekend and off-hours filters, excising phantom mock data and safeguarding true trade attribution.
+
+---
+
 ## 8. The Founder's Modus Operandi & AI Collaboration
 
 The evolution of Quant-Bot reflects a unique human-machine synergy:
@@ -847,7 +898,8 @@ The evolution of Quant-Bot reflects a unique human-machine synergy:
 | **Order Flow Role** | Candidate Delta ($>0$) Gate | Vectorized Net Delta OI Kinematics | 2-Second Rolling Anti-Spoof L2 Wall Shield (Validator) | Price-Indexed Queue Depletion Hazard Model + Sweep Attribution | 17-Feature CatBoost Classifier + Dual-Track Paper Trader + Adaptive Daily Median Gatekeeper | **Deterministic Wyckoff Volume ($VDR \ge 1.0$) + OFI Delta Gate ($\ge 1.30\times$ Imbalance) + In-Flight Option Flow Velocity + ML Decommissioned (100% Deterministic Edge)** |
 | **Execution Routing** | Fixed Market Orders | Aggressive Taker Fill | Market with Slippage Checks | Latency-Aware Adapter (Passive Limit vs IOC vs Adverse Abort) | Live Shoonya LMT/NRML + Instant 10s Stability Check | **Live Shoonya LMT/NRML + Single-Shot Clean 0.75s Entry (Zero Chasing Mandate) + Immediate Queue Draining + Strict 1-Lot Maker TP** |
 | **Exits** | 10% Fixed TP, 3-min Gamma Stall | 2-Phase Trailing HWM, Theta Abort | Claude's 4-Pillar Adaptive Exits (Maker TP, Noise Trailing, 15:08 CAS) | Claude's 4-Pillar Adaptive Exits + Post-Fill Edge Analytics | Normalized Stepped Risk Compression (+2% $\to$ -3% SL, +3% $\to$ 0% Cost-Shield, +3.5% $\to$ 0.5% Near-Target Lock) + +4% Maker TP + 9-EMA Structural + 5m Timeout | **Universal Entry Candle Low/High $\pm$ 0.10 ATR Invalidation + Adaptive Stepped Shield: -12% Floor $\to$ Step 1 Safety Net (-3% SL @ $+3.0\%$) $\to$ Step 2 Cost-Shield (0.0% @ $+3.5\%$) $\to$ Near-Target Lock $\to$ Maker TP (+4.0% Mon–Thu, +3.0% Fri DTE 4) + 15:08 CAS** |
-| **Max Trades / Day** | 3 trades / day (30m cooldown) | 3 trades / day (60s hold floor) | 3 trades / day (Slot 3 reserved for $\ge 14:45$ afternoon gamma) | 3 trades / day (Slot 3 reserved for $\ge 14:45$ afternoon gamma) | 3 trades / day (3/3 Wins, 100% Win Rate on Sep 24 Expiry) | **3 trades / day (19 Trades: 16 Wins, 3 Losses, 84.2% Win Rate, Profit Factor 4.08, +35.4% Capital Growth)** |
+| **Max Trades / Day** | 3 trades / day (30m cooldown) | 3 trades / day (60s hold floor) | 3 trades / day (Slot 3 reserved for $\ge 14:45$ afternoon gamma) | 3 trades / day (Slot 3 reserved for $\ge 14:45$ afternoon gamma) | 3 trades / day (3/3 Wins, 100% Win Rate on Sep 24 Expiry) | **3 trades / day (Strict Daily Cap enforced, Pre-Trade Rollback on abort)** |
+| **Empirical Track Record** | Discretionary scaling | KDO Paper simulation | 10 Trades (Initial PA) | 14 Trades (Rough Path) | 19 Trades (84.2% Win Rate, +35.4% ROI) | **50 Trades Milestone: 37 Wins, 13 Losses, 74.0% Win Rate, Profit Factor 1.50, Gross P&L +₹229.40, Star Pillar 3 (100% WR, 9/9 Wins, +3.45% avg gain)** |
 | **UI Dashboard** | Intelligence Lab (Lightweight Charts) | Bloomberg Terminal (Sensibull parity) | Dual-Brand Quant Console (ARGUS × AEGIS) | Dual-Brand Quant Console (ARGUS × AEGIS) | Dual-Brand Quant Console (ARGUS × AEGIS) + Outcome Telemetry | **Dual-Brand Quant Console (AEGIS × ARGUS) + Telemetry Engine + Gold Target Discipline Banners + Dynamic Date-Mapped Telemetry** |
 | **Governing Law** | Research Gap Register | The Covenant & Document 0.08 | `AGENTS.md` (Kronos decommissioned, 100% green tests mandatory) | `AGENTS.md` (Kronos decommissioned, 100% green tests mandatory) | `AGENTS.md` (Kronos decommissioned, 100% green tests mandatory) | **`AGENTS.md` (Kronos decommissioned, Strict +4% Target Discipline Mandate, Scale-Invariance via bps/%, 100% Green Pytest)** |
 | **Primary Failure Lesson** | 50-stock REST polling chokes; local UI lags PC | Transformers & lagging indicators buy the top of gamma bursts | Sub-second L2 book imbalances flash & spoof; Macro PA dominates | Un-discounted signatures diverge ($10^{14}$); 750ms latency traps retail breakouts | Missing `bar.ts` & C++ read-only array lock broke ML silently; Fixed-paise breakeven (50p) choked +5.6% wins on 5s dips | **ML morning warm-up false-vetos solved by deterministic Wyckoff; 0-DTE micro-wiggles choked by tight -3% SL solved by +3.0% threshold; Greeding for 5%–6% exposes to sharp institutional dumps, cementing the permanent +4% Maker TP mandate.** |

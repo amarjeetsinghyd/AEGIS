@@ -83,7 +83,6 @@ class TestCompositeConvictionEngine:
         assert res.total_score >= 85.0
         assert res.sizing_tier == "FULL_SIZE"
         assert res.recommended_tp_pct == 0.050
-        assert res.sub_scores["structure"] >= 20.0
         assert res.sub_scores["impulse"] >= 20.0
         assert res.sub_scores["flow"] >= 20.0
         assert res.sub_scores["contract"] == 25.0
@@ -128,7 +127,7 @@ class TestCompositeConvictionEngine:
         assert res.is_approved is False
         assert res.total_score < 75.0
         assert res.sizing_tier == "BLOCKED"
-        assert "structure_drag" in res.reason or "impulse_drag" in res.reason
+        assert "aggression_drag" in res.reason or "momentum_drag" in res.reason or "drag" in res.reason
 
     def test_deep_otm_delta_trap_penalized(self, engine):
         """
@@ -430,7 +429,6 @@ class TestCompositeConvictionEngine:
         assert res.is_approved is True
         assert res.total_score >= 85.0
         assert res.sizing_tier == "FULL_SIZE"
-        assert res.sub_scores["structure"] >= 20.0
         assert res.sub_scores["impulse"] >= 20.0
         assert res.sub_scores["flow"] >= 20.0
         assert res.sub_scores["contract"] == 25.0
@@ -483,8 +481,8 @@ class TestCompositeConvictionEngine:
 
         assert res.is_approved is True
         assert res.total_score >= 80.0
-        assert res.breakdown["structure_details"]["swing_reason"] == "validated_pullback_reclaim"
-        assert res.sub_scores["structure"] >= 20.0
+        assert res.sub_scores["flow"] >= 20.0
+        assert res.sub_scores["contract"] >= 20.0
 
     def test_newborn_bar_protection_on_bar_close(self, engine):
         """

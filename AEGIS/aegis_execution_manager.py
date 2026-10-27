@@ -1,5 +1,5 @@
 # aegis_execution_manager.py
-# AEGIS V2.0 — Execution Manager for Gamma Burst Engine
+# AEGIS V1.0 — Execution Manager for Gamma Burst Engine
 # Parses GAMMA_BURST_ENTRY signals, manages positions, feeds fill latency to AEGIS core
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from common.execution.order_lifecycle import (
     get_marketable_exit_limit_price,
     get_smart_maker_tp_price,
 )
-from common.execution.strike_selector import StrikeSelector
+from common.execution.strike_selector import StrikeSelector, effective_premium_floor
 from common.execution.trade_context import TradeContext, TradeLeg
 from common.execution.realistic_paper_broker import calculate_nse_option_charges, OptionCharges
 from common.market.market_calendar import is_trading_day
@@ -716,9 +716,11 @@ class AegisExecutionManager:
                 _rv_reject = None
                 _rv_ts, _rv_lp, _rv_bid, _rv_ask = self._latest_option_book(opt_row["symbol"])
                 if _rv_lp > 0 and (now_epoch - _rv_ts) <= 10.0:
-                    _pmin = float(params.get("premium_min", 0.0) or 0.0)
-                    if _pmin > 0 and _rv_lp < _pmin:
-                        _rv_reject = f"premium_too_low ({_rv_lp:.2f} < {_pmin:.2f})"
+                    _pmin = float(params.get('premium_min', 0.0) or 0.0)
+                    avail_funds = float(self.capital_engine.get_available_funds()) if hasattr(self, 'capital_engine') and self.capital_engine and hasattr(self.capital_engine, 'get_available_funds') else 0.0
+                    _eff_pmin = effective_premium_floor(_pmin, avail_funds, int(params.get('lot_size', 1)))
+                    if _eff_pmin > 0 and _rv_lp < _eff_pmin:
+                        _rv_reject = f"premium_too_low ({_rv_lp:.2f} < {_eff_pmin:.2f} [eff_floor for funds ₹{avail_funds:.0f}])"
                     elif _rv_bid > 0 and _rv_ask > 0:
                         _rv_spread = _rv_ask - _rv_bid
                         _rv_mid = (_rv_ask + _rv_bid) * 0.5

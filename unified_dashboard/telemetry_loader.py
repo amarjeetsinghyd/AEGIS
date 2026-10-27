@@ -371,8 +371,14 @@ def reconcile_and_auto_journal() -> bool:
         pnl = float(r.get("net_pl", r.get("pnl", 0.0)))
         entry_px = float(r.get("entry_price") or 0.0)
 
-        # Filter test mock dummy trades
-        if not sym or sym in ("NIFTY_CALL", "NIFTY24000CE", "TEST", "MOCK") or sym.startswith("TEST_") or (entry_px == 100.0 and exit_px == 104.0):
+        # Filter test mock dummy trades / corrupted synthetic runs / impossible values
+        if not sym or sym in ("NIFTY_CALL", "NIFTY24000CE", "TEST", "MOCK") or sym.startswith("TEST_"):
+            continue
+
+        if (entry_px == 100.0 and exit_px == 104.0) or (entry_px == 8.15 and exit_px == 1.0):
+            continue
+
+        if abs(pnl) > 3000.0:
             continue
 
         if exit_px <= 0 and pnl == 0.0:
@@ -403,6 +409,17 @@ def reconcile_and_auto_journal() -> bool:
         # Skip records earlier than latest_iso unless same date
         if iso_d < latest_iso:
             continue
+
+        # Skip weekend records (Saturday=5, Sunday=6) and out-of-market test executions
+        try:
+            dt_chk = datetime.strptime(f"{iso_d} {entry_hms}", "%Y-%m-%d %H:%M:%S")
+            if dt_chk.weekday() >= 5:
+                continue
+            mins = dt_chk.hour * 60 + dt_chk.minute
+            if mins < 9 * 60 + 14 or mins > 15 * 60 + 35:
+                continue
+        except Exception:
+            pass
 
         stk, expiry_str = _extract_strike_and_expiry(sym, r, default_date=date_str)
 
