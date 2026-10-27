@@ -36,7 +36,7 @@ try:
     )
     from AEGIS.core.option_quality import OptionQualityEngine
     from AEGIS.core.outcome_telemetry import OutcomeTelemetryEngine
-    from AEGIS.core.index_vwap_engine import IndexVWAPEngine
+
     from AEGIS.execution.aegis_execution_manager import QualitySlotPolicy, PostTriggerStabilityTracker
     from AEGIS.core.wyckoff_volume_engine import WyckoffVolumeEngine
     from AEGIS.core.shadow_boundary_observer import ShadowBoundaryObserver
@@ -50,7 +50,7 @@ except ImportError:
         )
         from core.option_quality import OptionQualityEngine
         from core.outcome_telemetry import OutcomeTelemetryEngine
-        from core.index_vwap_engine import IndexVWAPEngine
+
         from execution.aegis_execution_manager import QualitySlotPolicy, PostTriggerStabilityTracker
         from core.wyckoff_volume_engine import WyckoffVolumeEngine
         from core.shadow_boundary_observer import ShadowBoundaryObserver
@@ -62,7 +62,7 @@ except ImportError:
         AdaptiveMicroValidator = None
         OptionQualityEngine = None
         OutcomeTelemetryEngine = None
-        IndexVWAPEngine = None
+
         ShadowBoundaryObserver = None
         QualitySlotPolicy = None
         PostTriggerStabilityTracker = None
@@ -183,12 +183,12 @@ class AegisPipelineOrchestrator:
         self._di_vetoed = 0
         self._last_wall_log_min = -1
 
-        self.vwap_engine = IndexVWAPEngine(
-            index_name="SENSEX" if self.strike_step >= 100.0 else "NIFTY",
-            strike_step=self.strike_step,
-            max_extension_bps=float(self.P.get("max_vwap_extension_bps", 25.0)),
-            poll_interval_sec=60.0,
-        ) if IndexVWAPEngine is not None else None
+        self.vwap_engine = None
+
+
+
+
+
 
         # Shadow Quant Telemetry Tracker (Tracks 5 novel quant edges in passive shadow mode)
 
@@ -241,6 +241,7 @@ class AegisPipelineOrchestrator:
         self.shadow_boundary_observer = ShadowBoundaryObserver(
             price_action_engine=self.price_action_engine,
             wyckoff_engine=self.wyckoff_volume_engine,
+
             strike_step=self.strike_step,
             log_dir=telemetry_dir,
         ) if ShadowBoundaryObserver is not None else None
@@ -540,7 +541,7 @@ class AegisPipelineOrchestrator:
                 pa_setup_name = ""
                 pa_details = {}
                 if self.price_action_engine:
-                    current_vwap = getattr(self.price_action_engine, "current_vwap", 0.0) or (getattr(self.vwap_engine, "current_vwap", 0.0) if self.vwap_engine else 0.0)
+                    current_vwap = getattr(self.price_action_engine, "current_vwap", 0.0)
                     if sym in self._l2_depth_history:
                         self.price_action_engine._l2_depth_history = list(self._l2_depth_history[sym])
                     is_pa_setup, pa_setup_name, pa_details = self.price_action_engine.evaluate_setup(direction, current_vwap, current_time=now_sec)
@@ -786,7 +787,7 @@ class AegisPipelineOrchestrator:
                                 spread_val = opt_metrics.get("spread_pct", 0.0) if isinstance(opt_metrics, dict) else 0.0
                                 tot_depth_val = tot_bid_depth + tot_ask_depth
                                 fut_basis_m = self.get_futures_basis_metrics(now_sec, 60.0)
-                                vwap_val = (getattr(self.price_action_engine, "current_vwap", 0.0) if self.price_action_engine else 0.0) or (getattr(self.vwap_engine, "current_vwap", 0.0) if self.vwap_engine else 0.0)
+                                vwap_val = getattr(self.price_action_engine, "current_vwap", 0.0) if self.price_action_engine else 0.0
                                 if vwap_val <= 0:
                                     vwap_val = self.last_spot
 

@@ -78,7 +78,7 @@ def _build_edges_snapshot(aegis_engine, trader):
                 "ema20": round(float(getattr(eng, "ema_20_1m", 0.0) or 0.0), 1) if eng else 0.0,
                 "ema50": round(float(getattr(eng, "ema_50_1m", 0.0) or getattr(eng, "ema_50_1m_live", 0.0) or 0.0), 1) if eng else 0.0,
                 "atr": round(float(getattr(eng, "current_atr_1m", 0.0) or 0.0), 2) if eng else 0.0,
-                "vwap": round(float(getattr(getattr(aegis_engine, "vwap_engine", None), "current_vwap", 0.0) or 0.0), 1),
+                "vwap": round(float(getattr(getattr(aegis_engine, "price_action_engine", None), "current_vwap", 0.0) or 0.0), 1),
             }
             snap["micro"] = {
                 "p1_persist": 0.40, "p2_persist": 0.60, "p3_persist": 0.30,
@@ -458,21 +458,7 @@ def main():
         except Exception as e_seed:
             logger.warning(f"[AegisMain] Historical 1m bar seeding warning (non-fatal): {e_seed}")
 
-        # ─── VWAP Background Poller (constituent volumes → live VWAP) ───
-        # The IndexVWAPEngine gate stays inactive until current_vwap > 0, so the
-        # constituent-volume poller MUST be started here with the broker REST api.
-        # Without it the VWAP Over-Extension gate never fires (was a zombie gate).
-        try:
-            vwap_eng = getattr(aegis_engine, "vwap_engine", None)
-            if vwap_eng is not None:
-                vwap_eng.broker_api = getattr(broker, "_api", None) or broker
-                vwap_eng.start_background_poller()
-                if not vwap_eng._running:
-                    logger.warning("[AegisMain] VWAP poller did NOT start (no broker_api / constituents)")
-                else:
-                    logger.info("[AegisMain] VWAP constituent poller started (60s cadence, live VWAP active)")
-        except Exception as e_vwap:
-            logger.warning(f"[AegisMain] VWAP poller start warning (non-fatal): {e_vwap}")
+
 
         # ─── OI Quotes Poller (DISABLED per operator directive) ───
         # Operator policy: OI polling provides zero trading edge, pollutes logs,
@@ -570,13 +556,7 @@ def main():
             # ─── Session Management ───
             if not is_bot_active_hours(now):
                 logger.info("Bot active hours closed. Stopping background workers...")
-                try:
-                    vwap_eng = getattr(aegis_engine, "vwap_engine", None)
-                    if vwap_eng is not None:
-                        vwap_eng.stop_background_poller()
-                        logger.info("[AegisMain] VWAP poller stopped for deep sleep")
-                except Exception:
-                    pass
+
                 if oi_poller is not None:
                     try:
                         oi_poller.stop()
@@ -750,14 +730,7 @@ def main():
     
     # ─── Graceful Shutdown ───
     logger.info("Shutting down AEGIS V1.0...")
-    # Stop VWAP background poller first (no new REST volume polls during teardown)
-    try:
-        vwap_eng = getattr(aegis_engine, "vwap_engine", None)
-        if vwap_eng is not None:
-            vwap_eng.stop_background_poller()
-            logger.info("[AegisMain] VWAP poller stopped")
-    except Exception as e_vwap:
-        logger.warning(f"[AegisMain] VWAP poller stop warning (non-fatal): {e_vwap}")
+
     # Stop OI quotes poller (no new REST OI polls during teardown)
     try:
         if oi_poller is not None:
