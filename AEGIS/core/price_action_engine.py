@@ -28,159 +28,19 @@ from typing import Dict, List, Optional, Tuple, Any, Final
 import numpy as np
 
 
-class FastDualEnvelopeHVG:
-    """
-    O(N) zero-allocation Dual-Envelope Monotonic Stack for Horizontal Visibility Graph (HVG).
-    Operates strictly across pre-allocated integer arrays using C-style indexing pointers.
-    Computes:
-      - Upper Visibility Envelope on Spot 1m Highs (Resistance network).
-      - Lower Inverted Visibility Envelope on Spot 1m Lows (Support network).
-      - Horizontal visibility spans: w_i = min(R_i, N) - max(L_i, 0).
-      - Compression state: median(w) < 0.35 * N.
-      - Relative Prominence: deg_i / (mean_deg + 1e-9).
-    """
-    __slots__ = (
-        "capacity", "stack_indices", "left_bounds", "right_bounds",
-        "visibility_spans", "deg_upper", "deg_lower"
-    )
-
+class FastMonotonicStack:
+    """Lightweight 0-D persistence prominence helper (kept for legacy unit test compatibility)."""
     def __init__(self, capacity: int = 128) -> None:
         self.capacity: int = capacity
-        self.stack_indices: np.ndarray = np.zeros(capacity, dtype=np.int32)
-        self.left_bounds: np.ndarray = np.zeros(capacity, dtype=np.int32)
-        self.right_bounds: np.ndarray = np.zeros(capacity, dtype=np.int32)
-        self.visibility_spans: np.ndarray = np.zeros(capacity, dtype=np.int32)
-        self.deg_upper: np.ndarray = np.zeros(capacity, dtype=np.int32)
-        self.deg_lower: np.ndarray = np.zeros(capacity, dtype=np.int32)
-
-    def compute_upper_envelope(self, highs: np.ndarray, n: int) -> Tuple[np.ndarray, np.ndarray, float]:
-        """
-        Upper Visibility Envelope on Highs (Resistance Network).
-        Returns: (degrees, visibility_spans, median_visibility_span)
-        """
-        if n <= 0:
-            return self.deg_upper[:0], self.visibility_spans[:0], 0.0
-
-        n_clamped = min(n, self.capacity)
-
-        # 1. Left Bounds (nearest j < i with highs[j] >= highs[i])
-        stack_ptr = 0
-        for i in range(n_clamped):
-            val = highs[i]
-            while stack_ptr > 0 and highs[self.stack_indices[stack_ptr - 1]] < val:
-                stack_ptr -= 1
-            self.left_bounds[i] = self.stack_indices[stack_ptr - 1] if stack_ptr > 0 else -1
-            self.stack_indices[stack_ptr] = i
-            stack_ptr += 1
-
-        # 2. Right Bounds (nearest j > i with highs[j] >= highs[i])
-        stack_ptr = 0
-        for i in range(n_clamped - 1, -1, -1):
-            val = highs[i]
-            while stack_ptr > 0 and highs[self.stack_indices[stack_ptr - 1]] < val:
-                stack_ptr -= 1
-            self.right_bounds[i] = self.stack_indices[stack_ptr - 1] if stack_ptr > 0 else n_clamped
-            self.stack_indices[stack_ptr] = i
-            stack_ptr += 1
-
-        # 3. Horizontal Visibility Spans: w_i = min(R_i, N) - max(L_i, 0)
-        for i in range(n_clamped):
-            r = min(int(self.right_bounds[i]), n_clamped)
-            l = max(int(self.left_bounds[i]), 0)
-            self.visibility_spans[i] = r - l
-
-        # 4. Strict HVG Degrees on Highs in O(N)
-        self.deg_upper[:n_clamped].fill(0)
-        stack_ptr = 0
-        for i in range(n_clamped):
-            val = highs[i]
-            while stack_ptr > 0 and highs[self.stack_indices[stack_ptr - 1]] < val:
-                top_idx = self.stack_indices[stack_ptr - 1]
-                stack_ptr -= 1
-                self.deg_upper[i] += 1
-                self.deg_upper[top_idx] += 1
-            if stack_ptr > 0:
-                top_idx = self.stack_indices[stack_ptr - 1]
-                self.deg_upper[i] += 1
-                self.deg_upper[top_idx] += 1
-                if highs[top_idx] == val:
-                    stack_ptr -= 1
-            self.stack_indices[stack_ptr] = i
-            stack_ptr += 1
-
-        med_span = float(np.median(self.visibility_spans[:n_clamped]))
-        return self.deg_upper[:n_clamped], self.visibility_spans[:n_clamped], med_span
-
-    def compute_lower_envelope(self, lows: np.ndarray, n: int) -> Tuple[np.ndarray, np.ndarray, float]:
-        """
-        Lower Inverted Visibility Envelope on Lows (Support Network).
-        Returns: (degrees, visibility_spans, median_visibility_span)
-        """
-        if n <= 0:
-            return self.deg_lower[:0], self.visibility_spans[:0], 0.0
-
-        n_clamped = min(n, self.capacity)
-
-        # 1. Left Bounds (nearest j < i with lows[j] <= lows[i])
-        stack_ptr = 0
-        for i in range(n_clamped):
-            val = lows[i]
-            while stack_ptr > 0 and lows[self.stack_indices[stack_ptr - 1]] > val:
-                stack_ptr -= 1
-            self.left_bounds[i] = self.stack_indices[stack_ptr - 1] if stack_ptr > 0 else -1
-            self.stack_indices[stack_ptr] = i
-            stack_ptr += 1
-
-        # 2. Right Bounds (nearest j > i with lows[j] <= lows[i])
-        stack_ptr = 0
-        for i in range(n_clamped - 1, -1, -1):
-            val = lows[i]
-            while stack_ptr > 0 and lows[self.stack_indices[stack_ptr - 1]] > val:
-                stack_ptr -= 1
-            self.right_bounds[i] = self.stack_indices[stack_ptr - 1] if stack_ptr > 0 else n_clamped
-            self.stack_indices[stack_ptr] = i
-            stack_ptr += 1
-
-        # 3. Horizontal Visibility Spans: w_i = min(R_i, N) - max(L_i, 0)
-        for i in range(n_clamped):
-            r = min(int(self.right_bounds[i]), n_clamped)
-            l = max(int(self.left_bounds[i]), 0)
-            self.visibility_spans[i] = r - l
-
-        # 4. Strict HVG Degrees on Lows in O(N)
-        self.deg_lower[:n_clamped].fill(0)
-        stack_ptr = 0
-        for i in range(n_clamped):
-            val = lows[i]
-            while stack_ptr > 0 and lows[self.stack_indices[stack_ptr - 1]] > val:
-                top_idx = self.stack_indices[stack_ptr - 1]
-                stack_ptr -= 1
-                self.deg_lower[i] += 1
-                self.deg_lower[top_idx] += 1
-            if stack_ptr > 0:
-                top_idx = self.stack_indices[stack_ptr - 1]
-                self.deg_lower[i] += 1
-                self.deg_lower[top_idx] += 1
-                if lows[top_idx] == val:
-                    stack_ptr -= 1
-            self.stack_indices[stack_ptr] = i
-            stack_ptr += 1
-
-        med_span = float(np.median(self.visibility_spans[:n_clamped]))
-        return self.deg_lower[:n_clamped], self.visibility_spans[:n_clamped], med_span
 
     def compute_prominence(self, prices: np.ndarray, target_idx: int, atr: float) -> float:
-        """
-        0-D Persistence Prominence calculation for a local extremum.
-        pi_hat = |P_hub - Saddle| / ATR
-        """
         n: int = len(prices)
         if n < 3 or target_idx <= 0 or target_idx >= n - 1 or atr <= 1e-6:
             return 0.0
 
-        hub_val: float = prices[target_idx]
-        is_peak: bool = (hub_val > prices[target_idx - 1]) and (hub_val > prices[target_idx + 1])
-        is_trough: bool = (hub_val < prices[target_idx - 1]) and (hub_val < prices[target_idx + 1])
+        hub_val: float = float(prices[target_idx])
+        is_peak: bool = bool((hub_val > prices[target_idx - 1]) and (hub_val > prices[target_idx + 1]))
+        is_trough: bool = bool((hub_val < prices[target_idx - 1]) and (hub_val < prices[target_idx + 1]))
 
         if not (is_peak or is_trough):
             return 0.0
@@ -195,10 +55,6 @@ class FastDualEnvelopeHVG:
             right_max = float(np.max(prices[target_idx + 1:]))
             key_saddle = max(left_max, right_max)
             return abs(hub_val - key_saddle) / atr
-
-
-# Direct alias
-FastMonotonicStack = FastDualEnvelopeHVG
 
 try:
     from common.logger import get_logger
@@ -269,6 +125,8 @@ class StructuralLevel:
     touch_count: int = 1   # Number of times price tested this level
     is_broken: bool = False
     ts_broken: float = 0.0
+    timeframe: str = "5m"  # "DAILY", "15m", "5m", or "1m"
+    is_previous_day: bool = False  # True if seeded from previous trading session
     # ─── Volume & Order Flow Footprint at Anchor / Retests ───
     volume: float = 0.0            # Underlying / bar traded volume at anchor
     call_buy_vol: float = 0.0      # Aggressive Call Buying (lifted at ask)
@@ -309,12 +167,14 @@ class PriceActionEngine:
         else:
             self.lot_size = float(os.getenv("AEGIS_LOT_SIZE", "65.0"))
 
-        # ─── 1-Minute and 5-Minute Bar Building State ───
+        # ─── 1-Minute, 5-Minute, and 15-Minute Bar Building State ───
         self._curr_1m_bar: Optional[OHLCBar] = None
         self._curr_1m_bucket: int = -1
         self.bars_1m: deque[OHLCBar] = deque(maxlen=self.max_history_bars)
         self._curr_5m_bar: Optional[OHLCBar] = None
         self.bars_5m: deque[OHLCBar] = deque(maxlen=200)
+        self._curr_15m_bar: Optional[OHLCBar] = None
+        self.bars_15m: deque[OHLCBar] = deque(maxlen=100)
 
 
         # ─── Real-Time 1-Minute Option Flow Accumulator (ATM ± 7 Window) ───
@@ -379,6 +239,7 @@ class PriceActionEngine:
 
         # ─── Dynamic Session S/R Level Registry (Pillar 4 Multi-Bar Memory) ───
         self.session_levels: List[StructuralLevel] = []
+        self._previous_day_levels: List[StructuralLevel] = []
         self._levels_day: int = -1
         self._total_bars_seen: int = 0
         # ─── Daily Structural Levels (PDH / PDL / PDC) ───
@@ -776,9 +637,11 @@ class PriceActionEngine:
 
         # Update 5-minute bar
         bucket_5m = int(bar.ts_start // 300)
+        new_5m_bar = False
         if self._curr_5m_bar is None or int(self._curr_5m_bar.ts_start // 300) != bucket_5m:
             if self._curr_5m_bar is not None:
                 self.bars_5m.append(self._curr_5m_bar)
+                new_5m_bar = True
             self._curr_5m_bar = OHLCBar(
                 ts_start=float(bucket_5m * 300),
                 ts_end=float((bucket_5m + 1) * 300),
@@ -787,6 +650,13 @@ class PriceActionEngine:
                 low=bar.low,
                 close=bar.close,
                 volume=bar.volume,
+                call_buy_vol=bar.call_buy_vol,
+                call_sell_vol=bar.call_sell_vol,
+                put_buy_vol=bar.put_buy_vol,
+                put_sell_vol=bar.put_sell_vol,
+                opt_delta_flow=bar.opt_delta_flow,
+                opt_total_vol=bar.opt_total_vol,
+                opt_pcr=bar.opt_pcr,
             )
         else:
             b5 = self._curr_5m_bar
@@ -796,6 +666,50 @@ class PriceActionEngine:
                 b5.low = bar.low
             b5.close = bar.close
             b5.volume += bar.volume
+            b5.call_buy_vol += bar.call_buy_vol
+            b5.call_sell_vol += bar.call_sell_vol
+            b5.put_buy_vol += bar.put_buy_vol
+            b5.put_sell_vol += bar.put_sell_vol
+            b5.opt_total_vol += bar.opt_total_vol
+            b5.opt_delta_flow += bar.opt_delta_flow
+
+        # Update 15-minute bar
+        bucket_15m = int(bar.ts_start // 900)
+        new_15m_bar = False
+        if self._curr_15m_bar is None or int(self._curr_15m_bar.ts_start // 900) != bucket_15m:
+            if self._curr_15m_bar is not None:
+                self.bars_15m.append(self._curr_15m_bar)
+                new_15m_bar = True
+            self._curr_15m_bar = OHLCBar(
+                ts_start=float(bucket_15m * 900),
+                ts_end=float((bucket_15m + 1) * 900),
+                open=bar.open,
+                high=bar.high,
+                low=bar.low,
+                close=bar.close,
+                volume=bar.volume,
+                call_buy_vol=bar.call_buy_vol,
+                call_sell_vol=bar.call_sell_vol,
+                put_buy_vol=bar.put_buy_vol,
+                put_sell_vol=bar.put_sell_vol,
+                opt_delta_flow=bar.opt_delta_flow,
+                opt_total_vol=bar.opt_total_vol,
+                opt_pcr=bar.opt_pcr,
+            )
+        else:
+            b15 = self._curr_15m_bar
+            if bar.high > b15.high:
+                b15.high = bar.high
+            if bar.low < b15.low:
+                b15.low = bar.low
+            b15.close = bar.close
+            b15.volume += bar.volume
+            b15.call_buy_vol += bar.call_buy_vol
+            b15.call_sell_vol += bar.call_sell_vol
+            b15.put_buy_vol += bar.put_buy_vol
+            b15.put_sell_vol += bar.put_sell_vol
+            b15.opt_total_vol += bar.opt_total_vol
+            b15.opt_delta_flow += bar.opt_delta_flow
 
 
         # 1. Update 20 EMA (Close, High, Low Band)
@@ -867,12 +781,12 @@ class PriceActionEngine:
             self.atr_ratio = 1.0
 
         # 5. Dynamic Session S/R Level Registry Update
-        self._update_structural_levels(bar)
+        self._update_structural_levels(bar, new_5m_bar=new_5m_bar, new_15m_bar=new_15m_bar)
 
         # 6. Mode A Boundary Rejection Arming (Pain Zone & 200 EMA)
         self._evaluate_mode_a_arming(bar)
 
-    def _update_structural_levels(self, bar: OHLCBar) -> None:
+    def _update_structural_levels(self, bar: OHLCBar, new_5m_bar: bool = False, new_15m_bar: bool = False) -> None:
         """
         Dynamically discovers, registers, and tracks intraday Support & Resistance levels.
         Maintains an active session diary of structural peaks and troughs.
@@ -892,6 +806,8 @@ class PriceActionEngine:
                         bar_idx=0,
                         seq_idx=0,
                         touch_count=2,
+                        timeframe="DAILY",
+                        is_previous_day=True,
                     )
                 )
             if self.pdl > 0:
@@ -904,8 +820,16 @@ class PriceActionEngine:
                         bar_idx=0,
                         seq_idx=0,
                         touch_count=2,
+                        timeframe="DAILY",
+                        is_previous_day=True,
                     )
                 )
+            # Restore unbroken previous-day 5m/15m structural levels
+            if hasattr(self, "_previous_day_levels"):
+                for p_lvl in self._previous_day_levels:
+                    if not p_lvl.is_broken:
+                        if not any(l.level_type == p_lvl.level_type and abs(l.price - p_lvl.price) < 2.0 for l in self.session_levels):
+                            self.session_levels.append(p_lvl)
 
         atr = self.current_atr_1m if self.current_atr_1m > 0 else (bar.close * 0.001)
 
@@ -937,17 +861,47 @@ class PriceActionEngine:
         if len(self.bars_1m) < 3:
             return
 
-        cand = self.bars_1m[-2]
-        prev = self.bars_1m[-3]
-        curr = bar
-        tol = max(0.25 * atr, cand.high * 0.0003)
+        tol = max(0.25 * atr, bar.close * 0.0003)
 
-        # Multi-bar swing depth calculation (looking back up to 5 bars before cand)
-        window_left = list(self.bars_1m)[-7:-2] if len(self.bars_1m) >= 7 else list(self.bars_1m)[:-2]
-        ref_lows = [b.low for b in window_left] + [curr.low]
-        ref_highs = [b.high for b in window_left] + [curr.high]
-        depth_high = cand.high - (min(ref_lows) if ref_lows else min(prev.low, curr.low))
-        depth_low = (max(ref_highs) if ref_highs else max(prev.high, curr.high)) - cand.low
+        # ─── Multi-Timeframe Structural Pivot Discovery ───
+        # Priority 1: 5-Minute Bars (Institutional Structural Swing Timeframe)
+        # Fallback: 1-Minute Bars (prior to 3 completed 5m bars, e.g. early morning or synthetic tests)
+        if len(self.bars_5m) >= 3:
+            # Only discover/update 5m structural swings when a 5m bar has just closed
+            if not new_5m_bar:
+                return
+            cand = self.bars_5m[-2]
+            prev = self.bars_5m[-3]
+            curr = self.bars_5m[-1]
+            tf_name = "5m"
+            tf_prom_boost = 0.50  # 5m institutional swing boost
+            window_left = list(self.bars_5m)[-7:-2] if len(self.bars_5m) >= 7 else list(self.bars_5m)[:-2]
+            ref_lows = [b.low for b in window_left] + [curr.low]
+            ref_highs = [b.high for b in window_left] + [curr.high]
+            depth_high = cand.high - (min(ref_lows) if ref_lows else min(prev.low, curr.low))
+            depth_low = (max(ref_highs) if ref_highs else max(prev.high, curr.high)) - cand.low
+            # Check 15m confluence
+            if len(self.bars_15m) >= 3:
+                cand_15 = self.bars_15m[-2]
+                prev_15 = self.bars_15m[-3]
+                curr_15 = self.bars_15m[-1]
+                if abs(cand.high - cand_15.high) <= tol and (cand_15.high >= prev_15.high and cand_15.high > curr_15.high):
+                    tf_name = "15m"
+                    tf_prom_boost += 0.50
+                elif abs(cand.low - cand_15.low) <= tol and (cand_15.low <= prev_15.low and cand_15.low < curr_15.low):
+                    tf_name = "15m"
+                    tf_prom_boost += 0.50
+        else:
+            cand = self.bars_1m[-2]
+            prev = self.bars_1m[-3]
+            curr = bar
+            tf_name = "1m"
+            tf_prom_boost = 0.0
+            window_left = list(self.bars_1m)[-7:-2] if len(self.bars_1m) >= 7 else list(self.bars_1m)[:-2]
+            ref_lows = [b.low for b in window_left] + [curr.low]
+            ref_highs = [b.high for b in window_left] + [curr.high]
+            depth_high = cand.high - (min(ref_lows) if ref_lows else min(prev.low, curr.low))
+            depth_low = (max(ref_highs) if ref_highs else max(prev.high, curr.high)) - cand.low
 
         # ─── Anchor Volume & Order Flow Footprint ───
         cand_vol = float(getattr(cand, "volume", 0.0) or 0.0)
@@ -986,32 +940,38 @@ class PriceActionEngine:
         if is_swing_high:
             depth = depth_high
             if depth >= 0.15 * atr:
+                res_ofi_boost = 0.20 if (cand_opt_vol > 0 and (cand_cs > cand_cb or cand_delta < 0)) else 0.0
+                total_prom = round((depth / max(atr, 1e-4)) + vol_ratio_boost + res_ofi_boost + tf_prom_boost, 2)
                 matched = False
                 for lvl in self.session_levels:
                     if lvl.level_type == "RESISTANCE" and not lvl.is_broken and abs(lvl.price - cand.high) <= tol:
-                        lvl.touch_count += 1
-                        lvl.volume += cand_vol
-                        lvl.call_buy_vol += cand_cb
-                        lvl.call_sell_vol += cand_cs
-                        lvl.put_buy_vol += cand_pb
-                        lvl.put_sell_vol += cand_ps
-                        lvl.opt_total_vol += cand_opt_vol
-                        lvl.opt_delta_flow = round(lvl.call_buy_vol - lvl.put_buy_vol, 1)
-                        lvl.net_delta_flow = lvl.opt_delta_flow
-                        tot_c = lvl.call_buy_vol + lvl.call_sell_vol
-                        tot_p = lvl.put_buy_vol + lvl.put_sell_vol
-                        lvl.opt_pcr = round(tot_p / max(tot_c, 1.0), 2)
-                        lvl.pcr_at_level = lvl.opt_pcr
-                        lvl.vol_ratio_at_level = round(lvl.volume / max(med_vol, 1.0), 2)
-                        retest_boost = 0.35 + (0.15 if vr >= 1.20 else 0.0)
-                        lvl.prominence = round(lvl.prominence + retest_boost, 2)
+                        # Only treat as a re-test touch if cand formed AFTER the anchor bar
+                        if cand.ts_start > (lvl.ts_created + 60.0):
+                            lvl.touch_count += 1
+                            lvl.volume += cand_vol
+                            lvl.call_buy_vol += cand_cb
+                            lvl.call_sell_vol += cand_cs
+                            lvl.put_buy_vol += cand_pb
+                            lvl.put_sell_vol += cand_ps
+                            lvl.opt_total_vol += cand_opt_vol
+                            lvl.opt_delta_flow = round(lvl.call_buy_vol - lvl.put_buy_vol, 1)
+                            lvl.net_delta_flow = lvl.opt_delta_flow
+                            tot_c = lvl.call_buy_vol + lvl.call_sell_vol
+                            tot_p = lvl.put_buy_vol + lvl.put_sell_vol
+                            lvl.opt_pcr = round(tot_p / max(tot_c, 1.0), 2)
+                            lvl.pcr_at_level = lvl.opt_pcr
+                            lvl.vol_ratio_at_level = round(lvl.volume / max(med_vol, 1.0), 2)
+                            retest_boost = 0.35 + (0.15 if vr >= 1.20 else 0.0) + (0.20 if tf_name in ("5m", "15m") else 0.0)
+                            lvl.prominence = round(lvl.prominence + retest_boost, 2)
+                        else:
+                            if tf_name in ("5m", "15m"):
+                                lvl.timeframe = tf_name
+                                lvl.prominence = max(lvl.prominence, total_prom)
+                        lvl.timeframe = tf_name
                         lvl.price = max(lvl.price, cand.high)
                         matched = True
                         break
                 if not matched:
-                    # Institutional Resistance OFI boost: Call writing or negative delta absorption
-                    res_ofi_boost = 0.20 if (cand_opt_vol > 0 and (cand_cs > cand_cb or cand_delta < 0)) else 0.0
-                    total_prom = round((depth / max(atr, 1e-4)) + vol_ratio_boost + res_ofi_boost, 2)
                     self.session_levels.append(
                         StructuralLevel(
                             level_type="RESISTANCE",
@@ -1020,6 +980,7 @@ class PriceActionEngine:
                             prominence=total_prom,
                             bar_idx=len(self.bars_1m) - 2,
                             seq_idx=max(0, self._total_bars_seen - 2),
+                            timeframe=tf_name,
                             volume=cand_vol,
                             call_buy_vol=cand_cb,
                             call_sell_vol=cand_cs,
@@ -1039,32 +1000,38 @@ class PriceActionEngine:
         if is_swing_low:
             depth = depth_low
             if depth >= 0.15 * atr:
+                sup_ofi_boost = 0.20 if (cand_opt_vol > 0 and (cand_ps > cand_pb or cand_delta > 0)) else 0.0
+                total_prom = round((depth / max(atr, 1e-4)) + vol_ratio_boost + sup_ofi_boost + tf_prom_boost, 2)
                 matched = False
                 for lvl in self.session_levels:
                     if lvl.level_type == "SUPPORT" and not lvl.is_broken and abs(lvl.price - cand.low) <= tol:
-                        lvl.touch_count += 1
-                        lvl.volume += cand_vol
-                        lvl.call_buy_vol += cand_cb
-                        lvl.call_sell_vol += cand_cs
-                        lvl.put_buy_vol += cand_pb
-                        lvl.put_sell_vol += cand_ps
-                        lvl.opt_total_vol += cand_opt_vol
-                        lvl.opt_delta_flow = round(lvl.call_buy_vol - lvl.put_buy_vol, 1)
-                        lvl.net_delta_flow = lvl.opt_delta_flow
-                        tot_c = lvl.call_buy_vol + lvl.call_sell_vol
-                        tot_p = lvl.put_buy_vol + lvl.put_sell_vol
-                        lvl.opt_pcr = round(tot_p / max(tot_c, 1.0), 2)
-                        lvl.pcr_at_level = lvl.opt_pcr
-                        lvl.vol_ratio_at_level = round(lvl.volume / max(med_vol, 1.0), 2)
-                        retest_boost = 0.35 + (0.15 if vr >= 1.20 else 0.0)
-                        lvl.prominence = round(lvl.prominence + retest_boost, 2)
+                        # Only treat as a re-test touch if cand formed AFTER the anchor bar
+                        if cand.ts_start > (lvl.ts_created + 60.0):
+                            lvl.touch_count += 1
+                            lvl.volume += cand_vol
+                            lvl.call_buy_vol += cand_cb
+                            lvl.call_sell_vol += cand_cs
+                            lvl.put_buy_vol += cand_pb
+                            lvl.put_sell_vol += cand_ps
+                            lvl.opt_total_vol += cand_opt_vol
+                            lvl.opt_delta_flow = round(lvl.call_buy_vol - lvl.put_buy_vol, 1)
+                            lvl.net_delta_flow = lvl.opt_delta_flow
+                            tot_c = lvl.call_buy_vol + lvl.call_sell_vol
+                            tot_p = lvl.put_buy_vol + lvl.put_sell_vol
+                            lvl.opt_pcr = round(tot_p / max(tot_c, 1.0), 2)
+                            lvl.pcr_at_level = lvl.opt_pcr
+                            lvl.vol_ratio_at_level = round(lvl.volume / max(med_vol, 1.0), 2)
+                            retest_boost = 0.35 + (0.15 if vr >= 1.20 else 0.0) + (0.20 if tf_name in ("5m", "15m") else 0.0)
+                            lvl.prominence = round(lvl.prominence + retest_boost, 2)
+                        else:
+                            if tf_name in ("5m", "15m"):
+                                lvl.timeframe = tf_name
+                                lvl.prominence = max(lvl.prominence, total_prom)
+                        lvl.timeframe = tf_name
                         lvl.price = min(lvl.price, cand.low)
                         matched = True
                         break
                 if not matched:
-                    # Institutional Support OFI boost: Put writing or positive delta absorption
-                    sup_ofi_boost = 0.20 if (cand_opt_vol > 0 and (cand_ps > cand_pb or cand_delta > 0)) else 0.0
-                    total_prom = round((depth / max(atr, 1e-4)) + vol_ratio_boost + sup_ofi_boost, 2)
                     self.session_levels.append(
                         StructuralLevel(
                             level_type="SUPPORT",
@@ -1073,6 +1040,7 @@ class PriceActionEngine:
                             prominence=total_prom,
                             bar_idx=len(self.bars_1m) - 2,
                             seq_idx=max(0, self._total_bars_seen - 2),
+                            timeframe=tf_name,
                             volume=cand_vol,
                             call_buy_vol=cand_cb,
                             call_sell_vol=cand_cs,
@@ -1097,6 +1065,8 @@ class PriceActionEngine:
                 "price": lvl.price,
                 "prominence": lvl.prominence,
                 "touch_count": lvl.touch_count,
+                "timeframe": getattr(lvl, "timeframe", "5m"),
+                "is_previous_day": getattr(lvl, "is_previous_day", False),
                 "is_broken": lvl.is_broken,
                 "ts_created": lvl.ts_created,
                 "ts_broken": lvl.ts_broken,
@@ -1280,6 +1250,8 @@ class PriceActionEngine:
                         bar_idx=0,
                         seq_idx=0,
                         touch_count=2,
+                        timeframe="DAILY",
+                        is_previous_day=True,
                     )
                 )
         if pdl > 0:
@@ -1295,6 +1267,8 @@ class PriceActionEngine:
                         bar_idx=0,
                         seq_idx=0,
                         touch_count=2,
+                        timeframe="DAILY",
+                        is_previous_day=True,
                     )
                 )
         if pdc > 0:
@@ -1303,6 +1277,316 @@ class PriceActionEngine:
             f"[PriceActionEngine] Seeded Daily Levels: PDH={self.pdh:.2f} | PDL={self.pdl:.2f} | PDC={self.pdc:.2f} "
             f"(Proximity Threshold: {self.proximity_threshold_bps:.1f} bps)"
         )
+
+    @staticmethod
+    def _cluster_and_merge_levels(
+        levels: List[StructuralLevel],
+        cluster_tol: float,
+    ) -> List[StructuralLevel]:
+        """
+        Clusters nearby S/R levels within cluster_tol and merges them based on institutional dominance:
+          1. Timeframe Confluence (15m > 5m)
+          2. Multiple Touches (higher touch_count)
+          3. Absolute Structural Extreme:
+             - RESISTANCE: Highest peak price (max) is the true structural breakout ceiling.
+             - SUPPORT: Lowest trough price (min) is the true structural breakdown floor.
+          4. Weaker levels in the cluster are consolidated into the dominant level:
+             touches and volume aggregated, prominence boosted by +0.35.
+        """
+        if not levels:
+            return []
+
+        res_levels = [l for l in levels if l.level_type == "RESISTANCE"]
+        sup_levels = [l for l in levels if l.level_type == "SUPPORT"]
+
+        def _merge_group(group: List[StructuralLevel], is_resistance: bool) -> StructuralLevel:
+            if len(group) == 1:
+                return group[0]
+
+            def _dom_score(lvl: StructuralLevel) -> float:
+                score = lvl.prominence + (lvl.touch_count * 2.0)
+                if getattr(lvl, "timeframe", "") == "15m":
+                    score += 10.0
+                return score
+
+            dominant = max(group, key=_dom_score)
+
+            if is_resistance:
+                merged_price = max(l.price for l in group)
+            else:
+                merged_price = min(l.price for l in group)
+
+            total_touches = sum(l.touch_count for l in group)
+            total_vol = sum(l.volume for l in group)
+            max_prom = max(l.prominence for l in group)
+            has_15m = any(getattr(l, "timeframe", "") == "15m" for l in group)
+
+            dominant.price = round(merged_price, 2)
+            dominant.touch_count = total_touches
+            dominant.volume = total_vol
+            dominant.prominence = round(max_prom + 0.35, 2)
+            dominant.timeframe = "15m" if has_15m else "5m"
+            dominant.is_previous_day = True
+            return dominant
+
+        def _cluster_levels_by_type(lvls: List[StructuralLevel], is_resistance: bool) -> List[StructuralLevel]:
+            if not lvls:
+                return []
+            sorted_lvls = sorted(lvls, key=lambda l: l.price)
+            clusters: List[List[StructuralLevel]] = []
+            curr_cluster: List[StructuralLevel] = [sorted_lvls[0]]
+
+            for lvl in sorted_lvls[1:]:
+                if abs(lvl.price - curr_cluster[-1].price) <= cluster_tol or abs(lvl.price - curr_cluster[0].price) <= cluster_tol:
+                    curr_cluster.append(lvl)
+                else:
+                    clusters.append(curr_cluster)
+                    curr_cluster = [lvl]
+            if curr_cluster:
+                clusters.append(curr_cluster)
+
+            return [_merge_group(c, is_resistance) for c in clusters]
+
+        merged_res = _cluster_levels_by_type(res_levels, is_resistance=True)
+        merged_sup = _cluster_levels_by_type(sup_levels, is_resistance=False)
+        return merged_res + merged_sup
+
+    def seed_previous_day_5m_bars(self, candles: Any) -> Dict[str, Any]:
+        """
+        Seeds previous trading day's 5-minute and 15-minute structural swing levels
+        and macro anchors (PDH, PDL, PDC) into the Dynamic S/R Registry.
+        
+        Applies:
+          1. 5m / 15m multi-timeframe swing pivot detection.
+          2. ATR-scaled prominence calculation.
+          3. Level Clustering & Merging (15m dominance, multi-touch accumulation, extreme boundaries).
+          4. Registration into self.session_levels and self._previous_day_levels.
+        """
+        if candles is None:
+            return {"levels_discovered": 0, "pdh": 0.0, "pdl": 0.0, "pdc": 0.0, "levels": []}
+
+        if hasattr(candles, "to_dict"):
+            candles = candles.to_dict(orient="records")
+        if not isinstance(candles, list) or not candles:
+            return {"levels_discovered": 0, "pdh": 0.0, "pdl": 0.0, "pdc": 0.0, "levels": []}
+
+        from datetime import datetime as _dt
+
+        def _parse_ts(c_dict: Dict[str, Any]) -> float:
+            raw_ts = c_dict.get("timestamp") or c_dict.get("time") or c_dict.get("ssboe") or c_dict.get("ts")
+            if hasattr(raw_ts, "timestamp"):
+                return float(raw_ts.timestamp())
+            if isinstance(raw_ts, (int, float)):
+                return float(raw_ts)
+            if isinstance(raw_ts, str):
+                for fmt in ("%Y-%m-%d %H:%M:%S", "%d-%m-%Y %H:%M:%S", "%d-%b-%Y %H:%M:%S", "%Y-%m-%d"):
+                    try:
+                        return _dt.strptime(raw_ts, fmt).timestamp()
+                    except ValueError:
+                        pass
+                try:
+                    return float(raw_ts)
+                except ValueError:
+                    pass
+            return 0.0
+
+        parsed_5m = []
+        for c in candles:
+            try:
+                op = float(c.get("open") or c.get("into") or 0.0)
+                hi = float(c.get("high") or c.get("inth") or 0.0)
+                lo = float(c.get("low") or c.get("intl") or 0.0)
+                cl = float(c.get("close") or c.get("intc") or 0.0)
+                if op <= 0 or hi <= 0 or lo <= 0 or cl <= 0:
+                    continue
+                vol = float(c.get("volume") or c.get("intv") or c.get("v") or 0.0)
+                ts = _parse_ts(c)
+                parsed_5m.append({
+                    "ts": ts,
+                    "open": op,
+                    "high": hi,
+                    "low": lo,
+                    "close": cl,
+                    "volume": vol,
+                })
+            except Exception:
+                continue
+
+        if len(parsed_5m) < 3:
+            logger.warning(f"[PriceActionEngine] Insufficient 5m candles ({len(parsed_5m)}) to seed previous-day structural levels.")
+            return {"levels_discovered": 0, "pdh": 0.0, "pdl": 0.0, "pdc": 0.0, "levels": []}
+
+        # Chronological sort
+        parsed_5m.sort(key=lambda x: x["ts"])
+
+        # Derive PDH, PDL, PDC
+        pdh = round(max(b["high"] for b in parsed_5m), 2)
+        pdl = round(min(b["low"] for b in parsed_5m), 2)
+        pdc = round(parsed_5m[-1]["close"], 2)
+
+        # Seed daily macro anchors
+        self.seed_daily_levels(pdh, pdl, pdc)
+
+        # Construct 15m aggregated candles
+        parsed_15m = []
+        for i in range(0, len(parsed_5m), 3):
+            chunk = parsed_5m[i:i + 3]
+            if not chunk:
+                continue
+            parsed_15m.append({
+                "ts": chunk[0]["ts"],
+                "open": chunk[0]["open"],
+                "high": max(c["high"] for c in chunk),
+                "low": min(c["low"] for c in chunk),
+                "close": chunk[-1]["close"],
+                "volume": sum(c["volume"] for c in chunk),
+            })
+
+        # Calculate 5m ATR and scaled 1m ATR
+        tr_5m = []
+        for i in range(1, len(parsed_5m)):
+            prev_c = parsed_5m[i - 1]["close"]
+            h = parsed_5m[i]["high"]
+            l = parsed_5m[i]["low"]
+            tr = max(h - l, abs(h - prev_c), abs(l - prev_c))
+            tr_5m.append(tr)
+        atr_5m = (sum(tr_5m) / len(tr_5m)) if tr_5m else (pdc * 0.001)
+        ref_atr = self.current_atr_1m if self.current_atr_1m > 0 else max(atr_5m / 2.23, pdc * 0.0005)
+        tol_15m = max(0.25 * ref_atr, pdc * 0.0003)
+
+        raw_levels: List[StructuralLevel] = []
+        n_bars = len(parsed_5m)
+        for i in range(1, n_bars - 1):
+            cand = parsed_5m[i]
+            prev_b = parsed_5m[i - 1]
+            next_b = parsed_5m[i + 1]
+
+            window_left = parsed_5m[max(0, i - 5):i]
+            ref_lows = [b["low"] for b in window_left] + [next_b["low"]]
+            ref_highs = [b["high"] for b in window_left] + [next_b["high"]]
+
+            depth_high = cand["high"] - min(ref_lows)
+            depth_low = max(ref_highs) - cand["low"]
+
+            is_swing_high = (cand["high"] >= prev_b["high"] and cand["high"] > next_b["high"])
+            is_swing_low = (cand["low"] <= prev_b["low"] and cand["low"] < next_b["low"])
+
+            # 1. Swing High (Resistance)
+            if is_swing_high and depth_high >= (0.15 * ref_atr):
+                is_15m = False
+                for j in range(1, len(parsed_15m) - 1):
+                    c15 = parsed_15m[j]
+                    p15 = parsed_15m[j - 1]
+                    n15 = parsed_15m[j + 1]
+                    if c15["high"] >= p15["high"] and c15["high"] > n15["high"]:
+                        if abs(cand["high"] - c15["high"]) <= tol_15m:
+                            is_15m = True
+                            break
+
+                tf_name = "15m" if is_15m else "5m"
+                prom_boost = 0.50 if is_15m else 0.0
+                prom = round((depth_high / max(ref_atr, 1e-4)) + prom_boost, 2)
+                raw_levels.append(
+                    StructuralLevel(
+                        level_type="RESISTANCE",
+                        price=round(cand["high"], 2),
+                        ts_created=cand["ts"],
+                        prominence=max(1.5, prom),
+                        bar_idx=0,
+                        seq_idx=0,
+                        touch_count=1,
+                        timeframe=tf_name,
+                        volume=cand["volume"],
+                        is_previous_day=True,
+                    )
+                )
+
+            # 2. Swing Low (Support)
+            if is_swing_low and depth_low >= (0.15 * ref_atr):
+                is_15m = False
+                for j in range(1, len(parsed_15m) - 1):
+                    c15 = parsed_15m[j]
+                    p15 = parsed_15m[j - 1]
+                    n15 = parsed_15m[j + 1]
+                    if c15["low"] <= p15["low"] and c15["low"] < n15["low"]:
+                        if abs(cand["low"] - c15["low"]) <= tol_15m:
+                            is_15m = True
+                            break
+
+                tf_name = "15m" if is_15m else "5m"
+                prom_boost = 0.50 if is_15m else 0.0
+                prom = round((depth_low / max(ref_atr, 1e-4)) + prom_boost, 2)
+                raw_levels.append(
+                    StructuralLevel(
+                        level_type="SUPPORT",
+                        price=round(cand["low"], 2),
+                        ts_created=cand["ts"],
+                        prominence=max(1.5, prom),
+                        bar_idx=0,
+                        seq_idx=0,
+                        touch_count=1,
+                        timeframe=tf_name,
+                        volume=cand["volume"],
+                        is_previous_day=True,
+                    )
+                )
+
+        # Apply clustering and merging (scale-invariant outermost structural boundary)
+        cluster_tol = max(0.65 * ref_atr, pdc * 0.00065)
+        merged_levels = self._cluster_and_merge_levels(raw_levels, cluster_tol)
+
+        # Filter out levels coinciding with PDH or PDL within 2.0 pts (and enrich PDH/PDL anchors if present)
+        filtered_levels: List[StructuralLevel] = []
+        for lvl in merged_levels:
+            if lvl.level_type == "RESISTANCE" and abs(lvl.price - pdh) < 2.0:
+                for sl in self.session_levels:
+                    if sl.level_type == "RESISTANCE" and abs(sl.price - pdh) < 2.0:
+                        sl.volume = max(sl.volume, lvl.volume)
+                        sl.touch_count = max(sl.touch_count, lvl.touch_count)
+                        sl.prominence = max(sl.prominence, lvl.prominence)
+                continue
+            if lvl.level_type == "SUPPORT" and abs(lvl.price - pdl) < 2.0:
+                for sl in self.session_levels:
+                    if sl.level_type == "SUPPORT" and abs(sl.price - pdl) < 2.0:
+                        sl.volume = max(sl.volume, lvl.volume)
+                        sl.touch_count = max(sl.touch_count, lvl.touch_count)
+                        sl.prominence = max(sl.prominence, lvl.prominence)
+                continue
+            filtered_levels.append(lvl)
+
+        for lvl in filtered_levels:
+            if not any(l.level_type == lvl.level_type and abs(l.price - lvl.price) < 2.0 for l in self.session_levels):
+                self.session_levels.append(lvl)
+
+        # Store all previous day levels (macro PDH/PDL anchors + intermediate 5m/15m swings)
+        self._previous_day_levels = [l for l in self.session_levels if getattr(l, "is_previous_day", False)]
+
+        logger.info(
+            f"[PriceActionEngine] Seeded Previous Day 5m/15m: {len(self._previous_day_levels)} total previous-day levels registered "
+            f"({len(filtered_levels)} intermediate swings | {len([l for l in self._previous_day_levels if l.level_type == 'RESISTANCE'])} Res, "
+            f"{len([l for l in self._previous_day_levels if l.level_type == 'SUPPORT'])} Sup) | "
+            f"PDH={pdh:.2f} | PDL={pdl:.2f} | PDC={pdc:.2f} (Cluster Tol: {cluster_tol:.2f})"
+        )
+
+        level_dicts = [
+            {
+                "type": l.level_type,
+                "price": l.price,
+                "prominence": l.prominence,
+                "touch_count": l.touch_count,
+                "timeframe": l.timeframe,
+            }
+            for l in self._previous_day_levels
+        ]
+
+        return {
+            "levels_discovered": len(self._previous_day_levels),
+            "intermediate_swings": len(filtered_levels),
+            "pdh": pdh,
+            "pdl": pdl,
+            "pdc": pdc,
+            "levels": level_dicts,
+        }
 
     def check_key_level_proximity(self, direction: str, spot_price: float) -> Tuple[bool, str, Dict[str, Any]]:
         """
@@ -1803,7 +2087,7 @@ class PriceActionEngine:
         check_day_extremes: bool = False,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
-        Structural Obstacle Shield (HVG Topological Anchors + Multi-Touch Horizontal Clusters).
+        Structural Obstacle Shield (Dynamic S/R Registry Anchors + Multi-Touch Horizontal Clusters).
         Prevents buying PUTs directly into an underlying support wall (e.g. 11:33 & 11:39 double-bottom)
         or buying CALLs directly into an overhead resistance wall.
         Threshold is normalized via localized volatility (0.85x ATR).
@@ -2924,7 +3208,7 @@ class PriceActionEngine:
                         "lower_wick_ratio": round(lower_wick_ratio, 3),
                     }
 
-                # Structural Obstacle Shield (HVG Topological Anchors + Day Extreme Runway)
+                # Structural Obstacle Shield (Dynamic S/R Registry Anchors + Day Extreme Runway)
                 ok_struct, r_struct, det_struct = self._check_structural_obstacle(
                     "PUT", bar.close, check_day_extremes=True
                 )
@@ -3007,7 +3291,7 @@ class PriceActionEngine:
                         "upper_wick_ratio": round(upper_wick_ratio, 3),
                     }
 
-                # Structural Obstacle Shield (HVG Topological Anchors + Day Extreme Runway)
+                # Structural Obstacle Shield (Dynamic S/R Registry Anchors + Day Extreme Runway)
                 ok_struct, r_struct, det_struct = self._check_structural_obstacle(
                     "CALL", bar.close, check_day_extremes=True
                 )
@@ -3046,9 +3330,10 @@ class PriceActionEngine:
         current_time: float = 0.0,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
-        Pillar 4 (V4 Final): 0-D Prominence Hub Structural Breakout.
-        Evaluates 0-D Prominence (\\hat{\\pi} >= 1.75) via FastMonotonicStack,
-        5m structural alignment, and Volume Ratio Gate (VR_t >= 1.4 vs 60m median).
+        Pillar 4: Dynamic Session Support/Resistance Registry Breakout.
+        Evaluates structural breakout of registered unbroken S/R levels (prominence >= 1.25,
+        touch count, anchor volume & order flow footprint, 5m structural trend alignment,
+        and Volume Ratio Gate VR_t >= 1.20 vs 60m median).
         """
         if len(self.bars_1m) < 5 or self.current_atr_1m <= 1e-6:
             return False, "insufficient_bars", {}
@@ -3118,70 +3403,86 @@ class PriceActionEngine:
                 displacement = s_lvl.price - bar.close
                 bar_range = bar.high - bar.low
                 origin_dist = abs(bar.open - s_lvl.price)
-                if (
-                    bar.close <= (s_lvl.price - min_hub_clearance)
-                    and origin_dist <= (0.35 * _atr_ref)
-                    and bar.close < bar.open
-                    and body_ratio >= 0.35
-                    and close_edge_put >= 0.68
-                    and lower_wick_ratio <= 0.18
-                    and bar_range <= (1.35 * _atr_ref)
-                    and displacement <= (1.25 * _atr_ref)
-                    and vr_t >= 1.20
-                ):
-                    if current_vwap > 0 and bar.close > current_vwap:
-                        continue
+                if bar.close <= (s_lvl.price - min_hub_clearance):
+                    # Anti-Exhaustion & Origin Validation on broken support level
+                    if bar_range > (1.35 * _atr_ref):
+                        return False, "exhausted_breakout_candle_range", {
+                            "bar_range": round(bar_range, 2),
+                            "max_allowed_range": round(1.35 * _atr_ref, 2),
+                            "atr_ref": round(_atr_ref, 2),
+                        }
+                    if displacement > (1.25 * _atr_ref):
+                        return False, "overextended_from_hub", {
+                            "displacement": round(displacement, 2),
+                            "max_allowed": round(1.25 * _atr_ref, 2),
+                            "atr_ref": round(_atr_ref, 2),
+                        }
+                    if origin_dist > (0.35 * _atr_ref):
+                        return False, "bar_opened_too_far_from_hub", {
+                            "bar_open": round(bar.open, 2),
+                            "hub_price": round(s_lvl.price, 2),
+                        }
 
-                    # Macro Runway Guard (Day Extreme Clearance + ignore self-broken level)
-                    ok_struct, r_struct, det_struct = self._check_structural_obstacle(
-                        "PUT", bar.close, ignore_pivots_above=(s_lvl.price - 0.10 * _atr_ref), check_day_extremes=True
-                    )
-                    if not ok_struct:
-                        return False, f"structural_obstacle_{r_struct}", det_struct
+                    if (
+                        bar.close < bar.open
+                        and body_ratio >= 0.35
+                        and close_edge_put >= 0.68
+                        and lower_wick_ratio <= 0.18
+                        and vr_t >= 1.20
+                    ):
+                        if current_vwap > 0 and bar.close > current_vwap:
+                            continue
 
-                    s_lvl.is_broken = True
-                    s_lvl.ts_broken = bar.ts_end
-                    sl_price = round(s_lvl.price + buffer_pts, 2)
-                    age_bars = (self._total_bars_seen - s_lvl.seq_idx) if self._total_bars_seen >= s_lvl.seq_idx else (len(self.bars_1m) - 1 - s_lvl.bar_idx)
+                        # Macro Runway Guard (Day Extreme Clearance + ignore self-broken level)
+                        ok_struct, r_struct, det_struct = self._check_structural_obstacle(
+                            "PUT", bar.close, ignore_pivots_above=(s_lvl.price - 0.10 * _atr_ref), check_day_extremes=True
+                        )
+                        if not ok_struct:
+                            return False, f"structural_obstacle_{r_struct}", det_struct
 
-                    # Wyckoff Effort vs Result & Stopping Volume Shield
-                    ok_wflow, r_wflow, det_wflow = self._evaluate_wyckoff_pillar_flow(
-                        pillar=4,
-                        direction="PUT",
-                        bar=bar,
-                    )
-                    if not ok_wflow:
-                        return False, r_wflow, det_wflow
+                        s_lvl.is_broken = True
+                        s_lvl.ts_broken = bar.ts_end
+                        sl_price = round(s_lvl.price + buffer_pts, 2)
+                        age_bars = (self._total_bars_seen - s_lvl.seq_idx) if self._total_bars_seen >= s_lvl.seq_idx else (len(self.bars_1m) - 1 - s_lvl.bar_idx)
 
-                    details = {
-                        "pa_setup_name": "topological_prominence_breakout",
-                        "pillar": 4,
-                        "hub_price": s_lvl.price,
-                        "min_hub_clearance": round(min_hub_clearance, 2),
-                        "pi_hat": s_lvl.prominence,
-                        "vr_t": vr_t,
-                        "breakout_direction": "DOWN",
-                        "anchor_age_bars": age_bars,
-                        "anchor_touch_count": s_lvl.touch_count,
-                        "anchor_volume": round(s_lvl.volume, 1),
-                        "anchor_vr": round(s_lvl.vr_anchor, 2),
-                        "anchor_delta_flow": round(s_lvl.opt_delta_flow, 1),
-                        "anchor_pcr": round(s_lvl.opt_pcr, 2),
-                        "anchor_call_sell_vol": round(s_lvl.call_sell_vol, 1),
-                        "anchor_put_sell_vol": round(s_lvl.put_sell_vol, 1),
-                        "level_source": "sr_registry",
-                        "bar_open": round(bar.open, 2),
-                        "bar_close": round(bar.close, 2),
-                        "bar_low": round(bar.low, 2),
-                        "bar_high": round(bar.high, 2),
-                        "body_ratio": round(body_ratio, 3),
-                        "lower_wick_ratio": round(lower_wick_ratio, 3),
-                        "close_edge": round(close_edge_put, 3),
-                        "sl_price": sl_price,
-                        "buffer_pts": round(buffer_pts, 2),
-                    }
-                    details.update(det_wflow)
-                    return True, "prominence_hub_breakout_down", details
+                        # Wyckoff Effort vs Result & Stopping Volume Shield
+                        ok_wflow, r_wflow, det_wflow = self._evaluate_wyckoff_pillar_flow(
+                            pillar=4,
+                            direction="PUT",
+                            bar=bar,
+                        )
+                        if not ok_wflow:
+                            return False, r_wflow, det_wflow
+
+                        details = {
+                            "pa_setup_name": "topological_prominence_breakout",
+                            "pillar": 4,
+                            "hub_price": s_lvl.price,
+                            "min_hub_clearance": round(min_hub_clearance, 2),
+                            "pi_hat": s_lvl.prominence,
+                            "vr_t": vr_t,
+                            "breakout_direction": "DOWN",
+                            "anchor_age_bars": age_bars,
+                            "anchor_touch_count": s_lvl.touch_count,
+                            "anchor_volume": round(s_lvl.volume, 1),
+                            "anchor_vr": round(s_lvl.vr_anchor, 2),
+                            "anchor_delta_flow": round(s_lvl.opt_delta_flow, 1),
+                            "anchor_pcr": round(s_lvl.opt_pcr, 2),
+                            "anchor_call_sell_vol": round(s_lvl.call_sell_vol, 1),
+                            "anchor_put_sell_vol": round(s_lvl.put_sell_vol, 1),
+                            "level_source": "sr_registry",
+                            "bar_open": round(bar.open, 2),
+                            "bar_close": round(bar.close, 2),
+                            "bar_low": round(bar.low, 2),
+                            "bar_high": round(bar.high, 2),
+                            "body_ratio": round(body_ratio, 3),
+                            "lower_wick_ratio": round(lower_wick_ratio, 3),
+                            "close_edge": round(close_edge_put, 3),
+                            "sl_price": sl_price,
+                            "buffer_pts": round(buffer_pts, 2),
+                        }
+                        details.update(det_wflow)
+                        return True, "prominence_hub_breakout_down", details
 
         elif is_bullish and trend_5m_bullish:
             cand_resistances = [
@@ -3196,256 +3497,87 @@ class PriceActionEngine:
                 displacement = bar.close - r_lvl.price
                 bar_range = bar.high - bar.low
                 origin_dist = abs(bar.open - r_lvl.price)
-                if (
-                    bar.close >= (r_lvl.price + min_hub_clearance)
-                    and origin_dist <= (0.35 * _atr_ref)
-                    and bar.close > bar.open
-                    and body_ratio >= 0.35
-                    and close_edge_call >= 0.68
-                    and upper_wick_ratio <= 0.18
-                    and bar_range <= (1.35 * _atr_ref)
-                    and displacement <= (1.25 * _atr_ref)
-                    and vr_t >= 1.20
-                ):
-                    if current_vwap > 0 and bar.close < current_vwap:
-                        continue
+                if bar.close >= (r_lvl.price + min_hub_clearance):
+                    # Anti-Exhaustion & Origin Validation on broken resistance level
+                    if bar_range > (1.35 * _atr_ref):
+                        return False, "exhausted_breakout_candle_range", {
+                            "bar_range": round(bar_range, 2),
+                            "max_allowed_range": round(1.35 * _atr_ref, 2),
+                            "atr_ref": round(_atr_ref, 2),
+                        }
+                    if displacement > (1.25 * _atr_ref):
+                        return False, "overextended_from_hub", {
+                            "displacement": round(displacement, 2),
+                            "max_allowed": round(1.25 * _atr_ref, 2),
+                            "atr_ref": round(_atr_ref, 2),
+                        }
+                    if origin_dist > (0.35 * _atr_ref):
+                        return False, "bar_opened_too_far_from_hub", {
+                            "bar_open": round(bar.open, 2),
+                            "hub_price": round(r_lvl.price, 2),
+                        }
 
-                    ok_struct, r_struct, det_struct = self._check_structural_obstacle(
-                        "CALL", bar.close, ignore_pivots_below=(r_lvl.price + 0.10 * _atr_ref), check_day_extremes=True
-                    )
-                    if not ok_struct:
-                        return False, f"structural_obstacle_{r_struct}", det_struct
+                    if (
+                        bar.close > bar.open
+                        and body_ratio >= 0.35
+                        and close_edge_call >= 0.68
+                        and upper_wick_ratio <= 0.18
+                        and vr_t >= 1.20
+                    ):
+                        if current_vwap > 0 and bar.close < current_vwap:
+                            continue
 
-                    r_lvl.is_broken = True
-                    r_lvl.ts_broken = bar.ts_end
-                    sl_price = round(r_lvl.price - buffer_pts, 2)
-                    age_bars = (self._total_bars_seen - r_lvl.seq_idx) if self._total_bars_seen >= r_lvl.seq_idx else (len(self.bars_1m) - 1 - r_lvl.bar_idx)
+                        ok_struct, r_struct, det_struct = self._check_structural_obstacle(
+                            "CALL", bar.close, ignore_pivots_below=(r_lvl.price + 0.10 * _atr_ref), check_day_extremes=True
+                        )
+                        if not ok_struct:
+                            return False, f"structural_obstacle_{r_struct}", det_struct
 
-                    # Wyckoff Effort vs Result & Stopping Volume Shield
-                    ok_wflow, r_wflow, det_wflow = self._evaluate_wyckoff_pillar_flow(
-                        pillar=4,
-                        direction="CALL",
-                        bar=bar,
-                    )
-                    if not ok_wflow:
-                        return False, r_wflow, det_wflow
+                        r_lvl.is_broken = True
+                        r_lvl.ts_broken = bar.ts_end
+                        sl_price = round(r_lvl.price - buffer_pts, 2)
+                        age_bars = (self._total_bars_seen - r_lvl.seq_idx) if self._total_bars_seen >= r_lvl.seq_idx else (len(self.bars_1m) - 1 - r_lvl.bar_idx)
 
-                    details = {
-                        "pa_setup_name": "topological_prominence_breakout",
-                        "pillar": 4,
-                        "hub_price": r_lvl.price,
-                        "min_hub_clearance": round(min_hub_clearance, 2),
-                        "pi_hat": r_lvl.prominence,
-                        "vr_t": vr_t,
-                        "breakout_direction": "UP",
-                        "anchor_age_bars": age_bars,
-                        "anchor_touch_count": r_lvl.touch_count,
-                        "anchor_volume": round(r_lvl.volume, 1),
-                        "anchor_vr": round(r_lvl.vr_anchor, 2),
-                        "anchor_delta_flow": round(r_lvl.opt_delta_flow, 1),
-                        "anchor_pcr": round(r_lvl.opt_pcr, 2),
-                        "anchor_call_sell_vol": round(r_lvl.call_sell_vol, 1),
-                        "anchor_put_sell_vol": round(r_lvl.put_sell_vol, 1),
-                        "level_source": "sr_registry",
-                        "bar_open": round(bar.open, 2),
-                        "bar_close": round(bar.close, 2),
-                        "bar_low": round(bar.low, 2),
-                        "bar_high": round(bar.high, 2),
-                        "body_ratio": round(body_ratio, 3),
-                        "upper_wick_ratio": round(upper_wick_ratio, 3),
-                        "close_edge": round(close_edge_call, 3),
-                        "sl_price": sl_price,
-                        "buffer_pts": round(buffer_pts, 2),
-                    }
-                    details.update(det_wflow)
-                    return True, "prominence_hub_breakout_up", details
+                        # Wyckoff Effort vs Result & Stopping Volume Shield
+                        ok_wflow, r_wflow, det_wflow = self._evaluate_wyckoff_pillar_flow(
+                            pillar=4,
+                            direction="CALL",
+                            bar=bar,
+                        )
+                        if not ok_wflow:
+                            return False, r_wflow, det_wflow
 
-        # ─── Priority 2: Fallback to FastMonotonicStack (T-2 Hub) ───
-        prices_window = np.array([b.close for b in list(self.bars_1m)[-60:]], dtype=np.float64)
-        if len(prices_window) < 5:
-            return False, "insufficient_window", {}
+                        details = {
+                            "pa_setup_name": "topological_prominence_breakout",
+                            "pillar": 4,
+                            "hub_price": r_lvl.price,
+                            "min_hub_clearance": round(min_hub_clearance, 2),
+                            "pi_hat": r_lvl.prominence,
+                            "vr_t": vr_t,
+                            "breakout_direction": "UP",
+                            "anchor_age_bars": age_bars,
+                            "anchor_touch_count": r_lvl.touch_count,
+                            "anchor_volume": round(r_lvl.volume, 1),
+                            "anchor_vr": round(r_lvl.vr_anchor, 2),
+                            "anchor_delta_flow": round(r_lvl.opt_delta_flow, 1),
+                            "anchor_pcr": round(r_lvl.opt_pcr, 2),
+                            "anchor_call_sell_vol": round(r_lvl.call_sell_vol, 1),
+                            "anchor_put_sell_vol": round(r_lvl.put_sell_vol, 1),
+                            "level_source": "sr_registry",
+                            "bar_open": round(bar.open, 2),
+                            "bar_close": round(bar.close, 2),
+                            "bar_low": round(bar.low, 2),
+                            "bar_high": round(bar.high, 2),
+                            "body_ratio": round(body_ratio, 3),
+                            "upper_wick_ratio": round(upper_wick_ratio, 3),
+                            "close_edge": round(close_edge_call, 3),
+                            "sl_price": sl_price,
+                            "buffer_pts": round(buffer_pts, 2),
+                        }
+                        details.update(det_wflow)
+                        return True, "prominence_hub_breakout_up", details
 
-        hub_idx = len(prices_window) - 2
-        if not hasattr(self, "prominence_stack") or self.prominence_stack is None:
-            if FastMonotonicStack is not None:
-                self.prominence_stack = FastMonotonicStack(capacity=128)
-
-        if self.prominence_stack is None:
-            return False, "no_prominence_stack", {}
-
-        pi_hat = self.prominence_stack.compute_prominence(prices_window, hub_idx, self.current_atr_1m)
-        if pi_hat < 1.75:
-            return False, f"insufficient_prominence_{pi_hat:.2f}", {}
-
-        if vr_t < 1.4:
-            return False, f"volume_ratio_gate_failed_{vr_t:.2f}", {}
-
-        hub_price = float(prices_window[hub_idx])
-
-        # Live Spot Sanity Guard
-        if self.last_price > 0:
-            if is_bullish and self.last_price < hub_price:
-                return False, "live_price_below_hub", {
-                    "last_price": round(self.last_price, 2),
-                    "hub_price": round(hub_price, 2),
-                }
-            elif is_bearish and self.last_price > hub_price:
-                return False, "live_price_above_hub", {
-                    "last_price": round(self.last_price, 2),
-                    "hub_price": round(hub_price, 2),
-                }
-
-        if is_bullish and trend_5m_bullish:
-            # 1. Anti-Exhaustion & Origin Validation:
-            bar_range = bar.high - bar.low
-            if bar_range > (1.35 * _atr_ref):
-                return False, "exhausted_breakout_candle_range", {
-                    "bar_range": round(bar_range, 2),
-                    "max_allowed_range": round(1.35 * _atr_ref, 2),
-                    "atr_ref": round(_atr_ref, 2),
-                }
-
-            displacement = abs(bar.close - hub_price)
-            if displacement > (1.25 * _atr_ref):
-                return False, "overextended_from_hub", {
-                    "displacement": round(displacement, 2),
-                    "max_allowed": round(1.25 * _atr_ref, 2),
-                    "atr_ref": round(_atr_ref, 2),
-                }
-
-            if bar.open > (hub_price + 0.25 * _atr_ref):
-                return False, "bar_opened_too_far_above_hub", {
-                    "bar_open": round(bar.open, 2),
-                    "hub_price": round(hub_price, 2),
-                    "threshold": round(hub_price + 0.25 * _atr_ref, 2),
-                }
-
-            # Enforce solid breakout candle anatomy (No shooting stars / inverted hammer traps):
-            is_solid_breakout = (
-                bar.close >= (hub_price + min_hub_clearance)
-                and bar.close > bar.open
-                and body_ratio >= 0.35
-                and close_edge_call >= 0.70
-                and upper_wick_ratio <= 0.20
-            )
-            if is_solid_breakout:
-                if current_vwap > 0 and bar.close < current_vwap:
-                    return False, "counter_to_vwap", {}
-
-                # Structural Obstacle Shield (HVG Topological Anchors + Day Extreme Runway)
-                ok_struct, r_struct, det_struct = self._check_structural_obstacle(
-                    "CALL", bar.close, check_day_extremes=True
-                )
-                if not ok_struct:
-                    return False, f"structural_obstacle_{r_struct}", det_struct
-
-                # Wyckoff Effort vs Result & Stopping Volume Shield
-                ok_wflow, r_wflow, det_wflow = self._evaluate_wyckoff_pillar_flow(
-                    pillar=4,
-                    direction="CALL",
-                    bar=bar,
-                )
-                if not ok_wflow:
-                    return False, r_wflow, det_wflow
-
-                sl_price = round(bar.low - buffer_pts, 2)
-                details = {
-                    "pa_setup_name": "topological_prominence_breakout",
-                    "pillar": 4,
-                    "hub_price": hub_price,
-                    "min_hub_clearance": round(min_hub_clearance, 2),
-                    "pi_hat": pi_hat,
-                    "vr_t": vr_t,
-                    "breakout_direction": "UP",
-                    "bar_open": round(bar.open, 2),
-                    "bar_close": round(bar.close, 2),
-                    "bar_low": round(bar.low, 2),
-                    "bar_high": round(bar.high, 2),
-                    "body_ratio": round(body_ratio, 3),
-                    "upper_wick_ratio": round(upper_wick_ratio, 3),
-                    "close_edge": round(close_edge_call, 3),
-                    "sl_price": sl_price,
-                    "buffer_pts": round(buffer_pts, 2),
-                }
-                details.update(det_wflow)
-                return True, "prominence_hub_breakout_up", details
-
-        if is_bearish and trend_5m_bearish:
-            # 1. Anti-Exhaustion & Origin Validation:
-            bar_range = bar.high - bar.low
-            if bar_range > (1.35 * _atr_ref):
-                return False, "exhausted_breakout_candle_range", {
-                    "bar_range": round(bar_range, 2),
-                    "max_allowed_range": round(1.35 * _atr_ref, 2),
-                    "atr_ref": round(_atr_ref, 2),
-                }
-
-            displacement = abs(bar.close - hub_price)
-            if displacement > (1.25 * _atr_ref):
-                return False, "overextended_from_hub", {
-                    "displacement": round(displacement, 2),
-                    "max_allowed": round(1.25 * _atr_ref, 2),
-                    "atr_ref": round(_atr_ref, 2),
-                }
-
-            if bar.open < (hub_price - 0.25 * _atr_ref):
-                return False, "bar_opened_too_far_below_hub", {
-                    "bar_open": round(bar.open, 2),
-                    "hub_price": round(hub_price, 2),
-                    "threshold": round(hub_price - 0.25 * _atr_ref, 2),
-                }
-
-            # Enforce solid breakout candle anatomy (No hammer / bullish bounce traps):
-            is_solid_breakout = (
-                bar.close <= (hub_price - min_hub_clearance)
-                and bar.close < bar.open
-                and body_ratio >= 0.35
-                and close_edge_put >= 0.70
-                and lower_wick_ratio <= 0.20
-            )
-            if is_solid_breakout:
-                if current_vwap > 0 and bar.close > current_vwap:
-                    return False, "counter_to_vwap", {}
-
-                # Structural Obstacle Shield (HVG Topological Anchors + Day Extreme Runway)
-                ok_struct, r_struct, det_struct = self._check_structural_obstacle(
-                    "PUT", bar.close, check_day_extremes=True
-                )
-                if not ok_struct:
-                    return False, f"structural_obstacle_{r_struct}", det_struct
-
-                # Wyckoff Effort vs Result & Stopping Volume Shield
-                ok_wflow, r_wflow, det_wflow = self._evaluate_wyckoff_pillar_flow(
-                    pillar=4,
-                    direction="PUT",
-                    bar=bar,
-                )
-                if not ok_wflow:
-                    return False, r_wflow, det_wflow
-
-                sl_price = round(bar.high + buffer_pts, 2)
-                details = {
-                    "pa_setup_name": "topological_prominence_breakout",
-                    "pillar": 4,
-                    "hub_price": hub_price,
-                    "min_hub_clearance": round(min_hub_clearance, 2),
-                    "pi_hat": pi_hat,
-                    "vr_t": vr_t,
-                    "breakout_direction": "DOWN",
-                    "bar_open": round(bar.open, 2),
-                    "bar_close": round(bar.close, 2),
-                    "bar_low": round(bar.low, 2),
-                    "bar_high": round(bar.high, 2),
-                    "body_ratio": round(body_ratio, 3),
-                    "lower_wick_ratio": round(lower_wick_ratio, 3),
-                    "close_edge": round(close_edge_put, 3),
-                    "sl_price": sl_price,
-                    "buffer_pts": round(buffer_pts, 2),
-                }
-                details.update(det_wflow)
-                return True, "prominence_hub_breakout_down", details
-
-        return False, "no_breakout_against_hub", {}
+        return False, "no_sr_breakout", {}
 
     # ═══════════════════════════════════════════════════════════
     # 4. MASTER SIGNAL DISPATCHER
@@ -4233,17 +4365,6 @@ class PriceActionEngine:
                     and lvl.prominence >= 1.25
                     and ((self._total_bars_seen - lvl.seq_idx) >= 3 or (now_sec - lvl.ts_created) >= 180.0)
                 ]
-                for hub in getattr(self, "_topological_hubs", []):
-                    if hub.get("hub_type") == "PEAK" and not hub.get("is_broken", False) and hub.get("pi_hat", 0.0) >= 1.75:
-                        if not any(abs(c.price - hub["price"]) < 2.0 for c in candidates):
-                            candidates.append(StructuralLevel(
-                                level_type="RESISTANCE",
-                                price=hub["price"],
-                                ts_created=hub.get("ts_created", now_sec),
-                                prominence=hub.get("pi_hat", 1.75),
-                                bar_idx=hub.get("bar_idx", 0),
-                                touch_count=1
-                            ))
                 candidates.sort(key=lambda l: (l.touch_count * 0.5 + l.prominence), reverse=True)
                 matched_any = False
                 for r_lvl in candidates:
@@ -4290,17 +4411,6 @@ class PriceActionEngine:
                     and lvl.prominence >= 1.25
                     and ((self._total_bars_seen - lvl.seq_idx) >= 3 or (now_sec - lvl.ts_created) >= 180.0)
                 ]
-                for hub in getattr(self, "_topological_hubs", []):
-                    if hub.get("hub_type") == "TROUGH" and not hub.get("is_broken", False) and hub.get("pi_hat", 0.0) >= 1.75:
-                        if not any(abs(c.price - hub["price"]) < 2.0 for c in candidates):
-                            candidates.append(StructuralLevel(
-                                level_type="SUPPORT",
-                                price=hub["price"],
-                                ts_created=hub.get("ts_created", now_sec),
-                                prominence=hub.get("pi_hat", 1.75),
-                                bar_idx=hub.get("bar_idx", 0),
-                                touch_count=1
-                            ))
                 candidates.sort(key=lambda l: (l.touch_count * 0.5 + l.prominence), reverse=True)
                 matched_any = False
                 for s_lvl in candidates:
@@ -4356,8 +4466,7 @@ class PriceActionEngine:
           Pillar 1: 20 EMA + Wick Rejection (Double-Touch Confluence)
           Pillar 2: Micro-Sweep & Reclaim (Turtle Soup / 5-Bar Liquidity Grab)
           Pillar 3: Volatility Squeeze to Expansion Breakout (3-Bar Tight Box Expansion)
-          Pillar 4: 0-D Prominence Hub Breakout (pi-hat >= 1.75, VR >= 1.4, 5m align)
-                      + Dual-Timeframe HVG Phase Shift (gated by shadow_only flag)
+          Pillar 4: Dynamic Session S/R Registry Breakout (Mode B Breakthrough)
         Returns:
             (is_triggered, setup_name, details_dict)
         """
@@ -4401,24 +4510,10 @@ class PriceActionEngine:
         # V4.0 (2026-09-21): Al Brooks 2-Legged Pullback retired from the live
         # ladder — P1 -> P2 -> P3 -> P4 only. Method kept for offline reference.
 
-        # Pillar 3: Volatility Squeeze Breakout (3-Bar Tight Box Expansion)
-        # V4.1: second-place Pain Zone removed — absolute band veto at tick top is single source.
-        ok_sq, reason_sq, details_sq = self.check_volatility_squeeze_breakout(direction, eff_vwap, current_time=current_time)
-        if ok_sq:
-            details_sq["pain_zone_score"] = 0.0
-            details_sq["pain_zone_reason"] = "band_veto_top_only"
-            return True, "volatility_squeeze_breakout", self._enrich_details(details_sq)
-
-        # Pillar 4 (V4 Final): 0-D Prominence Hub Structural Breakout (\hat{\pi} >= 1.75, VR_t >= 1.4, 5m Alignment)
-        # V4.1: second-place Pain Zone removed — absolute band veto at tick top is single source.
-        ok_prom, reason_prom, details_prom = self.check_topological_prominence_breakout(direction, eff_vwap, current_time=current_time)
-        if ok_prom:
-            details_prom["pain_zone_score"] = 0.0
-            details_prom["pain_zone_reason"] = "band_veto_top_only"
-            bar_ts = self.bars_1m[-1].ts_start if self.bars_1m else self.last_ts
-            details_prom["timestamp"] = bar_ts
-            details_prom["event_id"] = f"P4_PROM_{int(bar_ts)}_{direction.upper()}"
-            return True, "topological_prominence_breakout", self._enrich_details(details_prom)
+        # ─── Mode B Mandate: Pillar 3 & Pillar 4 execute EXCLUSIVELY via Mode B ───
+        # Volatility Squeeze (P3) and Dynamic S/R Registry Breakout (P4) are momentum
+        # breakthrough setups. They trigger in-flight via check_mode_b_breakthrough().
+        # Bar-close execution (Mode A) is retired to prevent late-entry chasing and slippage.
 
         # V4.0 (2026-09-21): standalone Break of Structure retired from the live
         # ladder — superseded by P4 topological phase shift. Method kept offline.

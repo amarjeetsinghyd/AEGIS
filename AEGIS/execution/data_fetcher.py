@@ -4,7 +4,7 @@ import time
 import requests
 import pandas as pd
 import collections
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 from AEGIS.config.settings import BROKER
 ACTIVE_BROKER = (os.getenv("ACTIVE_BROKER") or BROKER).upper()
@@ -189,6 +189,100 @@ class DataFetcher:
             return df
         except Exception as e:
             logger.error(f"Error fetching candles for token {token}: {e}")
+        return pd.DataFrame()
+
+    def get_previous_day_5m_candles(self, exchange: str = None, token: str = None, prev_date: date = None) -> pd.DataFrame:
+        """
+        Fetches the complete 5-minute historical candle series (~75 candles) for the given
+        underlying index from the previous official trading session (09:15:00 to 15:30:00 IST).
+        Checks disk cache first to minimize redundant REST calls on bot restarts.
+        """
+        from common.market.market_calendar import get_previous_trading_day
+        from datetime import time as dt_time
+
+        if prev_date is None:
+            prev_date = get_previous_trading_day(datetime.now().date())
+        
+        if token is None or exchange is None:
+            default_token, name, default_exch = self.get_cash_index_token()
+            token = token or default_token
+            exchange = exchange or default_exch
+        else:
+            name = "NIFTY" if token == "26000" else ("SENSEX" if token in ("1", "99919000") else str(token))
+
+        cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "scratch")
+        cache_file = os.path.join(cache_dir, f"previous_day_5m_{name}_{prev_date.strftime('%Y%m%d')}.parquet")
+        
+        if os.path.exists(cache_file):
+            try:
+                df_cached = pd.read_parquet(cache_file)
+                if not df_cached.empty and len(df_cached) >= 30:
+                    logger.info(f"[DataFetcher] Loaded {len(df_cached)} previous-day 5m candles for {name} ({prev_date}) from cache: {cache_file}")
+                    return df_cached
+            except Exception as e_cache:
+                logger.debug(f"[DataFetcher] Cache read failed ({e_cache}), falling back to broker API.")
+
+        start_time = datetime.combine(prev_date, dt_time(9, 15, 0))
+        end_time = datetime.combine(prev_date, dt_time(15, 30, 0))
+        
+        # 1. Try via historical_provider
+        try:
+            hp = getattr(self.broker, "historical_provider", None)
+            if hp is not None and hasattr(hp, "get_historical"):
+                df = hp.get_historical(
+                    exchange=exchange,
+                    token=str(token),
+                    interval="FIVE_MINUTE",
+                    start_time=start_time,
+                    end_time=end_time
+                )
+                if df is not None and not df.empty:
+                    os.makedirs(cache_dir, exist_ok=True)
+                    try:
+                        df.to_parquet(cache_file, index=False)
+                    except Exception:
+                        pass
+                    logger.info(f"[DataFetcher] Fetched {len(df)} 5m candles for {name} ({prev_date}) via historical provider.")
+                    return df
+        except Exception as e_hp:
+            logger.debug(f"[DataFetcher] Historical provider fetch failed for {name}: {e_hp}")
+
+        # 2. Try direct API get_time_price_series
+        try:
+            api = getattr(self.broker, "_api", None) or self.broker
+            if hasattr(api, "get_time_price_series"):
+                resp = api.get_time_price_series(
+                    exchange=exchange,
+                    token=str(token),
+                    starttime=int(start_time.timestamp()),
+                    endtime=int(end_time.timestamp()),
+                    interval=5
+                )
+                if isinstance(resp, list) and len(resp) > 0:
+                    df = pd.DataFrame(resp)
+                    if 'time' in df.columns: df['timestamp'] = df['time']
+                    elif 'ssboe' in df.columns: df['timestamp'] = df['ssboe']
+                    if 'into' in df.columns: df['open'] = df['into']
+                    if 'inth' in df.columns: df['high'] = df['inth']
+                    if 'intl' in df.columns: df['low'] = df['intl']
+                    if 'intc' in df.columns: df['close'] = df['intc']
+                    if 'intv' in df.columns: df['volume'] = df['intv']
+                    elif 'v' in df.columns: df['volume'] = df['v']
+                    
+                    for col in ['open', 'high', 'low', 'close', 'volume']:
+                        if col in df.columns:
+                            df[col] = pd.to_numeric(df[col], errors='coerce')
+                    
+                    os.makedirs(cache_dir, exist_ok=True)
+                    try:
+                        df.to_parquet(cache_file, index=False)
+                    except Exception:
+                        pass
+                    logger.info(f"[DataFetcher] Fetched {len(df)} 5m candles for {name} ({prev_date}) via direct API.")
+                    return df
+        except Exception as e_api:
+            logger.debug(f"[DataFetcher] Direct API fetch failed for {name}: {e_api}")
+
         return pd.DataFrame()
 
     def get_weekly_option_tokens(self) -> pd.DataFrame:

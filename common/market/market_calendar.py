@@ -37,6 +37,35 @@ POST_MARKET_TIME = dt_time(15, 17, 0)
 KRONOS_FORCE_FLATTEN_TIME = dt_time(15, 10, 0)
 KRONOS_ENTRY_CUTOFF_TIME = dt_time(15, 0, 0)
 
+def is_exchange_trading_day(d: date = None) -> bool:
+    """Returns True if the given date is an official NSE/BSE trading day (Mon-Fri, non-holiday).
+    
+    Unlike is_trading_day() which respects AEGIS Friday bot sleep policy, this reflects whether
+    the physical exchange was open and generated trading bars.
+    """
+    if d is None:
+        d = datetime.now().date()
+    if d.weekday() >= 5:  # Saturday = 5, Sunday = 6
+        return False
+    if d in NSE_HOLIDAYS_2026:
+        return False
+    return True
+
+def get_previous_trading_day(for_date: date = None) -> date:
+    """Returns the previous official exchange trading day (skipping weekends and NSE/BSE holidays).
+    
+    Example:
+      Monday -> previous Friday
+      Tuesday -> previous Monday
+      Day after holiday -> previous open session
+    """
+    if for_date is None:
+        for_date = datetime.now().date()
+    candidate = for_date - timedelta(days=1)
+    while not is_exchange_trading_day(candidate):
+        candidate -= timedelta(days=1)
+    return candidate
+
 def is_trading_day(d: date = None) -> bool:
     """Returns True if the given date is a weekday and not an official NSE/BSE holiday.
     

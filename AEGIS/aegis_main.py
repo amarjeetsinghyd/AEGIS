@@ -400,27 +400,50 @@ def main():
                         except Exception as e_fb:
                             logger.warning(f"[AegisMain][COLD-BOOT] Fallback failed (non-fatal): {e_fb}")
 
-                # ─── Seed Daily Structural Levels (PDH / PDL / PDC) ───
+                # ─── Seed Daily Structural Levels (PDH / PDL / PDC) & Previous Day 5m/15m S/R ───
                 pdh, pdl, pdc = 0.0, 0.0, 0.0
-                try:
-                    df_day = fetcher.get_historical_candles(spot_exch, spot_token, "ONE_DAY", days_back=5)
-                    if df_day is not None and not df_day.empty and len(df_day) >= 2:
-                        today_str = datetime.now().strftime("%Y-%m-%d")
-                        candles_day = df_day.to_dict(orient="records") if hasattr(df_day, "to_dict") else []
-                        prev_days = []
-                        for r in candles_day:
-                            d_val = str(r.get("date", "") or r.get("time", ""))[:10]
-                            if d_val and d_val < today_str:
-                                prev_days.append(r)
-                        if prev_days:
-                            last_day = prev_days[-1]
-                            pdh = float(last_day.get("high") or last_day.get("inth") or 0.0)
-                            pdl = float(last_day.get("low") or last_day.get("intl") or 0.0)
-                            pdc = float(last_day.get("close") or last_day.get("intc") or 0.0)
-                except Exception as e_pd:
-                    logger.debug(f"[AegisMain] Daily candle fetch failed: {e_pd}")
+                from common.market.market_calendar import get_previous_trading_day
+                prev_trading_date = get_previous_trading_day(datetime.now().date())
+                logger.info(f"[AegisMain] Identified previous trading session: {prev_trading_date} for {inst_name}")
 
-                # Fallback: derive from seeded 1m bars if available
+                # Priority 1: Fetch Previous Day 5m candles (~75 candles) and seed 5m/15m S/R registry + PDH/PDL/PDC
+                try:
+                    df_5m_prev = fetcher.get_previous_day_5m_candles(spot_exch, spot_token, prev_trading_date)
+                    if df_5m_prev is not None and not df_5m_prev.empty and len(df_5m_prev) >= 3:
+                        candles_5m = df_5m_prev.to_dict(orient="records") if hasattr(df_5m_prev, "to_dict") else []
+                        res_prev = pa_eng.seed_previous_day_5m_bars(candles_5m)
+                        pdh = float(res_prev.get("pdh", 0.0) or 0.0)
+                        pdl = float(res_prev.get("pdl", 0.0) or 0.0)
+                        pdc = float(res_prev.get("pdc", 0.0) or 0.0)
+                        logger.info(
+                            f"[AegisMain] Seeded Previous Day 5m/15m Structural Levels: "
+                            f"{res_prev.get('levels_discovered', 0)} discovered | "
+                            f"PDH={pdh:.2f} | PDL={pdl:.2f} | PDC={pdc:.2f}"
+                        )
+                except Exception as e_p5m:
+                    logger.warning(f"[AegisMain] Previous day 5m seeding warning (non-fatal): {e_p5m}")
+
+                # Priority 2: Fallback to ONE_DAY endpoint if 5m seeding did not establish PDH/PDL
+                if pdh <= 0:
+                    try:
+                        df_day = fetcher.get_historical_candles(spot_exch, spot_token, "ONE_DAY", days_back=5)
+                        if df_day is not None and not df_day.empty and len(df_day) >= 2:
+                            today_str = datetime.now().strftime("%Y-%m-%d")
+                            candles_day = df_day.to_dict(orient="records") if hasattr(df_day, "to_dict") else []
+                            prev_days = []
+                            for r in candles_day:
+                                d_val = str(r.get("date", "") or r.get("time", ""))[:10]
+                                if d_val and d_val < today_str:
+                                    prev_days.append(r)
+                            if prev_days:
+                                last_day = prev_days[-1]
+                                pdh = float(last_day.get("high") or last_day.get("inth") or 0.0)
+                                pdl = float(last_day.get("low") or last_day.get("intl") or 0.0)
+                                pdc = float(last_day.get("close") or last_day.get("intc") or 0.0)
+                    except Exception as e_pd:
+                        logger.debug(f"[AegisMain] Daily candle fetch failed: {e_pd}")
+
+                # Priority 3 Fallback: derive from seeded 1m bars if available
                 if pdh <= 0 and pa_eng and pa_eng.bars_1m:
                     today_d = datetime.now().date()
                     y_bars = [b for b in pa_eng.bars_1m if datetime.fromtimestamp(b.ts_start).date() < today_d]

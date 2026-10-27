@@ -927,13 +927,22 @@ def test_argon_p4_prominence_anti_exhaustion_and_origin_caps():
     3. Bar open origin constraint (within 0.25x ATR of hub)
     4. Close edge >= 0.70
     """
-    from unittest.mock import MagicMock
+    from AEGIS.core.price_action_engine import StructuralLevel
     engine = PriceActionEngine()
-    engine.prominence_stack = MagicMock()
-    engine.prominence_stack.compute_prominence.return_value = 2.5
 
     for i in range(60):
         engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74400.0, 74410.0, 74390.0, 74400.0, volume=100.0))
+
+    engine.session_levels.append(
+        StructuralLevel(
+            level_type="SUPPORT",
+            price=74390.0,
+            ts_created=60.0,
+            prominence=2.5,
+            bar_idx=1,
+            seq_idx=1,
+        )
+    )
 
     # Test 1: Gigantic bar range (> 1.35x ATR) -> Rejected as exhausted
     huge_bar = OHLCBar(3600, 3660, 74400.0, 74440.0, 74365.0, 74370.0, volume=200.0)
@@ -945,12 +954,20 @@ def test_argon_p4_prominence_anti_exhaustion_and_origin_caps():
 
     # Test 2: Overextended displacement from hub (> 1.25x ATR)
     engine2 = PriceActionEngine()
-    engine2.prominence_stack = MagicMock()
-    engine2.prominence_stack.compute_prominence.return_value = 2.5
     for i in range(58):
         engine2._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74400.0, 74415.0, 74385.0, 74400.0, volume=100.0))
     # Hub at T-1 with close = 74430.0
     engine2._on_1m_bar_close(OHLCBar(3540, 3600, 74440.0, 74440.0, 74425.0, 74430.0, volume=100.0))
+    engine2.session_levels.append(
+        StructuralLevel(
+            level_type="SUPPORT",
+            price=74430.0,
+            ts_created=60.0,
+            prominence=2.5,
+            bar_idx=1,
+            seq_idx=1,
+        )
+    )
     # Breakout bar range = 40 pts (<= 1.35 * ATR), but displacement from hub = 60 pts (> 1.25 * ATR)
     overext_bar = OHLCBar(3600, 3660, 74410.0, 74410.0, 74370.0, 74370.0, volume=200.0)
     engine2._on_1m_bar_close(overext_bar)
@@ -968,11 +985,8 @@ def test_argon_p4_day_low_runway_veto_and_breakout_pass():
     - Trade #2 (09:56 candle): Close is only 35.7 pts above Day Low (< 1.25x ATR) -> VETOED!
     - True breakdown below Day Low -> PASSES!
     """
-    from unittest.mock import MagicMock
+    from AEGIS.core.price_action_engine import StructuralLevel
     engine = PriceActionEngine()
-    engine.prominence_stack = MagicMock()
-    engine.prominence_stack.compute_prominence.return_value = 2.5
-
     morning_day_low = 74323.0
     engine._on_1m_bar_close(OHLCBar(0, 60, 74350.0, 74360.0, morning_day_low, 74340.0, volume=100.0))
     for i in range(1, 58):
@@ -981,6 +995,17 @@ def test_argon_p4_day_low_runway_veto_and_breakout_pass():
     # Hub at 74388
     engine._on_1m_bar_close(OHLCBar(3480, 3540, 74388.0, 74395.0, 74380.0, 74388.0, volume=100.0))
     engine._on_1m_bar_close(OHLCBar(3540, 3600, 74388.0, 74390.0, 74380.0, 74385.0, volume=100.0))
+
+    engine.session_levels.append(
+        StructuralLevel(
+            level_type="SUPPORT",
+            price=74388.0,
+            ts_created=60.0,
+            prominence=2.5,
+            bar_idx=1,
+            seq_idx=1,
+        )
+    )
 
     # Setup Bar: closes at 74,358.0 (Distance to Day Low = 35.0 pts < 62.5 pts runway!)
     setup_bar = OHLCBar(3600, 3660, 74385.0, 74385.0, 74355.0, 74358.0, volume=250.0)
@@ -1501,4 +1526,74 @@ def test_fast_monotonic_stack_prominence():
     pi_hat = stack.compute_prominence(prices, target_idx, atr)
     assert pi_hat >= 1.75
     assert pi_hat == pytest.approx(4.0, abs=0.1)
+
+
+def test_5m_and_15m_sr_registry_discovery_and_mode_b_breakthrough():
+    """
+    Verifies that:
+    1. 5-minute structural swing high/low forms and registers in session_levels with timeframe='5m'.
+    2. Mode B mid-bar breakthrough triggers in-flight at T:08s+ when 1m candle surges through the 5m level.
+    3. The 5m level is marked is_broken=True upon execution.
+    """
+    engine = PriceActionEngine(max_history_bars=400)
+    engine.current_atr_1m = 40.0
+
+    # 1. Feed 5m Bar 0 (ts 0 to 300): 5 1m bars hovering 74,200 to 74,250
+    for i in range(5):
+        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74210.0, 74250.0, 74200.0, 74230.0, volume=100.0))
+
+    # 2. Feed 5m Bar 1 (ts 300 to 600): 5 1m bars surging up to peak at 74,350.0 (high=74,350.0)
+    for i in range(5, 10):
+        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74250.0, 74350.0, 74240.0, 74320.0, volume=150.0))
+
+    # 3. Feed 5m Bar 2 (ts 600 to 900): 5 1m bars pulling back to 74,260.0
+    for i in range(10, 15):
+        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74300.0, 74310.0, 74250.0, 74260.0, volume=100.0))
+
+    # Close 5m Bar 2 by starting bar 15 at ts 900.0
+    engine._on_1m_bar_close(OHLCBar(15 * 60, 16 * 60, 74260.0, 74270.0, 74250.0, 74265.0, volume=100.0))
+
+    # 5m swing high at 74,350.0 must be registered in session_levels!
+    resistances = [l for l in engine.session_levels if l.level_type == "RESISTANCE" and abs(l.price - 74350.0) < 2.0]
+    assert len(resistances) == 1
+    r_5m = resistances[0]
+    assert r_5m.timeframe == "5m"
+    assert r_5m.prominence >= 2.0
+    assert r_5m.is_broken is False
+
+    # 4. Now simulate an in-flight 1-minute candle surging above 74,350.0 at T+25s
+    now_sec = 985.0  # ts 960 + 25s (T+25s)
+    engine.last_price = 74360.0
+    engine._curr_1m_bar = OHLCBar(
+        ts_start=960.0,
+        ts_end=1020.0,
+        open=74330.0,
+        high=74360.0,
+        low=74325.0,
+        close=74360.0,
+        volume=250.0,
+        tick_count=10,
+    )
+    engine._curr_1m_bar.tick_count = 10
+    engine._opt_flow_1m["call_buy_vol"] = 2500.0
+    engine._opt_flow_1m["call_sell_vol"] = 500.0
+    engine._opt_flow_1m["put_buy_vol"] = 400.0
+    engine._opt_flow_1m["put_sell_vol"] = 800.0
+    engine.bars_5m[-1].open = 74260.0
+    engine.bars_5m[-1].close = 74355.0
+
+    # First tick: arm / check first tick persistence
+    ok1, reason1, _ = engine.check_mode_b_breakthrough("UP", external_vwap=74300.0, current_time=now_sec)
+    assert ok1 is False
+    assert reason1 == "awaiting_second_tick"
+
+    # Second tick (0.3s later): fires Mode B breakthrough on the 5m resistance!
+    engine._curr_1m_bar.tick_count = 12
+    ok2, reason2, details2 = engine.check_mode_b_breakthrough("UP", external_vwap=74300.0, current_time=now_sec + 0.3)
+    assert ok2 is True
+    assert reason2 == "topological_prominence_breakout"
+    assert details2["boundary_level"] == 74350.0
+    assert details2["mode"] == "MODE_B_INFLIGHT_BREAKTHROUGH"
+    assert r_5m.is_broken is True
+
 
