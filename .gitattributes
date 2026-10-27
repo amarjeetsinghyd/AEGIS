@@ -1,0 +1,10 @@
+# Set default behaviour to automatically normalize line endings to LF
+* text=auto eol=lf
+
+# Explicit binary files
+*.parquet binary
+*.db binary
+*.png binary
+*.jpg binary
+*.xlsx binary
+*.key binary

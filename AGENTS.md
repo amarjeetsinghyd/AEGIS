@@ -261,18 +261,17 @@ Before writing or modifying ANY strategy, gatekeeper, or execution code, every A
 
 ---
 
-## REPOSITORY LAYOUT ENFORCEMENT
+## REPOSITORY LAYOUT & ZERO-ENTROPY HYGIENE ENFORCEMENT
 
-Canonical layout is documented in [`SYSTEM_ARCHITECTURE.md`](SYSTEM_ARCHITECTURE.md) §8.
-Rules every change must uphold:
+> **Zero-Entropy Mandate**: The codebase must remain completely free of transient clutter, scratch files, one-shot diagnostics, and virtual environment leakage. Only core production code, validated unit tests, and canonical configs are committed.
 
-- **No temp / scratch files at repo root.** Scratch goes in `scratch/`. No
-  `temp.json`, `scratch_state.json`, `scratch_state_pretty.json`, or log files
-  at the repo root.
-- **No one-shot debug scripts at repo root.** Diagnostic/ops scripts go in
-  `scripts/`. Scripts that patch a specific trade, a specific installed
-  package on the VPS, or output into a tool's private brain are deprecated
-  one-shots — delete them, do not commit new ones.
+Rules every AI agent and contributor must uphold:
+
+- **Immediate Scratch & Temp Cleanup**: Any diagnostic or scratch script created in `scratch/` or `scripts/` MUST be deleted immediately after its purpose is served. Never leave temporary scripts (`check_*.py`, `patch_*.py`, `test_*.json`, `temp_*`) behind.
+- **No Virtual Environment or Binary Package Tracking**: `venv/`, `.venv/`, `.pytest_cache/`, `*.pyc`, and `.coverage` are permanently ignored via `.gitignore` and must NEVER enter Jujutsu or Git tracking.
+- **No Temp / Scratch Files at Repo Root**: Scratch goes in `scratch/` (which is gitignored). Never place `temp.json`, `scratch_state.json`, or ad-hoc log files at repo root.
+- **No One-Shot Debug Scripts in `scripts/`**: `scripts/` is reserved ONLY for permanent operational tools (e.g. `trace_trade_pipeline.py`). Ad-hoc patch scripts must be executed in `scratch/` and promptly deleted.
+- **Pristine Jujutsu Working Copy**: Before concluding a session, verify that `jj st` shows a zero-entropy state (no stray files, no untracked noise).
 - **SSH key only at repo root** (`Oracle SSH keys/`), never inside an engine dir.
 - **No engine-level `.env` files.** Credentials live ONLY in the root `.env` (locally) or `/home/opc/.env` (VPS). Never place `.env` inside `AEGIS/`, `ARGUS/`, or any engine subdirectory.
 - **Engine files stay in their engine.** A file used by only one engine lives in
