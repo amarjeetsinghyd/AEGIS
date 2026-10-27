@@ -15,7 +15,7 @@
 >    - **Pillar 1**: 20 EMA Pullback & Momentum Rejection (`20_ema_rejection` — `price_action_engine.py`, Bar close T:00s with pre-staged strikes & T:50s early entry).
 >    - **Pillar 2**: Liquidity Sweep & Reclaim (`micro_sweep_reclaim` Priority 1 Dynamic S/R Registry & Day Extreme [PDH/PDL] stop-hunt reclaim + parallel shadow topological sweep).
 >    - **Pillar 3**: Volatility Squeeze to Expansion Breakout (`volatility_squeeze_breakout` — $O(1)$ metric ATR box compression).
->    - **Pillar 4**: 0-D Prominence Hub Structural Breakout (`check_topological_prominence_breakout` via `FastMonotonicStack`, $\hat{\pi} \ge 1.75$, $VR_t \ge 1.4$ Volume Ratio vs 60m median volume, 5m structural trend alignment).
+>    - **Pillar 4**: 0-D Prominence Hub Structural Breakout (`check_topological_prominence_breakout` via Topological Prominence Hub and Dynamic S/R Registry, $\hat{\pi} \ge 1.75$, $VR_t \ge 1.4$ Volume Ratio vs 60m median volume, 5m structural trend alignment).
 > 2. **Absolute Pain Zone VWAP Band Law**: Single unified directional veto before pillars:
 >    - Spot **ABOVE** Upper Band (`zone_top`) $\implies$ **ONLY CALL** trades allowed.
 >    - Spot **BELOW** Lower Band (`zone_bottom`) $\implies$ **ONLY PUT** trades allowed.
@@ -38,7 +38,7 @@
 >      $$\text{CALL SL} = \text{Entry Candle Low} - (0.10 \times \text{ATR})$$
 >      $$\text{PUT SL} = \text{Entry Candle High} + (0.10 \times \text{ATR})$$
 >    - Evaluated strictly against the cash index spot price, fully immunizing trades from option spread widening and order book spoofing.
-> 7. **Composite Conviction Continuous Scoring Law**: Replaces rigid, binary boolean gating with continuous 0–100 dual-profile microstructure scoring (`composite_conviction_engine.py`). Zero-Entropy 40-35-25 model (upstream spot structure retired to 0.0 pts):
+> 7. **Composite Conviction Continuous Scoring Law**: Replaces rigid, binary boolean gating with continuous 0–100 dual-profile microstructure scoring (`option_order_flow.py`). Zero-Entropy 40-35-25 model (upstream spot structure retired to 0.0 pts):
 >    - **Dual-Profile Microstructure**: Evaluates dedicated **Mode B Profile** (Touch Aggression $I_1$ 40 pts, Live Tick Arrival Intensity 35 pts, Spread Tradability 25 pts) for mid-bar breakouts and **Mode A Profile** (Order Book Support & Deep Pressure 40 pts, 30s Option Return Velocity 35 pts, Contract Tradability & Depth 25 pts) for bar-close rejections.
 >    - **Consolidated Microstructure & Circuit Breakers**: `AdaptiveMicroValidator` is 100% merged into `CompositeConvictionEngine` (redundant 60-pt gate eliminated; hard circuit breakers for spread blowout > 2.5%, ghost book < 200 depth, severe dump < -1.5% embedded).
 >    - $\ge 85.0$: Admitted as `FULL_SIZE` (2 Lots, +4.0% Maker TP, +3.0% Friday).
@@ -62,12 +62,12 @@ flowchart TD
     subgraph Ingestion ["1. Data Ingestion & Pre-Warming"]
         WS["Shoonya WebSocket<br/>(L1 + 5-Level Depth)"] --> TC["TickCompiler (Zero-Copy ParsedTick Pool)"]
         REST["Shoonya REST API<br/>(09:14 AM Pre-Market)"] --> SEED["seed_historical_bars()<br/>20 EMA, 50 EMA, ATR(14), VWAP"]
-        TC --> AGE["AegisGammaEngine.on_tick_parsed()"]
+        TC --> APO["AegisPipelineOrchestrator.on_tick_parsed()"]
         SEED -.-> PAE["PriceActionEngine (core/price_action_engine.py)"]
     end
 
     subgraph Spot_Processing ["2. Cash Index Spot Path"]
-        AGE -->|Underlying Tick| SPOT["_on_underlying_tick()"]
+        APO -->|Underlying Tick| SPOT["_on_underlying_tick()"]
         SPOT --> BAD["Bad-Tick Guard<br/>(Drop >0.5% spike, 60s re-sync)"]
         BAD --> PAE
         BAD --> PERS["DirectionalPersistenceEngine<br/>(5s Snapshots: 20 EMA slope + drift)"]
@@ -76,7 +76,7 @@ flowchart TD
     end
 
     subgraph Primary_Trigger ["3. Macro Price Action Primary Trigger (PriceActionEngine)"]
-        AGE -->|Option Tick| BAND{"Absolute Pain Zone Band Veto V4.1 (Tick-Top)<br/>(Above zone_top=CALL only, Below zone_bottom=PUT only, Inside=discard)"}
+        APO -->|Option Tick| BAND{"Absolute Pain Zone Band Veto V4.1 (Tick-Top)<br/>(Above zone_top=CALL only, Below zone_bottom=PUT only, Inside=discard)"}
         BAND -->|Blocked| DROP["Instant Discard & Purge<br/>(return None)"]
         BAND -->|Passed| PA_CHECK{"Price Action Setup?<br/>(evaluate_setup)"}
         PA_CHECK -->|No Setup| DROP
@@ -181,23 +181,21 @@ All active non-archive modules within `AEGIS/` mapped with exact lines, responsi
 | Module Path | Primary Responsibility | Key Classes & Functions |
 |---|---|---|
 | `AEGIS/aegis_main.py` | Process orchestrator, PM2 entry, 09:14 AM seeding, 1-min ATM shift, IPC state | `main()`, `build_minute_digest()`, `attach_aegis_archiver()` |
-| `AEGIS/aegis_gamma_engine.py` | Central brain, tick router, rolling L2 depth deque, Wyckoff parallel gate, conviction wiring, shadow ML router | `AegisGammaEngine`, `create_aegis_engine()`, `on_tick_parsed()` |
-| `AEGIS/aegis_execution_manager.py` | Execution daemon, order routing, strict 1-lot maker TP (+4.0%), pre-trade rollback, 15:08 CAS flatten | `AegisExecutionManager`, `_manage_open_trade()`, `_rollback_slot()`, `_chase_exit_thread()` |
-| `AEGIS/core/price_action_engine.py` | **Primary Macro Trigger**: 1m OHLC bars, 20/50/200 EMA, ATR(14), Pain Zone band single source (`get_pain_zone_vwaps()` → zone_top / zone_bottom), Priority Mode B Mid-Bar In-Flight Breakthrough (`check_mode_b_breakthrough`), Mode A Pierce (`check_mode_a_pierce`), 4 active pillars (P1 20 EMA, P2 Liquidity Sweep, P3 Vol Squeeze, P4 0-D Prominence Hub Breakout) | `PriceActionEngine`, `evaluate_setup()`, `check_mode_b_breakthrough()`, `check_mode_a_pierce()`, `check_20_ema_rejection()`, `check_micro_sweep_reclaim()`, `check_topological_prominence_breakout()` |
+| `AEGIS/core/aegis_pipeline_orchestrator.py` | Central brain, master L2 tick router, 6-gate pipeline orchestrator, shadow observer router | `AegisPipelineOrchestrator`, `create_aegis_engine()`, `on_tick_parsed()` |
+| `AEGIS/execution/aegis_execution_manager.py` | Execution daemon, order routing, strict 1-lot maker TP (+4.0%), pre-trade rollback, 15:08 CAS flatten | `AegisExecutionManager`, `_manage_open_trade()`, `_rollback_slot()`, `_chase_exit_thread()` |
+| `AEGIS/core/price_action_engine.py` | **Primary Macro Trigger**: Single source of truth for 1m/5m/15m OHLC candle aggregation, 20/50 EMA, ATR(14), Priority Mode B Mid-Bar In-Flight Breakthrough (`check_mode_b_breakthrough`), Mode A Pierce (`check_mode_a_pierce`), 4 active pillars (P1 20 EMA, P2 Liquidity Sweep, P3 Vol Squeeze, P4 Topological S/R Prominence Breakout) | `PriceActionEngine`, `evaluate_setup()`, `check_mode_b_breakthrough()`, `check_mode_a_pierce()`, `check_20_ema_rejection()`, `check_micro_sweep_reclaim()` |
+| `AEGIS/core/structural_registry.py` | **Dynamic S/R Level Registry**: Monotonic `seq_idx` tracking, 5m historical candle clustering, role classification (`OUTERMOST_ROOF`, `INTERIOR_CLUSTER`), multi-touch boost | `StructuralRegistryMixin`, `StructuralLevel`, `update_structural_levels_on_bar()` |
+| `AEGIS/core/dow_macro_shields.py` | **Dow Theory & Macro Obstacle Shields**: 4-point HL2/LH2 sequence, 20 EMA High/Low bands, Day Extreme Runway Shield (`min_runway_pts`), Obstacle Wall Shield | `DowMacroShieldsMixin`, `DowStructureChain`, `_check_day_extreme_runway()` |
+| `AEGIS/core/option_order_flow.py` | **Option Order Flow, Microstructure & Conviction Gatekeeper**: Consolidated tape reading (ATM $\pm 25$ strikes, PCR, OFI delta, Pain Zone VWAP), contract L1-L5 depth (`MicrostructureScorer`), and continuous 0–100 conviction scoring (`CompositeConvictionEngine`, 40-35-25 model, $\ge 80.0$) | `OptionOrderFlowMixin`, `MicrostructureScorer`, `CompositeConvictionEngine`, `ConvictionResult` |
 | `AEGIS/core/wyckoff_volume_engine.py` | **Wyckoff Volume & Delta Gate**: Effort vs Result, Volume Dry-Up Ratio (VDR), Absorption pin wick, Delta Harmony (Call Buy vs Put Buy) | `WyckoffVolumeEngine`, `evaluate()` |
-| `AEGIS/core/composite_conviction_engine.py` | **Continuous 0–100 Dual-Profile Evaluator & Consolidated Microstructure Gate**: Zero-entropy 40-35-25 model (upstream spot structure retired to 0.0 pts as verified by PA). Mode B Profile (Touch Aggression $I_1$ 40 pts, Live Tick Rate 35 pts, Spread 25 pts) & Mode A Profile (Order Book Support & Deep Pressure 40 pts, 30s Option Return 35 pts, Depth 25 pts). Embedded hard circuit breakers (spread blowout > 2.5%, ghost book < 200, severe dump < -1.5%). `AdaptiveMicroValidator` 100% merged. Thresholds: $\ge 80.0 \to 1\text{ Lot}$, $\ge 85.0 \to 2\text{ Lots}$, $< 80.0 \to \text{Blocked}$. | `CompositeConvictionEngine`, `AdaptiveMicroValidator`, `ConvictionResult`, `compute_conviction_score()` |
-| `AEGIS/core/quality_stack.py` | **Institutional 3-Slot Daily Policy**: Full-day agile sizing (14:45 lockout removed), dynamic score hurdle, stability tracker | `QualitySlotPolicy`, `PostTriggerStabilityTracker` |
 | `AEGIS/core/index_vwap_engine.py` | Constituent-volume weighted index VWAP poller and structural proximity gate | `IndexVWAPEngine`, `get_vwap_metrics()` |
-| `AEGIS/core/oi_builtup_gate.py` | Passive Open Interest wall snapshot telemetry & depth profiling; live entry blocking kinematics veto decommissioned 2026-10-27 (NSE publishes OI every 3m, not tick-by-tick) | `OIBuiltupGate`, `update_tick()`, `get_wall_snapshot()` |
-| `AEGIS/core/directional_persistence.py` | Rolling 60s directional persistence tracking; live spot tick-counting veto decommissioned 2026-10-27 (redundant with `PriceActionEngine` candle geometry) | `DirectionalPersistenceEngine`, `evaluate_persistence()` |
-| `AEGIS/core/microstructure_scorer.py` | Empirical 0-100 logit model, 15 features, $T$-anchored micro-acceleration & raw tick buffer history | `MicrostructureScorer`, `compute_score()` |
 | `AEGIS/core/instrument_repository.py` | SQLite WAL cache for instrument metadata and nearest-expiry resolution | `InstrumentRepository`, `resolve_weekly_options()` |
 | `AEGIS/core/outcome_telemetry.py` | Forward outcome tracking (30s, 60s, 180s, 300s MFE/MAE) with JSONL persistence | `OutcomeTelemetryEngine`, `register_entry()` |
 | `AEGIS/core/option_quality.py` | Option contract tradability filter (spread, top-5 depth, premium limits) | `OptionQualityEngine`, `qualify_option()` |
 | `AEGIS/core/shadow_boundary_observer.py` | **Autonomous Shadow Boundary Observer**: Zero-capital empirical paper-trader tracking First-Touch Pain Zone and 200 EMA rejections on OTM 5 strikes with 30s/60s/300s telemetry | `ShadowBoundaryObserver`, `on_1m_bar_close()`, `on_option_tick()` |
 | `AEGIS/config/settings.py` | Configuration binding for AEGIS runtime (`DATA_DIR=AEGIS/data`, `LOGS_DIR=AEGIS/logs`) | `get_runtime_paths("aegis")` |
 
-> **Decommissioned & Archived (2026-10, `AEGIS/_archive/decommissioned_2026-10/`):** `top5_depth_guard` (redundant BBO micro-guard eliminated 2026-10-27; false INVALID_QUOTES on trade ticks cut), `oi_kinematics live veto` (NSE 3m polling latency eliminated from entry path 2026-10-27), `directional_persistence tick veto` (redundant with candle geometry eliminated 2026-10-27), `adaptive_micro_validator.py` (merged into `composite_conviction_engine.py`), `hvg_engine.py` (live 5m stealth veto eliminated), `ml_gatekeeper.py`, `catboost_paper_trader.py`, `time_bar_engine.py`, `signal_state_machine.py`, `regime_chop_gate.py`, `entry_quality_engine.py`, `oi_quotes_poller.py`, `volume_profile_engine.py`, `shadow_quant_tracker.py`, `causal_microstructure_pipeline.py` — ~10,000 lines of dead weight removed. Post-debloat core: `price_action_engine.py` 3,847 lines, `aegis_gamma_engine.py` 1,796 lines, `aegis_execution_manager.py` 2,518 lines.
+> **Decommissioned & Archived (2026-10, `AEGIS/_archive/decommissioned_2026-10/`):** `aegis_gamma_engine.py` (purged; superseded by `aegis_pipeline_orchestrator.py`), `composite_conviction_engine.py` & `microstructure_scorer.py` (purged; consolidated into `option_order_flow.py`), `FastMonotonicStack` & `legacy_bar_close_setups.py` (purged), `top5_depth_guard`, `oi_kinematics live veto`, `directional_persistence tick veto`, `adaptive_micro_validator.py`, `hvg_engine.py`, `ml_gatekeeper.py`, `catboost_paper_trader.py`, `time_bar_engine.py`, `signal_state_machine.py`, `regime_chop_gate.py`, `entry_quality_engine.py`, `oi_quotes_poller.py`, `volume_profile_engine.py`, `shadow_quant_tracker.py`, `causal_microstructure_pipeline.py`. Post-modularization core: `price_action_engine.py` 2,332 lines, `aegis_pipeline_orchestrator.py` 1,704 lines, `option_order_flow.py` 1,254 lines, `structural_registry.py` 913 lines, `dow_macro_shields.py` 572 lines.
 
 ---
 
@@ -244,7 +242,7 @@ A pure-Python, sub-5-microsecond gate wired **in parallel with Price Action trig
 
 ---
 
-## Deep-Dive: Composite Conviction Engine & Dual-Profile Microstructure Gate (`AEGIS/core/composite_conviction_engine.py`)
+## Deep-Dive: Composite Conviction Engine & Dual-Profile Microstructure Gate (`AEGIS/core/option_order_flow.py`)
 
 A pure-Python, zero-allocation microsecond engine executing continuous 0–100 institutional conviction scoring and consolidating raw tick-buffer extraction and sanity circuit breakers.
 
@@ -392,8 +390,8 @@ AEGIS employs a **Hybrid Intra-Bar Execution Architecture**:
   - Scale-invariant clearance requirement:
     $$\text{min\_runway\_pts} = \max(1.25 \times \text{ATR}_{1m}, 0.0008 \times \text{Spot})$$
   - Rejects CALL entries within `min_runway_pts` of Day High / PDH, and PUT entries within `min_runway_pts` of Day Low / PDL.
-- **Priority 2: T-2 0-D Prominence Hub (`FastMonotonicStack`)**:
-  - Anchor identified via `FastMonotonicStack` with prominence ratio $\hat{\pi} \ge 1.75$.
+- **Priority 2: T-2 0-D Prominence Hub Breakout**:
+  - Topological anchor identified with prominence ratio $\hat{\pi} \ge 1.75$ (`FastMonotonicStack` purged).
   - Volume Ratio Gate: Current volume $VR_t \ge 1.4\times$ rolling 60-minute median volume.
   - Wyckoff Stopping Volume Veto: Opposing institutional delta swamping ($> 2.2\times$) triggers instant discard.
   - Note: `hvg_network_phase_shift` is strictly `SHADOW_ONLY`.

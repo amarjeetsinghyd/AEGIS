@@ -95,7 +95,7 @@ Shared library: `common/` (broker / execution / market / ipc / runtime / config 
 * **Pillar 1 (`20_ema_rejection`)**: Classical Dow Theory `HL2` (CALL) / `LH2` (PUT) 2nd-touch confirmation into 20 EMA High-Low Band + Mode A execution.
 * **Pillar 2 (`micro_sweep_reclaim`)**: Priority 1 Dynamic S/R Registry & Day Extreme (PDH/PDL) Liquidity Sweep & Reclaim (eliminates random 5-bar noise) + Mode A execution (with 11:15–13:00 IST Lunch Chop Veto).
 * **Pillar 3 (`volatility_squeeze_breakout`)**: 3–4 bar tight box (`<= 1.25x ATR`) expansion breakout + Mode B In-Flight Surge (`T:08s onwards / No Upper Cap`) + Anti-Climax Cap (`<= 1.35x ATR`).
-* **Pillar 4 (`topological_prominence_breakout`)**: Priority 1 Dynamic S/R Registry Breakout + Priority 2 `T-2` 0-D Prominence Hub (`FastMonotonicStack`), governed by Mode B In-Flight Surge, Day Extreme Runway Rule, and Wyckoff Stopping Volume Veto (`hvg_engine` and its 5m structural veto are permanently DECOMMISSIONED & ARCHIVED).
+* **Pillar 4 (`topological_prominence_breakout`)**: Priority 1 Dynamic S/R Registry Breakout + Priority 2 Topological Prominence Hub, governed by Mode B In-Flight Surge, Day Extreme Runway Rule, and Wyckoff Stopping Volume Veto (`FastMonotonicStack`, `hvg_engine` and its 5m structural veto are permanently DECOMMISSIONED & ARCHIVED).
 * **Priority Mode B (`check_mode_b_breakthrough`)**: Mid-bar entry from `T:08s onwards (No Upper Cap)` on sweet-spot range (`0.35x–1.20x ATR`), body $\ge 65\%$, leading wick $\le 0.05 \times \text{ATR}$, 2-tick boundary persistence, and live `_opt_flow_1m` delta $\ge 1.30\times$ (or spot tick rate $\ge 1.5$ ticks/sec). Enters ahead of retail, filling resting +4.0% Maker TP (+3.0% on Friday) before or as candle closes.
 
 ### 2. Absolute Pain Zone VWAP Band (v1.0 Production Early Veto)
@@ -128,17 +128,22 @@ Shared library: `common/` (broker / execution / market / ipc / runtime / config 
 * **EOD CAS Flush**: 15:08:00 IST force flattens all open inventory.
 
 ### 6. Component Operational State (Live vs Shadow vs Decommissioned)
-* **LIVE**: 4 Price Action Pillars, Absolute Pain Zone Band, Wyckoff Volume & OFI Delta Gate, Composite Conviction Engine ($\ge 80$, unified microstructure scorer), Adaptive Exits, StrikeSelector, Futures Basis & Lead-Lag Tracking, OIBuiltupGate & OI Kinematics Veto, MicrostructureScorer.
+* **LIVE**:
+  - `AegisPipelineOrchestrator` (`aegis_pipeline_orchestrator.py`): Central brain, Shoonya L2 tick router, 6-gate pipeline orchestrator.
+  - `PriceActionEngine` (`price_action_engine.py`): Single source of truth for 1m/5m/15m OHLC candle construction and 4 Macro Price Action Pillars + Mode B In-Flight Surge.
+  - `StructuralRegistryMixin` (`structural_registry.py`): Monotonic S/R registry, 5m candle clustering, role classification (`OUTERMOST_ROOF`, `INTERIOR_CLUSTER`).
+  - `DowMacroShieldsMixin` (`dow_macro_shields.py`): Classical Dow Theory HL2/LH2 sequence, 20 EMA high/low bands, Day Extreme Runway Shield, Obstacle Wall Shield.
+  - `OptionOrderFlowMixin`, `MicrostructureScorer`, `CompositeConvictionEngine` (`option_order_flow.py`): Unified tape reading (ATM $\pm 25$ flow, PCR, OFI Delta, Pain Zone VWAP), contract L1-L5 depth, continuous conviction gatekeeper ($\ge 80.0$).
+  - `WyckoffVolumeEngine` (`wyckoff_volume_engine.py`): Volume dry-up (VDR), absorption pin wick, delta harmony gate.
+  - `AdaptiveExits` (`aegis_execution_manager.py`): Universal Spot Invalidation, near-target profit lock (+3.5% trigger, 0.8% pullback), 1-lot resting Maker TP (+4.0% Mon–Thu, +3.0% Fri).
 * **SHADOW**: Single active shadow observer: `ShadowBoundaryObserver` (Absolute Pain Zone & 200 EMA breakout analytics).
 * **DECOMMISSIONED & ARCHIVED (`AEGIS/_archive/decommissioned_2026-10/`)**:
-  - `adaptive_micro_validator.py`: Merged into `composite_conviction_engine.py` and archived (zero-entropy consolidation).
-  - `hvg_engine.py`: Decommissioned and archived (its live 5m stealth veto `check_5m_structural_alignment` in `_check_structural_obstacle` permanently eliminated).
-  - `volume_profile_engine.py`: Decommissioned and archived.
-  - `shadow_quant_tracker.py`: Decommissioned and archived.
-  - `ml_gatekeeper.py` & `catboost_paper_trader.py`: Decommissioned and archived (Kyle's Lambda inactive).
-  - `causal_microstructure_pipeline.py`: Decommissioned and archived.
-  - `time_bar_engine.py`: Decommissioned and archived (fully integrated into `price_action_engine.py`).
-  - `signal_state_machine.py`, `regime_chop_gate.py`, `entry_quality_engine.py`, `oi_quotes_poller.py`: Decommissioned and archived.
+  - `aegis_gamma_engine.py`: Permanently purged; superseded by `aegis_pipeline_orchestrator.py` (`AegisPipelineOrchestrator`).
+  - `composite_conviction_engine.py` & `microstructure_scorer.py`: Standalone files purged; unified into `option_order_flow.py`.
+  - `FastMonotonicStack` & `legacy_bar_close_setups.py`: Decommissioned and completely deleted.
+  - `adaptive_micro_validator.py`: Merged into conviction engine and archived.
+  - `hvg_engine.py`: Decommissioned and archived.
+  - `volume_profile_engine.py`, `shadow_quant_tracker.py`, `ml_gatekeeper.py`, `catboost_paper_trader.py`, `causal_microstructure_pipeline.py`, `time_bar_engine.py`, `signal_state_machine.py`, `regime_chop_gate.py`, `entry_quality_engine.py`, `oi_quotes_poller.py`: Decommissioned and archived.
   - Gemini 3.8 / `ai_shadow_reviewer.py`: Deleted. Kronos: Shut down.
 
 ### 7. Trading Calendar & Weekly Engine Schedule

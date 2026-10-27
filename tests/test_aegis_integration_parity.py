@@ -1,7 +1,7 @@
 """
 tests/test_aegis_integration_parity.py — Mathematical & Production Execution Parity Verification.
 
-Runs the complete production AegisGammaEngine against real Level 2 Parquet tick data
+Runs the complete production AegisPipelineOrchestrator against real Level 2 Parquet tick data
 downloaded from the live Shoonya WebSocket seam.
 
 Verifies:
@@ -25,7 +25,7 @@ if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
 from AEGIS.backtest_engine import AegisParquetBacktester, ParquetTickAdapter
-from AEGIS.aegis_gamma_engine import AegisGammaEngine
+from AEGIS.aegis_pipeline_orchestrator import AegisPipelineOrchestrator
 
 
 class TestAegisIntegrationParity:
@@ -77,7 +77,7 @@ class TestAegisIntegrationParity:
     @pytest.mark.slow
     def test_aegis_full_replay_execution_parity(self, backtester):
         """
-        Executes full chronological replay of 180,000+ real ticks through AegisGammaEngine.
+        Executes full chronological replay of 180,000+ real ticks through AegisPipelineOrchestrator.
         Asserts zero crashes, high throughput, and positive forward MFE.
         """
         results = backtester.run()

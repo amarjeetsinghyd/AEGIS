@@ -332,8 +332,8 @@ def test_entry_exception_clears_trade_context():
 
 def test_stale_spot_history_returns_zero_drift():
     """Verify that get_spot_drift and get_spot_drift_bps return 0.0 when spot feed is older than 60s."""
-    from AEGIS.aegis_gamma_engine import AegisGammaEngine
-    engine = AegisGammaEngine(
+    from AEGIS.aegis_pipeline_orchestrator import AegisPipelineOrchestrator
+    engine = AegisPipelineOrchestrator(
         token_to_symbol={"26000": "NIFTY"},
         token_map={"26000": {"side": 0, "strike": 0.0, "is_index": True}},
         strike_step=50.0,

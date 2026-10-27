@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased] - 2026-10-27 (Zero-Entropy Core Modularization, AegisPipelineOrchestrator Elevation & Pure Tape-Reading Consolidation)
+
+### Architectural Restructuring & Consolidation
+- **`AegisGammaEngine` Permanently Purged & Replaced by `AegisPipelineOrchestrator`** (`AEGIS/core/aegis_pipeline_orchestrator.py`):
+  - Completely erased legacy `aegis_gamma_engine.py` file, class `AegisGammaEngine`, and all backward-compatibility facade re-exports and aliases across the entire repository.
+  - Formally established `AegisPipelineOrchestrator` as the sole master conductor for Shoonya L2 market data ingestion, spot vs option tick distribution, 6-gate pipeline synchronization, and execution dispatch.
+  - Purged all dead attributes (`gamma_tensor`, `primed_strikes`, `required_bursts`, `v4_futures_buffer`, etc.) from the orchestrator.
+- **Decomposition of Monolithic `PriceActionEngine` into Modular Mixins** (`AEGIS/core/price_action_engine.py`):
+  - Streamlined `price_action_engine.py` from 4,118 lines to 2,332 lines while retaining its role as the single source of truth for 1m/5m/15m OHLC candle construction and 4 Macro Price Action Pillars + Priority Mode B Mid-Bar Breakthrough.
+  - **Dynamic S/R Registry Extraction** (`AEGIS/core/structural_registry.py`):
+    - Encapsulated `StructuralRegistryMixin`, `StructuralLevel` dataclass, 5m historical candle seeding, cluster merging, and level role classification (`OUTERMOST_ROOF`, `INTERIOR_CLUSTER`) with monotonic `seq_idx` tracking.
+  - **Dow Theory & Macro Obstacle Shields Extraction** (`AEGIS/core/dow_macro_shields.py`):
+    - Encapsulated `DowMacroShieldsMixin`, `DowStructureChain` dataclass, classical 4-point HL2/LH2 sequence, 20 EMA High/Low bands, Day Extreme Runway Shield (`min_runway_pts`), and Obstacle Wall Shield.
+  - **Unified Order Flow, Microstructure & Conviction Engine** (`AEGIS/core/option_order_flow.py`):
+    - Consolidated `OptionOrderFlowMixin` (ATM $\pm 25$ strikes tape reading, PCR, OFI Delta, Pain Zone VWAP), contract L1-L5 depth (`MicrostructureScorer`), and continuous 0–100 conviction scoring (`CompositeConvictionEngine`, `ConvictionResult`, 40-35-25 model) into a unified module.
+    - Permanently purged standalone `composite_conviction_engine.py` and `microstructure_scorer.py` files.
+- **Purge of Dead Code & Legacy Setups**:
+  - Permanently excised `FastMonotonicStack` from `price_action_engine.py` and unit tests.
+  - Permanently excised `LegacyBarCloseSetupsMixin` and `legacy_bar_close_setups.py` along with 12 obsolete closed-bar breakout unit tests.
+- **Verification**:
+  - Full pytest test suite executed: **211 passed, 4 skipped in 17.23s** across the entire repository with 0 errors and 0 failures.
+
 ## [Unreleased] - 2026-10-27 (50-Trade Quantitative Milestone, Zero-Futures Architecture, Event-Driven Broker Capital & Data Integrity Shield)
 
 ### Milestone

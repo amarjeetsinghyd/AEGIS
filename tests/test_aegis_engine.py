@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from AEGIS.aegis_gamma_engine import AegisGammaEngine, create_aegis_engine
+from AEGIS.aegis_pipeline_orchestrator import AegisPipelineOrchestrator, create_aegis_engine
 from common.execution.strike_selector import StrikeSelector
 
 
@@ -189,7 +189,7 @@ def test_delta_inflection_veto_on_flip_against_up():
     """Buyers (+I1) flipping to sellers (-I1) vetoes an UP entry."""
     rows = [(float(i), 10.0, 10.0, 10.1, 800.0, 200.0) for i in range(6)]
     rows += [(float(i + 6), 10.0, 10.0, 10.1, 200.0, 800.0) for i in range(6)]
-    vetoed, detail = AegisGammaEngine._delta_inflection_check(_stub_with_history(rows), "SYM", "UP")
+    vetoed, detail = AegisPipelineOrchestrator._delta_inflection_check(_stub_with_history(rows), "SYM", "UP")
     assert vetoed
     assert "flip" in detail
 
@@ -197,14 +197,14 @@ def test_delta_inflection_veto_on_flip_against_up():
 def test_delta_inflection_no_veto_when_aligned():
     """Consistent buyer aggression never vetoes an UP entry."""
     rows = [(float(i), 10.0, 10.0, 10.1, 800.0, 200.0) for i in range(12)]
-    vetoed, _ = AegisGammaEngine._delta_inflection_check(_stub_with_history(rows), "SYM", "UP")
+    vetoed, _ = AegisPipelineOrchestrator._delta_inflection_check(_stub_with_history(rows), "SYM", "UP")
     assert not vetoed
 
 
 def test_delta_inflection_fail_open_on_sparse_history():
     """Fewer than 6 ticks => fail-open, never a veto."""
     rows = [(float(i), 10.0, 10.0, 10.1, 800.0, 200.0) for i in range(3)]
-    vetoed, detail = AegisGammaEngine._delta_inflection_check(_stub_with_history(rows), "SYM", "DOWN")
+    vetoed, detail = AegisPipelineOrchestrator._delta_inflection_check(_stub_with_history(rows), "SYM", "DOWN")
     assert not vetoed
     assert detail == "insufficient_history"
 
@@ -216,7 +216,7 @@ def test_delta_inflection_propagates_direction_wide():
     flip_rows = [(float(i), 10.0, 10.0, 10.1, 800.0, 200.0) for i in range(6)]
     flip_rows += [(float(i + 6), 10.0, 10.0, 10.1, 200.0, 800.0) for i in range(6)]
     stub_a = _stub_with_history(flip_rows)
-    vetoed_a, detail_a = AegisGammaEngine._delta_inflection_check(stub_a, "SYM", "UP")
+    vetoed_a, detail_a = AegisPipelineOrchestrator._delta_inflection_check(stub_a, "SYM", "UP")
     assert vetoed_a
     assert "flip" in detail_a
 
@@ -226,7 +226,7 @@ def test_delta_inflection_propagates_direction_wide():
     stub_b = _stub_with_history(aligned_rows)
     stub_b._spot_inflection_veto_until = stub_a._spot_inflection_veto_until
     import time as _time
-    vetoed_b, detail_b = AegisGammaEngine._delta_inflection_check(stub_b, "SYM", "UP", _time.time())
+    vetoed_b, detail_b = AegisPipelineOrchestrator._delta_inflection_check(stub_b, "SYM", "UP", _time.time())
     assert vetoed_b
     assert "trap window" in detail_b
 
@@ -238,7 +238,7 @@ def test_delta_inflection_trap_window_expires():
     flip_rows = [(float(i), 10.0, 10.0, 10.1, 800.0, 200.0) for i in range(6)]
     flip_rows += [(float(i + 6), 10.0, 10.0, 10.1, 200.0, 800.0) for i in range(6)]
     stub_a = _stub_with_history(flip_rows)
-    vetoed_a, _ = AegisGammaEngine._delta_inflection_check(stub_a, "SYM", "UP")
+    vetoed_a, _ = AegisPipelineOrchestrator._delta_inflection_check(stub_a, "SYM", "UP")
     assert vetoed_a
 
     now = _time.time()
@@ -247,5 +247,5 @@ def test_delta_inflection_trap_window_expires():
     aligned_rows = [(float(i), 10.0, 10.0, 10.1, 800.0, 200.0) for i in range(12)]
     stub_b = _stub_with_history(aligned_rows)
     stub_b._spot_inflection_veto_until = stub_a._spot_inflection_veto_until
-    vetoed_b, detail_b = AegisGammaEngine._delta_inflection_check(stub_b, "SYM", "UP", now)
+    vetoed_b, detail_b = AegisPipelineOrchestrator._delta_inflection_check(stub_b, "SYM", "UP", now)
     assert not vetoed_b

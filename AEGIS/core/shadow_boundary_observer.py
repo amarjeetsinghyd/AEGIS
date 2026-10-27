@@ -115,7 +115,7 @@ class ShadowBoundaryObserver:
         self._mode_b_up_ticks: int = 0
         self._mode_b_down_ticks: int = 0
         
-        # References populated by AegisGammaEngine
+        # References populated by AegisPipelineOrchestrator
         self.option_cache: Dict[str, float] = {}
         self.strike_to_symbol: Dict[Tuple[int, float], str] = {}
         self.current_atm_strike: float = 0.0

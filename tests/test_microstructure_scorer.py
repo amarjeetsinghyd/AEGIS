@@ -2,7 +2,7 @@ import os
 import time
 import pytest
 import numpy as np
-from AEGIS.core.microstructure_scorer import MicrostructureScorer
+from AEGIS.core.option_order_flow import MicrostructureScorer
 
 class TestMicrostructureScorer:
     def test_initialization(self):

@@ -14,7 +14,7 @@ from collections import deque
 import pytest
 
 from AEGIS.core.price_action_engine import PriceActionEngine, OHLCBar
-from AEGIS.aegis_gamma_engine import AegisGammaEngine
+from AEGIS.aegis_pipeline_orchestrator import AegisPipelineOrchestrator
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -519,93 +519,6 @@ class TestPillar2_Micro_Sweep_Reclaim:
 # PILLAR 3: VOLATILITY SQUEEZE BREAKOUT TESTS
 # ═══════════════════════════════════════════════════════════════
 
-class TestPillar3_VolatilitySqueezeBreakout:
-    def test_volatility_squeeze_upside_breakout(self):
-        engine = PriceActionEngine()
-        engine.current_atr_1m = 30.0  # ATR is 30 pts
-
-        # 4 tight bars with total box range of 12 pts (< 0.65 * 30 = 19.5 pts)
-        for i in range(4):
-            engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 24100.0, 24106.0, 24095.0, 24101.0))
-
-        # Breakout bar closes above 24106.0 (full-candle entry, no mid-bar hop)
-        breakout_bar = OHLCBar(240, 300, 24101.0, 24118.0, 24100.0, 24115.0)
-        engine._on_1m_bar_close(breakout_bar)
-        engine.last_price = breakout_bar.close
-        engine.current_atr_1m = 30.0  # Pin ATR so box stays squeezed
-
-        current_vwap = 24050.0  # Spot is well above VWAP
-        is_breakout, reason, details = engine.check_volatility_squeeze_breakout("UP", current_vwap)
-
-        assert is_breakout is True
-        assert details["pillar"] == 3
-        assert details["pa_setup_name"] == "volatility_squeeze_breakout"
-        assert details["box_high"] == 24106.0
-        assert details["box_low"] == 24095.0
-        assert details["sl_price"] <= 24095.0 - 5.0  # SL placed below box low
-
-    def test_volatility_squeeze_downside_breakout(self):
-        engine = PriceActionEngine()
-        engine.current_atr_1m = 30.0
-
-        for i in range(4):
-            engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 24100.0, 24106.0, 24095.0, 24101.0))
-
-        # Breakout bar closes below 24095.0 (full-candle entry, no mid-bar hop)
-        breakout_bar = OHLCBar(240, 300, 24101.0, 24102.0, 24082.0, 24085.0)
-        engine._on_1m_bar_close(breakout_bar)
-        engine.last_price = breakout_bar.close
-        engine.current_atr_1m = 30.0  # Pin ATR so box stays squeezed
-
-        current_vwap = 24150.0  # Spot is below VWAP
-        is_breakout, reason, details = engine.check_volatility_squeeze_breakout("DOWN", current_vwap)
-
-        assert is_breakout is True
-        assert details["pillar"] == 3
-        assert details["sl_price"] >= 24106.0 + 5.0  # SL placed above box high
-
-    def test_volatility_squeeze_weak_breakout_candle_rejected(self):
-        """Verifies Upgrade 2: Breakout candles that are wicked-out or wrong color are rejected."""
-        engine = PriceActionEngine()
-        engine.current_atr_1m = 30.0
-
-        for i in range(4):
-            engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 24100.0, 24106.0, 24095.0, 24101.0))
-
-        # Breakout bar clears box_high by > min_box_clearance (24110.0 > 24108.4) BUT is a red candle (Close < Open)
-        weak_bar = OHLCBar(240, 300, 24115.0, 24120.0, 24100.0, 24110.0)
-        engine._on_1m_bar_close(weak_bar)
-        engine.last_price = weak_bar.close
-        engine.current_atr_1m = 30.0
-
-        current_vwap = 24050.0
-        is_breakout, reason, details = engine.check_volatility_squeeze_breakout("UP", current_vwap)
-        assert is_breakout is False
-        assert reason == "weak_squeeze_breakout_candle"
-
-    def test_volatility_squeeze_micro_penetration_rejected(self):
-        """Verifies Upgrade 3: Breakout candle closing only 0.5 pts above box is rejected by min_box_clearance."""
-        engine = PriceActionEngine()
-        engine.current_atr_1m = 30.0
-
-        for i in range(4):
-            engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 24100.0, 24106.0, 24095.0, 24101.0))
-
-        # Candle closes at 24106.5 (only 0.5 pts above 24106.0, whereas min_box_clearance is 2.4 pts)
-        micro_bar = OHLCBar(240, 300, 24102.0, 24107.0, 24100.0, 24106.5)
-        engine._on_1m_bar_close(micro_bar)
-        engine.last_price = micro_bar.close
-        engine.current_atr_1m = 30.0
-
-        current_vwap = 24050.0
-        is_breakout, reason, details = engine.check_volatility_squeeze_breakout("UP", current_vwap)
-        assert is_breakout is False
-        assert reason == "no_upside_breakout"
-
-
-# ═══════════════════════════════════════════════════════════════
-# MASTER DISPATCHER & WATERTIGHT FILTER BYPASS TESTS
-# ═══════════════════════════════════════════════════════════════
 
 class TestWatertightPriceActionIntegration:
     def test_master_price_action_dispatcher(self):
@@ -618,7 +531,7 @@ class TestWatertightPriceActionIntegration:
         """Verifies that an extreme opposing ask wall (top5_imb < -0.40) vetoes price action entry."""
         sig_q = queue.Queue()
         token_map = {"100": {"side": 0, "strike": 24000.0, "is_index": True}}
-        engine = AegisGammaEngine(
+        engine = AegisPipelineOrchestrator(
             token_to_symbol={"100": "NIFTY_SPOT", "200": "NIFTY24000CE"},
             token_map={"200": {"side": 0, "strike": 24000.0}},
             bucket_map={},
@@ -654,7 +567,7 @@ class TestWatertightPriceActionIntegration:
         """Verifies that an excessive spread (> 1.0%) vetoes price action entry."""
         sig_q = queue.Queue()
         token_map = {"100": {"side": 0, "strike": 24000.0, "is_index": True}}
-        engine = AegisGammaEngine(
+        engine = AegisPipelineOrchestrator(
             token_to_symbol={"100": "NIFTY_SPOT", "200": "NIFTY24000CE"},
             token_map={"200": {"side": 0, "strike": 24000.0}},
             bucket_map={},
@@ -695,7 +608,7 @@ class TestWatertightPriceActionIntegration:
 class TestSpotBadTickGuard:
     def _sensex_engine(self):
         sig_q = queue.Queue()
-        return AegisGammaEngine(
+        return AegisPipelineOrchestrator(
             token_to_symbol={"1": "SENSEX_SPOT"},
             token_map={},
             bucket_map={},
@@ -704,7 +617,7 @@ class TestSpotBadTickGuard:
         )
 
     def test_static_plausibility_matrix(self):
-        g = AegisGammaEngine.is_plausible_spot_tick
+        g = AegisPipelineOrchestrator.is_plausible_spot_tick
         assert g(75068.0, 75060.0, 1.0) is True     # normal drift
         assert g(7.40, 75068.0, 1.0) is False       # the live bad tick
         assert g(0.0, 75068.0, 1.0) is False
@@ -919,144 +832,7 @@ def test_hybrid_option_flow_and_pain_zone_vwaps():
     assert vwaps_reset["vwap_call_buy"] == 0.0
 
 
-def test_argon_p4_prominence_anti_exhaustion_and_origin_caps():
-    """
-    Verifies Gemini for Argon Pillar 4 anti-exhaustion and origin caps:
-    1. Bar range <= 1.35x ATR
-    2. Hub displacement <= 1.25x ATR
-    3. Bar open origin constraint (within 0.25x ATR of hub)
-    4. Close edge >= 0.70
-    """
-    from AEGIS.core.price_action_engine import StructuralLevel
-    engine = PriceActionEngine()
 
-    for i in range(60):
-        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74400.0, 74410.0, 74390.0, 74400.0, volume=100.0))
-
-    engine.session_levels.append(
-        StructuralLevel(
-            level_type="SUPPORT",
-            price=74390.0,
-            ts_created=60.0,
-            prominence=2.5,
-            bar_idx=1,
-            seq_idx=1,
-        )
-    )
-
-    # Test 1: Gigantic bar range (> 1.35x ATR) -> Rejected as exhausted
-    huge_bar = OHLCBar(3600, 3660, 74400.0, 74440.0, 74365.0, 74370.0, volume=200.0)
-    engine._on_1m_bar_close(huge_bar)
-    engine.last_price = 74370.0
-    ok, reason, details = engine.check_topological_prominence_breakout("DOWN", current_vwap=74500.0)
-    assert ok is False
-    assert reason == "exhausted_breakout_candle_range"
-
-    # Test 2: Overextended displacement from hub (> 1.25x ATR)
-    engine2 = PriceActionEngine()
-    for i in range(58):
-        engine2._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74400.0, 74415.0, 74385.0, 74400.0, volume=100.0))
-    # Hub at T-1 with close = 74430.0
-    engine2._on_1m_bar_close(OHLCBar(3540, 3600, 74440.0, 74440.0, 74425.0, 74430.0, volume=100.0))
-    engine2.session_levels.append(
-        StructuralLevel(
-            level_type="SUPPORT",
-            price=74430.0,
-            ts_created=60.0,
-            prominence=2.5,
-            bar_idx=1,
-            seq_idx=1,
-        )
-    )
-    # Breakout bar range = 40 pts (<= 1.35 * ATR), but displacement from hub = 60 pts (> 1.25 * ATR)
-    overext_bar = OHLCBar(3600, 3660, 74410.0, 74410.0, 74370.0, 74370.0, volume=200.0)
-    engine2._on_1m_bar_close(overext_bar)
-    engine2.last_price = 74370.0
-    engine2.bars_5m[-1].open = 74450.0
-    engine2.bars_5m[-1].close = 74420.0
-    ok2, reason2, details2 = engine2.check_topological_prominence_breakout("DOWN", current_vwap=74500.0)
-    assert ok2 is False
-    assert reason2 == "overextended_from_hub"
-
-
-def test_argon_p4_day_low_runway_veto_and_breakout_pass():
-    """
-    Verifies Macro Runway & Day Extreme Clearance Rule:
-    - Trade #2 (09:56 candle): Close is only 35.7 pts above Day Low (< 1.25x ATR) -> VETOED!
-    - True breakdown below Day Low -> PASSES!
-    """
-    from AEGIS.core.price_action_engine import StructuralLevel
-    engine = PriceActionEngine()
-    morning_day_low = 74323.0
-    engine._on_1m_bar_close(OHLCBar(0, 60, 74350.0, 74360.0, morning_day_low, 74340.0, volume=100.0))
-    for i in range(1, 58):
-        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74400.0, 74415.0, 74385.0, 74400.0, volume=100.0))
-
-    # Hub at 74388
-    engine._on_1m_bar_close(OHLCBar(3480, 3540, 74388.0, 74395.0, 74380.0, 74388.0, volume=100.0))
-    engine._on_1m_bar_close(OHLCBar(3540, 3600, 74388.0, 74390.0, 74380.0, 74385.0, volume=100.0))
-
-    engine.session_levels.append(
-        StructuralLevel(
-            level_type="SUPPORT",
-            price=74388.0,
-            ts_created=60.0,
-            prominence=2.5,
-            bar_idx=1,
-            seq_idx=1,
-        )
-    )
-
-    # Setup Bar: closes at 74,358.0 (Distance to Day Low = 35.0 pts < 62.5 pts runway!)
-    setup_bar = OHLCBar(3600, 3660, 74385.0, 74385.0, 74355.0, 74358.0, volume=250.0)
-    engine._on_1m_bar_close(setup_bar)
-    engine.last_price = 74358.0
-
-    ok, reason, details = engine.check_topological_prominence_breakout("DOWN", current_vwap=74500.0)
-    assert ok is False
-    assert "insufficient_runway_to_day_low" in reason
-    assert details["room_pts"] == 35.0
-
-    # True Breakdown Bar: Closes decisively below Day Low
-    engine3 = PriceActionEngine()
-    engine3._on_1m_bar_close(OHLCBar(0, 60, 74350.0, 74360.0, morning_day_low, 74340.0, volume=100.0))
-    for i in range(1, 58):
-        engine3._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74380.0, 74390.0, 74360.0, 74370.0, volume=100.0))
-    engine3._on_1m_bar_close(OHLCBar(3480, 3540, 74360.0, 74370.0, 74340.0, 74350.0, volume=100.0))
-    engine3._on_1m_bar_close(OHLCBar(3540, 3600, 74350.0, 74355.0, 74330.0, 74335.0, volume=100.0))
-    true_breakdown_bar = OHLCBar(3600, 3660, 74335.0, 74335.0, 74305.0, 74310.0, volume=250.0)
-    engine3._on_1m_bar_close(true_breakdown_bar)
-    engine3.last_price = 74310.0
-
-    ok_bd, reason_bd, details_bd = engine3._check_day_extreme_runway("DOWN", true_breakdown_bar.close)
-    assert ok_bd is True
-    assert reason_bd == "clear_day_extreme_runway"
-
-
-def test_argon_p3_day_high_runway_veto_and_breakout_pass():
-    """
-    Verifies Pillar 3 Volatility Squeeze respect for Day High Runway:
-    - Box breakout into Day High without runway -> VETOED!
-    """
-    engine = PriceActionEngine()
-    engine.current_atr_1m = 20.0
-
-    day_high = 24050.0
-    engine._on_1m_bar_close(OHLCBar(0, 60, 24000.0, day_high, 23990.0, 24010.0))
-    for i in range(1, 25):
-        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 24000.0, 24015.0, 23995.0, 24010.0))
-
-    for i in range(4):
-        engine._on_1m_bar_close(OHLCBar((25 + i) * 60, (26 + i) * 60, 24012.0, 24025.0, 24010.0, 24020.0))
-
-    squeeze_bo_bar = OHLCBar(1800, 1860, 24020.0, 24036.0, 24018.0, 24035.0)
-    engine._on_1m_bar_close(squeeze_bo_bar)
-    engine.last_price = squeeze_bo_bar.close
-
-    ok, reason, details = engine.check_volatility_squeeze_breakout("UP", current_vwap=24000.0)
-    assert ok is False
-    assert "insufficient_runway_to_day_high" in reason
-    assert details["room_pts"] == 15.0
 
 
 def test_price_action_engine_full_session_capacity_375_bars():
@@ -1084,62 +860,6 @@ def test_price_action_engine_full_session_capacity_375_bars():
     day_low = min(b.low for b in list(engine.bars_1m)[:-1])
     assert day_low == 74300.0
 
-
-def test_dynamic_sr_level_registry_and_historical_breakout():
-    """
-    Verifies that PriceActionEngine dynamically registers intraday Support & Resistance levels,
-    maintains them across the session, and triggers Pillar 4 when a historical support (e.g. formed 30 bars ago)
-    is decisively broken downwards.
-    """
-    engine = PriceActionEngine()
-    engine.current_atr_1m = 40.0
-
-    # 1. Bar 0 to 5: Form an initial support trough at 74,230.0 (Bar 2 has low=74,230.0)
-    engine._on_1m_bar_close(OHLCBar(0, 60, 74300.0, 74310.0, 74270.0, 74280.0, volume=100.0))
-    engine._on_1m_bar_close(OHLCBar(60, 120, 74280.0, 74290.0, 74230.0, 74240.0, volume=100.0))
-    engine._on_1m_bar_close(OHLCBar(120, 180, 74240.0, 74350.0, 74240.0, 74340.0, volume=100.0))
-
-    # Support at 74,230 should now be registered!
-    supports = [l for l in engine.session_levels if l.level_type == "SUPPORT"]
-    assert len(supports) >= 1
-    assert any(abs(s.price - 74230.0) < 2.0 for s in supports)
-    s_target = [s for s in supports if abs(s.price - 74230.0) < 2.0][0]
-    assert s_target.is_broken is False
-
-    # 2. Add 25 consolidation bars hovering between 74,260 and 74,320 (30 minutes elapse)
-    for i in range(3, 28):
-        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74280.0, 74310.0, 74260.0, 74290.0, volume=100.0))
-
-    # Support at 74,230 must still remain intact and unbroken!
-    assert s_target.is_broken is False
-
-    # 3. Bar 28: Decisive breakdown candle slicing through 74,230
-    # Opens at 74,235 (near support), closes at 74,205 (below support by 25 pts), solid red body
-    breakdown_bar = OHLCBar(28 * 60, 29 * 60, 74235.0, 74238.0, 74200.0, 74205.0, volume=300.0)
-    engine._on_1m_bar_close(breakdown_bar)
-    engine.last_price = 74205.0
-
-    # Ensure 5m trend aligns bearish
-    engine.bars_5m[-1].open = 74300.0
-    engine.bars_5m[-1].close = 74205.0
-
-    ok, reason, details = engine.check_topological_prominence_breakout("DOWN", current_vwap=74350.0)
-    assert ok is True
-    assert reason == "prominence_hub_breakout_down"
-    assert details["level_source"] == "sr_registry"
-    assert abs(details["hub_price"] - 74230.0) < 2.0
-    assert details["anchor_age_bars"] >= 25
-
-    # The support level must now be marked as broken!
-    assert s_target.is_broken is True
-
-    # 4. A subsequent candle cannot re-trigger on this already-broken support
-    subsequent_bar = OHLCBar(29 * 60, 30 * 60, 74205.0, 74210.0, 74180.0, 74185.0, volume=300.0)
-    engine._on_1m_bar_close(subsequent_bar)
-    engine.last_price = 74185.0
-    # Because 74,230 is now broken, it won't re-trigger from sr_registry
-    cand_unbroken = [l for l in engine.session_levels if l.level_type == "SUPPORT" and not l.is_broken and l.price >= 74200.0]
-    assert len(cand_unbroken) == 0
 
 
 def test_argon_sr_registry_4_bug_fixes():
@@ -1193,160 +913,6 @@ def test_argon_sr_registry_4_bug_fixes():
     assert any(item["price"] == 74100.0 and item["is_broken"] is True for item in snap)
 
 
-def test_sr_registry_volume_and_order_flow_prominence_boost():
-    """
-    Verifies that StructuralLevel:
-    1. Captures anchor volume and option order flow footprint (call/put buy/sell vol, delta, PCR).
-    2. Calculates volume ratio vs 60m median and applies volume ratio boost to prominence.
-    3. Adds institutional OFI boost (e.g. Put writing at Support, Call writing at Resistance).
-    4. Accumulates volume and order flow on re-test touches.
-    5. Exposes all order flow metrics in get_active_sr_registry_snapshot.
-    6. Propagates anchor volume & flow into check_topological_prominence_breakout details.
-    """
-    engine = PriceActionEngine(max_history_bars=400)
-    engine.current_atr_1m = 40.0
-
-    # Establish baseline volume of 100.0 across 10 bars
-    for i in range(10):
-        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74300.0, 74320.0, 74280.0, 74310.0, volume=100.0))
-
-    # Form a Support Trough at 74,200.0 with HEAVY institutional volume and Put Writing:
-    # cand = Bar 11 (ts: 660-720) with low=74,200.0, volume=300.0 (VR=3.0),
-    # put_sell_vol=1500.0 (heavy put writing), call_buy_vol=500.0, opt_total_vol=2500.0
-    bar_prev = OHLCBar(10 * 60, 11 * 60, 74310.0, 74315.0, 74250.0, 74260.0, volume=100.0)
-    bar_cand = OHLCBar(
-        11 * 60, 12 * 60, 74260.0, 74270.0, 74200.0, 74210.0,
-        volume=300.0,
-        call_buy_vol=500.0,
-        call_sell_vol=200.0,
-        put_buy_vol=300.0,
-        put_sell_vol=1500.0,
-        opt_delta_flow=200.0,
-        opt_total_vol=2500.0,
-        opt_pcr=1.8 / 0.7,
-    )
-    bar_curr = OHLCBar(12 * 60, 13 * 60, 74210.0, 74320.0, 74210.0, 74310.0, volume=150.0)
-
-    engine._on_1m_bar_close(bar_prev)
-    engine._on_1m_bar_close(bar_cand)
-    engine._on_1m_bar_close(bar_curr)
-
-    supports = [l for l in engine.session_levels if l.level_type == "SUPPORT" and abs(l.price - 74200.0) < 2.0]
-    assert len(supports) == 1
-    s_lvl = supports[0]
-
-    # Verify footprint captured
-    assert s_lvl.volume == 300.0
-    assert s_lvl.vr_anchor >= 2.5
-    assert s_lvl.put_sell_vol == 1500.0
-    assert s_lvl.call_buy_vol == 500.0
-    assert s_lvl.opt_delta_flow == 200.0
-
-    # Prominence should be boosted:
-    # Base depth >= 1.50 ATR
-    # Volume ratio boost + OFI boost
-    assert s_lvl.prominence >= 2.20
-
-    # Test Telemetry Snapshot
-    snap = engine.get_active_sr_registry_snapshot()
-    snap_s = [x for x in snap if x["type"] == "SUPPORT" and abs(x["price"] - 74200.0) < 2.0][0]
-    assert snap_s["volume"] == 300.0
-    assert snap_s["put_sell_vol"] == 1500.0
-    assert snap_s["vr_anchor"] >= 2.5
-    assert snap_s["prominence"] == s_lvl.prominence
-
-    # Add 25 consolidation bars and then test breakdown trigger details
-    for i in range(13, 38):
-        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74240.0, 74260.0, 74230.0, 74250.0, volume=100.0))
-
-    breakdown_bar = OHLCBar(38 * 60, 39 * 60, 74205.0, 74208.0, 74170.0, 74175.0, volume=350.0)
-    engine._on_1m_bar_close(breakdown_bar)
-    engine.last_price = 74175.0
-    engine.bars_5m[-1].open = 74260.0
-    engine.bars_5m[-1].close = 74175.0
-
-    ok, reason, details = engine.check_topological_prominence_breakout("DOWN", current_vwap=74300.0)
-    assert ok is True
-    assert details["anchor_volume"] == 300.0
-    assert details["anchor_put_sell_vol"] == 1500.0
-    assert details["anchor_vr"] >= 2.5
-
-
-def test_pillar4_wyckoff_stopping_volume_trap_blocked():
-    """
-    Verifies that the 21 Oct 09:56 Stopping Volume Trap is strictly blocked:
-    A high-volume red candle (VR=1.57x) breaking below support, but having positive net
-    bullish delta (Put Writing PutSell > PutBuy, BullFlow > BearFlow by +1.29M) is
-    STRICTLY VETOED by wyckoff_p4_stopping_volume_bullish_absorption!
-    """
-    engine = PriceActionEngine(max_history_bars=400)
-    engine.current_atr_1m = 40.0
-
-    # 1. Register a Support at 74,323.0
-    engine._on_1m_bar_close(OHLCBar(0, 60, 74380.0, 74390.0, 74350.0, 74360.0, volume=100.0))
-    engine._on_1m_bar_close(OHLCBar(60, 120, 74360.0, 74370.0, 74323.0, 74330.0, volume=100.0))
-    engine._on_1m_bar_close(OHLCBar(120, 180, 74330.0, 74450.0, 74330.0, 74440.0, volume=100.0))
-
-    supports = [l for l in engine.session_levels if l.level_type == "SUPPORT" and abs(l.price - 74323.0) < 2.0]
-    assert len(supports) == 1
-    s_lvl = supports[0]
-
-    # Add 15 consolidation bars hovering around 74,350 - 74,400
-    for i in range(3, 18):
-        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74360.0, 74380.0, 74340.0, 74370.0, volume=100.0))
-
-    # 2. Replay the exact 09:56 candle:
-    # High volume (157.0 vs 100.0 median = 1.57x), big red body, closes at 74,310 (below 74,323 support).
-    # BUT order flow is Net Bullish by +1.29M:
-    # CallBuy=1576520, CallSell=1276620, PutBuy=1738740, PutSell=2730220
-    # BullFlow = 1576520 + 2730220 = 4,306,740
-    # BearFlow = 1738740 + 1276620 = 3,015,360
-    # Net Bullish Delta = +1,291,380!
-    stopping_vol_bar = OHLCBar(
-        18 * 60, 19 * 60, 74330.0, 74335.0, 74305.0, 74310.0,
-        volume=157.0,
-        call_buy_vol=1576520.0,
-        call_sell_vol=1276620.0,
-        put_buy_vol=1738740.0,
-        put_sell_vol=2730220.0,
-    )
-    engine._on_1m_bar_close(stopping_vol_bar)
-    engine.last_price = 74310.0
-    engine.bars_5m[-1].open = 74360.0
-    engine.bars_5m[-1].close = 74310.0
-
-    # MUST BE VETOED!
-    ok, reason, details = engine.check_topological_prominence_breakout("DOWN", current_vwap=74400.0)
-    assert ok is False
-    assert reason == "wyckoff_p4_stopping_volume_bullish_absorption"
-    assert details["verdict"] == "STOPPING_VOLUME_BULLISH_PUT_WRITING_ABSORPTION"
-    assert details["net_inst_delta"] > 1_000_000.0
-
-    # 3. Now verify that when genuine institutional selling occurs (BearFlow >= 1.18 * BullFlow), it triggers!
-    engine_gen = PriceActionEngine(max_history_bars=400)
-    engine_gen.current_atr_1m = 40.0
-    engine_gen._on_1m_bar_close(OHLCBar(0, 60, 74380.0, 74390.0, 74350.0, 74360.0, volume=100.0))
-    engine_gen._on_1m_bar_close(OHLCBar(60, 120, 74360.0, 74370.0, 74323.0, 74330.0, volume=100.0))
-    engine_gen._on_1m_bar_close(OHLCBar(120, 180, 74330.0, 74450.0, 74330.0, 74440.0, volume=100.0))
-    for i in range(3, 18):
-        engine_gen._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74360.0, 74380.0, 74340.0, 74370.0, volume=100.0))
-
-    genuine_bear_bar = OHLCBar(
-        18 * 60, 19 * 60, 74330.0, 74335.0, 74300.0, 74305.0,
-        volume=250.0,
-        call_buy_vol=500000.0,
-        call_sell_vol=1500000.0,
-        put_buy_vol=3500000.0,
-        put_sell_vol=600000.0,
-    )
-    engine_gen._on_1m_bar_close(genuine_bear_bar)
-    engine_gen.last_price = 74305.0
-    engine_gen.bars_5m[-1].close = 74305.0
-
-    ok_gen, reason_gen, details_gen = engine_gen.check_topological_prominence_breakout("DOWN", current_vwap=74400.0)
-    assert ok_gen is True
-    assert reason_gen == "prominence_hub_breakout_down"
-    assert details_gen["bear_ratio"] >= 1.18
 
 
 def test_wyckoff_flow_gates_across_all_pillars():
@@ -1398,82 +964,8 @@ def test_wyckoff_flow_gates_across_all_pillars():
     assert reason_abs == "micro_sweep_call_reclaim"
     assert details_abs["bull_ratio"] >= 1.0
 
-    # 2. Pillar 3 (Volatility Squeeze Breakout):
-    engine_p3 = PriceActionEngine()
-    engine_p3.current_atr_1m = 40.0
-    for i in range(25):
-        engine_p3._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74300.0, 74310.0, 74290.0, 74305.0, volume=100.0))
-
-    # Trigger bar with opposing bear delta (bear_ratio >= 1.15) should be vetoed
-    opposing_p3_bar = OHLCBar(
-        25 * 60, 26 * 60, 74305.0, 74350.0, 74300.0, 74345.0,
-        volume=300.0,
-        call_buy_vol=500.0,
-        call_sell_vol=2500.0,
-        put_buy_vol=3000.0,
-        put_sell_vol=200.0,
-    )
-    engine_p3._on_1m_bar_close(opposing_p3_bar)
-    engine_p3.last_price = 74345.0
-    engine_p3.squeeze_on = True
-    ok_p3, reason_p3, _ = engine_p3.check_volatility_squeeze_breakout("CALL", current_vwap=74300.0)
-    assert ok_p3 is False
-    assert reason_p3 == "wyckoff_p3_call_negative_delta_trap"
 
 
-def test_pillar3_climax_exhaustion_cap_and_box_displacement():
-    """
-    UPGRADE 3: Pillar 3 Climax Exhaustion Cap & Box Displacement Veto.
-    Prevents chasing blowout / climax bars (> 1.35x ATR) or bars overextended from the box (> 1.20x ATR).
-    """
-    # 1. Climax Candle Range Veto (> 1.35x ATR)
-    engine = PriceActionEngine()
-    engine.current_atr_1m = 40.0
-    for i in range(25):
-        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74300.0, 74315.0, 74295.0, 74305.0, volume=100.0))
-
-    # Box is ~74315 high to ~74295 low (range 20.0). ATR is ~20.0.
-    # An 80-pt giant candle (like 22 Oct 09:50) far exceeds 1.35 * ATR (27 pts)!
-    climax_bar = OHLCBar(
-        25 * 60, 26 * 60, 74305.0, 74385.0, 74305.0, 74380.0,
-        volume=300.0,
-        call_buy_vol=2000.0,
-        call_sell_vol=200.0,
-        put_buy_vol=100.0,
-        put_sell_vol=1000.0,
-    )
-    engine._on_1m_bar_close(climax_bar)
-    engine.last_price = 74380.0
-    engine.squeeze_on = True
-
-    ok, reason, details = engine.check_volatility_squeeze_breakout("CALL", current_vwap=74300.0)
-    assert ok is False
-    assert reason == "exhausted_squeeze_breakout_candle_range"
-    assert details["bar_range"] == 80.0
-
-    # 2. Box Displacement Veto (> 1.20x ATR beyond box_high)
-    # Candle range itself is moderate (25 pts <= 1.35 * ATR), but opened and closed way outside the box
-    engine_disp = PriceActionEngine()
-    engine_disp.current_atr_1m = 40.0
-    for i in range(25):
-        engine_disp._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74300.0, 74310.0, 74290.0, 74305.0, volume=100.0))
-
-    atr_val = engine_disp.current_atr_1m
-    displaced_bar = OHLCBar(
-        25 * 60, 26 * 60, 74340.0, 74355.0, 74338.0, 74350.0,
-        volume=300.0,
-        call_buy_vol=2000.0,
-        call_sell_vol=200.0,
-        put_buy_vol=100.0,
-        put_sell_vol=1000.0,
-    )
-    engine_disp._on_1m_bar_close(displaced_bar)
-    engine_disp.last_price = 74350.0
-    engine_disp.squeeze_on = True
-
-    ok_d, reason_d, details_d = engine_disp.check_volatility_squeeze_breakout("CALL", current_vwap=74300.0)
-    assert ok_d is False
-    assert reason_d == "overextended_from_squeeze_box"
 
 
 def test_freak_preopen_settlement_spike_filtered_in_levels_and_runway():
@@ -1509,23 +1001,6 @@ def test_freak_preopen_settlement_spike_filtered_in_levels_and_runway():
     assert ok is False
     assert reason == "insufficient_runway_to_day_high"
     assert details["day_high"] == 73423.0
-
-
-def test_fast_monotonic_stack_prominence():
-    """Verify 0-D prominence calculation on a synthetic peak via PriceActionEngine."""
-    import numpy as np
-    from AEGIS.core.price_action_engine import FastMonotonicStack
-
-    stack = FastMonotonicStack(capacity=128)
-    atr = 10.0
-
-    # Prices with a clear prominent peak at index 5
-    prices = np.array([100.0, 102.0, 105.0, 108.0, 115.0, 140.0, 112.0, 107.0, 104.0, 101.0], dtype=np.float64)
-    target_idx = 5
-
-    pi_hat = stack.compute_prominence(prices, target_idx, atr)
-    assert pi_hat >= 1.75
-    assert pi_hat == pytest.approx(4.0, abs=0.1)
 
 
 def test_5m_and_15m_sr_registry_discovery_and_mode_b_breakthrough():

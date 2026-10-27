@@ -282,7 +282,7 @@ class AegisExecutionManager:
         self,
         broker_gateway,
         data_fetcher,
-        aegis_engine,                   # Reference to AegisGammaEngine for fill feedback
+        aegis_engine,                   # Reference to AegisPipelineOrchestrator for fill feedback
         signal_queue: queue.Queue,      # AEGIS → Execution signal queue
     ):
         self.broker = broker_gateway

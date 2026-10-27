@@ -1,7 +1,7 @@
 """
 AEGIS V3.0 — End-to-End Integration & Empirical Parity Backtester.
 
-Directly drives the production AegisGammaEngine with historical high-resolution
+Directly drives the production AegisPipelineOrchestrator with historical high-resolution
 Level 2 parquet tick data recorded from the live Shoonya WebSocket seam.
 
 Measures:
@@ -32,7 +32,7 @@ repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from AEGIS.aegis_gamma_engine import AegisGammaEngine, create_aegis_engine
+from AEGIS.aegis_pipeline_orchestrator import AegisPipelineOrchestrator, create_aegis_engine
 from common.execution.realistic_paper_broker import calculate_nse_option_charges
 
 
@@ -158,7 +158,7 @@ class SimulatedPositionManager:
             self.last_spot = spot
 
     def on_signal(self, sig: Dict[str, Any], current_ts_sec: float) -> bool:
-        """Handles new entry signals from AegisGammaEngine."""
+        """Handles new entry signals from AegisPipelineOrchestrator."""
         # 1. Check production time cutoff (No new entries after 15:00)
         tm = time.localtime(current_ts_sec)
         if tm.tm_hour > self.entry_cutoff_hour or (tm.tm_hour == self.entry_cutoff_hour and tm.tm_min >= self.entry_cutoff_min):
@@ -438,7 +438,7 @@ class AegisParquetBacktester:
         self.files: List[str] = []
         self.token_to_symbol: Dict[str, str] = {}
         self.token_map: Dict[str, Dict[str, Any]] = {}
-        self.engine: Optional[AegisGammaEngine] = None
+        self.engine: Optional[AegisPipelineOrchestrator] = None
         self.position_manager: Optional[SimulatedPositionManager] = None
 
     def discover_files(self) -> List[str]:
@@ -501,8 +501,8 @@ class AegisParquetBacktester:
 
         return self.token_to_symbol, self.token_map
 
-    def initialize_engine(self) -> AegisGammaEngine:
-        """Instantiates and configures the production AegisGammaEngine and Position Manager."""
+    def initialize_engine(self) -> AegisPipelineOrchestrator:
+        """Instantiates and configures the production AegisPipelineOrchestrator and Position Manager."""
         # Select matching underlying token for the current index (strict index isolation)
         if self.strike_step <= 50:
             underlying_toks = {"26000"}  # NIFTY cash index only
