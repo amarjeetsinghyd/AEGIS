@@ -1,69 +1,9 @@
 """
 Unit tests for AEGIS Core Microstructure Components:
-- DirectionalPersistenceEngine
 - OutcomeTelemetryEngine
 """
 import pytest
-from AEGIS.core.directional_persistence import DirectionalPersistenceEngine
 from AEGIS.core.outcome_telemetry import OutcomeTelemetryEngine
-
-
-class TestDirectionalPersistence:
-    def test_directional_persistence_confirmed(self):
-        engine = DirectionalPersistenceEngine(
-            window_sec=60.0,
-            sample_interval_sec=5.0,
-            target_persistence_threshold=0.70,
-            max_allowed_opposite=1,
-        )
-
-        for i in range(10):
-            engine.record_snapshot(
-                now_sec=float(i * 5),
-                direction="UP",
-                micro_score=82.0,
-                spot_drift=+2.0,
-            )
-        for i in range(10, 12):
-            engine.record_snapshot(
-                now_sec=float(i * 5),
-                direction="NEUTRAL",
-                micro_score=60.0,
-                spot_drift=0.0,
-            )
-
-        is_confirmed, persistence, metrics = engine.evaluate_persistence("CALL")
-        assert is_confirmed is True
-        assert persistence == pytest.approx(10.0 / 12.0, 0.01)
-        assert metrics["opposite_count"] == 0
-
-    def test_directional_persistence_opposite_invalidation(self):
-        engine = DirectionalPersistenceEngine(
-            window_sec=60.0,
-            sample_interval_sec=5.0,
-            target_persistence_threshold=0.70,
-            max_allowed_opposite=1,
-        )
-
-        # 6 UP, 4 DOWN => opposite_count=4 > max_allowed_opposite(1)
-        for i in range(6):
-            engine.record_snapshot(
-                now_sec=float(i * 5),
-                direction="UP",
-                micro_score=80.0,
-                spot_drift=+1.0,
-            )
-        for i in range(6, 10):
-            engine.record_snapshot(
-                now_sec=float(i * 5),
-                direction="DOWN",
-                micro_score=75.0,
-                spot_drift=-2.0,
-            )
-
-        is_confirmed, persistence, metrics = engine.evaluate_persistence("CALL")
-        assert is_confirmed is False
-        assert metrics["opposite_count"] == 4
 
 
 class TestOutcomeTelemetry:

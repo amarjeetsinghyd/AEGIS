@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+from datetime import datetime
 from typing import Optional
 
 from common.config import get_data_dir, INITIAL_PAPER_CAPITAL
@@ -15,19 +16,19 @@ class CapitalEngine:
       1. Morning startup: queries broker API once to seed live available balance.
       2. Post-trade exit: refreshes broker API once upon trade close (add_funds).
       3. In-between: serves in-memory balance in 0.0001ms with zero API overhead.
+      4. Disk persistence: mirrors live/paper balance to capital_state.json for dashboard display.
     """
 
     def __init__(self, mode: str = "PAPER", portfolio_provider=None, data_dir: Optional[str] = None):
-        self.mode = mode
+        self.mode = mode.upper()
         self.portfolio_provider = portfolio_provider
-        self._paper_capital = INITIAL_PAPER_CAPITAL
+        self._capital = INITIAL_PAPER_CAPITAL
         self._locked_amount = 0.0
         self._needs_broker_sync = True  # Seeded on morning startup
         self.data_dir = data_dir or get_data_dir()
         self.STATE_FILE = os.path.join(self.data_dir, "capital_state.json")
 
-        if self.mode == "PAPER":
-            self._load_state()
+        self._load_state()
 
     def _load_state(self):
         if os.path.exists(self.STATE_FILE):
@@ -35,16 +36,16 @@ class CapitalEngine:
                 with open(self.STATE_FILE, "r") as f:
                     data = json.load(f)
                     raw = data.get("available_funds", data.get("current_capital", data.get("capital", INITIAL_PAPER_CAPITAL)))
-                    self._paper_capital = float(raw)
+                    self._capital = float(raw)
                     self._locked_amount = float(data.get("locked_withdrawal_amount", 0.0))
-                logger.info(f"[CapitalEngine] Loaded capital state: {self._paper_capital}, Locked: {self._locked_amount}")
+                logger.info(f"[CapitalEngine] Loaded capital state: {self._capital}, Locked: {self._locked_amount} ({self.mode})")
             except Exception as e:
                 logger.error(f"[CapitalEngine] Failed to load state: {e}. Defaulting to {INITIAL_PAPER_CAPITAL}")
-                self._paper_capital = INITIAL_PAPER_CAPITAL
+                self._capital = INITIAL_PAPER_CAPITAL
                 self._locked_amount = 0.0
                 self._save_state()
         else:
-            logger.info(f"[CapitalEngine] First run. Initializing paper capital: {self._paper_capital}")
+            logger.info(f"[CapitalEngine] First run. Initializing capital: {self._capital} ({self.mode})")
             self._save_state()
 
     def _save_state(self):
@@ -52,7 +53,12 @@ class CapitalEngine:
         try:
             with open(self.STATE_FILE, "w") as f:
                 json.dump(
-                    {"available_funds": self._paper_capital, "locked_withdrawal_amount": self._locked_amount},
+                    {
+                        "available_funds": round(self._capital, 2),
+                        "locked_withdrawal_amount": round(self._locked_amount, 2),
+                        "mode": self.mode,
+                        "updated_at": datetime.now().isoformat()
+                    },
                     f,
                     indent=4,
                 )
@@ -72,36 +78,35 @@ class CapitalEngine:
                     live_funds = float(self.portfolio_provider.portfolio_provider.get_available_funds())
 
                 if live_funds is not None and live_funds > 0:
-                    self._paper_capital = live_funds
+                    self._capital = live_funds
                     self._save_state()
-                    logger.info(f"[CapitalEngine] Synced live funds from broker: ₹{self._paper_capital:.2f}")
+                    logger.info(f"[CapitalEngine] Synced live funds from broker: ₹{self._capital:.2f}")
             except Exception as e:
-                logger.warning(f"[CapitalEngine] Broker funds sync failed ({e}); using state ₹{self._paper_capital:.2f}")
+                logger.warning(f"[CapitalEngine] Broker funds sync failed ({e}); using state ₹{self._capital:.2f}")
         self._needs_broker_sync = False
-        return self._paper_capital
+        return self._capital
 
     def get_available_funds(self) -> float:
         # Event-driven: ONLY queries broker on morning startup or when trade closes
         if self._needs_broker_sync and self.portfolio_provider:
             self.sync_funds_from_broker()
 
-        return max(0.0, self._paper_capital - self._locked_amount)
+        return max(0.0, self._capital - self._locked_amount)
 
     def deduct_funds(self, amount: float):
-        if self.mode == "PAPER":
-            if amount > self._paper_capital:
-                logger.warning(
-                    f"[CapitalEngine] Deducting more than available! (Capital: {self._paper_capital}, Amount: {amount})"
-                )
-            self._paper_capital -= amount
-            logger.info(f"[CapitalEngine] Deducted {amount}. New balance: {self._paper_capital}")
-            self._save_state()
+        if amount > self._capital:
+            logger.warning(
+                f"[CapitalEngine] Deducting more than available! (Capital: {self._capital}, Amount: {amount})"
+            )
+        self._capital -= amount
+        logger.info(f"[CapitalEngine] Deducted {amount}. New balance: {self._capital}")
+        self._save_state()
 
     def add_funds(self, amount: float):
         # Event-driven: post-trade close refresh directly from broker
         if self.portfolio_provider:
             self.sync_funds_from_broker()
-        elif self.mode == "PAPER":
-            self._paper_capital += amount
-            logger.info(f"[CapitalEngine] Added {amount}. New balance: {self._paper_capital}")
+        else:
+            self._capital += amount
+            logger.info(f"[CapitalEngine] Added {amount}. New balance: {self._capital}")
             self._save_state()

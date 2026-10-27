@@ -34,7 +34,6 @@ try:
         CompositeConvictionEngine,
         ConvictionResult,
     )
-    from AEGIS.core.directional_persistence import DirectionalPersistenceEngine
     from AEGIS.core.option_quality import OptionQualityEngine
     from AEGIS.core.outcome_telemetry import OutcomeTelemetryEngine
     from AEGIS.core.oi_builtup_gate import OIBuiltupGate
@@ -50,7 +49,6 @@ except ImportError:
             CompositeConvictionEngine,
             ConvictionResult,
         )
-        from core.directional_persistence import DirectionalPersistenceEngine
         from core.option_quality import OptionQualityEngine
         from core.outcome_telemetry import OutcomeTelemetryEngine
         from core.oi_builtup_gate import OIBuiltupGate
@@ -64,7 +62,6 @@ except ImportError:
         CompositeConvictionEngine = None
         WyckoffVolumeEngine = None
         AdaptiveMicroValidator = None
-        DirectionalPersistenceEngine = None
         OptionQualityEngine = None
         OutcomeTelemetryEngine = None
         OIBuiltupGate = None
@@ -192,13 +189,6 @@ class AegisGammaEngine:
         self.price_action_engine = PriceActionEngine(strike_step=self.strike_step, atr_period=14, lot_size=engine_lot) if PriceActionEngine is not None else None
         # Alias time_bar_engine to price_action_engine for 100% backward compatibility
         self.time_bar_engine = self.price_action_engine
-        # V3.0 Event-Bound: 60s persistence window, Dp >= 0.70, opposite <= 2.
-        self.persistence_engine = DirectionalPersistenceEngine(
-            window_sec=60.0,
-            sample_interval_sec=5.0,
-            target_persistence_threshold=0.70,
-            max_allowed_opposite=2,
-        ) if DirectionalPersistenceEngine is not None else None
         # Testing phase: premium floor Rs 4.0 (env AEGIS_MIN_PREMIUM) so Rs 4.30
         # candidates are not vetoed while funds are tiny.
         _min_prem = float(os.getenv("AEGIS_MIN_PREMIUM", "4.0"))
@@ -1407,37 +1397,6 @@ class AegisGammaEngine:
             self.time_bar_engine.update_tick(price=lp, ts_sec=now_sec)
             if self.time_bar_engine.atr_ratio >= 1.0 or self.time_bar_engine.current_atr_1m >= (0.00025 * lp):
                 self.last_volatility_burst_ts = now_sec
-
-        # 2. Update V3 60s Directional Persistence Snapshot every 5s
-        if self.persistence_engine and self.persistence_engine.should_sample(now_sec):
-            # True in-flight 5-second drift from spot history
-            drift_5s = 0.0
-            if len(self.spot_history) >= 2:
-                p_5s = self.spot_history[0][1]
-                target_ts = now_sec - 5.0
-                for ts_h, px_h in reversed(self.spot_history):
-                    if ts_h <= target_ts:
-                        p_5s = px_h
-                        break
-                drift_5s = lp - p_5s
-
-            # In-flight directional determination using live EMA slope & live drift
-            curr_dir = "NEUTRAL"
-            if self.time_bar_engine:
-                _, live_slope_1m_bps, _, _ = self.time_bar_engine.get_live_ema_and_slope()
-                if live_slope_1m_bps > 0.5 and drift_5s > 0.2:
-                    curr_dir = "UP"
-                elif live_slope_1m_bps < -0.5 and drift_5s < -0.2:
-                    curr_dir = "DOWN"
-            elif abs(drift_5s) >= 0.5:
-                curr_dir = "UP" if drift_5s > 0 else "DOWN"
-
-            self.persistence_engine.record_snapshot(
-                now_sec=now_sec,
-                direction=curr_dir,
-                micro_score=75.0 if curr_dir != "NEUTRAL" else 50.0,
-                spot_drift=drift_5s,
-            )
 
         # Prune older than 900s (15 min)
         cutoff = now_sec - 900.0
