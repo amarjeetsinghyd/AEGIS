@@ -1,27 +1,64 @@
+# Byte-compiled / optimized / Python caches
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.hypothesis/
+
+# Virtual Environments (never track binaries, packages, or wheels)
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Logs & Diagnostics
 logs/
 *.log
 desktop.ini
 stock_order_flow/data/
 
-# Sensitive — never commit
+# Sensitive & Secrets — never commit
 .env
 Oracle SSH keys/
 *.key
 *.key.pub
+data/shoonya_session.json
+tokens_cache.json
 
-# IDE / tooling
+# IDE / Tooling / VCS Metadata
 .qoder/
 .vscode/
+.idea/
+.jj/
 
-# Runtime data
+# Runtime market data & binary stores
 data/shm/
 *.parquet
 *.db
+*.sqlite
+*.sqlite3
 catboost_info/
 *_symbols.txt
 AEGIS/data/l2_raw/
+ARGUS/data/l2_raw/
+
+# Temporary / Scratch / Transient files (Zero-Entropy)
+scratch/
+tmp/
+temp/
+*.tmp
+*.temp
+temp_*
+scratch_*
+*.bak
+*.orig
+*.swp
+*~
 
 # Archives (read-only history)
 _archive/
@@ -29,13 +66,10 @@ AEGIS/_archive/
 ARGUS/_archive/
 deepseek-harness-master/
 
-# Scratch (throwaway workspace — never commit)
-scratch/
-
-# Test-artifact empty dirs — recreated by get_runtime_paths("kronos") legacy
-# branch in common/runtime/paths.py on every test run (harmless, 2KB).
+# Test-artifact empty dirs — recreated by legacy test paths
 astra_bot/
 kronos_bot/
 
 # Accidental bundle guard
 *.tar.gz
+*.zip
