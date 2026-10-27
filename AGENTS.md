@@ -202,29 +202,21 @@ Before writing or modifying ANY strategy, gatekeeper, or execution code, every A
 > **Jujutsu (`jj`) is the STRICT and ONLY version control CLI for all AI agents and contributors in this repo.**
 > Never use `git add` or `git commit`. All operations must use `jj`.
 
-### 1. Zero-Friction Agent Workflows (Pure Jujutsu)
-- **Automatic Working Copy Snapshot**: Every file modification is automatically tracked in the working copy snapshot (`@`).
-- **No Staging / No `git add`**: Never run `git add` or worry about staging; `jj` tracks working copy changes automatically.
-- **Recording Commits**: Use Jujutsu directly to describe and record commits:
-  ```powershell
-  jj describe -m "feat(AEGIS): <concise summary>"
-  # or
-  jj commit -m "feat(AEGIS): <concise summary>"
-  ```
-- **Starting a New Clean State**: When starting a distinct logical task, simply run:
-  ```powershell
-  jj new
-  ```
+### 1. Pure Automatic Snapshots (No Manual Commits During Work)
+- **Continuous Background Auto-Snapshotting**: Jujutsu automatically snapshots every single file modification directly into the current working copy (`@`).
+- **Never Run Commit Commands While Working**: Do NOT run `jj commit` or any commit command after editing files. Work freely—Jujutsu captures all edits automatically without any ceremony.
+- **No Staging / No Staging Area**: Concept of staging (`git add`) does not exist in Jujutsu. Your workspace is always clean and tracked.
 
-### 2. Pushing to Remote (`jj git push`)
-- When ready to push changes to GitHub remote (`origin/main`), sync via Jujutsu:
+### 2. Pushing Completed Work to GitHub Remote (`jj git push`)
+- Only when a feature or task is completely finished, tested, and ready to send to GitHub remote:
   ```powershell
   jj describe -m "feat(AEGIS): <concise summary>"
+  jj bookmark set main -r '@'
   jj git push
   ```
 
-### 3. Instant Rollback & Audit (`jj undo`)
-- **Instant Rollback**: If an operation creates unintended changes, execute:
+### 3. Instant Rollback & History Audit (`jj undo`)
+- **Instant Rollback**: If an operation creates unintended changes or breaks a test, execute:
   ```powershell
   jj undo
   ```
