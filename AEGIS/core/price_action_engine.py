@@ -127,6 +127,9 @@ class StructuralLevel:
     ts_broken: float = 0.0
     timeframe: str = "5m"  # "DAILY", "15m", "5m", or "1m"
     is_previous_day: bool = False  # True if seeded from previous trading session
+    level_role: str = "NORMAL"     # "OUTERMOST_ROOF", "OUTERMOST_FLOOR", "MAJOR_SWING", "INTERIOR_CLUSTER", "PDH", "PDL"
+    is_tradeable_breakout: bool = True  # False if interior cluster or insufficient runway ahead
+    breakout_tier: str = "A_PLUS"  # "A_PLUS", "A_STANDARD", "B_SWEEP_ONLY", "C_UNQUALIFIED"
     # ─── Volume & Order Flow Footprint at Anchor / Retests ───
     volume: float = 0.0            # Underlying / bar traded volume at anchor
     call_buy_vol: float = 0.0      # Aggressive Call Buying (lifted at ask)
@@ -1056,6 +1059,9 @@ class PriceActionEngine:
                         )
                     )
 
+        # Re-classify level roles and breakout eligibility
+        self._classify_level_roles()
+
     def get_active_sr_registry_snapshot(self) -> List[Dict[str, Any]]:
         """Returns active and recently broken S/R levels for telemetry and dashboard rendering."""
         snapshot = []
@@ -1067,6 +1073,9 @@ class PriceActionEngine:
                 "touch_count": lvl.touch_count,
                 "timeframe": getattr(lvl, "timeframe", "5m"),
                 "is_previous_day": getattr(lvl, "is_previous_day", False),
+                "level_role": getattr(lvl, "level_role", "NORMAL"),
+                "is_tradeable_breakout": getattr(lvl, "is_tradeable_breakout", True),
+                "breakout_tier": getattr(lvl, "breakout_tier", "A_PLUS"),
                 "is_broken": lvl.is_broken,
                 "ts_created": lvl.ts_created,
                 "ts_broken": lvl.ts_broken,
@@ -1273,6 +1282,7 @@ class PriceActionEngine:
                 )
         if pdc > 0:
             self.pdc = float(pdc)
+        self._classify_level_roles()
         logger.info(
             f"[PriceActionEngine] Seeded Daily Levels: PDH={self.pdh:.2f} | PDL={self.pdl:.2f} | PDC={self.pdc:.2f} "
             f"(Proximity Threshold: {self.proximity_threshold_bps:.1f} bps)"
@@ -1350,6 +1360,84 @@ class PriceActionEngine:
         merged_res = _cluster_levels_by_type(res_levels, is_resistance=True)
         merged_sup = _cluster_levels_by_type(sup_levels, is_resistance=False)
         return merged_res + merged_sup
+
+    def _classify_level_roles(self) -> None:
+        """
+        Dynamically tags each active unbroken level with its structural role and breakout eligibility:
+          - OUTERMOST_ROOF: The highest active resistance boundary (Blue Sky ahead) -> A+ Breakout.
+          - OUTERMOST_FLOOR: The lowest active support boundary -> A+ Breakdown.
+          - MAJOR_SWING: Has at least min_runway (1.25x ATR) of clear space before the next level -> A Standard.
+          - INTERIOR_CLUSTER: Has an overhead ceiling or underlying floor within min_runway -> VETOED FOR BREAKOUT (B_SWEEP_ONLY).
+          - C_UNQUALIFIED: Prominence < 1.25 -> VETOED FOR BREAKOUT.
+        """
+        atr = self.current_atr_1m if self.current_atr_1m > 0 else (self.pdc * 0.0008 if self.pdc > 0 else 20.0)
+        ref_spot = self.last_price if self.last_price > 0 else (self.pdc if self.pdc > 0 else 24000.0)
+        min_runway = max(1.25 * atr, 0.0008 * ref_spot)
+
+        active_res = [l for l in self.session_levels if l.level_type == "RESISTANCE" and not l.is_broken]
+        active_sup = [l for l in self.session_levels if l.level_type == "SUPPORT" and not l.is_broken]
+
+        # 1. Classify Resistances
+        if active_res:
+            sorted_res = sorted(active_res, key=lambda l: l.price)
+            highest_res = sorted_res[-1]
+
+            for lvl in sorted_res:
+                if lvl.timeframe == "DAILY" or (self.pdh > 0 and abs(lvl.price - self.pdh) < 2.0):
+                    lvl.level_role = "PDH"
+                    lvl.breakout_tier = "A_PLUS"
+                    lvl.is_tradeable_breakout = True
+                    continue
+
+                if lvl.price == highest_res.price:
+                    lvl.level_role = "OUTERMOST_ROOF"
+                    lvl.breakout_tier = "A_PLUS"
+                    lvl.is_tradeable_breakout = (lvl.prominence >= 1.25)
+                    continue
+
+                # Check clearance to the next higher resistance
+                higher_lvls = [l for l in sorted_res if l.price > lvl.price]
+                if higher_lvls:
+                    dist_to_next = higher_lvls[0].price - lvl.price
+                    if dist_to_next < min_runway:
+                        lvl.level_role = "INTERIOR_CLUSTER"
+                        lvl.is_tradeable_breakout = False
+                        lvl.breakout_tier = "B_SWEEP_ONLY"
+                    else:
+                        lvl.level_role = "MAJOR_SWING"
+                        lvl.is_tradeable_breakout = (lvl.prominence >= 1.25)
+                        lvl.breakout_tier = "A_STANDARD" if lvl.prominence >= 1.25 else "C_UNQUALIFIED"
+
+        # 2. Classify Supports
+        if active_sup:
+            sorted_sup = sorted(active_sup, key=lambda l: l.price, reverse=True)
+            lowest_sup = sorted_sup[-1]
+
+            for lvl in sorted_sup:
+                if lvl.timeframe == "DAILY" or (self.pdl > 0 and abs(lvl.price - self.pdl) < 2.0):
+                    lvl.level_role = "PDL"
+                    lvl.breakout_tier = "A_PLUS"
+                    lvl.is_tradeable_breakout = True
+                    continue
+
+                if lvl.price == lowest_sup.price:
+                    lvl.level_role = "OUTERMOST_FLOOR"
+                    lvl.breakout_tier = "A_PLUS"
+                    lvl.is_tradeable_breakout = (lvl.prominence >= 1.25)
+                    continue
+
+                # Check clearance to the next lower support
+                lower_lvls = [l for l in sorted_sup if l.price < lvl.price]
+                if lower_lvls:
+                    dist_to_next = lvl.price - lower_lvls[0].price
+                    if dist_to_next < min_runway:
+                        lvl.level_role = "INTERIOR_CLUSTER"
+                        lvl.is_tradeable_breakout = False
+                        lvl.breakout_tier = "B_SWEEP_ONLY"
+                    else:
+                        lvl.level_role = "MAJOR_SWING"
+                        lvl.is_tradeable_breakout = (lvl.prominence >= 1.25)
+                        lvl.breakout_tier = "A_STANDARD" if lvl.prominence >= 1.25 else "C_UNQUALIFIED"
 
     def seed_previous_day_5m_bars(self, candles: Any) -> Dict[str, Any]:
         """
@@ -1561,6 +1649,9 @@ class PriceActionEngine:
         # Store all previous day levels (macro PDH/PDL anchors + intermediate 5m/15m swings)
         self._previous_day_levels = [l for l in self.session_levels if getattr(l, "is_previous_day", False)]
 
+        # Classify structural roles and breakout eligibility
+        self._classify_level_roles()
+
         logger.info(
             f"[PriceActionEngine] Seeded Previous Day 5m/15m: {len(self._previous_day_levels)} total previous-day levels registered "
             f"({len(filtered_levels)} intermediate swings | {len([l for l in self._previous_day_levels if l.level_type == 'RESISTANCE'])} Res, "
@@ -1575,6 +1666,9 @@ class PriceActionEngine:
                 "prominence": l.prominence,
                 "touch_count": l.touch_count,
                 "timeframe": l.timeframe,
+                "level_role": getattr(l, "level_role", "NORMAL"),
+                "is_tradeable_breakout": getattr(l, "is_tradeable_breakout", True),
+                "breakout_tier": getattr(l, "breakout_tier", "A_PLUS"),
             }
             for l in self._previous_day_levels
         ]
@@ -2988,6 +3082,9 @@ class PriceActionEngine:
                     "pillar": 2,
                     "sweep_source": sweep_source,
                     "swept_level": round(sw_low, 2),
+                    "level_role": getattr(sr_lvl, "level_role", "FALLBACK_LOCAL_SWING") if sr_lvl else "FALLBACK_LOCAL_SWING",
+                    "breakout_tier": getattr(sr_lvl, "breakout_tier", "B_SWEEP_ONLY") if sr_lvl else "FALLBACK",
+                    "is_previous_day": getattr(sr_lvl, "is_previous_day", False) if sr_lvl else False,
                     "level_prominence": level_prominence,
                     "level_touches": level_touches,
                     "swing_low": round(sw_low, 2),
@@ -3058,6 +3155,9 @@ class PriceActionEngine:
                     "pillar": 2,
                     "sweep_source": sweep_source,
                     "swept_level": round(sw_high, 2),
+                    "level_role": getattr(sr_lvl, "level_role", "FALLBACK_LOCAL_SWING") if sr_lvl else "FALLBACK_LOCAL_SWING",
+                    "breakout_tier": getattr(sr_lvl, "breakout_tier", "B_SWEEP_ONLY") if sr_lvl else "FALLBACK",
+                    "is_previous_day": getattr(sr_lvl, "is_previous_day", False) if sr_lvl else False,
                     "level_prominence": level_prominence,
                     "level_touches": level_touches,
                     "swing_high": round(sw_high, 2),
@@ -3399,11 +3499,18 @@ class PriceActionEngine:
                 and ((self._total_bars_seen - lvl.seq_idx) >= 3 or (bar.ts_start - lvl.ts_created) >= 180.0)
             ]
             cand_supports.sort(key=lambda lvl: (lvl.touch_count * 0.5 + lvl.prominence), reverse=True)
+            interior_sup_hit = None
             for s_lvl in cand_supports:
                 displacement = s_lvl.price - bar.close
                 bar_range = bar.high - bar.low
                 origin_dist = abs(bar.open - s_lvl.price)
                 if bar.close <= (s_lvl.price - min_hub_clearance):
+                    # Selective Breakout Filter: VETO interior cluster levels with inadequate runway
+                    if not getattr(s_lvl, "is_tradeable_breakout", True):
+                        interior_sup_hit = s_lvl
+                        logger.debug(f"[PriceActionEngine] [Pillar4] Veto interior cluster level at {s_lvl.price} (role={getattr(s_lvl, 'level_role', 'INTERIOR_CLUSTER')})")
+                        continue
+
                     # Anti-Exhaustion & Origin Validation on broken support level
                     if bar_range > (1.35 * _atr_ref):
                         return False, "exhausted_breakout_candle_range", {
@@ -3442,6 +3549,7 @@ class PriceActionEngine:
 
                         s_lvl.is_broken = True
                         s_lvl.ts_broken = bar.ts_end
+                        self._classify_level_roles()
                         sl_price = round(s_lvl.price + buffer_pts, 2)
                         age_bars = (self._total_bars_seen - s_lvl.seq_idx) if self._total_bars_seen >= s_lvl.seq_idx else (len(self.bars_1m) - 1 - s_lvl.bar_idx)
 
@@ -3458,6 +3566,9 @@ class PriceActionEngine:
                             "pa_setup_name": "topological_prominence_breakout",
                             "pillar": 4,
                             "hub_price": s_lvl.price,
+                            "level_role": getattr(s_lvl, "level_role", "MAJOR_SWING"),
+                            "breakout_tier": getattr(s_lvl, "breakout_tier", "A_STANDARD"),
+                            "is_previous_day": getattr(s_lvl, "is_previous_day", False),
                             "min_hub_clearance": round(min_hub_clearance, 2),
                             "pi_hat": s_lvl.prominence,
                             "vr_t": vr_t,
@@ -3484,6 +3595,14 @@ class PriceActionEngine:
                         details.update(det_wflow)
                         return True, "prominence_hub_breakout_down", details
 
+            if interior_sup_hit is not None:
+                return False, "veto_interior_cluster_level", {
+                    "hub_price": interior_sup_hit.price,
+                    "level_role": getattr(interior_sup_hit, "level_role", "INTERIOR_CLUSTER"),
+                    "breakout_tier": getattr(interior_sup_hit, "breakout_tier", "B_SWEEP_ONLY"),
+                    "reason": "Interior cluster level has inadequate runway to next structural boundary",
+                }
+
         elif is_bullish and trend_5m_bullish:
             cand_resistances = [
                 lvl for lvl in self.session_levels
@@ -3493,11 +3612,18 @@ class PriceActionEngine:
                 and ((self._total_bars_seen - lvl.seq_idx) >= 3 or (bar.ts_start - lvl.ts_created) >= 180.0)
             ]
             cand_resistances.sort(key=lambda lvl: (lvl.touch_count * 0.5 + lvl.prominence), reverse=True)
+            interior_res_hit = None
             for r_lvl in cand_resistances:
                 displacement = bar.close - r_lvl.price
                 bar_range = bar.high - bar.low
                 origin_dist = abs(bar.open - r_lvl.price)
                 if bar.close >= (r_lvl.price + min_hub_clearance):
+                    # Selective Breakout Filter: VETO interior cluster levels with inadequate runway
+                    if not getattr(r_lvl, "is_tradeable_breakout", True):
+                        interior_res_hit = r_lvl
+                        logger.debug(f"[PriceActionEngine] [Pillar4] Veto interior cluster level at {r_lvl.price} (role={getattr(r_lvl, 'level_role', 'INTERIOR_CLUSTER')})")
+                        continue
+
                     # Anti-Exhaustion & Origin Validation on broken resistance level
                     if bar_range > (1.35 * _atr_ref):
                         return False, "exhausted_breakout_candle_range", {
@@ -3535,6 +3661,7 @@ class PriceActionEngine:
 
                         r_lvl.is_broken = True
                         r_lvl.ts_broken = bar.ts_end
+                        self._classify_level_roles()
                         sl_price = round(r_lvl.price - buffer_pts, 2)
                         age_bars = (self._total_bars_seen - r_lvl.seq_idx) if self._total_bars_seen >= r_lvl.seq_idx else (len(self.bars_1m) - 1 - r_lvl.bar_idx)
 
@@ -3551,6 +3678,9 @@ class PriceActionEngine:
                             "pa_setup_name": "topological_prominence_breakout",
                             "pillar": 4,
                             "hub_price": r_lvl.price,
+                            "level_role": getattr(r_lvl, "level_role", "MAJOR_SWING"),
+                            "breakout_tier": getattr(r_lvl, "breakout_tier", "A_STANDARD"),
+                            "is_previous_day": getattr(r_lvl, "is_previous_day", False),
                             "min_hub_clearance": round(min_hub_clearance, 2),
                             "pi_hat": r_lvl.prominence,
                             "vr_t": vr_t,
@@ -3576,6 +3706,14 @@ class PriceActionEngine:
                         }
                         details.update(det_wflow)
                         return True, "prominence_hub_breakout_up", details
+
+            if interior_res_hit is not None:
+                return False, "veto_interior_cluster_level", {
+                    "hub_price": interior_res_hit.price,
+                    "level_role": getattr(interior_res_hit, "level_role", "INTERIOR_CLUSTER"),
+                    "breakout_tier": getattr(interior_res_hit, "breakout_tier", "B_SWEEP_ONLY"),
+                    "reason": "Interior cluster level has inadequate runway to next structural boundary",
+                }
 
         return False, "no_sr_breakout", {}
 
@@ -4159,6 +4297,9 @@ class PriceActionEngine:
                                     "sweep_source": sweep_src,
                                     "boundary": "SR_REGISTRY_SUPPORT" if sweep_src == "SR_REGISTRY" else "MICRO_SWEEP_LOW",
                                     "boundary_level": round(swept_low, 2),
+                                    "level_role": getattr(sr_lvl, "level_role", "FALLBACK_LOCAL_SWING") if sr_lvl else "FALLBACK_LOCAL_SWING",
+                                    "breakout_tier": getattr(sr_lvl, "breakout_tier", "B_SWEEP_ONLY") if sr_lvl else "FALLBACK",
+                                    "is_previous_day": getattr(sr_lvl, "is_previous_day", False) if sr_lvl else False,
                                     "sl_price": round(curr_bar.low - 0.15 * atr, 2),
                                     "trigger_sec": sec_in_min,
                                     "bar_open": round(curr_bar.open, 2),
@@ -4205,6 +4346,9 @@ class PriceActionEngine:
                                     "sweep_source": sweep_src,
                                     "boundary": "SR_REGISTRY_RESISTANCE" if sweep_src == "SR_REGISTRY" else "MICRO_SWEEP_HIGH",
                                     "boundary_level": round(swept_high, 2),
+                                    "level_role": getattr(sr_lvl, "level_role", "FALLBACK_LOCAL_SWING") if sr_lvl else "FALLBACK_LOCAL_SWING",
+                                    "breakout_tier": getattr(sr_lvl, "breakout_tier", "B_SWEEP_ONLY") if sr_lvl else "FALLBACK",
+                                    "is_previous_day": getattr(sr_lvl, "is_previous_day", False) if sr_lvl else False,
                                     "sl_price": round(curr_bar.high + 0.15 * atr, 2),
                                     "trigger_sec": sec_in_min,
                                     "bar_open": round(curr_bar.open, 2),
@@ -4381,8 +4525,15 @@ class PriceActionEngine:
                 ]
                 candidates.sort(key=lambda l: (l.touch_count * 0.5 + l.prominence), reverse=True)
                 matched_any = False
+                interior_res_mb_hit = None
                 for r_lvl in candidates:
                     if curr_bar.open <= r_lvl.price and spot >= (r_lvl.price + min_clearance):
+                        # Selective Breakout Filter: VETO interior cluster levels with inadequate runway
+                        if not getattr(r_lvl, "is_tradeable_breakout", True):
+                            interior_res_mb_hit = r_lvl
+                            logger.debug(f"[PriceActionEngine] [MODE_B_P4] Veto interior cluster level at {r_lvl.price} (role={getattr(r_lvl, 'level_role', 'INTERIOR_CLUSTER')})")
+                            continue
+
                         body_ratio = (spot - curr_bar.open) / max(curr_rng, 0.1)
                         upper_wick = curr_bar.high - spot
                         ok_struct, _, _ = self._check_structural_obstacle("CALL", spot, ignore_pivots_below=r_lvl.price, check_day_extremes=True)
@@ -4400,12 +4551,16 @@ class PriceActionEngine:
                                     self._mode_b_last_trigger_bar_idx["P4_SR_BREAKTHROUGH"] = bar_idx
                                     r_lvl.is_broken = True
                                     r_lvl.ts_broken = now_sec
-                                    logger.info(f"[PriceActionEngine] [MODE_B_P4] Dynamic S/R CALL Breakout at spot={spot:.2f} > res={r_lvl.price:.2f} (T+{sec_in_min}s)")
+                                    self._classify_level_roles()
+                                    logger.info(f"[PriceActionEngine] [MODE_B_P4] Dynamic S/R CALL Breakout at spot={spot:.2f} > res={r_lvl.price:.2f} role={getattr(r_lvl, 'level_role', 'UNKNOWN')} (T+{sec_in_min}s)")
                                     return True, "topological_prominence_breakout", {
                                         "pillar": 4,
                                         "pa_setup_name": "topological_prominence_breakout",
                                         "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
                                         "boundary_level": round(r_lvl.price, 2),
+                                        "level_role": getattr(r_lvl, "level_role", "UNKNOWN"),
+                                        "breakout_tier": getattr(r_lvl, "breakout_tier", "UNKNOWN"),
+                                        "is_previous_day": getattr(r_lvl, "is_previous_day", False),
                                         "sl_price": round(curr_bar.low - 0.15 * atr, 2),
                                         "trigger_sec": sec_in_min,
                                         "bar_open": round(curr_bar.open, 2),
@@ -4417,6 +4572,13 @@ class PriceActionEngine:
                                 return False, "awaiting_second_tick", {}
                 if not matched_any:
                     self._mode_b_p4_up_ticks = 0
+                    if interior_res_mb_hit is not None:
+                        return False, "veto_interior_cluster_level", {
+                            "hub_price": interior_res_mb_hit.price,
+                            "level_role": getattr(interior_res_mb_hit, "level_role", "INTERIOR_CLUSTER"),
+                            "breakout_tier": getattr(interior_res_mb_hit, "breakout_tier", "B_SWEEP_ONLY"),
+                            "reason": "Interior cluster level has inadequate runway to next structural boundary",
+                        }
             elif direction == "DOWN":
                 candidates = [
                     lvl for lvl in self.session_levels
@@ -4427,8 +4589,15 @@ class PriceActionEngine:
                 ]
                 candidates.sort(key=lambda l: (l.touch_count * 0.5 + l.prominence), reverse=True)
                 matched_any = False
+                interior_sup_mb_hit = None
                 for s_lvl in candidates:
                     if curr_bar.open >= s_lvl.price and spot <= (s_lvl.price - min_clearance):
+                        # Selective Breakout Filter: VETO interior cluster levels with inadequate runway
+                        if not getattr(s_lvl, "is_tradeable_breakout", True):
+                            interior_sup_mb_hit = s_lvl
+                            logger.debug(f"[PriceActionEngine] [MODE_B_P4] Veto interior cluster level at {s_lvl.price} (role={getattr(s_lvl, 'level_role', 'INTERIOR_CLUSTER')})")
+                            continue
+
                         body_ratio = (curr_bar.open - spot) / max(curr_rng, 0.1)
                         lower_wick = spot - curr_bar.low
                         ok_struct, _, _ = self._check_structural_obstacle("PUT", spot, ignore_pivots_above=s_lvl.price, check_day_extremes=True)
@@ -4446,12 +4615,16 @@ class PriceActionEngine:
                                     self._mode_b_last_trigger_bar_idx["P4_SR_BREAKTHROUGH"] = bar_idx
                                     s_lvl.is_broken = True
                                     s_lvl.ts_broken = now_sec
-                                    logger.info(f"[PriceActionEngine] [MODE_B_P4] Dynamic S/R PUT Breakout at spot={spot:.2f} < sup={s_lvl.price:.2f} (T+{sec_in_min}s)")
+                                    self._classify_level_roles()
+                                    logger.info(f"[PriceActionEngine] [MODE_B_P4] Dynamic S/R PUT Breakout at spot={spot:.2f} < sup={s_lvl.price:.2f} role={getattr(s_lvl, 'level_role', 'UNKNOWN')} (T+{sec_in_min}s)")
                                     return True, "topological_prominence_breakout", {
                                         "pillar": 4,
                                         "pa_setup_name": "topological_prominence_breakout",
                                         "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
                                         "boundary_level": round(s_lvl.price, 2),
+                                        "level_role": getattr(s_lvl, "level_role", "UNKNOWN"),
+                                        "breakout_tier": getattr(s_lvl, "breakout_tier", "UNKNOWN"),
+                                        "is_previous_day": getattr(s_lvl, "is_previous_day", False),
                                         "sl_price": round(curr_bar.high + 0.15 * atr, 2),
                                         "trigger_sec": sec_in_min,
                                         "bar_open": round(curr_bar.open, 2),
@@ -4463,6 +4636,13 @@ class PriceActionEngine:
                                 return False, "awaiting_second_tick", {}
                 if not matched_any:
                     self._mode_b_p4_down_ticks = 0
+                    if interior_sup_mb_hit is not None:
+                        return False, "veto_interior_cluster_level", {
+                            "hub_price": interior_sup_mb_hit.price,
+                            "level_role": getattr(interior_sup_mb_hit, "level_role", "INTERIOR_CLUSTER"),
+                            "breakout_tier": getattr(interior_sup_mb_hit, "breakout_tier", "B_SWEEP_ONLY"),
+                            "reason": "Interior cluster level has inadequate runway to next structural boundary",
+                        }
 
         return False, "no_mode_b_trigger", {}
 

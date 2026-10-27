@@ -247,3 +247,108 @@ def test_pillar2_sweep_maps_previous_day_level():
     assert matched.level_type == "SUPPORT"
     assert matched.is_previous_day is True
 
+
+def test_interior_cluster_level_vetoed_on_breakout():
+    pa = PriceActionEngine()
+    now_ts = datetime(2026, 10, 27, 10, 0, 0).timestamp()
+
+    # Create two resistances:
+    # 1. Interior cluster at 24080 (only 10 pts below outermost roof 24090; 10 < 1.25 * ATR(15) = 18.75)
+    # 2. Outermost roof at 24090
+    res_int = StructuralLevel(
+        level_type="RESISTANCE",
+        price=24080.0,
+        ts_created=now_ts - 86400.0,
+        prominence=1.5,
+        bar_idx=0,
+        seq_idx=0,
+        touch_count=1,
+        timeframe="5m",
+        is_previous_day=True,
+    )
+    res_outer = StructuralLevel(
+        level_type="RESISTANCE",
+        price=24090.0,
+        ts_created=now_ts - 86400.0,
+        prominence=2.5,
+        bar_idx=0,
+        seq_idx=0,
+        touch_count=3,
+        timeframe="15m",
+        is_previous_day=True,
+    )
+
+    pa.session_levels = [res_int, res_outer]
+    pa.current_atr_1m = 15.0
+    pa.pdc = 24000.0
+    pa.last_price = 24050.0
+    pa._classify_level_roles()
+
+    # Verify classification
+    assert res_int.level_role == "INTERIOR_CLUSTER"
+    assert res_int.is_tradeable_breakout is False
+    assert res_int.breakout_tier == "B_SWEEP_ONLY"
+
+    assert res_outer.level_role == "OUTERMOST_ROOF"
+    assert res_outer.is_tradeable_breakout is True
+    assert res_outer.breakout_tier == "A_PLUS"
+
+    # Setup environment for Mode B
+    pa._total_bars_seen = 10
+    pa.current_vwap = 24040.0
+    pa.bars_5m.append(OHLCBar(ts_start=now_ts - 300, ts_end=now_ts, open=24040.0, high=24085.0, low=24035.0, close=24082.0))
+    pa._opt_flow_1m = {
+        "call_buy_vol": 900.0,
+        "call_sell_vol": 100.0,
+        "put_buy_vol": 50.0,
+        "put_sell_vol": 50.0,
+    }
+
+    # Case 1: Spot breaks ONLY interior cluster at 24080 (spot = 24084 < 24090)
+    pa._curr_1m_bar = OHLCBar(
+        ts_start=now_ts,
+        ts_end=now_ts + 60.0,
+        open=24075.0,
+        high=24084.0,
+        low=24074.0,
+        close=24084.0,
+        volume=600,
+        tick_count=10,
+    )
+    pa.last_price = 24084.0
+    ok_int, reason_int, det_int = pa.check_mode_b_breakthrough("UP", current_time=now_ts + 20.0)
+    assert ok_int is False
+    assert reason_int == "veto_interior_cluster_level"
+    assert det_int["hub_price"] == 24080.0
+    assert det_int["level_role"] == "INTERIOR_CLUSTER"
+
+    # Case 2: Spot breaks the OUTERMOST ROOF at 24090 (spot = 24095 > 24090)
+    pa._curr_1m_bar = OHLCBar(
+        ts_start=now_ts,
+        ts_end=now_ts + 60.0,
+        open=24075.0,
+        high=24095.0,
+        low=24074.0,
+        close=24095.0,
+        volume=1200,
+        tick_count=10,
+    )
+    pa.last_price = 24095.0
+    ok1, r1, _ = pa.check_mode_b_breakthrough("UP", current_time=now_ts + 25.0)
+    assert ok1 is False
+    assert r1 == "awaiting_second_tick"
+
+    # Tick 2 confirms outermost breakout
+    pa._curr_1m_bar.high = 24096.0
+    pa._curr_1m_bar.close = 24096.0
+    pa._curr_1m_bar.tick_count = 11
+    pa.last_price = 24096.0
+    ok2, r2, det2 = pa.check_mode_b_breakthrough("UP", current_time=now_ts + 25.5)
+    assert ok2 is True
+    assert r2 == "topological_prominence_breakout"
+    assert det2["boundary_level"] == 24090.0
+    assert det2["level_role"] == "OUTERMOST_ROOF"
+    assert det2["breakout_tier"] == "A_PLUS"
+    assert res_outer.is_broken is True
+
+
