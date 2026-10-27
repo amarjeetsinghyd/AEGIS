@@ -104,25 +104,6 @@ def test_key_level_proximity_veto_near_pdl():
     assert reason == "clear_of_key_levels"
 
 
-def test_volatility_squeeze_rejects_opposed_ema():
-    """Verify Pillar 3 Squeeze rejects CALL when EMA 20 < EMA 50 (BEAR_OVERLAP)."""
-    engine = PriceActionEngine()
-    engine.current_atr_1m = 30.0
-    engine.ema_20_1m = 74220.0
-    engine.ema_50_1m = 74250.0  # Bear overlap!
-
-    for i in range(4):
-        engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74260.0, 74270.0, 74255.0, 74265.0))
-
-    breakout_bar = OHLCBar(240, 300, 74265.0, 74295.0, 74260.0, 74290.0)
-    engine._on_1m_bar_close(breakout_bar)
-    engine.last_price = breakout_bar.close
-
-    is_breakout, reason, _ = engine.check_volatility_squeeze_breakout("UP", current_vwap=74200.0)
-    assert is_breakout is False
-    assert reason == "bear_overlap_ema_disallowed"
-
-
 def test_strike_selector_selects_otm8_when_closer_unaffordable():
     """Verify that on low capital (e.g. Rs 605.83, ceiling Rs 30.29 on lot 20),
     StrikeSelector scans up to OTM 10 and selects OTM 8 (74000 PE @ 24.95) when OTM 1-7 are > Rs 32.

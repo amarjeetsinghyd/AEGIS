@@ -60,9 +60,9 @@ the `common/` shared branches alone and ask. Never add new kronos code.**
 
 ## ACTIVE ENGINES (Priority Order)
 
-1. **`AEGIS/`** — **PRIMARY ACTIVE ENGINE (Core Focus)** — **AEGIS** (**A**utonomous **E**xecution & **G**amma **I**mbalance **S**ystem) — options strategy bot (Production Version 1.0 / v1.0 Locked).
+1. **`AEGIS/`** — **SOLE ACTIVE PRODUCTION ENGINE (100% Core Focus)** — **AEGIS** (**A**utonomous **E**xecution & **G**amma **I**mbalance **S**ystem) — options strategy bot (Production Version 1.0 / v1.0 Locked).
    Architecture authority: `AEGIS/AEGIS_V1.0_ARCHITECTURE.md` (Production Version 1.0 Locked).
-   - **Primary Focus**: All current development, telemetry review, and trading logic verification center on AEGIS.
+   - **Primary Focus**: All development, telemetry, execution, and live trading center exclusively on AEGIS.
    - **Architecture & Rules**: Conform all edits to `AEGIS/AEGIS_V1.0_ARCHITECTURE.md`:
      * **4 Macro Price Action Pillars + Hybrid Intra-Bar Execution**:
        - **Mode A (Rejection & Pierce / T:00s Close & T:50s Pre-Close)** for Pillar 1 (`20_ema_rejection`) & Pillar 2 (`micro_sweep_reclaim`).
@@ -78,10 +78,10 @@ the `common/` shared branches alone and ask. Never add new kronos code.**
      * **Strict 1-Lot Maker TP at +4.0% (Friday calibrated to +3.0%), Adaptive Exits, Universal Entry Candle Low/High Invalidation**.
      * **Strict 3-Trade Daily Cap (`MAX_TRADES_PER_DAY = 3`)**.
      * **Pre-Trade Abort Slot Rollback and 15:08:00 IST CAS Force Flatten**.
-   - **Testing / Consistency Phase**: Currently in consistency testing / validation mode. We are validating pipeline health, signal consistency, Wyckoff delta harmony, and telemetry with current available account funds without manual top-ups.
-2. **`ARGUS/`** — **ARGUS** (**A**lgorithmic **R**eal-time **G**ranular **U**ltra-microstructure **S**calper) — HFT microstructure equities engine.
-   - **Status**: **SECONDARY / DEPRIORITIZED (Ignore for now)**. We are NOT focusing on ARGUS at this stage. Treat as secondary/dormant unless explicitly directed.
-3. **`unified_dashboard/`** — monitoring UI, dual-brands: Quant Console — AEGIS × ARGUS.
+   - **Testing / Consistency Phase**: Validating pipeline health, signal consistency, Wyckoff delta harmony, and telemetry with current available account funds without manual top-ups.
+2. **`ARGUS/`** — **DECOMMISSIONED & PURGED (Deleted October 2026)**.
+   - Equities microstructure engine permanently deleted to maintain zero-entropy focus on AEGIS options trading.
+3. **`unified_dashboard/`** — monitoring UI (Quant Console — AEGIS).
 
 Shared library: `common/` (broker / execution / market / ipc / runtime / config / symbols).
 
@@ -247,17 +247,26 @@ Before writing or modifying ANY strategy, gatekeeper, or execution code, every A
 
 ---
 
-## VPS & OPS ACCESS
+## VPS & OPS ACCESS (LEAN PRODUCTION DEPLOYMENT MANDATE)
+
+> **VPS Lean Deployment Rule**: ONLY active, production-critical runtime files are allowed on the VPS. All tests, test data, scratch experiments, historical archives, and forensics documentation MUST stay strictly on the local development machine. Never deploy or leave non-runtime files on the VPS.
 
 - **Host:** `137.23.41.38` (Oracle Cloud, Ubuntu). **User:** `opc`. Repo on VPS: `/home/opc`.
-- **SSH key location (local):** repo-root `Oracle SSH keys/ssh-key-2026-07-11.key`.
-  It is the ONLY copy — never replicate it into an engine subfolder (e.g. do **not**
-  copy it into `ARGUS/`).
+- **Allowed on VPS (Runtime Only)**:
+  - `AEGIS/` (production options engine)
+  - `unified_dashboard/` (monitoring UI)
+  - `common/` (broker adapters, IPC, runtime paths, symbols)
+  - `ecosystem.config.js` (PM2 process manifest)
+  - `.env` (root credentials only — never in subdirectories)
+- **Forbidden on VPS (Local-Only)**:
+  - `tests/` (unit tests run locally before deployment)
+  - `scratch/` (transient workspace — must remain 100% empty on VPS)
+  - `*_archive/` or any `.tar.gz` backup dumps (zero archives on VPS)
+  - Heavy ML datasets, raw parquets, or forensic notebooks
+- **SSH key location (local):** repo-root `Oracle SSH keys/ssh-key-2026-07-11.key`. It is the ONLY copy — never replicate it into an engine subfolder.
 - **SSH command:** `ssh -i "Oracle SSH keys/ssh-key-2026-07-11.key" opc@137.23.41.38`
-- **Process manager:** PM2, config `ecosystem.config.js` — active apps: `aegis-bot`,
-  `argus`, `unified-dashboard`, `l2-archiver`, `eod-calibrator`.
-- **Deploy rule:** restart `shoonya-data-hub` *before* `astra-bot`; deploy only after
-  15:30 IST or before 09:15 IST.
+- **Process manager:** PM2, config `ecosystem.config.js` — active apps: `aegis-bot`, `unified-dashboard`.
+- **Deploy rule:** Deploy only after 15:30 IST or before 09:15 IST.
 
 ---
 
