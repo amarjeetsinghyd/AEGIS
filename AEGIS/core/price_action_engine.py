@@ -443,7 +443,6 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         live_ema_50, live_slope_50_bps = self.get_live_50_ema_and_slope()
         return live_ema_20, live_slope_20_bps, live_ema_50, live_slope_50_bps
 
-    @staticmethod
     def seed_historical_bars(self, candles: List[Dict[str, Any]]) -> int:
         """
         Pre-warms the engine with historical 1m bars from broker REST API

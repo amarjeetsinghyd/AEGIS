@@ -399,8 +399,13 @@ def main():
                                 logger.warning("[AegisMain][COLD-BOOT] Fallback fetch empty — priming purely from live ticks.")
                         except Exception as e_fb:
                             logger.warning(f"[AegisMain][COLD-BOOT] Fallback failed (non-fatal): {e_fb}")
+        except Exception as e_seed:
+            logger.warning(f"[AegisMain] Historical 1m bar seeding warning (non-fatal): {e_seed}")
 
-                # ─── Seed Daily Structural Levels (PDH / PDL / PDC) & Previous Day 5m/15m S/R ───
+        # ─── Seed Daily Structural Levels (PDH / PDL / PDC) & Previous Day 5m/15m S/R ───
+        try:
+            pa_eng = getattr(aegis_engine, "price_action_engine", None) or getattr(aegis_engine, "time_bar_engine", None)
+            if pa_eng and spot_token and spot_exch:
                 pdh, pdl, pdc = 0.0, 0.0, 0.0
                 from common.market.market_calendar import get_previous_trading_day
                 prev_trading_date = get_previous_trading_day(datetime.now().date())
@@ -455,8 +460,8 @@ def main():
                 if pdh > 0:
                     pa_eng.seed_daily_levels(pdh, pdl, pdc)
                     logger.info(f"[AegisMain] Seeded Daily Structural Levels: PDH={pdh:.2f} | PDL={pdl:.2f} | PDC={pdc:.2f}")
-        except Exception as e_seed:
-            logger.warning(f"[AegisMain] Historical 1m bar seeding warning (non-fatal): {e_seed}")
+        except Exception as e_sr_seed:
+            logger.warning(f"[AegisMain] Daily / 5m structural seeding warning (non-fatal): {e_sr_seed}")
 
 
 
