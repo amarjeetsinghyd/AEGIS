@@ -2066,6 +2066,15 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         ps = float(self._opt_flow_1m.get("put_sell_vol", 0.0))
         bull_flow = cb + ps
         bear_flow = pb + cs
+        opt_delta_flow = cb - pb
+        opt_total_vol = cb + cs + pb + ps
+        flow_dict = {
+            "opt_delta_flow": round(opt_delta_flow, 1),
+            "opt_total_vol": round(opt_total_vol, 1),
+            "bull_flow": round(bull_flow, 1),
+            "bear_flow": round(bear_flow, 1),
+            "trigger_sec": sec_in_min,
+        }
 
         # ─── Pain Zone VWAP Alignment Gate ───
         eff_vwap_mb = external_vwap if external_vwap > 0 else self.current_vwap
@@ -2115,6 +2124,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                             "bar_low": round(curr_bar.low, 2),
                             "bar_close": round(spot, 2),
                             "entry_bar_bucket": int(now_sec // 60),
+                            **flow_dict,
                         }
             elif direction == "DOWN":
                 # Instant breakout: candle opened inside/at box, spot crossed below box_low
@@ -2137,6 +2147,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                             "bar_low": round(curr_bar.low, 2),
                             "bar_close": round(spot, 2),
                             "entry_bar_bucket": int(now_sec // 60),
+                            **flow_dict,
                         }
 
         # ─── 2. PILLAR 4: Dynamic Session S/R Registry & T-2 Prominence Hub Breakout (Mode B) ───
@@ -2257,7 +2268,8 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                     self._mode_b_last_trigger_bar_idx["P1_EMA20_UP"] = bar_idx
                                     lowest_low = min(prior_bar.low, curr_bar.low)
                                     sl_price = round(lowest_low - 0.15 * atr, 2)
-                                    logger.info(f"[PriceActionEngine] [MODE_B_P1] 20 EMA CALL In-Flight Reversal Breakout at spot={spot:.2f} >= prior_high={prior_bar.high:.2f} (T+{sec_in_min}s)")
+                                    n1_fp = self.compute_n1_footprint(prior_bar, atr)
+                                    logger.info(f"[PriceActionEngine] [MODE_B_P1] 20 EMA CALL In-Flight Reversal Breakout at spot={spot:.2f} >= prior_high={prior_bar.high:.2f} (T+{sec_in_min}s) | N1Dry={n1_fp.get('n1_vol_dryup')}")
                                     return True, "20_ema_rejection", {
                                         "pillar": 1,
                                         "pa_setup_name": "20_ema_rejection",
@@ -2271,6 +2283,8 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                         "bar_low": round(curr_bar.low, 2),
                                         "bar_close": round(spot, 2),
                                         "entry_bar_bucket": int(now_sec // 60),
+                                        "n1_footprint": n1_fp,
+                                        **flow_dict,
                                     }
                     elif direction == "DOWN":
                         downtrend_ok = (live_slope_20_bps <= 0.10) and (self.ema_20_1m <= self.ema_50_1m or self.ema_50_1m <= 0)
@@ -2294,7 +2308,8 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                     self._mode_b_last_trigger_bar_idx["P1_EMA20_DOWN"] = bar_idx
                                     highest_high = max(prior_bar.high, curr_bar.high)
                                     sl_price = round(highest_high + 0.15 * atr, 2)
-                                    logger.info(f"[PriceActionEngine] [MODE_B_P1] 20 EMA PUT In-Flight Reversal Breakdown at spot={spot:.2f} <= prior_low={prior_bar.low:.2f} (T+{sec_in_min}s)")
+                                    n1_fp = self.compute_n1_footprint(prior_bar, atr)
+                                    logger.info(f"[PriceActionEngine] [MODE_B_P1] 20 EMA PUT In-Flight Reversal Breakdown at spot={spot:.2f} <= prior_low={prior_bar.low:.2f} (T+{sec_in_min}s) | N1Dry={n1_fp.get('n1_vol_dryup')}")
                                     return True, "20_ema_rejection", {
                                         "pillar": 1,
                                         "pa_setup_name": "20_ema_rejection",
@@ -2308,6 +2323,8 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                         "bar_low": round(curr_bar.low, 2),
                                         "bar_close": round(spot, 2),
                                         "entry_bar_bucket": int(now_sec // 60),
+                                        "n1_footprint": n1_fp,
+                                        **flow_dict,
                                     }
 
         # ─── 4. PILLAR 2: Micro-Sweep & Reclaim In-Flight Reversal Breakout (Mode B) ───
@@ -2344,7 +2361,8 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                 self._mode_b_last_trigger_bar_idx["P2_SWEEP_UP"] = bar_idx
                                 lowest_low = min(prior_bar.low, curr_bar.low)
                                 sl_price = round(lowest_low - 0.15 * atr, 2)
-                                logger.info(f"[PriceActionEngine] [MODE_B_P2] Micro-Sweep CALL In-Flight Reversal Breakout at spot={spot:.2f} >= prior_high={prior_bar.high:.2f} (T+{sec_in_min}s, src={sweep_src})")
+                                n1_fp = self.compute_n1_footprint(prior_bar, atr)
+                                logger.info(f"[PriceActionEngine] [MODE_B_P2] Micro-Sweep CALL In-Flight Reversal Breakout at spot={spot:.2f} >= prior_high={prior_bar.high:.2f} (T+{sec_in_min}s, src={sweep_src}) | N1Dry={n1_fp.get('n1_vol_dryup')}")
                                 return True, "micro_sweep_reclaim", {
                                     "pillar": 2,
                                     "pa_setup_name": "micro_sweep_reclaim",
@@ -2359,6 +2377,8 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                     "bar_low": round(curr_bar.low, 2),
                                     "bar_close": round(spot, 2),
                                     "entry_bar_bucket": int(now_sec // 60),
+                                    "n1_footprint": n1_fp,
+                                    **flow_dict,
                                 }
                     elif direction == "DOWN":
                         sr_lvl_dn = self._find_swept_sr_level("PUT", prior_bar, min_sweep_depth, atr)
@@ -2377,7 +2397,8 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                 self._mode_b_last_trigger_bar_idx["P2_SWEEP_DOWN"] = bar_idx
                                 highest_high = max(prior_bar.high, curr_bar.high)
                                 sl_price = round(highest_high + 0.15 * atr, 2)
-                                logger.info(f"[PriceActionEngine] [MODE_B_P2] Micro-Sweep PUT In-Flight Reversal Breakdown at spot={spot:.2f} <= prior_low={prior_bar.low:.2f} (T+{sec_in_min}s, src={sweep_src})")
+                                n1_fp = self.compute_n1_footprint(prior_bar, atr)
+                                logger.info(f"[PriceActionEngine] [MODE_B_P2] Micro-Sweep PUT In-Flight Reversal Breakdown at spot={spot:.2f} <= prior_low={prior_bar.low:.2f} (T+{sec_in_min}s, src={sweep_src}) | N1Dry={n1_fp.get('n1_vol_dryup')}")
                                 return True, "micro_sweep_reclaim", {
                                     "pillar": 2,
                                     "pa_setup_name": "micro_sweep_reclaim",
@@ -2392,6 +2413,8 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                     "bar_low": round(curr_bar.low, 2),
                                     "bar_close": round(spot, 2),
                                     "entry_bar_bucket": int(now_sec // 60),
+                                    "n1_footprint": n1_fp,
+                                    **flow_dict,
                                 }
 
         return False, "no_mode_b_trigger", {}

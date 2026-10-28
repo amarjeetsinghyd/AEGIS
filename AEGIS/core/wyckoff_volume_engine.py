@@ -109,10 +109,22 @@ class WyckoffVolumeEngine:
         pa_name = str((pa_details or {}).get("pa_setup_name", ""))
         mode_val = str((pa_details or {}).get("mode", "")).upper()
         if pa_name.startswith(("mode_b_", "mode_a_")) or mode_val.startswith(("MODE_A", "MODE_B")):
+            live_delta = float((pa_details or {}).get("opt_delta_flow", 0.0))
+            live_vol = float((pa_details or {}).get("opt_total_vol", 0.0))
+            n1_fp = (pa_details or {}).get("n1_footprint", {})
+            vdr_val = 0.50 if n1_fp.get("n1_vol_dryup", False) else 1.0
+            absorption = 2.0 if n1_fp.get("n1_stopping_vol", False) else 1.0
             return True, "wyckoff_intrabar_inflight_confirmed", {
                 "in_flight_validated": True,
                 "setup_name": pa_name or mode_val,
                 "atr": round(max(float(atr or 10.0), 1.0), 2),
+                "opt_delta_flow": round(live_delta, 1),
+                "opt_total_vol": round(live_vol, 1),
+                "ofi_delta": round(live_delta, 1),
+                "vdr": round(vdr_val, 2),
+                "absorption_score": round(absorption, 1),
+                "n1_footprint": n1_fp,
+                "wyckoff_confirmed": True,
             }
 
         if not bars or len(bars) < 4:

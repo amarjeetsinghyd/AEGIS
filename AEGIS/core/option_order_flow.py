@@ -952,7 +952,8 @@ class CompositeConvictionEngine:
 
         if wyckoff_conf:
             ofi_aligned = (ofi > 0) if is_up else (ofi < 0)
-            if ofi_aligned or ofi != 0:
+            n1_fp = (wyckoff_details or {}).get("n1_footprint") or {}
+            if ofi_aligned or ofi != 0 or n1_fp.get("n1_vol_dryup", False) or n1_fp.get("n1_stopping_vol", False):
                 agg_pts = max(agg_pts, 34.0)
 
         # 2. Live Tick Arrival Intensity (35 pts max)
@@ -1184,8 +1185,12 @@ class CompositeConvictionEngine:
 
         # Tick rate calculation from live forming candle if available
         if tick_intensity is None and current_bar is not None and hasattr(current_bar, "tick_count"):
-            now_sec = float(getattr(current_bar, "ts_end", 0.0) or getattr(current_bar, "ts_start", 0.0) + 15.0)
-            sec_in_min = max(int(now_sec % 60), 1)
+            trigger_sec = int((pa_details or {}).get("trigger_sec", 0))
+            if trigger_sec > 0:
+                sec_in_min = max(trigger_sec, 2)
+            else:
+                now_sec = float(getattr(current_bar, "ts_end", 0.0) or getattr(current_bar, "ts_start", 0.0) + 15.0)
+                sec_in_min = max(int(now_sec % 60), 2)
             tick_intensity = float(current_bar.tick_count) / float(sec_in_min)
 
         # ─── Dual-Profile Selection ───
