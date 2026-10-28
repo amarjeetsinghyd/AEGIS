@@ -1672,18 +1672,16 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                 continue
 
             triggered = False
-            # Pierce Quality Buffer (2026-10-26): marginal single-tick pierces are
-            # the classic bull/bear-trap signature (trap case 2026-10-26 10:17:
-            # +0.75pt pierce immediately reversed). Scale-invariant excursion
-            # beyond the anchor is now required before Mode A consumes a setup.
-            pierce_buffer = max(0.10 * atr, 0.10)
-            if s_dir == "UP" and spot >= (anchor_h + pierce_buffer):
+            # Zero-Latency Single-Shot Pierce: The moment live spot pierces the prior
+            # candle's High (for CALL) or Low (for PUT), trigger immediately on the very
+            # first tick without artificial clearance buffer (eliminates HFT front-running latency).
+            if s_dir == "UP" and spot >= anchor_h:
                 triggered = True
-            elif s_dir == "DOWN" and spot <= (anchor_l - pierce_buffer):
+            elif s_dir == "DOWN" and spot <= anchor_l:
                 triggered = True
 
             if triggered:
-                # OFI Delta Harmony Gate (2026-10-26): Mode A pierces now require
+                # OFI Delta Harmony Gate: Mode A pierces require
                 # in-flight institutional flow harmony (parity with Mode B ladders
                 # and the T:50s pre-close path). Consumes the setup on failure —
                 # the pierce fired but the order flow betrayed it.
@@ -1696,7 +1694,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                     return False, "delta_harmony_fail", {}
                 del self._mode_a_armed_setups[b_name]
                 b_open = round(self._curr_1m_bar.open, 2) if self._curr_1m_bar is not None else round(anchor_l if direction == "UP" else anchor_h, 2)
-                logger.info(f"[PriceActionEngine] [MODE_A_PIERCE] Pillar {pillar_num} {setup_name} {direction} Triggered at spot={spot:.2f} (T+{sec_in_min}s, buffer={pierce_buffer:.2f}pts)")
+                logger.info(f"[PriceActionEngine] [MODE_A_PIERCE] Pillar {pillar_num} {setup_name} {direction} Triggered at spot={spot:.2f} (T+{sec_in_min}s, anchor_h={anchor_h:.2f}, anchor_l={anchor_l:.2f})")
                 return True, setup_name, {
                     "pillar": pillar_num,
                     "pa_setup_name": setup_name,

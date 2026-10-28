@@ -252,32 +252,20 @@ def test_pillar_2_micro_sweep_mode_a_arming_and_piercing():
 
 
 
-    # 3. Bar N+1 at T+10s: marginal single-tick pierce (0.5pt < 0.10xATR buffer)
-
-    #    must NOT consume the setup — that is the trap filter (2026-10-26).
-
-    pa.last_price = 22462.5
-
+    # 3. Bar N+1 at T+10s: spot below anchor high (22461.5 < 22462.0)
+    #    must NOT trigger - setup stays armed.
+    pa.last_price = 22461.5
     ok, reason, _ = pa.check_mode_a_pierce("UP", current_time=now + 13 * 60 + 10)
+    assert ok is False
+    assert "PILLAR_2_SWEEP_UP" in pa._mode_a_armed_setups, "Setup must stay armed before breach"
 
-    assert ok is False, "Marginal sub-buffer pierce must be filtered (trap signature)"
-
-    assert "PILLAR_2_SWEEP_UP" in pa._mode_a_armed_setups, "Setup must stay armed after sub-buffer touch"
-
-
-
-    # 4. Same bar at T+15s: spot extends 1.5pts beyond anchor (> buffer) -> Triggers Mode A Pierce!
-
-    pa.last_price = 22463.5
-
+    # 4. Same bar at T+15s: single-shot instant pierce on first tick breach (22462.5 >= 22462.0)
+    #    triggers Mode A Pierce immediately without artificial clearance buffer!
+    pa.last_price = 22462.5
     ok, reason, details = pa.check_mode_a_pierce("UP", current_time=now + 13 * 60 + 15)
-
     assert ok is True
-
     assert details["mode"] == "MODE_A_PIERCE"
-
     assert details["pillar"] == 2
-
     assert details["pa_setup_name"] == "micro_sweep_reclaim"
 
 
