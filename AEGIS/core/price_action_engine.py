@@ -1989,8 +1989,8 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
 
         # 3. Per-Bar Compression: No trending giant bars inside the box
         max_bar_rng = max(b.high - b.low for b in recent_bars)
-        if max_bar_rng > (0.65 * atr):
-            return False, f"individual_bar_expanded_{max_bar_rng:.1f}_gt_{0.65*atr:.1f}", {}
+        if max_bar_rng > (0.85 * atr):
+            return False, f"individual_bar_expanded_{max_bar_rng:.1f}_gt_{0.85*atr:.1f}", {}
 
         # 4. Net Directional Drift Cap: |Close[-1] - Open[0]| <= 0.50 * box_rng
         drift = abs(recent_bars[-1].close - recent_bars[0].open)
@@ -2025,7 +2025,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         # 6. Median Oscillation / Core Overlap: at least 60% of bars cross or touch the center-line
         mid_level = (box_high + box_low) / 2.0
         touch_count = sum(1 for b in recent_bars if b.low <= mid_level <= b.high)
-        if (touch_count / float(n)) < 0.60:
+        if (touch_count / float(n)) < 0.50:
             return False, f"insufficient_median_crossings_{touch_count}/{n}", {}
 
         return True, "valid_squeeze_box", {
@@ -2043,11 +2043,12 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         current_time: float = 0.0,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
-        Mode B: Live In-Flight Intra-Bar Breakthrough Surge.
-        Triggers strictly on:
-          1. Pillar 3: Volatility Squeeze Box Breakout (3-4 bar tight compression).
-          2. Pillar 4: Dynamic S/R Registry Breakout (with Day Extreme Runway Shield).
-        Active mid-bar from T:08s onwards (upper cap removed per user mandate).
+        Mode B: Live In-Flight Intra-Bar Breakthrough Surge (Semi-HFT Zero-Gating).
+        Triggers instantly upon price breaking through:
+          1. Pillar 3: Volatility Squeeze Box Breakout (box_high for CALL, box_low for PUT).
+          2. Pillar 4: Dynamic S/R Registry Breakout (res for CALL, sup for PUT).
+        Active mid-bar from T:08s onwards. Single-shot clean trigger without artificial
+        body ratio, wick chokes, multi-tick delays, or point clearance hurdles.
         """
         now_sec = current_time if current_time > 0 else self.last_ts
         sec_in_min = int(now_sec % 60)
@@ -2055,16 +2056,11 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
             return False, "outside_mode_b_window", {}
 
         curr_bar = self._curr_1m_bar
-        if curr_bar is None or curr_bar.tick_count < 6 or self.current_atr_1m <= 0:
+        if curr_bar is None or self.current_atr_1m <= 0:
             return False, "insufficient_ticks_or_atr", {}
 
         atr = self.current_atr_1m
         spot = self.last_price
-        curr_rng = curr_bar.high - curr_bar.low
-
-        # Activity Floor Filter: at least 0.20x ATR to avoid single-tick micro noise
-        if curr_rng < (0.20 * atr):
-            return False, "range_sub_threshold", {}
 
         cb = float(self._opt_flow_1m.get("call_buy_vol", 0.0))
         cs = float(self._opt_flow_1m.get("call_sell_vol", 0.0))
@@ -2072,26 +2068,8 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         ps = float(self._opt_flow_1m.get("put_sell_vol", 0.0))
         bull_flow = cb + ps
         bear_flow = pb + cs
-        tick_rate = curr_bar.tick_count / max(float(sec_in_min), 1.0)
 
-        # Require active volume delta or tick rate >= 1.5
-        vols_60 = [float(getattr(b, "volume", 0.0) or 0.0) for b in list(self.bars_1m)[-60:]]
-        inflight_opt_vol = cb + cs + pb + ps
-        if vols_60 and inflight_opt_vol > 0:
-            s_v = sorted(vols_60)
-            med_vol = float(s_v[len(s_v)//2])
-            expected_opt_vol = max(1.0, med_vol * (float(sec_in_min) / 60.0))
-            opt_pace_ok = (inflight_opt_vol / expected_opt_vol) >= 1.15
-        else:
-            opt_pace_ok = True
-
-        if not (opt_pace_ok or tick_rate >= 1.5):
-            return False, "volume_velocity_sub_threshold", {}
-
-        # ─── Pain Zone VWAP Alignment Gate (Parity with main Pillar 3/4 ladders) ───
-        # Mode B must never fire a breakout against the composite option-flow VWAP
-        # or the direction-selected trapped-buyer line (index has no native volume;
-        # these are the 4-stream Pain Zone substitutes for an index VWAP).
+        # ─── Pain Zone VWAP Alignment Gate ───
         eff_vwap_mb = external_vwap if external_vwap > 0 else self.current_vwap
         if direction == "UP" and not self._pain_zone_vwap_aligned("CALL", spot, eff_vwap_mb):
             return False, "below_vwap", {}
@@ -2101,15 +2079,11 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         bar_idx = self._total_bars_seen
 
         # ─── 1. PILLAR 3: Squeeze Box Breakout (Mode B) ───
-        # Hardened Intent-to-Parity: evaluates candidate windows (5 to 7 closed bars).
-        # Requires true horizontal compression, per-bar compression, anti-staircase floor, and median crossing.
-        min_clearance = max(2.0, (spot / 24000.0) * 2.0, 0.08 * atr)
         last_p3 = self._mode_b_last_trigger_bar_idx.get("P3_BOX_BREAKTHROUGH", -100)
-
         p3_box_valid = False
         box_meta: Dict[str, Any] = {}
-        if len(self.bars_1m) >= 5 and (bar_idx - last_p3) >= 3:
-            for n_cand in (6, 5, 7):
+        if len(self.bars_1m) >= 4 and (bar_idx - last_p3) >= 3:
+            for n_cand in (6, 5, 4, 7):
                 if len(self.bars_1m) >= n_cand:
                     cand_bars = list(self.bars_1m)[-n_cand:]
                     ok_box, _, meta = self._is_valid_squeeze_box(cand_bars, atr, direction)
@@ -2121,78 +2095,53 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         if p3_box_valid:
             box_high = float(box_meta["box_high"])
             box_low = float(box_meta["box_low"])
-            box_bars_n = int(box_meta.get("bar_count", 5))
+            box_bars_n = int(box_meta.get("bar_count", 4))
             if direction == "UP":
-                if curr_bar.open <= box_high and spot >= (box_high + min_clearance):
-                    body_ratio = (spot - curr_bar.open) / max(curr_rng, 0.1)
-                    upper_wick = curr_bar.high - spot
+                # Instant breakout: candle opened inside/at box, spot crossed above box_high
+                if curr_bar.open <= box_high and spot > box_high:
                     ok_struct, _, _ = self._check_structural_obstacle("CALL", spot, check_day_extremes=True)
-                    if body_ratio >= 0.65 and upper_wick <= (0.05 * atr) and ok_struct:
-                        if (bull_flow + bear_flow <= 0) or (bull_flow >= 1.30 * bear_flow and cb > cs):
-                            last_spot_cnt = getattr(self, "_mode_b_p3_up_last_tick", -1)
-                            last_spot_time = getattr(self, "_mode_b_p3_up_last_time", 0.0)
-                            if curr_bar.tick_count != last_spot_cnt or (now_sec - last_spot_time) >= 0.25:
-                                self._mode_b_p3_up_ticks = getattr(self, "_mode_b_p3_up_ticks", 0) + 1
-                                self._mode_b_p3_up_last_tick = curr_bar.tick_count
-                                self._mode_b_p3_up_last_time = now_sec
-                            if self._mode_b_p3_up_ticks >= 2:
-                                self._mode_b_p3_up_ticks = 0
-                                self._mode_b_last_trigger_bar_idx["P3_BOX_BREAKTHROUGH"] = bar_idx
-                                logger.info(f"[PriceActionEngine] [MODE_B_P3] Squeeze Box CALL Breakout at spot={spot:.2f} > box_high={box_high:.2f} (T+{sec_in_min}s) | BoxBars={box_bars_n}")
-                                return True, "volatility_squeeze_breakout", {
-                                    "pillar": 3,
-                                    "pa_setup_name": "volatility_squeeze_breakout",
-                                    "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
-                                    "box_high": round(box_high, 2),
-                                    "box_low": round(box_low, 2),
-                                    "boundary_level": round(box_high, 2),
-                                    "sl_price": round(curr_bar.low - 0.15 * atr, 2),
-                                    "trigger_sec": sec_in_min,
-                                    "bar_open": round(curr_bar.open, 2),
-                                    "bar_high": round(curr_bar.high, 2),
-                                    "bar_low": round(curr_bar.low, 2),
-                                    "bar_close": round(spot, 2),
-                                    "entry_bar_bucket": int(now_sec // 60),
-                                }
-                            return False, "awaiting_second_tick", {}
-                self._mode_b_p3_up_ticks = 0
+                    if ok_struct and ((bull_flow + bear_flow <= 0) or (bull_flow >= bear_flow)):
+                        self._mode_b_last_trigger_bar_idx["P3_BOX_BREAKTHROUGH"] = bar_idx
+                        logger.info(f"[PriceActionEngine] [MODE_B_P3] Squeeze Box CALL Breakout at spot={spot:.2f} > box_high={box_high:.2f} (T+{sec_in_min}s) | BoxBars={box_bars_n}")
+                        return True, "volatility_squeeze_breakout", {
+                            "pillar": 3,
+                            "pa_setup_name": "volatility_squeeze_breakout",
+                            "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
+                            "box_high": round(box_high, 2),
+                            "box_low": round(box_low, 2),
+                            "boundary_level": round(box_high, 2),
+                            "sl_price": round(curr_bar.low - 0.15 * atr, 2),
+                            "trigger_sec": sec_in_min,
+                            "bar_open": round(curr_bar.open, 2),
+                            "bar_high": round(curr_bar.high, 2),
+                            "bar_low": round(curr_bar.low, 2),
+                            "bar_close": round(spot, 2),
+                            "entry_bar_bucket": int(now_sec // 60),
+                        }
             elif direction == "DOWN":
-                if curr_bar.open >= box_low and spot <= (box_low - min_clearance):
-                    body_ratio = (curr_bar.open - spot) / max(curr_rng, 0.1)
-                    lower_wick = spot - curr_bar.low
+                # Instant breakout: candle opened inside/at box, spot crossed below box_low
+                if curr_bar.open >= box_low and spot < box_low:
                     ok_struct, _, _ = self._check_structural_obstacle("PUT", spot, check_day_extremes=True)
-                    if body_ratio >= 0.65 and lower_wick <= (0.05 * atr) and ok_struct:
-                        if (bull_flow + bear_flow <= 0) or (bear_flow >= 1.30 * bull_flow and pb > ps):
-                            last_spot_cnt = getattr(self, "_mode_b_p3_down_last_tick", -1)
-                            last_spot_time = getattr(self, "_mode_b_p3_down_last_time", 0.0)
-                            if curr_bar.tick_count != last_spot_cnt or (now_sec - last_spot_time) >= 0.25:
-                                self._mode_b_p3_down_ticks = getattr(self, "_mode_b_p3_down_ticks", 0) + 1
-                                self._mode_b_p3_down_last_tick = curr_bar.tick_count
-                                self._mode_b_p3_down_last_time = now_sec
-                            if self._mode_b_p3_down_ticks >= 2:
-                                self._mode_b_p3_down_ticks = 0
-                                self._mode_b_last_trigger_bar_idx["P3_BOX_BREAKTHROUGH"] = bar_idx
-                                logger.info(f"[PriceActionEngine] [MODE_B_P3] Squeeze Box PUT Breakout at spot={spot:.2f} < box_low={box_low:.2f} (T+{sec_in_min}s) | BoxBars={box_bars_n}")
-                                return True, "volatility_squeeze_breakout", {
-                                    "pillar": 3,
-                                    "pa_setup_name": "volatility_squeeze_breakout",
-                                    "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
-                                    "box_high": round(box_high, 2),
-                                    "box_low": round(box_low, 2),
-                                    "boundary_level": round(box_low, 2),
-                                    "sl_price": round(curr_bar.high + 0.15 * atr, 2),
-                                    "trigger_sec": sec_in_min,
-                                    "bar_open": round(curr_bar.open, 2),
-                                    "bar_high": round(curr_bar.high, 2),
-                                    "bar_low": round(curr_bar.low, 2),
-                                    "bar_close": round(spot, 2),
-                                    "entry_bar_bucket": int(now_sec // 60),
-                                }
-                            return False, "awaiting_second_tick", {}
-                self._mode_b_p3_down_ticks = 0
+                    if ok_struct and ((bull_flow + bear_flow <= 0) or (bear_flow >= bull_flow)):
+                        self._mode_b_last_trigger_bar_idx["P3_BOX_BREAKTHROUGH"] = bar_idx
+                        logger.info(f"[PriceActionEngine] [MODE_B_P3] Squeeze Box PUT Breakout at spot={spot:.2f} < box_low={box_low:.2f} (T+{sec_in_min}s) | BoxBars={box_bars_n}")
+                        return True, "volatility_squeeze_breakout", {
+                            "pillar": 3,
+                            "pa_setup_name": "volatility_squeeze_breakout",
+                            "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
+                            "box_high": round(box_high, 2),
+                            "box_low": round(box_low, 2),
+                            "boundary_level": round(box_low, 2),
+                            "sl_price": round(curr_bar.high + 0.15 * atr, 2),
+                            "trigger_sec": sec_in_min,
+                            "bar_open": round(curr_bar.open, 2),
+                            "bar_high": round(curr_bar.high, 2),
+                            "bar_low": round(curr_bar.low, 2),
+                            "bar_close": round(spot, 2),
+                            "entry_bar_bucket": int(now_sec // 60),
+                        }
 
         # ─── 2. PILLAR 4: Dynamic Session S/R Registry & T-2 Prominence Hub Breakout (Mode B) ───
-        # 5m Structural Alignment Gate (parity with check_topological_prominence_breakout)
         trend_5m_bullish_mb = True
         trend_5m_bearish_mb = True
         if self.bars_5m:
@@ -2211,61 +2160,33 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                     and ((self._total_bars_seen - lvl.seq_idx) >= 3 or (now_sec - lvl.ts_created) >= 180.0)
                 ]
                 candidates.sort(key=lambda l: (l.touch_count * 0.5 + l.prominence), reverse=True)
-                matched_any = False
-                interior_res_mb_hit = None
                 for r_lvl in candidates:
-                    if curr_bar.open <= r_lvl.price and spot >= (r_lvl.price + min_clearance):
-                        # Selective Breakout Filter: VETO interior cluster levels with inadequate runway
+                    if curr_bar.open <= r_lvl.price and spot > r_lvl.price:
                         if not getattr(r_lvl, "is_tradeable_breakout", True):
-                            interior_res_mb_hit = r_lvl
-                            logger.debug(f"[PriceActionEngine] [MODE_B_P4] Veto interior cluster level at {r_lvl.price} (role={getattr(r_lvl, 'level_role', 'INTERIOR_CLUSTER')})")
                             continue
-
-                        body_ratio = (spot - curr_bar.open) / max(curr_rng, 0.1)
-                        upper_wick = curr_bar.high - spot
                         ok_struct, _, _ = self._check_structural_obstacle("CALL", spot, ignore_pivots_below=r_lvl.price, check_day_extremes=True)
-                        if body_ratio >= 0.65 and upper_wick <= (0.05 * atr) and trend_5m_bullish_mb and ok_struct:
-                            if (bull_flow + bear_flow <= 0) or (bull_flow >= 1.30 * bear_flow and cb > cs):
-                                matched_any = True
-                                last_spot_cnt = getattr(self, "_mode_b_p4_up_last_tick", -1)
-                                last_spot_time = getattr(self, "_mode_b_p4_up_last_time", 0.0)
-                                if curr_bar.tick_count != last_spot_cnt or (now_sec - last_spot_time) >= 0.25:
-                                    self._mode_b_p4_up_ticks = getattr(self, "_mode_b_p4_up_ticks", 0) + 1
-                                    self._mode_b_p4_up_last_tick = curr_bar.tick_count
-                                    self._mode_b_p4_up_last_time = now_sec
-                                if self._mode_b_p4_up_ticks >= 2:
-                                    self._mode_b_p4_up_ticks = 0
-                                    self._mode_b_last_trigger_bar_idx["P4_SR_BREAKTHROUGH"] = bar_idx
-                                    r_lvl.is_broken = True
-                                    r_lvl.ts_broken = now_sec
-                                    self._classify_level_roles()
-                                    logger.info(f"[PriceActionEngine] [MODE_B_P4] Dynamic S/R CALL Breakout at spot={spot:.2f} > res={r_lvl.price:.2f} role={getattr(r_lvl, 'level_role', 'UNKNOWN')} (T+{sec_in_min}s)")
-                                    return True, "topological_prominence_breakout", {
-                                        "pillar": 4,
-                                        "pa_setup_name": "topological_prominence_breakout",
-                                        "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
-                                        "boundary_level": round(r_lvl.price, 2),
-                                        "level_role": getattr(r_lvl, "level_role", "UNKNOWN"),
-                                        "breakout_tier": getattr(r_lvl, "breakout_tier", "UNKNOWN"),
-                                        "is_previous_day": getattr(r_lvl, "is_previous_day", False),
-                                        "sl_price": round(curr_bar.low - 0.15 * atr, 2),
-                                        "trigger_sec": sec_in_min,
-                                        "bar_open": round(curr_bar.open, 2),
-                                        "bar_high": round(curr_bar.high, 2),
-                                        "bar_low": round(curr_bar.low, 2),
-                                        "bar_close": round(spot, 2),
-                                        "entry_bar_bucket": int(now_sec // 60),
-                                    }
-                                return False, "awaiting_second_tick", {}
-                if not matched_any:
-                    self._mode_b_p4_up_ticks = 0
-                    if interior_res_mb_hit is not None:
-                        return False, "veto_interior_cluster_level", {
-                            "hub_price": interior_res_mb_hit.price,
-                            "level_role": getattr(interior_res_mb_hit, "level_role", "INTERIOR_CLUSTER"),
-                            "breakout_tier": getattr(interior_res_mb_hit, "breakout_tier", "B_SWEEP_ONLY"),
-                            "reason": "Interior cluster level has inadequate runway to next structural boundary",
-                        }
+                        if trend_5m_bullish_mb and ok_struct and ((bull_flow + bear_flow <= 0) or (bull_flow >= bear_flow)):
+                            self._mode_b_last_trigger_bar_idx["P4_SR_BREAKTHROUGH"] = bar_idx
+                            r_lvl.is_broken = True
+                            r_lvl.ts_broken = now_sec
+                            self._classify_level_roles()
+                            logger.info(f"[PriceActionEngine] [MODE_B_P4] Dynamic S/R CALL Breakout at spot={spot:.2f} > res={r_lvl.price:.2f} role={getattr(r_lvl, 'level_role', 'UNKNOWN')} (T+{sec_in_min}s)")
+                            return True, "topological_prominence_breakout", {
+                                "pillar": 4,
+                                "pa_setup_name": "topological_prominence_breakout",
+                                "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
+                                "boundary_level": round(r_lvl.price, 2),
+                                "level_role": getattr(r_lvl, "level_role", "UNKNOWN"),
+                                "breakout_tier": getattr(r_lvl, "breakout_tier", "UNKNOWN"),
+                                "is_previous_day": getattr(r_lvl, "is_previous_day", False),
+                                "sl_price": round(curr_bar.low - 0.15 * atr, 2),
+                                "trigger_sec": sec_in_min,
+                                "bar_open": round(curr_bar.open, 2),
+                                "bar_high": round(curr_bar.high, 2),
+                                "bar_low": round(curr_bar.low, 2),
+                                "bar_close": round(spot, 2),
+                                "entry_bar_bucket": int(now_sec // 60),
+                            }
             elif direction == "DOWN":
                 candidates = [
                     lvl for lvl in self.session_levels
@@ -2275,61 +2196,33 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                     and ((self._total_bars_seen - lvl.seq_idx) >= 3 or (now_sec - lvl.ts_created) >= 180.0)
                 ]
                 candidates.sort(key=lambda l: (l.touch_count * 0.5 + l.prominence), reverse=True)
-                matched_any = False
-                interior_sup_mb_hit = None
                 for s_lvl in candidates:
-                    if curr_bar.open >= s_lvl.price and spot <= (s_lvl.price - min_clearance):
-                        # Selective Breakout Filter: VETO interior cluster levels with inadequate runway
+                    if curr_bar.open >= s_lvl.price and spot < s_lvl.price:
                         if not getattr(s_lvl, "is_tradeable_breakout", True):
-                            interior_sup_mb_hit = s_lvl
-                            logger.debug(f"[PriceActionEngine] [MODE_B_P4] Veto interior cluster level at {s_lvl.price} (role={getattr(s_lvl, 'level_role', 'INTERIOR_CLUSTER')})")
                             continue
-
-                        body_ratio = (curr_bar.open - spot) / max(curr_rng, 0.1)
-                        lower_wick = spot - curr_bar.low
                         ok_struct, _, _ = self._check_structural_obstacle("PUT", spot, ignore_pivots_above=s_lvl.price, check_day_extremes=True)
-                        if body_ratio >= 0.65 and lower_wick <= (0.05 * atr) and trend_5m_bearish_mb and ok_struct:
-                            if (bull_flow + bear_flow <= 0) or (bear_flow >= 1.30 * bull_flow and pb > ps):
-                                matched_any = True
-                                last_spot_cnt = getattr(self, "_mode_b_p4_down_last_tick", -1)
-                                last_spot_time = getattr(self, "_mode_b_p4_down_last_time", 0.0)
-                                if curr_bar.tick_count != last_spot_cnt or (now_sec - last_spot_time) >= 0.25:
-                                    self._mode_b_p4_down_ticks = getattr(self, "_mode_b_p4_down_ticks", 0) + 1
-                                    self._mode_b_p4_down_last_tick = curr_bar.tick_count
-                                    self._mode_b_p4_down_last_time = now_sec
-                                if self._mode_b_p4_down_ticks >= 2:
-                                    self._mode_b_p4_down_ticks = 0
-                                    self._mode_b_last_trigger_bar_idx["P4_SR_BREAKTHROUGH"] = bar_idx
-                                    s_lvl.is_broken = True
-                                    s_lvl.ts_broken = now_sec
-                                    self._classify_level_roles()
-                                    logger.info(f"[PriceActionEngine] [MODE_B_P4] Dynamic S/R PUT Breakout at spot={spot:.2f} < sup={s_lvl.price:.2f} role={getattr(s_lvl, 'level_role', 'UNKNOWN')} (T+{sec_in_min}s)")
-                                    return True, "topological_prominence_breakout", {
-                                        "pillar": 4,
-                                        "pa_setup_name": "topological_prominence_breakout",
-                                        "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
-                                        "boundary_level": round(s_lvl.price, 2),
-                                        "level_role": getattr(s_lvl, "level_role", "UNKNOWN"),
-                                        "breakout_tier": getattr(s_lvl, "breakout_tier", "UNKNOWN"),
-                                        "is_previous_day": getattr(s_lvl, "is_previous_day", False),
-                                        "sl_price": round(curr_bar.high + 0.15 * atr, 2),
-                                        "trigger_sec": sec_in_min,
-                                        "bar_open": round(curr_bar.open, 2),
-                                        "bar_high": round(curr_bar.high, 2),
-                                        "bar_low": round(curr_bar.low, 2),
-                                        "bar_close": round(spot, 2),
-                                        "entry_bar_bucket": int(now_sec // 60),
-                                    }
-                                return False, "awaiting_second_tick", {}
-                if not matched_any:
-                    self._mode_b_p4_down_ticks = 0
-                    if interior_sup_mb_hit is not None:
-                        return False, "veto_interior_cluster_level", {
-                            "hub_price": interior_sup_mb_hit.price,
-                            "level_role": getattr(interior_sup_mb_hit, "level_role", "INTERIOR_CLUSTER"),
-                            "breakout_tier": getattr(interior_sup_mb_hit, "breakout_tier", "B_SWEEP_ONLY"),
-                            "reason": "Interior cluster level has inadequate runway to next structural boundary",
-                        }
+                        if trend_5m_bearish_mb and ok_struct and ((bull_flow + bear_flow <= 0) or (bear_flow >= bull_flow)):
+                            self._mode_b_last_trigger_bar_idx["P4_SR_BREAKTHROUGH"] = bar_idx
+                            s_lvl.is_broken = True
+                            s_lvl.ts_broken = now_sec
+                            self._classify_level_roles()
+                            logger.info(f"[PriceActionEngine] [MODE_B_P4] Dynamic S/R PUT Breakout at spot={spot:.2f} < sup={s_lvl.price:.2f} role={getattr(s_lvl, 'level_role', 'UNKNOWN')} (T+{sec_in_min}s)")
+                            return True, "topological_prominence_breakout", {
+                                "pillar": 4,
+                                "pa_setup_name": "topological_prominence_breakout",
+                                "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
+                                "boundary_level": round(s_lvl.price, 2),
+                                "level_role": getattr(s_lvl, "level_role", "UNKNOWN"),
+                                "breakout_tier": getattr(s_lvl, "breakout_tier", "UNKNOWN"),
+                                "is_previous_day": getattr(s_lvl, "is_previous_day", False),
+                                "sl_price": round(curr_bar.high + 0.15 * atr, 2),
+                                "trigger_sec": sec_in_min,
+                                "bar_open": round(curr_bar.open, 2),
+                                "bar_high": round(curr_bar.high, 2),
+                                "bar_low": round(curr_bar.low, 2),
+                                "bar_close": round(spot, 2),
+                                "entry_bar_bucket": int(now_sec // 60),
+                            }
 
         return False, "no_mode_b_trigger", {}
 
