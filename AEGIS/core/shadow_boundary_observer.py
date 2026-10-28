@@ -307,12 +307,7 @@ class ShadowBoundaryObserver:
             atr = 10.0
 
         curr_rng = curr_bar.high - curr_bar.low
-        # 1. Activity Floor Filter: at least 0.20x ATR to avoid single-tick micro noise (upper cap removed for explosive breakouts)
-        if curr_rng < (0.20 * atr):
-            return
-
-        # Scale-Invariant Clearance Buffer (consistent with PriceActionEngine)
-        min_clearance = max(2.0, (spot / 24000.0) * 2.0, 0.08 * atr)
+        # Zero-latency: activity floor and min_clearance removed per Mode B parity
 
         # 2. In-Flight Option Flow & Spot Tick Arrival Rate
         tick_rate = curr_bar.tick_count / max(float(sec_in_min), 1.0)
@@ -366,40 +361,24 @@ class ShadowBoundaryObserver:
                 # Bullish Rejection Breakout: Prior (or current) bar tested Pain Zone Top, live spot breaks prior bar High
                 pz_up_tested = (prior_bar.low <= pz_top + 0.25 * atr and prior_bar.close >= pz_bot - 0.25 * atr) or (curr_bar.low <= pz_top + 0.25 * atr)
                 pz_up_action = (prior_bar.close <= prior_bar.open) or ((prior_bar.close - prior_bar.low) >= 0.15 * max(prior_bar.high - prior_bar.low, 0.1))
-                if pz_up_tested and pz_up_action and spot >= (prior_bar.high + min_clearance):
-                    body_ratio = (spot - curr_bar.open) / max(curr_rng, 0.1)
-                    upper_wick = curr_bar.high - spot
-                    if body_ratio >= 0.65 and upper_wick <= (0.05 * atr):
-                        if self._check_wyckoff_harmony("UP", curr_bar):
-                            self._mode_b_pz_up_ticks = getattr(self, "_mode_b_pz_up_ticks", 0) + 1
-                            if self._mode_b_pz_up_ticks >= 2:
-                                self._mode_b_pz_up_ticks = 0
-                                self.last_trigger_bar_idx["PAIN_ZONE_REJECTION_BREAKOUT"] = bar_idx
-                                lowest_low = min(prior_bar.low, curr_bar.low)
-                                logger.info(f"[SHADOW_INTRABAR_SURGE] PAIN_ZONE_REJECTION_BREAKOUT CALL | Spot: {spot:.2f} > AnchorHigh: {prior_bar.high:.2f} at T+{sec_in_min}s")
-                                self._open_shadow_trade("PAIN_ZONE_REJECTION_BREAKOUT", "UP", spot, prior_bar.high, lowest_low, now_sec, n1_fp)
-                                return
-                else:
-                    self._mode_b_pz_up_ticks = 0
+                if pz_up_tested and pz_up_action and spot >= prior_bar.high:
+                    if self._check_wyckoff_harmony("UP", curr_bar):
+                        self.last_trigger_bar_idx["PAIN_ZONE_REJECTION_BREAKOUT"] = bar_idx
+                        lowest_low = min(prior_bar.low, curr_bar.low)
+                        logger.info(f"[SHADOW_INTRABAR_SURGE] PAIN_ZONE_REJECTION_BREAKOUT CALL | Spot: {spot:.2f} >= AnchorHigh: {prior_bar.high:.2f} at T+{sec_in_min}s")
+                        self._open_shadow_trade("PAIN_ZONE_REJECTION_BREAKOUT", "UP", spot, prior_bar.high, lowest_low, now_sec, n1_fp)
+                        return
 
                 # Bearish Rejection Breakdown: Prior (or current) bar tested Pain Zone Bottom, live spot breaks prior bar Low
                 pz_dn_tested = (prior_bar.high >= pz_bot - 0.25 * atr and prior_bar.close <= pz_top + 0.25 * atr) or (curr_bar.high >= pz_bot - 0.25 * atr)
                 pz_dn_action = (prior_bar.close >= prior_bar.open) or ((prior_bar.high - prior_bar.close) >= 0.15 * max(prior_bar.high - prior_bar.low, 0.1))
-                if pz_dn_tested and pz_dn_action and spot <= (prior_bar.low - min_clearance):
-                    body_ratio = (curr_bar.open - spot) / max(curr_rng, 0.1)
-                    lower_wick = spot - curr_bar.low
-                    if body_ratio >= 0.65 and lower_wick <= (0.05 * atr):
-                        if self._check_wyckoff_harmony("DOWN", curr_bar):
-                            self._mode_b_pz_down_ticks = getattr(self, "_mode_b_pz_down_ticks", 0) + 1
-                            if self._mode_b_pz_down_ticks >= 2:
-                                self._mode_b_pz_down_ticks = 0
-                                self.last_trigger_bar_idx["PAIN_ZONE_REJECTION_BREAKOUT"] = bar_idx
-                                highest_high = max(prior_bar.high, curr_bar.high)
-                                logger.info(f"[SHADOW_INTRABAR_SURGE] PAIN_ZONE_REJECTION_BREAKOUT PUT | Spot: {spot:.2f} < AnchorLow: {prior_bar.low:.2f} at T+{sec_in_min}s")
-                                self._open_shadow_trade("PAIN_ZONE_REJECTION_BREAKOUT", "DOWN", spot, highest_high, prior_bar.low, now_sec, n1_fp)
-                                return
-                else:
-                    self._mode_b_pz_down_ticks = 0
+                if pz_dn_tested and pz_dn_action and spot <= prior_bar.low:
+                    if self._check_wyckoff_harmony("DOWN", curr_bar):
+                        self.last_trigger_bar_idx["PAIN_ZONE_REJECTION_BREAKOUT"] = bar_idx
+                        highest_high = max(prior_bar.high, curr_bar.high)
+                        logger.info(f"[SHADOW_INTRABAR_SURGE] PAIN_ZONE_REJECTION_BREAKOUT PUT | Spot: {spot:.2f} <= AnchorLow: {prior_bar.low:.2f} at T+{sec_in_min}s")
+                        self._open_shadow_trade("PAIN_ZONE_REJECTION_BREAKOUT", "DOWN", spot, highest_high, prior_bar.low, now_sec, n1_fp)
+                        return
 
         # 2. 200 EMA Rejection-Breakout (LRRB)
         # Prior bar tested 200 EMA level, live candle breaks prior bar extreme (Strict 1-Bar Expiry)
@@ -410,40 +389,24 @@ class ShadowBoundaryObserver:
                 # Bullish Rejection Breakout: Prior (or current) bar tested 200 EMA, live spot breaks prior bar High
                 ema_up_tested = (prior_bar.low <= ema200 + 0.25 * atr and prior_bar.high >= ema200 - 0.25 * atr) or (curr_bar.low <= ema200 + 0.25 * atr)
                 ema_up_action = (prior_bar.close <= prior_bar.open) or ((prior_bar.close - prior_bar.low) >= 0.15 * max(prior_bar.high - prior_bar.low, 0.1))
-                if ema_up_tested and ema_up_action and spot >= (prior_bar.high + min_clearance):
-                    body_ratio = (spot - curr_bar.open) / max(curr_rng, 0.1)
-                    upper_wick = curr_bar.high - spot
-                    if body_ratio >= 0.65 and upper_wick <= (0.05 * atr):
-                        if self._check_wyckoff_harmony("UP", curr_bar):
-                            self._mode_b_ema_up_ticks = getattr(self, "_mode_b_ema_up_ticks", 0) + 1
-                            if self._mode_b_ema_up_ticks >= 2:
-                                self._mode_b_ema_up_ticks = 0
-                                self.last_trigger_bar_idx["EMA_200_REJECTION_BREAKOUT"] = bar_idx
-                                lowest_low = min(prior_bar.low, curr_bar.low)
-                                logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_200_REJECTION_BREAKOUT CALL | Spot: {spot:.2f} > AnchorHigh: {prior_bar.high:.2f} at T+{sec_in_min}s")
-                                self._open_shadow_trade("EMA_200_REJECTION_BREAKOUT", "UP", spot, prior_bar.high, lowest_low, now_sec, n1_fp)
-                                return
-                else:
-                    self._mode_b_ema_up_ticks = 0
+                if ema_up_tested and ema_up_action and spot >= prior_bar.high:
+                    if self._check_wyckoff_harmony("UP", curr_bar):
+                        self.last_trigger_bar_idx["EMA_200_REJECTION_BREAKOUT"] = bar_idx
+                        lowest_low = min(prior_bar.low, curr_bar.low)
+                        logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_200_REJECTION_BREAKOUT CALL | Spot: {spot:.2f} >= AnchorHigh: {prior_bar.high:.2f} at T+{sec_in_min}s")
+                        self._open_shadow_trade("EMA_200_REJECTION_BREAKOUT", "UP", spot, prior_bar.high, lowest_low, now_sec, n1_fp)
+                        return
 
                 # Bearish Rejection Breakdown: Prior (or current) bar tested 200 EMA from below, live spot breaks prior bar Low
                 ema_dn_tested = (prior_bar.high >= ema200 - 0.25 * atr and prior_bar.low <= ema200 + 0.25 * atr) or (curr_bar.high >= ema200 - 0.25 * atr)
                 ema_dn_action = (prior_bar.close >= prior_bar.open) or ((prior_bar.high - prior_bar.close) >= 0.15 * max(prior_bar.high - prior_bar.low, 0.1))
-                if ema_dn_tested and ema_dn_action and spot <= (prior_bar.low - min_clearance):
-                    body_ratio = (curr_bar.open - spot) / max(curr_rng, 0.1)
-                    lower_wick = spot - curr_bar.low
-                    if body_ratio >= 0.65 and lower_wick <= (0.05 * atr):
-                        if self._check_wyckoff_harmony("DOWN", curr_bar):
-                            self._mode_b_ema_down_ticks = getattr(self, "_mode_b_ema_down_ticks", 0) + 1
-                            if self._mode_b_ema_down_ticks >= 2:
-                                self._mode_b_ema_down_ticks = 0
-                                self.last_trigger_bar_idx["EMA_200_REJECTION_BREAKOUT"] = bar_idx
-                                highest_high = max(prior_bar.high, curr_bar.high)
-                                logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_200_REJECTION_BREAKOUT PUT | Spot: {spot:.2f} < AnchorLow: {prior_bar.low:.2f} at T+{sec_in_min}s")
-                                self._open_shadow_trade("EMA_200_REJECTION_BREAKOUT", "DOWN", spot, highest_high, prior_bar.low, now_sec, n1_fp)
-                                return
-                else:
-                    self._mode_b_ema_down_ticks = 0
+                if ema_dn_tested and ema_dn_action and spot <= prior_bar.low:
+                    if self._check_wyckoff_harmony("DOWN", curr_bar):
+                        self.last_trigger_bar_idx["EMA_200_REJECTION_BREAKOUT"] = bar_idx
+                        highest_high = max(prior_bar.high, curr_bar.high)
+                        logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_200_REJECTION_BREAKOUT PUT | Spot: {spot:.2f} <= AnchorLow: {prior_bar.low:.2f} at T+{sec_in_min}s")
+                        self._open_shadow_trade("EMA_200_REJECTION_BREAKOUT", "DOWN", spot, highest_high, prior_bar.low, now_sec, n1_fp)
+                        return
 
         # 3. 20 EMA Rejection-Breakout (LRRB Shadow Observer)
         # Prior bar tested 20 EMA level, live candle breaks prior bar extreme (Strict 1-Bar Expiry)
@@ -454,40 +417,24 @@ class ShadowBoundaryObserver:
                 # Bullish Rejection Breakout: Prior (or current) bar tested 20 EMA from above, live spot breaks prior bar High
                 ema20_up_tested = (prior_bar.low <= ema20 + 0.25 * atr and prior_bar.high >= ema20 - 0.25 * atr) or (curr_bar.low <= ema20 + 0.25 * atr)
                 ema20_up_action = (prior_bar.close <= prior_bar.open) or ((prior_bar.close - prior_bar.low) >= 0.15 * max(prior_bar.high - prior_bar.low, 0.1))
-                if ema20_up_tested and ema20_up_action and spot >= (prior_bar.high + min_clearance):
-                    body_ratio = (spot - curr_bar.open) / max(curr_rng, 0.1)
-                    upper_wick = curr_bar.high - spot
-                    if body_ratio >= 0.65 and upper_wick <= (0.05 * atr):
-                        if self._check_wyckoff_harmony("UP", curr_bar):
-                            self._mode_b_ema20_up_ticks = getattr(self, "_mode_b_ema20_up_ticks", 0) + 1
-                            if self._mode_b_ema20_up_ticks >= 2:
-                                self._mode_b_ema20_up_ticks = 0
-                                self.last_trigger_bar_idx["EMA_20_REJECTION_BREAKOUT"] = bar_idx
-                                lowest_low = min(prior_bar.low, curr_bar.low)
-                                logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_20_REJECTION_BREAKOUT CALL | Spot: {spot:.2f} > AnchorHigh: {prior_bar.high:.2f} at T+{sec_in_min}s")
-                                self._open_shadow_trade("EMA_20_REJECTION_BREAKOUT", "UP", spot, prior_bar.high, lowest_low, now_sec, n1_fp)
-                                return
-                else:
-                    self._mode_b_ema20_up_ticks = 0
+                if ema20_up_tested and ema20_up_action and spot >= prior_bar.high:
+                    if self._check_wyckoff_harmony("UP", curr_bar):
+                        self.last_trigger_bar_idx["EMA_20_REJECTION_BREAKOUT"] = bar_idx
+                        lowest_low = min(prior_bar.low, curr_bar.low)
+                        logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_20_REJECTION_BREAKOUT CALL | Spot: {spot:.2f} >= AnchorHigh: {prior_bar.high:.2f} at T+{sec_in_min}s")
+                        self._open_shadow_trade("EMA_20_REJECTION_BREAKOUT", "UP", spot, prior_bar.high, lowest_low, now_sec, n1_fp)
+                        return
 
                 # Bearish Rejection Breakdown: Prior (or current) bar tested 20 EMA from below, live spot breaks prior bar Low
                 ema20_dn_tested = (prior_bar.high >= ema20 - 0.25 * atr and prior_bar.low <= ema20 + 0.25 * atr) or (curr_bar.high >= ema20 - 0.25 * atr)
                 ema20_dn_action = (prior_bar.close >= prior_bar.open) or ((prior_bar.high - prior_bar.close) >= 0.15 * max(prior_bar.high - prior_bar.low, 0.1))
-                if ema20_dn_tested and ema20_dn_action and spot <= (prior_bar.low - min_clearance):
-                    body_ratio = (curr_bar.open - spot) / max(curr_rng, 0.1)
-                    lower_wick = spot - curr_bar.low
-                    if body_ratio >= 0.65 and lower_wick <= (0.05 * atr):
-                        if self._check_wyckoff_harmony("DOWN", curr_bar):
-                            self._mode_b_ema20_down_ticks = getattr(self, "_mode_b_ema20_down_ticks", 0) + 1
-                            if self._mode_b_ema20_down_ticks >= 2:
-                                self._mode_b_ema20_down_ticks = 0
-                                self.last_trigger_bar_idx["EMA_20_REJECTION_BREAKOUT"] = bar_idx
-                                highest_high = max(prior_bar.high, curr_bar.high)
-                                logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_20_REJECTION_BREAKOUT PUT | Spot: {spot:.2f} < AnchorLow: {prior_bar.low:.2f} at T+{sec_in_min}s")
-                                self._open_shadow_trade("EMA_20_REJECTION_BREAKOUT", "DOWN", spot, highest_high, prior_bar.low, now_sec, n1_fp)
-                                return
-                else:
-                    self._mode_b_ema20_down_ticks = 0
+                if ema20_dn_tested and ema20_dn_action and spot <= prior_bar.low:
+                    if self._check_wyckoff_harmony("DOWN", curr_bar):
+                        self.last_trigger_bar_idx["EMA_20_REJECTION_BREAKOUT"] = bar_idx
+                        highest_high = max(prior_bar.high, curr_bar.high)
+                        logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_20_REJECTION_BREAKOUT PUT | Spot: {spot:.2f} <= AnchorLow: {prior_bar.low:.2f} at T+{sec_in_min}s")
+                        self._open_shadow_trade("EMA_20_REJECTION_BREAKOUT", "DOWN", spot, highest_high, prior_bar.low, now_sec, n1_fp)
+                        return
 
     def _evaluate_boundary_arming(self, spot: float, now_sec: float) -> None:
         """Evaluates boundary rejection on latest closed 1m candle and arms Mode A."""

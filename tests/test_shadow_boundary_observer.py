@@ -120,14 +120,10 @@ def test_inflight_breakthrough_surge():
     }
     observer.option_cache = {"NIFTY_22750_CE": 45.0}
 
-    # At T+25s, spot is 22518.8, which is > prior_bar.high (22514.0) + min_clearance (2.0) = 22516.0
+    # At T+25s, spot is 22518.8, which is >= prior_bar.high (22514.0)
     now_sec = 1700000000.0 + 25.0  # sec_in_min = 45 (between 8 and 48)
-    # First tick -> arms persistence (count = 1)
+    # Single-shot instant entry on first tick breach (zero debounce)
     observer._check_inflight_breakthrough(spot=22518.8, now_sec=now_sec)
-    assert len(observer.active_trades) == 0
-
-    # Second tick -> fires entry!
-    observer._check_inflight_breakthrough(spot=22518.8, now_sec=now_sec + 0.1)
     assert len(observer.active_trades) == 1
     trade = observer.active_trades[0]
     assert trade.boundary == "PAIN_ZONE_REJECTION_BREAKOUT"
@@ -181,17 +177,12 @@ def test_mode_b_breakthrough_in_price_action_engine():
     )
     pa._curr_1m_bar = curr_bar
 
-    # Tick 1: returns False (awaiting second tick)
-    ok1, reason1, _ = pa.check_mode_b_breakthrough("UP", current_time=pa.last_ts)
-    assert ok1 is False
-    assert reason1 == "awaiting_second_tick"
-
-    # Tick 2: returns True (breakthrough confirmed on Pillar 4 S/R breakout)
-    ok2, reason2, details = pa.check_mode_b_breakthrough("UP", current_time=pa.last_ts + 0.3)
-    assert ok2 is True
-    assert reason2 == "topological_prominence_breakout"
-    assert details["boundary_level"] == 22510.0
-    assert details["trigger_sec"] == 45
+    # Single-shot instant breakthrough on first tick breach (zero debounce)
+    ok1, reason1, details1 = pa.check_mode_b_breakthrough("UP", current_time=pa.last_ts)
+    assert ok1 is True
+    assert reason1 == "topological_prominence_breakout"
+    assert details1["boundary_level"] == 22510.0
+    assert details1["trigger_sec"] == 45
 
 
 def test_shadow_inflight_breakthrough_large_expansion_above_120_atr():
@@ -235,12 +226,8 @@ def test_shadow_inflight_breakthrough_large_expansion_above_120_atr():
     observer.option_cache = {"NIFTY_22750_CE": 45.0}
 
     now_sec = 1700000000.0 + 10.0  # (1700000000 + 10) % 60 = 30s
-    # Tick 1 -> persistence count 1
+    # Single-shot instant entry on first tick breach (zero debounce)
     observer._check_inflight_breakthrough(spot=22524.0, now_sec=now_sec)
-    assert len(observer.active_trades) == 0
-
-    # Tick 2 -> fires trade despite range (44.0 pts) being 4.4x ATR!
-    observer._check_inflight_breakthrough(spot=22524.0, now_sec=now_sec + 0.2)
     assert len(observer.active_trades) == 1
     trade = observer.active_trades[0]
     assert trade.boundary == "EMA_200_REJECTION_BREAKOUT"
@@ -354,12 +341,8 @@ def test_shadow_ema20_rejection_and_n1_footprint():
     observer.option_cache = {"NIFTY_22750_CE": 45.0}
 
     now_sec = 1700000000.0 + 10.0  # sec_in_min = 30s
-    # Tick 1
+    # Single-shot instant entry on first tick breach (zero debounce)
     observer._check_inflight_breakthrough(spot=22515.0, now_sec=now_sec)
-    assert len(observer.active_trades) == 0
-
-    # Tick 2 -> Fires EMA_20_REJECTION_BREAKOUT
-    observer._check_inflight_breakthrough(spot=22515.0, now_sec=now_sec + 0.2)
     assert len(observer.active_trades) == 1
     trade = observer.active_trades[0]
     assert trade.boundary == "EMA_20_REJECTION_BREAKOUT"
@@ -414,12 +397,9 @@ def test_shadow_breakthrough_late_in_candle_no_upper_cap():
     observer._check_inflight_breakthrough(spot=22515.0, now_sec=now_base + 4.0)
     assert len(observer.active_trades) == 0
 
-    # At T:54s (late candle: sec_in_min = 54, previously blocked by <= 48s cap)
+    # At T:54s (late candle: sec_in_min = 54, single-shot first tick trigger)
     late_sec = now_base + 54.0
     observer._check_inflight_breakthrough(spot=22515.0, now_sec=late_sec)
-    assert len(observer.active_trades) == 0  # 1st tick awaiting
-
-    observer._check_inflight_breakthrough(spot=22515.0, now_sec=late_sec + 0.2)
     assert len(observer.active_trades) == 1
     assert observer.active_trades[0].boundary == "EMA_20_REJECTION_BREAKOUT"
 
