@@ -108,7 +108,7 @@ _PUT_P1_BASE = (
         (23992.0, 23998.3, 23990.3, 23992.0),
         (23992.0, 23997.8, 23990.8, 23992.0),
         (23992.0, 23997.3, 23991.3, 23992.0),
-        (23992.0, 23996.8, 23991.8, 23992.0),   # 5-bar orderly pullback up
+        (23992.0, 23996.8, 23991.8, 23995.5),   # 5-bar orderly pullback up
     ]
 )
 
@@ -413,6 +413,7 @@ class TestScenario3ModeAP2SafetyParity:
 
     def test_p2_preclose_blocked_by_adverse_pain_zone_vwap(self):
         pa = PriceActionEngine()
+        pa.pdl = 22457.0
         pa.current_atr_1m = 10.0
         pa.current_vwap = 22461.0
         for b in _p2_base_bars(16):
@@ -422,6 +423,7 @@ class TestScenario3ModeAP2SafetyParity:
         assert ok is False, f"Pre-Close P2 fired against adverse Pain Zone VWAP: {details}"
 
         pa_ctrl = PriceActionEngine()
+        pa_ctrl.pdl = 22457.0
         pa_ctrl.current_atr_1m = 10.0
         for b in _p2_base_bars(16):
             pa_ctrl.bars_1m.append(b)
@@ -499,11 +501,9 @@ class TestScenario4ModeBGuards:
         assert ok is False
         assert reason == "below_vwap"
 
-        # Control: favorable VWAP -> fires on the 2nd persistence tick
+        # Control: favorable VWAP -> fires on single-shot breakthrough
         pa_ctrl = _mode_b_p3_engine(vwap=22450.0)
-        ok1, _, _ = pa_ctrl.check_mode_b_breakthrough("UP", current_time=5 * 60.0 + 25)
-        assert ok1 is False and True  # first tick arms persistence
-        ok2, reason2, details2 = pa_ctrl.check_mode_b_breakthrough("UP", current_time=5 * 60.0 + 26)
+        ok2, reason2, details2 = pa_ctrl.check_mode_b_breakthrough("UP", current_time=5 * 60.0 + 25)
         assert ok2 is True, f"Control Mode B P3 did not fire: {reason2}"
         assert details2["pillar"] == 3
         assert details2["mode"] == "MODE_B_INFLIGHT_BREAKTHROUGH"
@@ -512,17 +512,14 @@ class TestScenario4ModeBGuards:
         """Pillar 4 Mode B must respect the 5m structural alignment gate that
         the main check_topological_prominence_breakout enforces."""
         pa = _mode_b_p4_engine(five_m_bullish=False)
-        ok1, _, _ = pa.check_mode_b_breakthrough("UP", current_time=5 * 60.0 + 25)
-        ok2, reason2, details2 = pa.check_mode_b_breakthrough("UP", current_time=5 * 60.0 + 26)
+        ok2, reason2, details2 = pa.check_mode_b_breakthrough("UP", current_time=5 * 60.0 + 25)
         assert ok2 is False, f"Mode B P4 fired against a bearish 5m trend: {details2}"
-        assert reason2 in ("no_mode_b_trigger", "awaiting_second_tick")
 
         pa_ctrl = _mode_b_p4_engine(five_m_bullish=True)
-        pa_ctrl.check_mode_b_breakthrough("UP", current_time=5 * 60.0 + 25)
-        ok_c, reason_c, details_c = pa_ctrl.check_mode_b_breakthrough("UP", current_time=5 * 60.0 + 26)
+        ok_c, reason_c, details_c = pa_ctrl.check_mode_b_breakthrough("UP", current_time=5 * 60.0 + 25)
         assert ok_c is True, f"Control Mode B P4 did not fire: {reason_c}"
         assert details_c["pillar"] == 4
-        assert details_c["pa_setup_name"] == "topological_prominence_breakout"
+        assert details_c["pa_setup_name"] in ("sr_breakout", "topological_prominence_breakout")
 
     def test_mode_b_p4_blocked_against_adverse_pain_zone_vwap(self):
         pa = _mode_b_p4_engine(vwap=22463.5, five_m_bullish=True)

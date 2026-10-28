@@ -199,17 +199,23 @@ body {
 /* HERO KPIS */
 .kpi-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 14px;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
+  .kpi-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 700px) {
   .kpi-grid {
     grid-template-columns: repeat(2, 1fr);
   }
 }
 
-@media (max-width: 500px) {
+@media (max-width: 480px) {
   .kpi-grid {
     grid-template-columns: 1fr;
   }
@@ -647,9 +653,14 @@ body {
   <!-- HERO KPIS -->
   <section class="kpi-grid">
     <div class="kpi-card">
+      <div class="kpi-title">Today Gross PnL</div>
+      <div class="kpi-value" style="color:var(--green-bright);" id="kpiGrossPnl">+₹0.00</div>
+      <div class="kpi-subtitle" id="kpiGrossSub">Total Charges: ₹0.00</div>
+    </div>
+    <div class="kpi-card">
       <div class="kpi-title">Today Net PnL</div>
-      <div class="kpi-value" style="color:var(--green-bright);" id="kpiNetPnl">+₹19.18</div>
-      <div class="kpi-subtitle" id="kpiNetSub">1 Profit / 0 Loss (100% Day)</div>
+      <div class="kpi-value" style="color:var(--green-bright);" id="kpiNetPnl">+₹0.00</div>
+      <div class="kpi-subtitle" id="kpiNetSub">0 Trades Today</div>
     </div>
     <div class="kpi-card">
       <div class="kpi-title">Profit Rate</div>
@@ -668,15 +679,15 @@ body {
     </div>
   </section>
 
-  <!-- 3D TOPOLOGICAL PERSISTENCE & GAMMA MANIFOLD PANEL -->
+  <!-- 3D S/R LEVELS & GAMMA MANIFOLD PANEL -->
   <section class="manifold-panel">
     <div class="manifold-header">
       <div class="manifold-title-box">
-        <div class="manifold-title">Topological Persistence &amp; Gamma Manifold</div>
-        <div class="manifold-subtitle">Pillar 4 Phase-Shift Hubs · OFI Volatility Surface · Pain Zone Bands</div>
+        <div class="manifold-title">S/R Levels &amp; Gamma Manifold</div>
+        <div class="manifold-subtitle">Pillar 4 S/R Breakout Hubs · OFI Volatility Surface · Pain Zone Bands</div>
       </div>
       <div class="manifold-controls">
-        <button class="control-btn active" id="btnModeTopology" onclick="setManifoldMode('topology')">Topology Hubs</button>
+        <button class="control-btn active" id="btnModeTopology" onclick="setManifoldMode('topology')">S/R Hubs</button>
         <button class="control-btn" id="btnModeVol" onclick="setManifoldMode('volatility')">Vol Surface</button>
         <button class="control-btn" id="btnModePain" onclick="setManifoldMode('pain_zone')">Pain Zone</button>
         <button class="control-btn" id="btnToggleRotate" onclick="toggleAutoRotate()">Rotate: ON</button>
@@ -689,11 +700,11 @@ body {
       <div class="manifold-hud" id="manifoldHud">
         <div class="hud-head">
           <span class="hud-title" id="hudStrikeName">SENSEX 82500 CE (ATM)</span>
-          <span class="hud-badge" id="hudPhaseBadge">P4 HUB</span>
+          <span class="hud-badge" id="hudPhaseBadge">P4 S/R</span>
         </div>
         <div class="hud-row">
-          <span class="hud-label">Topological Cluster</span>
-          <span class="hud-val" id="hudCluster">0-D Prominence Hub (Active)</span>
+          <span class="hud-label">S/R Cluster</span>
+          <span class="hud-val" id="hudCluster">Dynamic S/R Level (Active)</span>
         </div>
         <div class="hud-row">
           <span class="hud-label">Order Flow Intensity (OFI)</span>
@@ -708,11 +719,11 @@ body {
           <span class="hud-val" id="hudPain" style="color:var(--cyan);">Spot &gt; Upper Band (Call Safe)</span>
         </div>
         <div class="hud-row">
-          <span class="hud-label">Homological Invariant</span>
-          <span class="hud-val" id="hudBetti">Betti-0: 1 | Betti-1: 0 (Stable)</span>
+          <span class="hud-label">Structural Level</span>
+          <span class="hud-val" id="hudBetti">Mode B S/R Clearance: Active</span>
         </div>
         <div class="hud-hint" id="hudHint">
-          Click any glowing 3D strike node or drag surface to inspect live topological metrics.
+          Click any glowing 3D strike node or drag surface to inspect live S/R breakout metrics.
         </div>
       </div>
     </div>
@@ -743,8 +754,8 @@ body {
       <div class="pillar-detail">Box Clearance 2-5 pts · Opposing Wick ≤ 18% · Solid Body ≥ 35%</div>
     </div>
     <div class="pillar-box">
-      <div class="pillar-name"><span>P4 · Prominence Hub</span><span style="color:var(--green-bright);">Active</span></div>
-      <div class="pillar-detail">0-D Monotonic Stack · Directional Body ≥ 35% · Opposing Wick ≤ 20%</div>
+      <div class="pillar-name"><span>P4 · S/R Breakout</span><span style="color:var(--green-bright);">Active</span></div>
+      <div class="pillar-detail">Dynamic Support / Resistance Breakout · In-Flight Mode B Clearance</div>
     </div>
   </section>
 
@@ -807,8 +818,8 @@ const STRIKE_NODES = [
     tag: "ATM CENTER",
     pos: [0, 4.2, 0],
     color: 0x00f0ff,
-    phase: "P4 HUB ACTIVE",
-    cluster: "0-D Prominence Hub (Active Cluster)",
+    phase: "P4 S/R BREAKOUT",
+    cluster: "Dynamic S/R Level (Active Cluster)",
     ofi: "+1.84M Delta (Aggressive Buy)",
     vol: "14.8% IV · Gamma +0.42",
     pain: "Spot > Upper Band (Call Only)",
@@ -1298,13 +1309,26 @@ function renderDashboard(data) {
 
   // 2. KPIs
   const stats = data.today_stats || {};
-  const netRs = stats.net_pnl_rs !== undefined ? stats.net_pnl_rs : (stats.pnl_rs !== undefined ? stats.pnl_rs : 19.18);
-  const grossRs = stats.gross_pnl_rs !== undefined ? stats.gross_pnl_rs : 32.5;
-  const count = stats.trades_count !== undefined ? stats.trades_count : (stats.count !== undefined ? stats.count : (stats.today_trades ? stats.today_trades.length : 1));
-  const profits = stats.profits !== undefined ? stats.profits : (stats.wins !== undefined ? stats.wins : 1);
+  const netRs = stats.net_pnl_rs !== undefined ? stats.net_pnl_rs : (stats.pnl_rs !== undefined ? stats.pnl_rs : 0.0);
+  const grossRs = stats.gross_pnl_rs !== undefined ? stats.gross_pnl_rs : 0.0;
+  const chargesRs = stats.charges_rs !== undefined ? stats.charges_rs : Math.max(0, grossRs - netRs);
+  const count = stats.trades_count !== undefined ? stats.trades_count : (stats.count !== undefined ? stats.count : (stats.today_trades ? stats.today_trades.length : 0));
+  const profits = stats.profits !== undefined ? stats.profits : (stats.wins !== undefined ? stats.wins : 0);
   const losses = stats.losses !== undefined ? stats.losses : Math.max(0, count - profits);
-  const pr = stats.profit_rate_pct !== undefined ? stats.profit_rate_pct : (stats.win_rate_pct !== undefined ? stats.win_rate_pct : (count > 0 ? (profits / count * 100.0) : 100.0));
+  const pr = stats.profit_rate_pct !== undefined ? stats.profit_rate_pct : (stats.win_rate_pct !== undefined ? stats.win_rate_pct : (count > 0 ? (profits / count * 100.0) : 0.0));
 
+  // Today Gross PnL
+  const grossEl = document.getElementById('kpiGrossPnl');
+  if (grossEl) {
+    grossEl.innerText = (grossRs >= 0 ? "+₹" : "₹") + Number(grossRs).toFixed(2);
+    grossEl.style.color = grossRs >= 0 ? "var(--green-bright)" : "var(--red-bright)";
+  }
+  const grossSub = document.getElementById('kpiGrossSub');
+  if (grossSub) {
+    grossSub.innerText = `Total Charges: ₹${Number(chargesRs).toFixed(2)}`;
+  }
+
+  // Today Net PnL
   const netEl = document.getElementById('kpiNetPnl');
   if (netEl) {
     netEl.innerText = (netRs >= 0 ? "+₹" : "₹") + Number(netRs).toFixed(2);
@@ -1348,6 +1372,11 @@ function renderDashboard(data) {
       const pnlSign = net >= 0 ? "+₹" : "₹";
       const gainSign = gainPct >= 0 ? "+" : "";
 
+      let setupDisp = String(t.pillar || 'Pillar 1 (20 EMA)');
+      if (setupDisp.includes('topological') || setupDisp.includes('BOS') || setupDisp.includes('Prominence') || setupDisp === 'sr_breakout') {
+        setupDisp = 'Pillar 4 (S/R Breakout)';
+      }
+
       tr.innerHTML = `
         <td data-label="Time" class="mono" style="color:var(--text-muted);"><span class="pill today" style="margin-right:6px;">TODAY</span>${t.date || '—'}</td>
         <td data-label="Contract" class="mono" style="font-weight:600; color:#fff;">${t.symbol || '—'}</td>
@@ -1358,7 +1387,7 @@ function renderDashboard(data) {
         <td data-label="Gross PnL" class="mono" style="color:${pnlColor}; font-weight:600;">${pnlSign}${gross.toFixed(2)}</td>
         <td data-label="Charges" class="mono" style="color:var(--text-muted); font-size:11px;">₹${chg.toFixed(2)}</td>
         <td data-label="Net PnL" class="mono" style="color:${pnlColor}; font-weight:800;">${pnlSign}${net.toFixed(2)}</td>
-        <td data-label="Setup" class="mono" style="color:var(--purple); font-size:11px;">${t.pillar || 'Pillar 1 (20 EMA)'}</td>
+        <td data-label="Setup" class="mono" style="color:var(--purple); font-size:11px;">${setupDisp}</td>
       `;
       tbody.appendChild(tr);
     });

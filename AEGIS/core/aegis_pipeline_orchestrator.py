@@ -35,7 +35,7 @@ try:
         ConvictionResult,
     )
     from AEGIS.core.option_quality import OptionQualityEngine
-    from AEGIS.core.outcome_telemetry import OutcomeTelemetryEngine
+    from AEGIS.core.outcome_telemetry import OutcomeTelemetryEngine, PostTradeMilestoneTracker
 
     from AEGIS.execution.aegis_execution_manager import QualitySlotPolicy, PostTriggerStabilityTracker
     from AEGIS.core.wyckoff_volume_engine import WyckoffVolumeEngine
@@ -49,7 +49,7 @@ except ImportError:
             ConvictionResult,
         )
         from core.option_quality import OptionQualityEngine
-        from core.outcome_telemetry import OutcomeTelemetryEngine
+        from core.outcome_telemetry import OutcomeTelemetryEngine, PostTradeMilestoneTracker
 
         from execution.aegis_execution_manager import QualitySlotPolicy, PostTriggerStabilityTracker
         from core.wyckoff_volume_engine import WyckoffVolumeEngine
@@ -62,6 +62,7 @@ except ImportError:
         AdaptiveMicroValidator = None
         OptionQualityEngine = None
         OutcomeTelemetryEngine = None
+        PostTradeMilestoneTracker = None
 
         ShadowBoundaryObserver = None
         QualitySlotPolicy = None
@@ -175,6 +176,7 @@ class AegisPipelineOrchestrator:
         self._veto_log_suppressed: Dict[str, int] = {}
         self._veto_log_interval_sec = float(os.getenv("AEGIS_VETO_LOG_INTERVAL_SEC", "60.0"))
         self.outcome_telemetry = OutcomeTelemetryEngine(log_dir=telemetry_dir) if OutcomeTelemetryEngine is not None else None
+        self.post_trade_tracker = PostTradeMilestoneTracker(log_dir=telemetry_dir) if PostTradeMilestoneTracker is not None else None
         self.oi_gate = None
         self._oi_kin_armed = 0
         self._oi_kin_skipped = 0
@@ -362,6 +364,8 @@ class AegisPipelineOrchestrator:
                 self.option_cache[sym] = lp
             if self.outcome_telemetry:
                 self.outcome_telemetry.update_tick(sym, lp, now_sec)
+            if getattr(self, "post_trade_tracker", None) and sym:
+                self.post_trade_tracker.on_option_tick(sym, lp, now_sec)
             if getattr(self, "shadow_boundary_observer", None) and sym:
                 self.shadow_boundary_observer.on_option_tick(sym, lp, now_sec)
 
@@ -985,6 +989,15 @@ class AegisPipelineOrchestrator:
 
                                 self.cooldowns[sym] = now_sec
 
+                                pz_snap = (
+                                    self.price_action_engine.get_pain_zone_vwaps()
+                                    if (self.price_action_engine and hasattr(self.price_action_engine, "get_pain_zone_vwaps"))
+                                    else {}
+                                )
+                                pz_top = float(pz_snap.get("zone_top", 0.0) or 0.0)
+                                pz_bot = float(pz_snap.get("zone_bottom", 0.0) or 0.0)
+                                pz_spread = round(pz_top - pz_bot, 2) if (pz_top > 0 and pz_bot > 0) else 0.0
+
                                 live_signal_metrics = {
                                     "impulse_timestamp": now_sec,
                                     "impulse_time_iso": datetime.fromtimestamp(now_sec).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
@@ -1009,6 +1022,14 @@ class AegisPipelineOrchestrator:
                                     "slot_verdict": slot_reason,
                                     "slot_used": self.slot_policy.used if self.slot_policy else 0,
                                     "oi_snapshot": self._get_oi_snapshot(sym, direction, now_sec),
+                                    "pain_zone_snapshot": pz_snap,
+                                    "pain_zone_top": pz_top,
+                                    "pain_zone_bottom": pz_bot,
+                                    "pain_zone_spread_pts": pz_spread,
+                                    "pain_zone_call_buy": float(pz_snap.get("vwap_call_buy", 0.0) or 0.0),
+                                    "pain_zone_call_sell": float(pz_snap.get("vwap_call_sell", 0.0) or 0.0),
+                                    "pain_zone_put_buy": float(pz_snap.get("vwap_put_buy", 0.0) or 0.0),
+                                    "pain_zone_put_sell": float(pz_snap.get("vwap_put_sell", 0.0) or 0.0),
                                     "eqs_score": eqs,
                                     "recommended_tp_pct": recommended_tp_pct,
                                     "microstructure_score": round(score, 2),

@@ -522,6 +522,21 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
             socket_error_callback=error_callback
         )
 
+    def stop_websocket(self) -> None:
+        """Cleanly close WebSocket and clear listeners to prevent post-market reconnects."""
+        try:
+            self._close_listeners = []
+            if hasattr(self, "_close_debounce_timer") and self._close_debounce_timer is not None:
+                self._close_debounce_timer.cancel()
+                self._close_debounce_timer = None
+            if hasattr(self._api, "close_websocket"):
+                self._api.close_websocket()
+            self._ws_connected = False
+            self._ws_started = False
+            logger.info("[ShoonyaAdapter] WebSocket disconnected cleanly for post-market sleep.")
+        except Exception as e:
+            logger.warning(f"[ShoonyaAdapter] Error closing WebSocket: {e}")
+
     def register_constituent_tokens(self, tokens: list):
         """Replace constituent set (do not merge) so NIFTY/SENSEX rotation cannot mix volumes."""
         self._constituent_tokens = {str(tok) for tok in tokens if str(tok).strip()}
@@ -1083,3 +1098,6 @@ class ShoonyaAdapter(IBrokerGateway):
     def compile_5min_option_net_delta_oi(self): return self._market_data_provider.get_and_reset_option_net_delta_oi()
     def get_strike_net_delta_oi(self, strike: float): return self._market_data_provider.get_strike_net_delta_oi(strike)
     def get_available_funds(self) -> float: return float(self._portfolio_provider.get_available_funds())
+    def stop_websocket(self) -> None:
+        if hasattr(self, "_market_data_provider") and self._market_data_provider is not None:
+            self._market_data_provider.stop_websocket()

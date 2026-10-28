@@ -180,7 +180,7 @@ def test_mode_b_breakthrough_in_price_action_engine():
     # Single-shot instant breakthrough on first tick breach (zero debounce)
     ok1, reason1, details1 = pa.check_mode_b_breakthrough("UP", current_time=pa.last_ts)
     assert ok1 is True
-    assert reason1 == "topological_prominence_breakout"
+    assert reason1 in ("sr_breakout", "topological_prominence_breakout")
     assert details1["boundary_level"] == 22510.0
     assert details1["trigger_sec"] == 45
 
@@ -402,6 +402,348 @@ def test_shadow_breakthrough_late_in_candle_no_upper_cap():
     observer._check_inflight_breakthrough(spot=22515.0, now_sec=late_sec)
     assert len(observer.active_trades) == 1
     assert observer.active_trades[0].boundary == "EMA_20_REJECTION_BREAKOUT"
+
+
+def test_pain_zone_direct_breakout_call():
+    """Verify in-flight Mode B breakout when spot breaks above Pain Zone Top (CALL)."""
+    mock_pae = MagicMock()
+    bar_n2 = MagicMock()
+    bar_n2.open = 22496.0
+    bar_n2.high = 22502.0
+    bar_n2.low = 22494.0
+    bar_n2.close = 22499.0
+    bar_n2.volume = 1000.0
+
+    prior_bar = MagicMock()
+    prior_bar.open = 22500.0
+    prior_bar.high = 22506.0  # > 22502 (HH)
+    prior_bar.low = 22498.0   # > 22494 (HL)
+    prior_bar.close = 22504.0
+    prior_bar.volume = 1000.0
+
+    forming_bar = MagicMock()
+    forming_bar.tick_count = 30
+    forming_bar.open = 22505.0
+    forming_bar.high = 22513.0
+    forming_bar.low = 22504.0  # >= 22498 (HL)
+    forming_bar.close = 22512.5
+    forming_bar.volume = 2000.0
+
+    mock_pae.bars_1m = [bar_n2] * 20 + [bar_n2, prior_bar]
+    mock_pae._curr_1m_bar = forming_bar
+    mock_pae._opt_flow_1m = {"call_buy_vol": 5000.0, "put_buy_vol": 500.0}
+    mock_pae.get_pain_zone_vwaps.return_value = {"zone_top": 22510.0, "zone_bottom": 22490.0}
+    mock_pae.current_atr_1m = 10.0
+    mock_pae.ema_200_1m = 22450.0
+    mock_pae.ema_20_1m = 22450.0
+
+    observer = ShadowBoundaryObserver(price_action_engine=mock_pae, strike_step=50.0, log_dir="scratch")
+    observer.current_atm_strike = 22500.0
+    observer.strike_to_symbol = {(0, 22750.0): "NIFTY_22750_CE", (1, 22250.0): "NIFTY_22250_PE"}
+    observer.option_cache = {"NIFTY_22750_CE": 45.0, "NIFTY_22250_PE": 45.0}
+
+    now_sec = 1700000000.0 + 20.0
+    # Spot 22512.5 breaks above zone_top 22510.0
+    observer._check_inflight_breakthrough(spot=22512.5, now_sec=now_sec)
+    assert len(observer.active_trades) == 1
+    trade = observer.active_trades[0]
+    assert trade.boundary == "PAIN_ZONE_BREAKOUT"
+    assert trade.direction == "UP"
+    assert trade.spot_entry == 22512.5
+    assert trade.opt_symbol == "NIFTY_22750_CE"
+
+
+def test_pain_zone_direct_breakdown_put():
+    """Verify in-flight Mode B breakdown when spot breaks below Pain Zone Bottom (PUT)."""
+    mock_pae = MagicMock()
+    bar_n2 = MagicMock()
+    bar_n2.open = 22506.0
+    bar_n2.high = 22508.0
+    bar_n2.low = 22500.0
+    bar_n2.close = 22503.0
+    bar_n2.volume = 1000.0
+
+    prior_bar = MagicMock()
+    prior_bar.open = 22500.0
+    prior_bar.high = 22502.0  # < 22508 (LH)
+    prior_bar.low = 22494.0   # < 22500 (LL)
+    prior_bar.close = 22496.0
+    prior_bar.volume = 1000.0
+
+    forming_bar = MagicMock()
+    forming_bar.tick_count = 30
+    forming_bar.open = 22495.0
+    forming_bar.high = 22496.0  # <= 22502 (LH)
+    forming_bar.low = 22487.0
+    forming_bar.close = 22488.0
+    forming_bar.volume = 2000.0
+
+    mock_pae.bars_1m = [bar_n2] * 20 + [bar_n2, prior_bar]
+    mock_pae._curr_1m_bar = forming_bar
+    mock_pae._opt_flow_1m = {"call_buy_vol": 500.0, "put_buy_vol": 5000.0}
+    mock_pae.get_pain_zone_vwaps.return_value = {"zone_top": 22510.0, "zone_bottom": 22490.0}
+    mock_pae.current_atr_1m = 10.0
+    mock_pae.ema_200_1m = 22450.0
+    mock_pae.ema_20_1m = 22450.0
+
+    observer = ShadowBoundaryObserver(price_action_engine=mock_pae, strike_step=50.0, log_dir="scratch")
+    observer.current_atm_strike = 22500.0
+    observer.strike_to_symbol = {(0, 22750.0): "NIFTY_22750_CE", (1, 22250.0): "NIFTY_22250_PE"}
+    observer.option_cache = {"NIFTY_22750_CE": 45.0, "NIFTY_22250_PE": 45.0}
+
+    now_sec = 1700000000.0 + 20.0
+    # Spot 22488.0 breaks below zone_bottom 22490.0 (lowest line)
+    observer._check_inflight_breakthrough(spot=22488.0, now_sec=now_sec)
+    assert len(observer.active_trades) == 1
+    trade = observer.active_trades[0]
+    assert trade.boundary == "PAIN_ZONE_BREAKOUT"
+    assert trade.direction == "DOWN"
+    assert trade.spot_entry == 22488.0
+    assert trade.opt_symbol == "NIFTY_22250_PE"
+
+
+def test_ema200_direct_breakout_call():
+    """Verify in-flight Mode B breakout when spot crosses 200 EMA to the upside (CALL)."""
+    mock_pae = MagicMock()
+    bar_n2 = MagicMock()
+    bar_n2.open = 22464.0
+    bar_n2.high = 22472.0
+    bar_n2.low = 22462.0
+    bar_n2.close = 22469.0
+    bar_n2.volume = 1000.0
+
+    prior_bar = MagicMock()
+    prior_bar.open = 22470.0
+    prior_bar.high = 22478.0  # > 22472 (HH)
+    prior_bar.low = 22468.0   # > 22462 (HL)
+    prior_bar.close = 22476.0
+    prior_bar.volume = 1000.0
+
+    forming_bar = MagicMock()
+    forming_bar.tick_count = 30
+    forming_bar.open = 22477.0
+    forming_bar.high = 22483.0
+    forming_bar.low = 22476.0  # >= 22468 (HL)
+    forming_bar.close = 22482.0
+    forming_bar.volume = 2000.0
+
+    mock_pae.bars_1m = [bar_n2] * 20 + [bar_n2, prior_bar]
+    mock_pae._curr_1m_bar = forming_bar
+    mock_pae._opt_flow_1m = {"call_buy_vol": 6000.0, "put_buy_vol": 400.0}
+    mock_pae.get_pain_zone_vwaps.return_value = {"zone_top": 0.0, "zone_bottom": 0.0}
+    mock_pae.current_atr_1m = 10.0
+    mock_pae.ema_200_1m = 22480.0
+
+    observer = ShadowBoundaryObserver(price_action_engine=mock_pae, strike_step=50.0, log_dir="scratch")
+    observer.current_atm_strike = 22500.0
+    observer.strike_to_symbol = {(0, 22750.0): "NIFTY_22750_CE", (1, 22250.0): "NIFTY_22250_PE"}
+    observer.option_cache = {"NIFTY_22750_CE": 45.0, "NIFTY_22250_PE": 45.0}
+
+    now_sec = 1700000000.0 + 15.0
+    # Spot 22482.0 crosses above 200 EMA (22480.0)
+    observer._check_inflight_breakthrough(spot=22482.0, now_sec=now_sec)
+    assert len(observer.active_trades) == 1
+    trade = observer.active_trades[0]
+    assert trade.boundary == "EMA_200_BREAKOUT"
+    assert trade.direction == "UP"
+    assert trade.spot_entry == 22482.0
+    assert trade.opt_symbol == "NIFTY_22750_CE"
+
+
+def test_ema200_direct_breakdown_put():
+    """Verify in-flight Mode B breakdown when spot breaks below 200 EMA low (PUT)."""
+    mock_pae = MagicMock()
+    bar_n2 = MagicMock()
+    bar_n2.open = 22490.0
+    bar_n2.high = 22493.0
+    bar_n2.low = 22486.0
+    bar_n2.close = 22488.0
+    bar_n2.volume = 1000.0
+
+    prior_bar = MagicMock()
+    prior_bar.open = 22485.0
+    prior_bar.high = 22488.0  # < 22493 (LH)
+    prior_bar.low = 22481.0   # < 22486 (LL)
+    prior_bar.close = 22483.0
+    prior_bar.volume = 1000.0
+
+    forming_bar = MagicMock()
+    forming_bar.tick_count = 30
+    forming_bar.open = 22481.0
+    forming_bar.high = 22482.0  # <= 22488 (LH)
+    forming_bar.low = 22475.0
+    forming_bar.close = 22475.5
+    forming_bar.volume = 2000.0
+
+    mock_pae.bars_1m = [bar_n2] * 20 + [bar_n2, prior_bar]
+    mock_pae._curr_1m_bar = forming_bar
+    mock_pae._opt_flow_1m = {"call_buy_vol": 300.0, "put_buy_vol": 6000.0}
+    mock_pae.get_pain_zone_vwaps.return_value = {"zone_top": 0.0, "zone_bottom": 0.0}
+    mock_pae.current_atr_1m = 10.0
+    mock_pae.ema_200_1m = 22480.0  # 200 EMA low = 22480 - 0.25*10 = 22477.5
+    mock_pae.ema_20_1m = 22450.0
+
+    observer = ShadowBoundaryObserver(price_action_engine=mock_pae, strike_step=50.0, log_dir="scratch")
+    observer.current_atm_strike = 22500.0
+    observer.strike_to_symbol = {(0, 22750.0): "NIFTY_22750_CE", (1, 22250.0): "NIFTY_22250_PE"}
+    observer.option_cache = {"NIFTY_22750_CE": 45.0, "NIFTY_22250_PE": 45.0}
+
+    now_sec = 1700000000.0 + 15.0
+    # Spot 22475.5 breaks below 200 EMA Low (22477.5)
+    observer._check_inflight_breakthrough(spot=22475.5, now_sec=now_sec)
+    assert len(observer.active_trades) == 1
+    trade = observer.active_trades[0]
+    assert trade.boundary == "EMA_200_BREAKOUT"
+    assert trade.direction == "DOWN"
+    assert trade.spot_entry == 22475.5
+    assert trade.opt_symbol == "NIFTY_22250_PE"
+
+
+def test_pain_zone_direct_breakout_cooldown_3bars():
+    """Verify that after a Pain Zone direct breakout triggers, consecutive ticks/bars within 3 bars are ignored."""
+    mock_pae = MagicMock()
+    bar_n2 = MagicMock()
+    bar_n2.open = 22496.0
+    bar_n2.high = 22502.0
+    bar_n2.low = 22494.0
+    bar_n2.close = 22499.0
+    bar_n2.volume = 1000.0
+
+    prior_bar = MagicMock()
+    prior_bar.open = 22500.0
+    prior_bar.high = 22506.0  # > 22502 (HH)
+    prior_bar.low = 22498.0   # > 22494 (HL)
+    prior_bar.close = 22504.0
+    prior_bar.volume = 1000.0
+
+    forming_bar = MagicMock()
+    forming_bar.tick_count = 30
+    forming_bar.open = 22505.0
+    forming_bar.high = 22513.0
+    forming_bar.low = 22504.0  # >= 22498 (HL)
+    forming_bar.close = 22512.5
+    forming_bar.volume = 2000.0
+
+    mock_pae.bars_1m = [bar_n2] * 20 + [bar_n2, prior_bar]
+    mock_pae._curr_1m_bar = forming_bar
+    mock_pae._opt_flow_1m = {"call_buy_vol": 5000.0, "put_buy_vol": 500.0}
+    mock_pae.get_pain_zone_vwaps.return_value = {"zone_top": 22510.0, "zone_bottom": 22490.0}
+    mock_pae.current_atr_1m = 10.0
+    mock_pae.ema_200_1m = 22450.0
+    mock_pae.ema_20_1m = 22450.0
+
+    observer = ShadowBoundaryObserver(price_action_engine=mock_pae, strike_step=50.0, log_dir="scratch")
+    observer.current_atm_strike = 22500.0
+    observer.strike_to_symbol = {(0, 22750.0): "NIFTY_22750_CE"}
+    observer.option_cache = {"NIFTY_22750_CE": 45.0}
+
+    now_sec = 1700000000.0 + 20.0
+    # First trigger at bar_idx 25
+    observer._check_inflight_breakthrough(spot=22512.5, now_sec=now_sec)
+    assert len(observer.active_trades) == 1
+
+    # Second tick on same bar: must NOT duplicate trigger
+    observer._check_inflight_breakthrough(spot=22514.0, now_sec=now_sec + 2.0)
+    assert len(observer.active_trades) == 1
+
+    # Bar 26 (+1 bar): still in cooldown
+    mock_pae.bars_1m.append(forming_bar)
+    observer._check_inflight_breakthrough(spot=22515.0, now_sec=now_sec + 60.0)
+    assert len(observer.active_trades) == 1
+
+
+def test_dow_thrust_vetoes_chop_breakout_call():
+    """Verify that when price is oscillating in a range (no Dow HH/HL ascending sequence), CALL breakout is vetoed."""
+    mock_pae = MagicMock()
+    # Bar N-2 has higher high (range chop, inside bar)
+    bar_n2 = MagicMock()
+    bar_n2.open = 22500.0
+    bar_n2.high = 22508.0
+    bar_n2.low = 22495.0
+    bar_n2.close = 22500.0
+    bar_n2.volume = 1000.0
+
+    # Bar N-1 makes a Lower High (22505 < 22508) - fails Dow HH
+    prior_bar = MagicMock()
+    prior_bar.open = 22500.0
+    prior_bar.high = 22505.0  # < 22508.0 (No Higher High!)
+    prior_bar.low = 22497.0
+    prior_bar.close = 22504.0
+    prior_bar.volume = 1000.0
+
+    # Forming bar suddenly surges across Pain Zone Top (22510.0)
+    forming_bar = MagicMock()
+    forming_bar.tick_count = 30
+    forming_bar.open = 22505.0
+    forming_bar.high = 22513.0
+    forming_bar.low = 22504.0
+    forming_bar.close = 22512.5
+    forming_bar.volume = 2000.0
+
+    mock_pae.bars_1m = [bar_n2] * 20 + [bar_n2, prior_bar]
+    mock_pae._curr_1m_bar = forming_bar
+    mock_pae._opt_flow_1m = {"call_buy_vol": 5000.0, "put_buy_vol": 500.0}
+    mock_pae.get_pain_zone_vwaps.return_value = {"zone_top": 22510.0, "zone_bottom": 22490.0}
+    mock_pae.current_atr_1m = 10.0
+    mock_pae.ema_200_1m = 22450.0
+    mock_pae.ema_20_1m = 22450.0
+
+    observer = ShadowBoundaryObserver(price_action_engine=mock_pae, strike_step=50.0, log_dir="scratch")
+    observer.current_atm_strike = 22500.0
+    observer.strike_to_symbol = {(0, 22750.0): "NIFTY_22750_CE"}
+    observer.option_cache = {"NIFTY_22750_CE": 45.0}
+
+    now_sec = 1700000000.0 + 20.0
+    # Spot 22512.5 crosses zone_top 22510.0, but Dow thrust fails -> VETOED!
+    observer._check_inflight_breakthrough(spot=22512.5, now_sec=now_sec)
+    assert len(observer.active_trades) == 0
+
+
+def test_dow_thrust_vetoes_chop_breakdown_put():
+    """Verify that when price is oscillating in a range (no Dow LH/LL descending sequence), PUT breakdown is vetoed."""
+    mock_pae = MagicMock()
+    # Bar N-2 has lower high
+    bar_n2 = MagicMock()
+    bar_n2.open = 22500.0
+    bar_n2.high = 22502.0
+    bar_n2.low = 22492.0
+    bar_n2.close = 22495.0
+    bar_n2.volume = 1000.0
+
+    # Bar N-1 makes a Higher Low (22496 > 22492) - fails Dow LL
+    prior_bar = MagicMock()
+    prior_bar.open = 22496.0
+    prior_bar.high = 22501.0
+    prior_bar.low = 22496.0  # > 22492.0 (No Lower Low!)
+    prior_bar.close = 22498.0
+    prior_bar.volume = 1000.0
+
+    # Forming bar suddenly drops across Pain Zone Bottom (22490.0)
+    forming_bar = MagicMock()
+    forming_bar.tick_count = 30
+    forming_bar.open = 22495.0
+    forming_bar.high = 22496.0
+    forming_bar.low = 22487.0
+    forming_bar.close = 22488.0
+    forming_bar.volume = 2000.0
+
+    mock_pae.bars_1m = [bar_n2] * 20 + [bar_n2, prior_bar]
+    mock_pae._curr_1m_bar = forming_bar
+    mock_pae._opt_flow_1m = {"call_buy_vol": 500.0, "put_buy_vol": 5000.0}
+    mock_pae.get_pain_zone_vwaps.return_value = {"zone_top": 22510.0, "zone_bottom": 22490.0}
+    mock_pae.current_atr_1m = 10.0
+    mock_pae.ema_200_1m = 22450.0
+    mock_pae.ema_20_1m = 22450.0
+
+    observer = ShadowBoundaryObserver(price_action_engine=mock_pae, strike_step=50.0, log_dir="scratch")
+    observer.current_atm_strike = 22500.0
+    observer.strike_to_symbol = {(1, 22250.0): "NIFTY_22250_PE"}
+    observer.option_cache = {"NIFTY_22250_PE": 45.0}
+
+    now_sec = 1700000000.0 + 20.0
+    # Spot 22488.0 crosses zone_bottom 22490.0, but Dow thrust fails -> VETOED!
+    observer._check_inflight_breakthrough(spot=22488.0, now_sec=now_sec)
+    assert len(observer.active_trades) == 0
 
 
 

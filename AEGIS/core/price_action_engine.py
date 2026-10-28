@@ -1166,11 +1166,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
             level_prominence = sr_lvl.prominence
             level_touches = sr_lvl.touch_count
         else:
-            sw_low = min(b.low for b in prior_bars)
-            sw_high = max(b.high for b in prior_bars)
-            sweep_source = "FALLBACK_LOCAL_SWING"
-            level_prominence = 1.0
-            level_touches = 1
+            return False, "no_registered_structural_boundary_swept", {}
 
         # Live Spot Sanity Guard
         if self.last_price > 0:
@@ -1336,7 +1332,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         return False, "unknown_direction", {}
 
     # ─── Note: Legacy bar-close Pillar 3 (check_volatility_squeeze_breakout) & Pillar 4
-    # (check_topological_prominence_breakout) are preserved in LegacyBarCloseSetupsMixin.
+    # (check_topological_prominence_breakout / sr_breakout) are preserved in LegacyBarCloseSetupsMixin.
     # In live trading, both execute exclusively via check_mode_b_breakthrough().
 
     # ═══════════════════════════════════════════════════════════
@@ -1855,10 +1851,9 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                         if sr_lvl is not None:
                             swept_low = sr_lvl.price
                             sweep_src = "SR_REGISTRY"
+                            swept_and_reclaimed = (curr_bar.low <= (swept_low - min_sweep_depth_pc)) and (spot > swept_low)
                         else:
-                            swept_low = min(b.low for b in prior_5)
-                            sweep_src = "LOCAL_5BAR"
-                        swept_and_reclaimed = (curr_bar.low <= (swept_low - min_sweep_depth_pc)) and (spot > swept_low)
+                            swept_and_reclaimed = False
                         lower_wick = min(curr_bar.open, spot) - curr_bar.low
                         lower_wick_ratio = lower_wick / curr_rng
                         upper_wick_pc = curr_bar.high - max(curr_bar.open, spot)
@@ -1904,10 +1899,9 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                         if sr_lvl is not None:
                             swept_high = sr_lvl.price
                             sweep_src = "SR_REGISTRY"
+                            swept_and_reclaimed = (curr_bar.high >= (swept_high + min_sweep_depth_pcd)) and (spot < swept_high)
                         else:
-                            swept_high = max(b.high for b in prior_5)
-                            sweep_src = "LOCAL_5BAR"
-                        swept_and_reclaimed = (curr_bar.high >= (swept_high + min_sweep_depth_pcd)) and (spot < swept_high)
+                            swept_and_reclaimed = False
                         upper_wick = curr_bar.high - max(curr_bar.open, spot)
                         upper_wick_ratio = upper_wick / curr_rng
                         lower_wick_pcd = min(curr_bar.open, spot) - curr_bar.low
@@ -2169,9 +2163,11 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                     and ((self._total_bars_seen - lvl.seq_idx) >= 3 or (now_sec - lvl.ts_created) >= 180.0)
                 ]
                 candidates.sort(key=lambda l: (l.touch_count * 0.5 + l.prominence), reverse=True)
+                interior_vetoed_up = None
                 for r_lvl in candidates:
                     if curr_bar.open <= r_lvl.price and spot > r_lvl.price:
                         if not getattr(r_lvl, "is_tradeable_breakout", True):
+                            interior_vetoed_up = r_lvl
                             continue
                         ok_struct, _, _ = self._check_structural_obstacle("CALL", spot, ignore_pivots_below=r_lvl.price, check_day_extremes=True)
                         if trend_5m_bullish_mb and ok_struct and ((bull_flow + bear_flow <= 0) or (bull_flow >= bear_flow)):
@@ -2180,9 +2176,9 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                             r_lvl.ts_broken = now_sec
                             self._classify_level_roles()
                             logger.info(f"[PriceActionEngine] [MODE_B_P4] Dynamic S/R CALL Breakout at spot={spot:.2f} > res={r_lvl.price:.2f} role={getattr(r_lvl, 'level_role', 'UNKNOWN')} (T+{sec_in_min}s)")
-                            return True, "topological_prominence_breakout", {
+                            return True, "sr_breakout", {
                                 "pillar": 4,
-                                "pa_setup_name": "topological_prominence_breakout",
+                                "pa_setup_name": "sr_breakout",
                                 "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
                                 "boundary_level": round(r_lvl.price, 2),
                                 "level_role": getattr(r_lvl, "level_role", "UNKNOWN"),
@@ -2196,6 +2192,11 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                 "bar_close": round(spot, 2),
                                 "entry_bar_bucket": int(now_sec // 60),
                             }
+                if interior_vetoed_up is not None:
+                    return False, "veto_interior_cluster_level", {
+                        "hub_price": interior_vetoed_up.price,
+                        "level_role": getattr(interior_vetoed_up, "level_role", "INTERIOR_CLUSTER"),
+                    }
             elif direction == "DOWN":
                 candidates = [
                     lvl for lvl in self.session_levels
@@ -2205,9 +2206,11 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                     and ((self._total_bars_seen - lvl.seq_idx) >= 3 or (now_sec - lvl.ts_created) >= 180.0)
                 ]
                 candidates.sort(key=lambda l: (l.touch_count * 0.5 + l.prominence), reverse=True)
+                interior_vetoed_dn = None
                 for s_lvl in candidates:
                     if curr_bar.open >= s_lvl.price and spot < s_lvl.price:
                         if not getattr(s_lvl, "is_tradeable_breakout", True):
+                            interior_vetoed_dn = s_lvl
                             continue
                         ok_struct, _, _ = self._check_structural_obstacle("PUT", spot, ignore_pivots_above=s_lvl.price, check_day_extremes=True)
                         if trend_5m_bearish_mb and ok_struct and ((bull_flow + bear_flow <= 0) or (bear_flow >= bull_flow)):
@@ -2216,9 +2219,9 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                             s_lvl.ts_broken = now_sec
                             self._classify_level_roles()
                             logger.info(f"[PriceActionEngine] [MODE_B_P4] Dynamic S/R PUT Breakout at spot={spot:.2f} < sup={s_lvl.price:.2f} role={getattr(s_lvl, 'level_role', 'UNKNOWN')} (T+{sec_in_min}s)")
-                            return True, "topological_prominence_breakout", {
+                            return True, "sr_breakout", {
                                 "pillar": 4,
-                                "pa_setup_name": "topological_prominence_breakout",
+                                "pa_setup_name": "sr_breakout",
                                 "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
                                 "boundary_level": round(s_lvl.price, 2),
                                 "level_role": getattr(s_lvl, "level_role", "UNKNOWN"),
@@ -2232,6 +2235,11 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                 "bar_close": round(spot, 2),
                                 "entry_bar_bucket": int(now_sec // 60),
                             }
+                if interior_vetoed_dn is not None:
+                    return False, "veto_interior_cluster_level", {
+                        "hub_price": interior_vetoed_dn.price,
+                        "level_role": getattr(interior_vetoed_dn, "level_role", "INTERIOR_CLUSTER"),
+                    }
 
         # ─── 3. PILLAR 1: 20 EMA In-Flight Reversal Breakout (Mode B) ───
         # When forming Bar N bounces from 20 EMA and pierces the High/Low of the prior pullback bar (N-1)
@@ -2328,8 +2336,9 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                     }
 
         # ─── 4. PILLAR 2: Micro-Sweep & Reclaim In-Flight Reversal Breakout (Mode B) ───
-        # When forming Bar N reclaims a swept swing/support and pierces the High/Low of the prior sweep bar (N-1)
-        if len(self.bars_1m) >= 7:
+        # When forming Bar N reclaims a verified registered S/R level and pierces the High/Low of the prior sweep bar (N-1)
+        # Strictly requires registered OUTERMOST_FLOOR, OUTERMOST_ROOF, PDL, PDH, or prominent MAJOR_SWING. Zero local swing fallback!
+        if len(self.bars_1m) >= 7 and sec_in_min >= 15:
             is_lunch_chop = False
             if now_sec > 1_000_000_000.0:
                 try:
@@ -2345,24 +2354,17 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                 last_p2 = self._mode_b_last_trigger_bar_idx.get(f"P2_SWEEP_{direction}", -100)
                 if (bar_idx - last_p2) >= 3:
                     if direction == "UP":
-                        sr_lvl_up = self._find_swept_sr_level("CALL", prior_bar, min_sweep_depth, atr)
+                        sr_lvl_up = self._find_inflight_swept_sr_level("CALL", prior_bar, curr_bar, spot, min_sweep_depth, atr)
                         if sr_lvl_up is not None:
                             swept_low = sr_lvl_up.price
                             sweep_src = "SR_REGISTRY"
-                        else:
-                            prior_5 = list(self.bars_1m)[-6:-1]
-                            swept_low = min(b.low for b in prior_5)
-                            sweep_src = "LOCAL_SWING"
-                        sweep_ok = (prior_bar.low <= swept_low - min_sweep_depth) or (curr_bar.low <= swept_low - min_sweep_depth)
-                        reclaim_ok = spot > swept_low
-                        if sweep_ok and reclaim_ok and spot >= prior_bar.high:
                             ok_struct, _, _ = self._check_structural_obstacle("CALL", spot)
                             if ok_struct and self._delta_harmony_ok("UP"):
                                 self._mode_b_last_trigger_bar_idx["P2_SWEEP_UP"] = bar_idx
                                 lowest_low = min(prior_bar.low, curr_bar.low)
                                 sl_price = round(lowest_low - 0.15 * atr, 2)
                                 n1_fp = self.compute_n1_footprint(prior_bar, atr)
-                                logger.info(f"[PriceActionEngine] [MODE_B_P2] Micro-Sweep CALL In-Flight Reversal Breakout at spot={spot:.2f} >= prior_high={prior_bar.high:.2f} (T+{sec_in_min}s, src={sweep_src}) | N1Dry={n1_fp.get('n1_vol_dryup')}")
+                                logger.info(f"[PriceActionEngine] [MODE_B_P2] Micro-Sweep CALL In-Flight Reversal Breakout at spot={spot:.2f} >= prior_high={prior_bar.high:.2f} (T+{sec_in_min}s, sr_lvl={swept_low:.2f}, role={getattr(sr_lvl_up, 'level_role', 'UNKNOWN')}) | N1Dry={n1_fp.get('n1_vol_dryup')}")
                                 return True, "micro_sweep_reclaim", {
                                     "pillar": 2,
                                     "pa_setup_name": "micro_sweep_reclaim",
@@ -2370,6 +2372,9 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                     "boundary": "MICRO_SWEEP_RECLAIM",
                                     "boundary_level": round(prior_bar.high, 2),
                                     "swept_level": round(swept_low, 2),
+                                    "level_role": getattr(sr_lvl_up, "level_role", "UNKNOWN"),
+                                    "breakout_tier": getattr(sr_lvl_up, "breakout_tier", "A_PLUS"),
+                                    "is_previous_day": getattr(sr_lvl_up, "is_previous_day", False),
                                     "sl_price": sl_price,
                                     "trigger_sec": sec_in_min,
                                     "bar_open": round(curr_bar.open, 2),
@@ -2381,24 +2386,17 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                     **flow_dict,
                                 }
                     elif direction == "DOWN":
-                        sr_lvl_dn = self._find_swept_sr_level("PUT", prior_bar, min_sweep_depth, atr)
+                        sr_lvl_dn = self._find_inflight_swept_sr_level("PUT", prior_bar, curr_bar, spot, min_sweep_depth, atr)
                         if sr_lvl_dn is not None:
                             swept_high = sr_lvl_dn.price
                             sweep_src = "SR_REGISTRY"
-                        else:
-                            prior_5 = list(self.bars_1m)[-6:-1]
-                            swept_high = max(b.high for b in prior_5)
-                            sweep_src = "LOCAL_SWING"
-                        sweep_ok = (prior_bar.high >= swept_high + min_sweep_depth) or (curr_bar.high >= swept_high + min_sweep_depth)
-                        reclaim_ok = spot < swept_high
-                        if sweep_ok and reclaim_ok and spot <= prior_bar.low:
                             ok_struct, _, _ = self._check_structural_obstacle("PUT", spot)
                             if ok_struct and self._delta_harmony_ok("DOWN"):
                                 self._mode_b_last_trigger_bar_idx["P2_SWEEP_DOWN"] = bar_idx
                                 highest_high = max(prior_bar.high, curr_bar.high)
                                 sl_price = round(highest_high + 0.15 * atr, 2)
                                 n1_fp = self.compute_n1_footprint(prior_bar, atr)
-                                logger.info(f"[PriceActionEngine] [MODE_B_P2] Micro-Sweep PUT In-Flight Reversal Breakdown at spot={spot:.2f} <= prior_low={prior_bar.low:.2f} (T+{sec_in_min}s, src={sweep_src}) | N1Dry={n1_fp.get('n1_vol_dryup')}")
+                                logger.info(f"[PriceActionEngine] [MODE_B_P2] Micro-Sweep PUT In-Flight Reversal Breakdown at spot={spot:.2f} <= prior_low={prior_bar.low:.2f} (T+{sec_in_min}s, sr_lvl={swept_high:.2f}, role={getattr(sr_lvl_dn, 'level_role', 'UNKNOWN')}) | N1Dry={n1_fp.get('n1_vol_dryup')}")
                                 return True, "micro_sweep_reclaim", {
                                     "pillar": 2,
                                     "pa_setup_name": "micro_sweep_reclaim",
@@ -2406,6 +2404,9 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                     "boundary": "MICRO_SWEEP_RECLAIM",
                                     "boundary_level": round(prior_bar.low, 2),
                                     "swept_level": round(swept_high, 2),
+                                    "level_role": getattr(sr_lvl_dn, "level_role", "UNKNOWN"),
+                                    "breakout_tier": getattr(sr_lvl_dn, "breakout_tier", "A_PLUS"),
+                                    "is_previous_day": getattr(sr_lvl_dn, "is_previous_day", False),
                                     "sl_price": sl_price,
                                     "trigger_sec": sec_in_min,
                                     "bar_open": round(curr_bar.open, 2),

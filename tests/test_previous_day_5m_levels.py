@@ -188,20 +188,11 @@ def test_mode_b_breakthrough_on_previous_day_level():
         "put_sell_vol": 100.0,
     }
 
-    # First tick above resistance
+    # Single-shot instant breakthrough on breach
     pa.last_price = 24106.0
-    ok1, reason1, _ = pa.check_mode_b_breakthrough("UP", current_time=now_ts + 15.0)
-    assert not ok1
-    assert reason1 == "awaiting_second_tick"
-
-    # Second tick confirms breakthrough
-    pa._curr_1m_bar.high = 24107.0
-    pa._curr_1m_bar.close = 24107.0
-    pa._curr_1m_bar.tick_count = 11
-    pa.last_price = 24107.0
-    ok2, reason2, details = pa.check_mode_b_breakthrough("UP", current_time=now_ts + 15.5)
-    assert ok2
-    assert reason2 == "topological_prominence_breakout"
+    ok, reason, details = pa.check_mode_b_breakthrough("UP", current_time=now_ts + 15.0)
+    assert ok is True
+    assert reason == "sr_breakout"
     assert details["boundary_level"] == 24100.0
     assert res_lvl.is_broken is True
 
@@ -334,18 +325,9 @@ def test_interior_cluster_level_vetoed_on_breakout():
         tick_count=10,
     )
     pa.last_price = 24095.0
-    ok1, r1, _ = pa.check_mode_b_breakthrough("UP", current_time=now_ts + 25.0)
-    assert ok1 is False
-    assert r1 == "awaiting_second_tick"
-
-    # Tick 2 confirms outermost breakout
-    pa._curr_1m_bar.high = 24096.0
-    pa._curr_1m_bar.close = 24096.0
-    pa._curr_1m_bar.tick_count = 11
-    pa.last_price = 24096.0
-    ok2, r2, det2 = pa.check_mode_b_breakthrough("UP", current_time=now_ts + 25.5)
+    ok2, r2, det2 = pa.check_mode_b_breakthrough("UP", current_time=now_ts + 25.0)
     assert ok2 is True
-    assert r2 == "topological_prominence_breakout"
+    assert r2 == "sr_breakout"
     assert det2["boundary_level"] == 24090.0
     assert det2["level_role"] == "OUTERMOST_ROOF"
     assert det2["breakout_tier"] == "A_PLUS"

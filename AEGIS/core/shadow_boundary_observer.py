@@ -70,6 +70,15 @@ class ShadowTrade:
     n1_vol_dryup: bool = False
     n1_net_delta: float = 0.0
     n1_stopping_vol: bool = False
+
+    # Pain Zone 4-Line Snapshot & Band Spread (Empirical Tracking)
+    pz_top: float = 0.0
+    pz_bottom: float = 0.0
+    pz_spread_pts: float = 0.0
+    pz_call_buy: float = 0.0
+    pz_call_sell: float = 0.0
+    pz_put_buy: float = 0.0
+    pz_put_sell: float = 0.0
     
     # State & Outcome
     captured_30s: bool = False
@@ -356,10 +365,10 @@ class ShadowBoundaryObserver:
         # Prior bar tested Pain Zone level, live candle breaks prior bar extreme (Strict 1-Bar Expiry)
         pz_top, pz_bot = self._get_pain_zone_levels(atr)
         if pz_top > 0 and pz_bot > 0:
-            last_trig = self.last_trigger_bar_idx.get("PAIN_ZONE_REJECTION_BREAKOUT", -100)
+            last_trig = max(self.last_trigger_bar_idx.get("PAIN_ZONE_REJECTION_BREAKOUT", -100), self.last_trigger_bar_idx.get("PAIN_ZONE_BREAKOUT", -100))
             if (bar_idx - last_trig) >= 3:
                 # Bullish Rejection Breakout: Prior (or current) bar tested Pain Zone Top, live spot breaks prior bar High
-                pz_up_tested = (prior_bar.low <= pz_top + 0.25 * atr and prior_bar.close >= pz_bot - 0.25 * atr) or (curr_bar.low <= pz_top + 0.25 * atr)
+                pz_up_tested = (prior_bar.low <= pz_top + 0.25 * atr and prior_bar.high >= pz_top and prior_bar.close >= pz_bot - 0.25 * atr)
                 pz_up_action = (prior_bar.close <= prior_bar.open) or ((prior_bar.close - prior_bar.low) >= 0.15 * max(prior_bar.high - prior_bar.low, 0.1))
                 if pz_up_tested and pz_up_action and spot >= prior_bar.high:
                     if self._check_wyckoff_harmony("UP", curr_bar):
@@ -370,7 +379,7 @@ class ShadowBoundaryObserver:
                         return
 
                 # Bearish Rejection Breakdown: Prior (or current) bar tested Pain Zone Bottom, live spot breaks prior bar Low
-                pz_dn_tested = (prior_bar.high >= pz_bot - 0.25 * atr and prior_bar.close <= pz_top + 0.25 * atr) or (curr_bar.high >= pz_bot - 0.25 * atr)
+                pz_dn_tested = (prior_bar.high >= pz_bot - 0.25 * atr and prior_bar.low <= pz_bot and prior_bar.close <= pz_top + 0.25 * atr)
                 pz_dn_action = (prior_bar.close >= prior_bar.open) or ((prior_bar.high - prior_bar.close) >= 0.15 * max(prior_bar.high - prior_bar.low, 0.1))
                 if pz_dn_tested and pz_dn_action and spot <= prior_bar.low:
                     if self._check_wyckoff_harmony("DOWN", curr_bar):
@@ -384,10 +393,10 @@ class ShadowBoundaryObserver:
         # Prior bar tested 200 EMA level, live candle breaks prior bar extreme (Strict 1-Bar Expiry)
         ema200 = float(getattr(self.pa_engine, "ema_200_1m", 0.0) or 0.0)
         if ema200 > 0:
-            last_trig_ema = self.last_trigger_bar_idx.get("EMA_200_REJECTION_BREAKOUT", -100)
+            last_trig_ema = max(self.last_trigger_bar_idx.get("EMA_200_REJECTION_BREAKOUT", -100), self.last_trigger_bar_idx.get("EMA_200_BREAKOUT", -100))
             if (bar_idx - last_trig_ema) >= 3:
                 # Bullish Rejection Breakout: Prior (or current) bar tested 200 EMA, live spot breaks prior bar High
-                ema_up_tested = (prior_bar.low <= ema200 + 0.25 * atr and prior_bar.high >= ema200 - 0.25 * atr) or (curr_bar.low <= ema200 + 0.25 * atr)
+                ema_up_tested = (prior_bar.low <= ema200 + 0.25 * atr and prior_bar.high >= ema200)
                 ema_up_action = (prior_bar.close <= prior_bar.open) or ((prior_bar.close - prior_bar.low) >= 0.15 * max(prior_bar.high - prior_bar.low, 0.1))
                 if ema_up_tested and ema_up_action and spot >= prior_bar.high:
                     if self._check_wyckoff_harmony("UP", curr_bar):
@@ -398,7 +407,7 @@ class ShadowBoundaryObserver:
                         return
 
                 # Bearish Rejection Breakdown: Prior (or current) bar tested 200 EMA from below, live spot breaks prior bar Low
-                ema_dn_tested = (prior_bar.high >= ema200 - 0.25 * atr and prior_bar.low <= ema200 + 0.25 * atr) or (curr_bar.high >= ema200 - 0.25 * atr)
+                ema_dn_tested = (prior_bar.high >= ema200 - 0.25 * atr and prior_bar.low <= ema200)
                 ema_dn_action = (prior_bar.close >= prior_bar.open) or ((prior_bar.high - prior_bar.close) >= 0.15 * max(prior_bar.high - prior_bar.low, 0.1))
                 if ema_dn_tested and ema_dn_action and spot <= prior_bar.low:
                     if self._check_wyckoff_harmony("DOWN", curr_bar):
@@ -415,7 +424,7 @@ class ShadowBoundaryObserver:
             last_trig_ema20 = self.last_trigger_bar_idx.get("EMA_20_REJECTION_BREAKOUT", -100)
             if (bar_idx - last_trig_ema20) >= 3:
                 # Bullish Rejection Breakout: Prior (or current) bar tested 20 EMA from above, live spot breaks prior bar High
-                ema20_up_tested = (prior_bar.low <= ema20 + 0.25 * atr and prior_bar.high >= ema20 - 0.25 * atr) or (curr_bar.low <= ema20 + 0.25 * atr)
+                ema20_up_tested = (prior_bar.low <= ema20 + 0.25 * atr and prior_bar.high >= ema20)
                 ema20_up_action = (prior_bar.close <= prior_bar.open) or ((prior_bar.close - prior_bar.low) >= 0.15 * max(prior_bar.high - prior_bar.low, 0.1))
                 if ema20_up_tested and ema20_up_action and spot >= prior_bar.high:
                     if self._check_wyckoff_harmony("UP", curr_bar):
@@ -426,7 +435,7 @@ class ShadowBoundaryObserver:
                         return
 
                 # Bearish Rejection Breakdown: Prior (or current) bar tested 20 EMA from below, live spot breaks prior bar Low
-                ema20_dn_tested = (prior_bar.high >= ema20 - 0.25 * atr and prior_bar.low <= ema20 + 0.25 * atr) or (curr_bar.high >= ema20 - 0.25 * atr)
+                ema20_dn_tested = (prior_bar.high >= ema20 - 0.25 * atr and prior_bar.low <= ema20)
                 ema20_dn_action = (prior_bar.close >= prior_bar.open) or ((prior_bar.high - prior_bar.close) >= 0.15 * max(prior_bar.high - prior_bar.low, 0.1))
                 if ema20_dn_tested and ema20_dn_action and spot <= prior_bar.low:
                     if self._check_wyckoff_harmony("DOWN", curr_bar):
@@ -435,6 +444,65 @@ class ShadowBoundaryObserver:
                         logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_20_REJECTION_BREAKOUT PUT | Spot: {spot:.2f} <= AnchorLow: {prior_bar.low:.2f} at T+{sec_in_min}s")
                         self._open_shadow_trade("EMA_20_REJECTION_BREAKOUT", "DOWN", spot, highest_high, prior_bar.low, now_sec, n1_fp)
                         return
+
+        # 4. Pain Zone Direct Breakout / Breakdown (Mode B In-Flight Surge)
+        # S/R Breakout parity: Triggers instantly when spot breaks highest line (zone_top) for CALL
+        # or lowest line (zone_bottom) for PUT from T:02s onwards with zero debounce
+        if pz_top > 0 and pz_bot > 0:
+            last_trig_pz_bo = max(self.last_trigger_bar_idx.get("PAIN_ZONE_BREAKOUT", -100), self.last_trigger_bar_idx.get("PAIN_ZONE_REJECTION_BREAKOUT", -100))
+            if (bar_idx - last_trig_pz_bo) >= 3:
+                # Bullish Breakout: Candle opened inside/below Pain Zone, spot breaks above highest line (zone_top)
+                if (curr_bar.open <= pz_top or prior_bar.close <= pz_top) and spot > pz_top:
+                    if self._check_dow_thrust_progression("UP", curr_bar, spot, atr):
+                        if self._check_wyckoff_harmony("UP", curr_bar):
+                            self.last_trigger_bar_idx["PAIN_ZONE_BREAKOUT"] = bar_idx
+                            lowest_low = min(prior_bar.low, curr_bar.low)
+                            highest_high = max(spot, curr_bar.high)
+                            logger.info(f"[SHADOW_INTRABAR_SURGE] PAIN_ZONE_BREAKOUT CALL | Spot: {spot:.2f} > ZoneTop: {pz_top:.2f} at T+{sec_in_min}s | Dow Thrust OK")
+                            self._open_shadow_trade("PAIN_ZONE_BREAKOUT", "UP", spot, highest_high, lowest_low, now_sec, n1_fp)
+                            return
+
+                # Bearish Breakdown: Candle opened inside/above Pain Zone, spot breaks below lowest line (zone_bottom)
+                if (curr_bar.open >= pz_bot or prior_bar.close >= pz_bot) and spot < pz_bot:
+                    if self._check_dow_thrust_progression("DOWN", curr_bar, spot, atr):
+                        if self._check_wyckoff_harmony("DOWN", curr_bar):
+                            self.last_trigger_bar_idx["PAIN_ZONE_BREAKOUT"] = bar_idx
+                            highest_high = max(prior_bar.high, curr_bar.high)
+                            lowest_low = min(spot, curr_bar.low)
+                            logger.info(f"[SHADOW_INTRABAR_SURGE] PAIN_ZONE_BREAKOUT PUT | Spot: {spot:.2f} < ZoneBottom: {pz_bot:.2f} at T+{sec_in_min}s | Dow Thrust OK")
+                            self._open_shadow_trade("PAIN_ZONE_BREAKOUT", "DOWN", spot, highest_high, lowest_low, now_sec, n1_fp)
+                            return
+
+        # 5. 200 EMA Direct Breakout / Breakdown (Mode B In-Flight Surge)
+        # S/R Breakout parity: Triggers instantly when spot crosses 200 EMA to the upside (CALL)
+        # or breaks below 200 EMA low / ribbon lower boundary (PUT)
+        if ema200 > 0:
+            last_trig_ema_bo = max(self.last_trigger_bar_idx.get("EMA_200_BREAKOUT", -100), self.last_trigger_bar_idx.get("EMA_200_REJECTION_BREAKOUT", -100))
+            if (bar_idx - last_trig_ema_bo) >= 3:
+                _, ema_bot = self._get_ema200_levels(atr)
+                ema_breakdown_level = ema_bot if ema_bot > 0 else ema200
+
+                # Bullish Breakout: Candle opened at/below 200 EMA, spot crosses above 200 EMA
+                if (curr_bar.open <= ema200 or prior_bar.close <= ema200) and spot > ema200:
+                    if self._check_dow_thrust_progression("UP", curr_bar, spot, atr):
+                        if self._check_wyckoff_harmony("UP", curr_bar):
+                            self.last_trigger_bar_idx["EMA_200_BREAKOUT"] = bar_idx
+                            lowest_low = min(prior_bar.low, curr_bar.low)
+                            highest_high = max(spot, curr_bar.high)
+                            logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_200_BREAKOUT CALL | Spot: {spot:.2f} > EMA200: {ema200:.2f} at T+{sec_in_min}s | Dow Thrust OK")
+                            self._open_shadow_trade("EMA_200_BREAKOUT", "UP", spot, highest_high, lowest_low, now_sec, n1_fp)
+                            return
+
+                # Bearish Breakdown: Candle opened at/above 200 EMA low, spot breaks below 200 EMA low
+                if (curr_bar.open >= ema_breakdown_level or prior_bar.close >= ema_breakdown_level) and spot < ema_breakdown_level:
+                    if self._check_dow_thrust_progression("DOWN", curr_bar, spot, atr):
+                        if self._check_wyckoff_harmony("DOWN", curr_bar):
+                            self.last_trigger_bar_idx["EMA_200_BREAKOUT"] = bar_idx
+                            highest_high = max(prior_bar.high, curr_bar.high)
+                            lowest_low = min(spot, curr_bar.low)
+                            logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_200_BREAKOUT PUT | Spot: {spot:.2f} < EMA200Low: {ema_breakdown_level:.2f} at T+{sec_in_min}s | Dow Thrust OK")
+                            self._open_shadow_trade("EMA_200_BREAKOUT", "DOWN", spot, highest_high, lowest_low, now_sec, n1_fp)
+                            return
 
     def _evaluate_boundary_arming(self, spot: float, now_sec: float) -> None:
         """Evaluates boundary rejection on latest closed 1m candle and arms Mode A."""
@@ -568,6 +636,54 @@ class ShadowBoundaryObserver:
             pass
         return 0.0, 0.0
 
+    def _check_dow_thrust_progression(self, direction: str, curr_bar: Any, spot: float, atr: float) -> bool:
+        """
+        Dow Theory 3-Candle Directional Thrust Validator for Boundary Breakouts:
+        Filters out false/whipsaw breakouts when price coils / ranges around VWAP (Pain Zone) or 200 EMA.
+
+        Requires a clean 3-candle ascending (CALL) or descending (PUT) ladder:
+          - CALL (HH/HL Thrust from below):
+              1. Bar N-1 High > Bar N-2 High
+              2. Bar N-1 Low > Bar N-2 Low
+              3. Forming Bar N Low >= (Bar N-1 Low - 0.05 * atr)
+              4. Live Spot > Bar N-1 High (or Forming Bar N High > Bar N-1 High)
+          - PUT (LH/LL Thrust from above):
+              1. Bar N-1 Low < Bar N-2 Low
+              2. Bar N-1 High < Bar N-2 High
+              3. Forming Bar N High <= (Bar N-1 High + 0.05 * atr)
+              4. Live Spot < Bar N-1 Low (or Forming Bar N Low < Bar N-1 Low)
+        """
+        bars = getattr(self.pa_engine, "bars_1m", [])
+        if len(bars) < 2:
+            return False
+
+        bar_n1 = bars[-1]
+        bar_n2 = bars[-2]
+
+        h_n1, l_n1 = float(getattr(bar_n1, "high", 0.0)), float(getattr(bar_n1, "low", 0.0))
+        h_n2, l_n2 = float(getattr(bar_n2, "high", 0.0)), float(getattr(bar_n2, "low", 0.0))
+        curr_h = float(getattr(curr_bar, "high", 0.0))
+        curr_l = float(getattr(curr_bar, "low", 0.0))
+
+        tol = 0.05 * max(atr, 1.0)
+
+        if direction.upper() in ("UP", "CALL"):
+            # 1. Bar N-1 made Higher High & Higher Low relative to Bar N-2
+            n1_ascending = (h_n1 > h_n2) and (l_n1 > l_n2)
+            # 2. Forming Bar N Low holds above Bar N-1 Low (within micro-wick tolerance)
+            curr_hl = curr_l >= (l_n1 - tol)
+            # 3. Forming Bar / Live Spot breaks above Bar N-1 High
+            curr_hh = (spot > h_n1) or (curr_h > h_n1)
+            return bool(n1_ascending and curr_hl and curr_hh)
+        else:
+            # 1. Bar N-1 made Lower Low & Lower High relative to Bar N-2
+            n1_descending = (l_n1 < l_n2) and (h_n1 < h_n2)
+            # 2. Forming Bar N High holds below Bar N-1 High (within micro-wick tolerance)
+            curr_lh = curr_h <= (h_n1 + tol)
+            # 3. Forming Bar / Live Spot breaks below Bar N-1 Low
+            curr_ll = (spot < l_n1) or (curr_l < l_n1)
+            return bool(n1_descending and curr_lh and curr_ll)
+
     def _check_wyckoff_harmony(self, direction: str, bar: Any) -> bool:
         """Verifies institutional order flow delta harmony (no opposing liquidation dump)."""
         opt_flow = getattr(self.pa_engine, "_opt_flow_1m", {}) if self.pa_engine else {}
@@ -609,6 +725,11 @@ class ShadowBoundaryObserver:
         tp_price = opt_lp * 1.04 if opt_lp > 0 else 0.0
         sl_price = opt_lp * 0.88 if opt_lp > 0 else 0.0
 
+        pz_dict = self.pa_engine.get_pain_zone_vwaps() if hasattr(self.pa_engine, "get_pain_zone_vwaps") else {}
+        pz_top_val = float(pz_dict.get("zone_top", 0.0) or 0.0)
+        pz_bot_val = float(pz_dict.get("zone_bottom", 0.0) or 0.0)
+        pz_spread = round(pz_top_val - pz_bot_val, 2) if (pz_top_val > 0 and pz_bot_val > 0) else 0.0
+
         n1 = n1_fp or {}
         trade = ShadowTrade(
             trade_id=trade_id,
@@ -631,6 +752,13 @@ class ShadowBoundaryObserver:
             n1_vol_dryup=bool(n1.get("n1_vol_dryup", False)),
             n1_net_delta=float(n1.get("n1_net_delta", 0.0)),
             n1_stopping_vol=bool(n1.get("n1_stopping_vol", False)),
+            pz_top=pz_top_val,
+            pz_bottom=pz_bot_val,
+            pz_spread_pts=pz_spread,
+            pz_call_buy=float(pz_dict.get("vwap_call_buy", 0.0) or 0.0),
+            pz_call_sell=float(pz_dict.get("vwap_call_sell", 0.0) or 0.0),
+            pz_put_buy=float(pz_dict.get("vwap_put_buy", 0.0) or 0.0),
+            pz_put_sell=float(pz_dict.get("vwap_put_sell", 0.0) or 0.0),
         )
         
         self.active_trades.append(trade)

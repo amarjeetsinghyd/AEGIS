@@ -493,3 +493,9 @@ class TickCompiler:
 
     def reset_5min_stats(self):
         self.reset_15min_stats()
+
+    def stop(self) -> None:
+        """Detaches engine and clears active subscription tracking for clean shutdown."""
+        self._engine = None
+        self._subscribed_tokens = {}
+        logger.info("[TickCompiler] Stopped and detached from engine.")

@@ -49,8 +49,8 @@ def _parse_opt_pct(pct_str: Any) -> float:
 
 def _identify_pillar(setup_str: str, reason_str: str) -> str:
     text = (str(setup_str) + " " + str(reason_str)).lower()
-    if "pillar 4" in text or "hvg" in text or "break of structure" in text or "bos" in text:
-        return "Pillar 4 (BOS)"
+    if "pillar 4" in text or "sr_breakout" in text or "s/r" in text or "topological" in text or "hvg" in text or "break of structure" in text or "bos" in text:
+        return "Pillar 4 (S/R Breakout)"
     if "pillar 3" in text or "squeeze" in text or "volatility_squeeze" in text:
         return "Pillar 3 (Squeeze)"
     if "pillar 2" in text or "sweep" in text or "spring" in text or "reclaim" in text:
@@ -600,7 +600,7 @@ def get_journal_data(force_reload: bool = False) -> Dict[str, Any]:
         "Pillar 1 (20 EMA)": {"name": "Pillar 1 (20 EMA)", "trades": 0, "wins": 0, "pnl": 0.0, "opt_pcts": []},
         "Pillar 2 (Sweep)": {"name": "Pillar 2 (Sweep)", "trades": 0, "wins": 0, "pnl": 0.0, "opt_pcts": []},
         "Pillar 3 (Squeeze)": {"name": "Pillar 3 (Squeeze)", "trades": 0, "wins": 0, "pnl": 0.0, "opt_pcts": []},
-        "Pillar 4 (BOS)": {"name": "Pillar 4 (BOS)", "trades": 0, "wins": 0, "pnl": 0.0, "opt_pcts": []},
+        "Pillar 4 (S/R Breakout)": {"name": "Pillar 4 (S/R Breakout)", "trades": 0, "wins": 0, "pnl": 0.0, "opt_pcts": []},
     }
 
     runner_analysis = []

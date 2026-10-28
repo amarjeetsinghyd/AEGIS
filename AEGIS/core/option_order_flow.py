@@ -862,6 +862,7 @@ class CompositeConvictionEngine:
             "albrooks_2legged_pullback",
             "volatility_squeeze_breakout",
             "hvg_network_phase_shift",
+            "sr_breakout",
             "topological_prominence_breakout",
             "break_of_structure",
         )
@@ -1162,7 +1163,7 @@ class CompositeConvictionEngine:
             "MODE_B" in mode_val
             or setup_name.startswith("mode_b_")
             or "MODE_B" in s_name_upper
-            or setup_name in ("volatility_squeeze_breakout", "topological_prominence_breakout")
+            or setup_name in ("volatility_squeeze_breakout", "sr_breakout", "topological_prominence_breakout")
         )
 
         # Extract micro-level option metrics if available

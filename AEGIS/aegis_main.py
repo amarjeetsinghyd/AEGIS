@@ -247,6 +247,57 @@ def build_minute_digest(now, aegis_engine, trader, spot_price):
 
     return " | ".join(seg)
 
+def shutdown_background_workers(trader=None, aegis_archiver=None, compiler=None, broker=None, oi_poller=None, reason="EOD Session Close"):
+    """Gracefully terminates all background threads, archivers, and broker websockets for clean off-market sleep."""
+    logger.info(f"[AegisMain] Shutting down background workers ({reason})...")
+
+    # 1. Stop Execution Manager & flatten open positions
+    if trader is not None:
+        try:
+            trader.stop()
+            if trader.has_open_trade():
+                logger.warning(f"[AegisMain] Force flattening open position on {reason}")
+                trader._close_all_legs(f"Shutdown: {reason}")
+            logger.info("[AegisMain] Execution Manager stopped.")
+        except Exception as e_em:
+            logger.warning(f"[AegisMain] Execution manager stop warning: {e_em}")
+
+    # 2. Flush and shutdown L2 Archiver
+    if aegis_archiver is not None:
+        try:
+            logger.info("[AegisMain] Flushing AEGIS L2 Options Archiver final partition...")
+            aegis_archiver.shutdown()
+            logger.info("[AegisMain] AEGIS L2 archiver shutdown complete.")
+        except Exception as e_arch:
+            logger.warning(f"[AegisMain] Archiver shutdown warning: {e_arch}")
+
+    # 3. Detach Tick Compiler from engine
+    if compiler is not None:
+        try:
+            compiler.stop()
+            logger.info("[AegisMain] TickCompiler stopped and detached from engine.")
+        except Exception as e_comp:
+            logger.warning(f"[AegisMain] TickCompiler stop warning: {e_comp}")
+
+    # 4. Disconnect Broker WebSocket
+    if broker is not None:
+        try:
+            if hasattr(broker, "stop_websocket"):
+                broker.stop_websocket()
+            elif hasattr(broker, "market_data_provider") and hasattr(broker.market_data_provider, "stop_websocket"):
+                broker.market_data_provider.stop_websocket()
+            logger.info("[AegisMain] Broker WebSocket cleanly closed for post-market sleep.")
+        except Exception as e_ws:
+            logger.warning(f"[AegisMain] WebSocket close warning: {e_ws}")
+
+    # 5. Stop OI Poller if active
+    if oi_poller is not None:
+        try:
+            oi_poller.stop()
+            logger.info("[AegisMain] OI poller stopped.")
+        except Exception:
+            pass
+
 def main():
     logger.info("==============================================")
     logger.info("STARTING AEGIS V1.0 GAMMA BURST ENGINE")
@@ -560,6 +611,12 @@ def main():
             
             # ─── Session Management ───
             if not is_bot_active_hours(now):
+                shutdown_background_workers(trader=trader, aegis_archiver=aegis_archiver, compiler=compiler, broker=broker, oi_poller=oi_poller, reason="EOD Session Close")
+                aegis_archiver = None
+                try:
+                    update_aegis_live_state({"status": "SLEEPING", "market_state": "CLOSED", "pos": "FLAT", "trades_today": getattr(trader, "trades_today", 0), "daily_pnl": getattr(trader, "daily_pnl", 0.0)})
+                except Exception:
+                    pass
                 logger.info("Bot active hours closed. Stopping background workers...")
 
                 if oi_poller is not None:
@@ -735,6 +792,8 @@ def main():
     
     # ─── Graceful Shutdown ───
     logger.info("Shutting down AEGIS V1.0...")
+    shutdown_background_workers(trader=trader, aegis_archiver=aegis_archiver, compiler=compiler, broker=broker, oi_poller=oi_poller, reason="System Shutdown")
+    aegis_archiver = None
 
     # Stop OI quotes poller (no new REST OI polls during teardown)
     try:

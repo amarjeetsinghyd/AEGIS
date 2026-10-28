@@ -1142,6 +1142,15 @@ class AegisExecutionManager:
                         "oi_n": int((metrics.get("oi_snapshot", {}) or {}).get("n", 0)),
                         "oi_builtup": str((metrics.get("oi_snapshot", {}) or {}).get("builtup", "UNKNOWN")),
                         "oi_wall_dist_strikes": float((metrics.get("oi_snapshot", {}) or {}).get("wall_dist_strikes", 0.0)),
+                        # ─── Pain Zone 4-Line Snapshot & Band Spread ───
+                        "pain_zone_snapshot": metrics.get("pain_zone_snapshot", {}),
+                        "pain_zone_top": float(metrics.get("pain_zone_top", 0.0) or 0.0),
+                        "pain_zone_bottom": float(metrics.get("pain_zone_bottom", 0.0) or 0.0),
+                        "pain_zone_spread_pts": float(metrics.get("pain_zone_spread_pts", 0.0) or 0.0),
+                        "pain_zone_call_buy": float(metrics.get("pain_zone_call_buy", 0.0) or 0.0),
+                        "pain_zone_call_sell": float(metrics.get("pain_zone_call_sell", 0.0) or 0.0),
+                        "pain_zone_put_buy": float(metrics.get("pain_zone_put_buy", 0.0) or 0.0),
+                        "pain_zone_put_sell": float(metrics.get("pain_zone_put_sell", 0.0) or 0.0),
                     }
                     self.trade_context.decision_payload = dp
                     self.trade_context.spot_sl_price = dp["spot_sl_price"]
@@ -1173,6 +1182,22 @@ class AegisExecutionManager:
             self.capital_engine.deduct_funds(leg.entry_price * quantity * params["lot_size"])
             self.trades_today += 1
             self._save_trades_today()
+
+            # Register for 60-second post-trade extended MFE and monotonicity tracking
+            if self.aegis_engine and getattr(self.aegis_engine, "post_trade_tracker", None):
+                try:
+                    self.aegis_engine.post_trade_tracker.register_executed_trade(
+                        trade_id=f"{symbol}_{int(fill_ts*1000)}",
+                        symbol=symbol,
+                        direction=signal_type,
+                        entry_price=leg.entry_price,
+                        entry_ts=fill_ts,
+                        setup_name=dp.get("pa_setup_name", ""),
+                        pillar=dp.get("pillar", 0),
+                        mode=dp.get("mode", ""),
+                    )
+                except Exception as _e_ptt:
+                    logger.debug(f"[AegisEM] Post-trade milestone register error: {_e_ptt}")
             self.tp_order_id = None
             self._trade_quote_history.clear()
 
@@ -2290,6 +2315,18 @@ class AegisExecutionManager:
         self.last_trade_exit_time = now_epoch
         self.last_trade_loss = (gross_pnl < 0)
 
+        # Notify 60s post-trade milestone tracker of broker exit
+        if self.aegis_engine and getattr(self.aegis_engine, "post_trade_tracker", None) and sym_str:
+            try:
+                self.aegis_engine.post_trade_tracker.notify_trade_exit(
+                    symbol=sym_str,
+                    exit_price=exit_px,
+                    exit_ts=now_epoch,
+                    exit_reason=reason,
+                )
+            except Exception as _e_nex:
+                logger.debug(f"[AegisEM] Post-trade exit notification error: {_e_nex}")
+
         # Quality Stack: consecutive-loss tracking + engine cross-wire
         if gross_pnl < 0:
             self._consec_losses = int(getattr(self, "_consec_losses", 0)) + 1
@@ -2580,6 +2617,7 @@ class AegisExecutionManager:
                 "boundary_level": getattr(self.trade_context, "boundary_level", 0.0),
                 "entry_bar_bucket": getattr(self.trade_context, "entry_bar_bucket", None),
                 "spot_sl_price": getattr(self.trade_context, "spot_sl_price", 0.0),
+                "decision_payload": getattr(self.trade_context, "decision_payload", {}),
                 "tp_order_id": self.tp_order_id,
                 "last_tp_order_id": self.last_tp_order_id,
                 "legs": [
@@ -2635,6 +2673,7 @@ class AegisExecutionManager:
             self.trade_context.pa_setup_name = str(data.get("pa_setup_name", "") or "")
             self.trade_context.execution_mode = str(data.get("execution_mode", "") or "")
             self.trade_context.boundary_level = float(data.get("boundary_level", 0.0) or 0.0)
+            self.trade_context.decision_payload = data.get("decision_payload", {})
             self.trade_context.entry_bar_bucket = data.get("entry_bar_bucket")
             self.trade_context.spot_sl_price = float(data.get("spot_sl_price", 0.0) or 0.0)
             if data.get("entry_time"):

@@ -867,25 +867,36 @@ class StructuralRegistryMixin:
         """
         Maps a candidate sweep candle to an active Structural Support (CALL) or Resistance (PUT)
         from self.session_levels or Day Extremes (PDH/PDL).
+        
+        Strict Institutional Qualification:
+          - CALL (Spring): Must be OUTERMOST_FLOOR, PDL, or high-prominence MAJOR_SWING (>= 1.25 prom).
+          - PUT (Upthrust): Must be OUTERMOST_ROOF, PDH, or high-prominence MAJOR_SWING (>= 1.25 prom).
+          - INTERIOR_CLUSTER and C_UNQUALIFIED are STRICTLY VETOED.
         """
         is_up = direction.upper() in ("UP", "CALL")
         target_type = "SUPPORT" if is_up else "RESISTANCE"
 
-        candidates = [
-            lvl for lvl in self.session_levels
-            if lvl.level_type == target_type
-            and not lvl.is_broken
-            and ((self._total_bars_seen - lvl.seq_idx) >= 2 or (getattr(bar, "ts_start", 0) - lvl.ts_created) >= 120.0)
-        ]
+        candidates = []
+        for lvl in self.session_levels:
+            if lvl.level_type != target_type or lvl.is_broken:
+                continue
+            role = getattr(lvl, "level_role", "NORMAL")
+            if role in ("INTERIOR_CLUSTER", "C_UNQUALIFIED"):
+                continue
+            if role == "MAJOR_SWING" and (lvl.prominence < 1.25 or getattr(lvl, "breakout_tier", "") == "C_UNQUALIFIED"):
+                continue
+            if (self._total_bars_seen - lvl.seq_idx) < 2 and (getattr(bar, "ts_start", 0) - lvl.ts_created) < 120.0:
+                continue
+            candidates.append(lvl)
 
         # Include Previous Day Extremes (PDL / PDH) if not already in session_levels
         if is_up and self.pdl > 0 and not any(abs(l.price - self.pdl) < 2.0 for l in candidates):
             candidates.append(
-                StructuralLevel(level_type="SUPPORT", price=self.pdl, ts_created=0.0, prominence=2.0, bar_idx=0, touch_count=2)
+                StructuralLevel(level_type="SUPPORT", price=self.pdl, ts_created=0.0, prominence=2.0, bar_idx=0, touch_count=2, level_role="PDL")
             )
         elif (not is_up) and self.pdh > 0 and not any(abs(l.price - self.pdh) < 2.0 for l in candidates):
             candidates.append(
-                StructuralLevel(level_type="RESISTANCE", price=self.pdh, ts_created=0.0, prominence=2.0, bar_idx=0, touch_count=2)
+                StructuralLevel(level_type="RESISTANCE", price=self.pdh, ts_created=0.0, prominence=2.0, bar_idx=0, touch_count=2, level_role="PDH")
             )
 
         # Sort by institutional strength: touch_count and prominence
@@ -907,6 +918,64 @@ class StructuralRegistryMixin:
                     and bar.high >= (lvl.price + min_sweep_depth)
                     and bar.close < lvl.price
                 ):
+                    return lvl
+
+        return None
+
+    def _find_inflight_swept_sr_level(
+        self,
+        direction: str,
+        prior_bar: Any,
+        curr_bar: Any,
+        spot: float,
+        min_sweep_depth: float,
+        atr: float,
+    ) -> Optional[StructuralLevel]:
+        """
+        Maps an in-flight forming candle to an active registered Structural Level for Mode B Reversal Breakout.
+        Strictly requires registered OUTERMOST_FLOOR, OUTERMOST_ROOF, PDL, PDH, or high-prominence MAJOR_SWING.
+        Zero tolerance for arbitrary 5-bar local swings.
+        """
+        is_up = direction.upper() in ("UP", "CALL")
+        target_type = "SUPPORT" if is_up else "RESISTANCE"
+
+        candidates = []
+        for lvl in self.session_levels:
+            if lvl.level_type != target_type or lvl.is_broken:
+                continue
+            role = getattr(lvl, "level_role", "NORMAL")
+            if role in ("INTERIOR_CLUSTER", "C_UNQUALIFIED"):
+                continue
+            if role == "MAJOR_SWING" and (lvl.prominence < 1.25 or getattr(lvl, "breakout_tier", "") == "C_UNQUALIFIED"):
+                continue
+            if (self._total_bars_seen - lvl.seq_idx) < 2 and (getattr(curr_bar, "ts_start", 0) - lvl.ts_created) < 120.0:
+                continue
+            candidates.append(lvl)
+
+        # Include Previous Day Extremes (PDL / PDH)
+        if is_up and self.pdl > 0 and not any(abs(l.price - self.pdl) < 2.0 for l in candidates):
+            candidates.append(
+                StructuralLevel(level_type="SUPPORT", price=self.pdl, ts_created=0.0, prominence=2.0, bar_idx=0, touch_count=2, level_role="PDL")
+            )
+        elif (not is_up) and self.pdh > 0 and not any(abs(l.price - self.pdh) < 2.0 for l in candidates):
+            candidates.append(
+                StructuralLevel(level_type="RESISTANCE", price=self.pdh, ts_created=0.0, prominence=2.0, bar_idx=0, touch_count=2, level_role="PDH")
+            )
+
+        candidates.sort(key=lambda l: (l.touch_count * 0.5 + l.prominence), reverse=True)
+
+        for lvl in candidates:
+            if is_up:
+                # Plunge below registered support on prior bar or forming bar, live spot reclaimed above support
+                plunge_ok = (prior_bar.low <= lvl.price - min_sweep_depth) or (curr_bar.low <= lvl.price - min_sweep_depth)
+                reclaim_ok = (spot > lvl.price) and (spot >= prior_bar.high)
+                if plunge_ok and reclaim_ok:
+                    return lvl
+            else:
+                # Surge above registered resistance on prior bar or forming bar, live spot reclaimed below resistance
+                surge_ok = (prior_bar.high >= lvl.price + min_sweep_depth) or (curr_bar.high >= lvl.price + min_sweep_depth)
+                reclaim_ok = (spot < lvl.price) and (spot <= prior_bar.low)
+                if surge_ok and reclaim_ok:
                     return lvl
 
         return None
