@@ -83,7 +83,7 @@ flowchart TD
         PA_CHECK -->|Mode B Breakthrough| PB["Mode B: In-Flight Mid-Bar Breakthrough (T:08s onwards / No Upper Cap)<br/>• Boundary Pierce (Squeeze Box, S/R Registry — live) + (Pain Zone, 200 EMA — ShadowBoundaryObserver only)<br/>• Sweet-Spot Range 0.35x–1.20x ATR, Body ≥ 65%<br/>• 2-Tick Persistence, Live Opt Delta ≥ 1.30x"]
         PA_CHECK -->|Pillar 1| P1["Pillar 1: 20 EMA Pullback & Momentum Rejection (Mode A)<br/>• Classical Dow HL2/LH2 2nd-Touch Confirmation<br/>• 20 EMA Wick Rejection, Close Edge ≥ 0.60<br/>• Wyckoff Candle N-1 Smart Safe Gate (Dry-Up/Delta/Absorption)"]
         PA_CHECK -->|Pillar 2| P2["Pillar 2: Liquidity Sweep & Reclaim (Mode A)<br/>• Dynamic S/R Registry & Day Extreme (PDH/PDL) Stop-Hunt Reclaim<br/>• Lower Wick ≥ 35% & ≥ 1.25x Upper Wick<br/>• Upper Wick ≤ 15%, Close Edge ≥ 0.55"]
-        PA_CHECK -->|Pillar 3| P3["Pillar 3: Volatility Squeeze Breakout<br/>• 3-4 Bar Box Compression (≤1.25x ATR)<br/>• Expansion Breakout, Anti-Climax Cap ≤ 1.35x ATR<br/>• Body ≥ 35% of Range, Close Edge ≥ 0.55"]
+        PA_CHECK -->|Pillar 3| P3["Pillar 3: Volatility Squeeze Breakout<br/>• 5-7 Bar Box Compression (≤1.15x ATR, Per-Bar ≤0.65x ATR)<br/>• Anti-Staircase & Drift Cap ≤50%, Median Crossing ≥60%<br/>• Priority Mode B In-Flight Surge"]
         PA_CHECK -->|Pillar 4| P4["Pillar 4: Topological Prominence Breakout<br/>• Priority 1: Dynamic Session S/R Level Registry Breakout<br/>• Priority 2: T-2 0-D Prominence Hub (π ≥ 1.75)<br/>• Day Extreme Runway Shield (min 1.25x ATR / 8 bps)"]
         PB & P1 & P2 & P3 & P4 --> SINGLE_ADM{"Single Admission Policy<br/>(Deterministic First-Hit Resolution)"}
     end

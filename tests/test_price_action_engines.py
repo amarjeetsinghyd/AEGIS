@@ -1072,3 +1072,60 @@ def test_5m_and_15m_sr_registry_discovery_and_mode_b_breakthrough():
     assert r_5m.is_broken is True
 
 
+
+
+def test_hardened_squeeze_box_anti_staircase_parity():
+    """
+    Verifies that:
+      1. A falling staircase (lower highs and lower lows like today 09:26-09:29) is strictly VETOED.
+      2. A genuine 5-bar horizontal compression with pre-established floor is ACCEPTED.
+    """
+    engine = PriceActionEngine(strike_step=100.0)
+    engine.current_atr_1m = 75.0
+    now = 1793160000.0
+
+    # 1. Falling Staircase (4-5 bars constantly dropping to lower lows)
+    staircase_bars = [
+        OHLCBar(ts_start=now - 240, ts_end=now - 180, open=72875.0, high=72885.0, low=72839.0, close=72842.0, volume=1000),
+        OHLCBar(ts_start=now - 180, ts_end=now - 120, open=72842.0, high=72885.0, low=72838.0, close=72884.0, volume=1000),
+        OHLCBar(ts_start=now - 120, ts_end=now - 60, open=72884.0, high=72884.0, low=72829.0, close=72861.0, volume=1000),
+        OHLCBar(ts_start=now - 60, ts_end=now, open=72861.0, high=72861.0, low=72814.0, close=72829.0, volume=1000),
+    ]
+    # Check 4-bar staircase
+    ok_sc4, reason_sc4, _ = engine._is_valid_squeeze_box(staircase_bars, atr=75.0, direction="DOWN")
+    assert ok_sc4 is False
+    assert "insufficient_box_bars" in reason_sc4
+
+    # Add 5th bar still continuing the fall
+    staircase_bars_5 = [
+        OHLCBar(ts_start=now - 300, ts_end=now - 240, open=72900.0, high=72910.0, low=72860.0, close=72875.0, volume=1000),
+    ] + staircase_bars
+    ok_sc5, reason_sc5, _ = engine._is_valid_squeeze_box(staircase_bars_5, atr=75.0, direction="DOWN")
+    assert ok_sc5 is False
+    assert any(k in reason_sc5 for k in ("staircase", "waterfall", "drift", "median", "box_range_expanded"))
+
+    # Also test a tight staircase that fits inside 1.15*ATR but has a falling staircase
+    tight_staircase = [
+        OHLCBar(ts_start=now - 300, ts_end=now - 240, open=72860.0, high=72865.0, low=72850.0, close=72852.0, volume=1000),
+        OHLCBar(ts_start=now - 240, ts_end=now - 180, open=72852.0, high=72858.0, low=72845.0, close=72848.0, volume=1000),
+        OHLCBar(ts_start=now - 180, ts_end=now - 120, open=72848.0, high=72852.0, low=72838.0, close=72840.0, volume=1000),
+        OHLCBar(ts_start=now - 120, ts_end=now - 60, open=72840.0, high=72844.0, low=72830.0, close=72832.0, volume=1000),
+        OHLCBar(ts_start=now - 60, ts_end=now, open=72832.0, high=72835.0, low=72820.0, close=72822.0, volume=1000),
+    ]
+    ok_tight, reason_tight, _ = engine._is_valid_squeeze_box(tight_staircase, atr=75.0, direction="DOWN")
+    assert ok_tight is False
+    assert any(k in reason_tight for k in ("staircase", "waterfall", "drift", "median"))
+
+    # 2. Genuine Horizontal Squeeze Box (5 bars coiling around 72840 with pre-established floor at 72828)
+    genuine_box = [
+        OHLCBar(ts_start=now - 300, ts_end=now - 240, open=72840.0, high=72850.0, low=72830.0, close=72845.0, volume=1000),
+        OHLCBar(ts_start=now - 240, ts_end=now - 180, open=72845.0, high=72852.0, low=72832.0, close=72838.0, volume=1000),
+        OHLCBar(ts_start=now - 180, ts_end=now - 120, open=72838.0, high=72848.0, low=72828.0, close=72842.0, volume=1000),
+        OHLCBar(ts_start=now - 120, ts_end=now - 60, open=72842.0, high=72845.0, low=72830.0, close=72835.0, volume=1000),
+        OHLCBar(ts_start=now - 60, ts_end=now, open=72835.0, high=72842.0, low=72831.0, close=72833.0, volume=1000),
+    ]
+    ok_box, reason_box, meta = engine._is_valid_squeeze_box(genuine_box, atr=75.0, direction="DOWN")
+    assert ok_box is True
+    assert reason_box == "valid_squeeze_box"
+    assert meta["box_low"] == 72828.0
+    assert meta["box_high"] == 72852.0
