@@ -294,12 +294,12 @@ class ShadowBoundaryObserver:
         if self.pa_engine is None:
             return
         curr_bar = getattr(self.pa_engine, "_curr_1m_bar", None)
-        if curr_bar is None or curr_bar.tick_count < 6:
+        if curr_bar is None or curr_bar.tick_count < 2:
             return
 
         sec_in_min = int(now_sec % 60)
-        # Active intra-bar expansion window (from 8s onwards, upper cap removed)
-        if sec_in_min < 8:
+        # Active intra-bar expansion window from T:02s onwards (rollover guard T:00s-T:01s)
+        if sec_in_min < 2:
             return
 
         atr = getattr(self.pa_engine, "current_atr_1m", 10.0) or 10.0

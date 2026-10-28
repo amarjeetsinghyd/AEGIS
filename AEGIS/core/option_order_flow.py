@@ -714,7 +714,7 @@ class CompositeConvictionEngine:
 
     Merged Architecture:
       - Raw tick buffer parsing & circuit breakers directly embedded (AdaptiveMicroValidator merged).
-      - Mode B Profile: In-Flight Mid-Bar Breakthrough Surge (T:08s onwards, No Upper Cap).
+      - Mode B Profile: In-Flight Mid-Bar Breakthrough Surge (T:02s onwards, No Upper Cap).
       - Mode A Profile: Structural Rejection & Close (T:50s Pre-Close / T:00s Close).
     """
 
@@ -920,7 +920,7 @@ class CompositeConvictionEngine:
     ) -> Tuple[float, Dict[str, float], Dict[str, Any], str]:
         """
         Mode B Conviction Profile: In-Flight Mid-Bar Breakthrough Surge.
-        Active from T:08s onwards anytime during the candle (No Upper Limit Cap).
+        Active from T:02s onwards anytime during the candle (No Upper Limit Cap).
         Focused on instantaneous breakout velocity, ask sweeps, and live tick intensity.
 
         Domains (100 pts total):
@@ -1152,7 +1152,7 @@ class CompositeConvictionEngine:
     ) -> ConvictionResult:
         """
         Computes the streamlined Dual-Profile Option Microstructure & Order Flow conviction score:
-          - Mode B Profile: In-Flight Mid-Bar Breakthrough Surge (T:08s onwards, No Upper Cap).
+          - Mode B Profile: In-Flight Mid-Bar Breakthrough Surge (T:02s onwards, No Upper Cap).
           - Mode A Profile: Structural Rejection & Close (T:50s Pre-Close / T:00s Close).
         """
         mode_val = str((pa_details or {}).get("mode", "")).upper()

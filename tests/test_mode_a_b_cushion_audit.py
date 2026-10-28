@@ -941,8 +941,8 @@ def test_mode_b_no_upper_cap_triggers_late_in_candle():
         "put_sell_vol": 5000.0,
     }
 
-    # Early guard check: At T:05s, outside_mode_b_window is enforced
-    ok_early, reason_early, _ = pa.check_mode_b_breakthrough("UP", current_time=now + 5 * 60 + 5)
+    # Early guard check: At T:01s (rollover guard window < 2s), outside_mode_b_window is enforced
+    ok_early, reason_early, _ = pa.check_mode_b_breakthrough("UP", current_time=now + 5 * 60 + 1)
     assert ok_early is False
     assert reason_early == "outside_mode_b_window"
 

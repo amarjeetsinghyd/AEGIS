@@ -392,9 +392,9 @@ def test_shadow_breakthrough_late_in_candle_no_upper_cap():
     observer.strike_to_symbol = {(0, 22750.0): "NIFTY_22750_CE"}
     observer.option_cache = {"NIFTY_22750_CE": 45.0}
 
-    # At T:04s (early noise window: sec_in_min = 4 < 8), breakthrough is ignored
+    # At T:01s (early rollover guard window: sec_in_min = 1 < 2), breakthrough is ignored
     now_base = 1700000040.0
-    observer._check_inflight_breakthrough(spot=22515.0, now_sec=now_base + 4.0)
+    observer._check_inflight_breakthrough(spot=22515.0, now_sec=now_base + 1.0)
     assert len(observer.active_trades) == 0
 
     # At T:54s (late candle: sec_in_min = 54, single-shot first tick trigger)

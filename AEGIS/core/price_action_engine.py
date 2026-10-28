@@ -2045,12 +2045,12 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         Triggers instantly upon price breaking through:
           1. Pillar 3: Volatility Squeeze Box Breakout (box_high for CALL, box_low for PUT).
           2. Pillar 4: Dynamic S/R Registry Breakout (res for CALL, sup for PUT).
-        Active mid-bar from T:08s onwards. Single-shot clean trigger without artificial
+        Active mid-bar from T:02s onwards (rollover guard T:00s-T:01s). Single-shot clean trigger without artificial
         body ratio, wick chokes, multi-tick delays, or point clearance hurdles.
         """
         now_sec = current_time if current_time > 0 else self.last_ts
         sec_in_min = int(now_sec % 60)
-        if sec_in_min < 8:
+        if sec_in_min < 2:
             return False, "outside_mode_b_window", {}
 
         curr_bar = self._curr_1m_bar
