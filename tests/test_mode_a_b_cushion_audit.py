@@ -1246,11 +1246,119 @@ def test_micro_sweep_sr_registry_mapping():
 
     assert details["level_prominence"] == 2.5
 
+def test_mode_b_p1_20_ema_inflight_reversal_breakout():
+    """Verify that forming Bar N bouncing from 20 EMA and piercing prior red bar (N-1) High triggers Mode B P1 instantly."""
+    pa = PriceActionEngine()
+    pa.current_atr_1m = 10.0
+    pa.ema_20_1m = 22450.0
+    pa.ema_50_1m = 22440.0
+    now = 1792730040.0
+
+    # 12 base bars trending up above 20 EMA
+    for i in range(12):
+        b = OHLCBar(
+            ts_start=now + i * 60,
+            ts_end=now + (i + 1) * 60,
+            open=22450.0 + i * 1.0,
+            high=22455.0 + i * 1.0,
+            low=22448.0 + i * 1.0,
+            close=22453.0 + i * 1.0,
+            volume=20000.0,
+            tick_count=20,
+        )
+        pa.bars_1m.append(b)
+    pa._total_bars_seen = 12
+
+    # Bar N-1: Red pullback bar touching 20 EMA band (High 22465.0, Low 22449.0, Open 22464.0, Close 22451.0)
+    pullback_bar = OHLCBar(
+        ts_start=now + 12 * 60,
+        ts_end=now + 13 * 60,
+        open=22464.0,
+        high=22465.0,
+        low=22449.0,
+        close=22451.0,
+        volume=25000.0,
+        tick_count=25,
+    )
+    pa.bars_1m.append(pullback_bar)
+    pa._total_bars_seen = 13
+
+    # Bar N: Live forming bar at T:15s, dips to 22450.0 (tests 20 EMA) and surges to 22465.5 (pierces prior bar High 22465.0)
+    forming_bar = OHLCBar(
+        ts_start=now + 13 * 60,
+        ts_end=now + 14 * 60,
+        open=22452.0,
+        high=22466.0,
+        low=22450.0,
+        close=22465.5,
+        volume=15000.0,
+        tick_count=15,
+    )
+    pa._curr_1m_bar = forming_bar
+    pa.last_price = 22465.5
+    pa.last_ts = now + 13 * 60 + 15
+
+    ok, reason, details = pa.check_mode_b_breakthrough("UP", current_time=pa.last_ts)
+    assert ok is True
+    assert details["pillar"] == 1
+    assert details["pa_setup_name"] == "20_ema_rejection"
+    assert details["mode"] == "MODE_B_INFLIGHT_BREAKTHROUGH"
+    assert details["boundary_level"] == 22465.0
 
 
+def test_mode_b_p2_micro_sweep_inflight_reversal_breakout():
+    """Verify that forming Bar N reclaiming a swept level and piercing prior bar (N-1) High triggers Mode B P2 instantly."""
+    pa = PriceActionEngine()
+    pa.current_atr_1m = 10.0
+    now = 1792730040.0
 
+    # 10 base bars with swing low at 22450.0
+    for i in range(10):
+        b = OHLCBar(
+            ts_start=now + i * 60,
+            ts_end=now + (i + 1) * 60,
+            open=22455.0,
+            high=22460.0,
+            low=22450.0 + i * 0.5,
+            close=22456.0,
+            volume=20000.0,
+            tick_count=20,
+        )
+        pa.bars_1m.append(b)
+    pa._total_bars_seen = 10
 
+    # Bar N-1: sweeps swing low (swept down to 22444.0 < 22450.0 - min_sweep), High is 22455.0
+    sweep_bar = OHLCBar(
+        ts_start=now + 10 * 60,
+        ts_end=now + 11 * 60,
+        open=22453.0,
+        high=22455.0,
+        low=22444.0,
+        close=22451.0,
+        volume=40000.0,
+        tick_count=40,
+    )
+    pa.bars_1m.append(sweep_bar)
+    pa._total_bars_seen = 11
 
+    # Bar N: Live forming bar at T:20s, reclaims above 22450.0 and pierces sweep_bar High (22455.5 >= 22455.0)
+    forming_bar = OHLCBar(
+        ts_start=now + 11 * 60,
+        ts_end=now + 12 * 60,
+        open=22451.5,
+        high=22456.0,
+        low=22449.0,
+        close=22455.5,
+        volume=20000.0,
+        tick_count=20,
+    )
+    pa._curr_1m_bar = forming_bar
+    pa.last_price = 22455.5
+    pa.last_ts = now + 11 * 60 + 20
 
-
-
+    ok, reason, details = pa.check_mode_b_breakthrough("UP", current_time=pa.last_ts)
+    assert ok is True
+    assert details["pillar"] == 2
+    assert details["pa_setup_name"] == "micro_sweep_reclaim"
+    assert details["mode"] == "MODE_B_INFLIGHT_BREAKTHROUGH"
+    assert details["boundary_level"] == 22455.0

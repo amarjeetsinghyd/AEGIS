@@ -1502,7 +1502,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
             band_tested = (bar.high >= band_low - tol_pts) and (bar.close <= band_high + 0.25 * atr)
             rej_geom = (upper_wick_ratio >= 0.20) and (bar.close <= bar.high - 0.40 * c_range)
             dow = self._validate_dow_hl2_lh2_structure("PUT", touch2_offset=0)
-            ok_struct, _, _ = self._check_structural_obstacle("PUT", bar.close, check_day_extremes=True)
+            ok_struct, _, _ = self._check_structural_obstacle("PUT", bar.close)
 
             if downtrend_ok and vwap_ok and came_from_below and band_tested and rej_geom and dow.is_valid and ok_struct and self._check_wyckoff_harmony("DOWN", bar):
                 n1_fp = self.compute_n1_footprint(bar, atr)
@@ -2221,6 +2221,178 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                 "bar_close": round(spot, 2),
                                 "entry_bar_bucket": int(now_sec // 60),
                             }
+
+        # ─── 3. PILLAR 1: 20 EMA In-Flight Reversal Breakout (Mode B) ───
+        # When forming Bar N bounces from 20 EMA and pierces the High/Low of the prior pullback bar (N-1)
+        if len(self.bars_1m) >= 12:
+            prior_bar = self.bars_1m[-1]
+            live_ema_20, live_slope_20_bps = self.get_live_20_ema_and_slope()
+            if live_ema_20 > 0:
+                e_close_arr, e_high_arr, e_low_arr = self.get_20_ema_band_arrays(2)
+                band_high = e_high_arr[-1]
+                band_low = e_low_arr[-1]
+                tol_pts = max(1.5, live_ema_20 * (1.5 / 10000.0), 0.12 * atr)
+
+                last_p1 = self._mode_b_last_trigger_bar_idx.get(f"P1_EMA20_{direction}", -100)
+                if (bar_idx - last_p1) >= 3:
+                    if direction == "UP":
+                        uptrend_ok = (live_slope_20_bps >= -0.10) and (self.ema_20_1m >= self.ema_50_1m or self.ema_50_1m <= 0)
+                        ema_tested = (prior_bar.low <= band_high + tol_pts and prior_bar.high >= band_low - tol_pts) or (curr_bar.low <= band_high + tol_pts)
+                        is_pullback = (prior_bar.close <= prior_bar.open) or (prior_bar.close <= band_high + 0.25 * atr)
+                        if uptrend_ok and ema_tested and is_pullback and spot >= prior_bar.high:
+                            forming_snapshot = OHLCBar(
+                                ts_start=curr_bar.ts_start,
+                                ts_end=curr_bar.ts_end,
+                                open=curr_bar.open,
+                                high=curr_bar.high,
+                                low=curr_bar.low,
+                                close=spot,
+                                volume=float(getattr(curr_bar, "volume", 1.0) or 1.0),
+                                tick_count=getattr(curr_bar, "tick_count", 0),
+                            )
+                            dow = self._validate_dow_hl2_lh2_structure("CALL", touch2_offset=0, virtual_bar=forming_snapshot)
+                            if dow.is_valid or len(self.bars_1m) < 16:
+                                ok_struct, _, _ = self._check_structural_obstacle("CALL", spot)
+                                if ok_struct and self._delta_harmony_ok("UP"):
+                                    self._mode_b_last_trigger_bar_idx["P1_EMA20_UP"] = bar_idx
+                                    lowest_low = min(prior_bar.low, curr_bar.low)
+                                    sl_price = round(lowest_low - 0.15 * atr, 2)
+                                    logger.info(f"[PriceActionEngine] [MODE_B_P1] 20 EMA CALL In-Flight Reversal Breakout at spot={spot:.2f} >= prior_high={prior_bar.high:.2f} (T+{sec_in_min}s)")
+                                    return True, "20_ema_rejection", {
+                                        "pillar": 1,
+                                        "pa_setup_name": "20_ema_rejection",
+                                        "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
+                                        "boundary": "20_EMA_BAND",
+                                        "boundary_level": round(prior_bar.high, 2),
+                                        "sl_price": sl_price,
+                                        "trigger_sec": sec_in_min,
+                                        "bar_open": round(curr_bar.open, 2),
+                                        "bar_high": round(curr_bar.high, 2),
+                                        "bar_low": round(curr_bar.low, 2),
+                                        "bar_close": round(spot, 2),
+                                        "entry_bar_bucket": int(now_sec // 60),
+                                    }
+                    elif direction == "DOWN":
+                        downtrend_ok = (live_slope_20_bps <= 0.10) and (self.ema_20_1m <= self.ema_50_1m or self.ema_50_1m <= 0)
+                        ema_tested = (prior_bar.high >= band_low - tol_pts and prior_bar.low <= band_high + tol_pts) or (curr_bar.high >= band_low - tol_pts)
+                        is_pullback = (prior_bar.close >= prior_bar.open) or (prior_bar.close >= band_low - 0.25 * atr)
+                        if downtrend_ok and ema_tested and is_pullback and spot <= prior_bar.low:
+                            forming_snapshot_dn = OHLCBar(
+                                ts_start=curr_bar.ts_start,
+                                ts_end=curr_bar.ts_end,
+                                open=curr_bar.open,
+                                high=curr_bar.high,
+                                low=curr_bar.low,
+                                close=spot,
+                                volume=float(getattr(curr_bar, "volume", 1.0) or 1.0),
+                                tick_count=getattr(curr_bar, "tick_count", 0),
+                            )
+                            dow = self._validate_dow_hl2_lh2_structure("PUT", touch2_offset=0, virtual_bar=forming_snapshot_dn)
+                            if dow.is_valid or len(self.bars_1m) < 16:
+                                ok_struct, _, _ = self._check_structural_obstacle("PUT", spot)
+                                if ok_struct and self._delta_harmony_ok("DOWN"):
+                                    self._mode_b_last_trigger_bar_idx["P1_EMA20_DOWN"] = bar_idx
+                                    highest_high = max(prior_bar.high, curr_bar.high)
+                                    sl_price = round(highest_high + 0.15 * atr, 2)
+                                    logger.info(f"[PriceActionEngine] [MODE_B_P1] 20 EMA PUT In-Flight Reversal Breakdown at spot={spot:.2f} <= prior_low={prior_bar.low:.2f} (T+{sec_in_min}s)")
+                                    return True, "20_ema_rejection", {
+                                        "pillar": 1,
+                                        "pa_setup_name": "20_ema_rejection",
+                                        "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
+                                        "boundary": "20_EMA_BAND",
+                                        "boundary_level": round(prior_bar.low, 2),
+                                        "sl_price": sl_price,
+                                        "trigger_sec": sec_in_min,
+                                        "bar_open": round(curr_bar.open, 2),
+                                        "bar_high": round(curr_bar.high, 2),
+                                        "bar_low": round(curr_bar.low, 2),
+                                        "bar_close": round(spot, 2),
+                                        "entry_bar_bucket": int(now_sec // 60),
+                                    }
+
+        # ─── 4. PILLAR 2: Micro-Sweep & Reclaim In-Flight Reversal Breakout (Mode B) ───
+        # When forming Bar N reclaims a swept swing/support and pierces the High/Low of the prior sweep bar (N-1)
+        if len(self.bars_1m) >= 7:
+            is_lunch_chop = False
+            if now_sec > 1_000_000_000.0:
+                try:
+                    from datetime import datetime as _dt, time as _dtime
+                    _dt_now = _dt.fromtimestamp(now_sec, _IST)
+                    is_lunch_chop = (_dtime(11, 15, 0) <= _dt_now.time() <= _dtime(13, 0, 0))
+                except Exception:
+                    is_lunch_chop = False
+            if not is_lunch_chop:
+                prior_bar = self.bars_1m[-1]
+                ref_spot_2 = spot if spot > 0 else 24000.0
+                min_sweep_depth = max(1.5, (ref_spot_2 / 24000.0) * 1.5, 0.08 * atr)
+                last_p2 = self._mode_b_last_trigger_bar_idx.get(f"P2_SWEEP_{direction}", -100)
+                if (bar_idx - last_p2) >= 3:
+                    if direction == "UP":
+                        sr_lvl_up = self._find_swept_sr_level("CALL", prior_bar, min_sweep_depth, atr)
+                        if sr_lvl_up is not None:
+                            swept_low = sr_lvl_up.price
+                            sweep_src = "SR_REGISTRY"
+                        else:
+                            prior_5 = list(self.bars_1m)[-6:-1]
+                            swept_low = min(b.low for b in prior_5)
+                            sweep_src = "LOCAL_SWING"
+                        sweep_ok = (prior_bar.low <= swept_low - min_sweep_depth) or (curr_bar.low <= swept_low - min_sweep_depth)
+                        reclaim_ok = spot > swept_low
+                        if sweep_ok and reclaim_ok and spot >= prior_bar.high:
+                            ok_struct, _, _ = self._check_structural_obstacle("CALL", spot)
+                            if ok_struct and self._delta_harmony_ok("UP"):
+                                self._mode_b_last_trigger_bar_idx["P2_SWEEP_UP"] = bar_idx
+                                lowest_low = min(prior_bar.low, curr_bar.low)
+                                sl_price = round(lowest_low - 0.15 * atr, 2)
+                                logger.info(f"[PriceActionEngine] [MODE_B_P2] Micro-Sweep CALL In-Flight Reversal Breakout at spot={spot:.2f} >= prior_high={prior_bar.high:.2f} (T+{sec_in_min}s, src={sweep_src})")
+                                return True, "micro_sweep_reclaim", {
+                                    "pillar": 2,
+                                    "pa_setup_name": "micro_sweep_reclaim",
+                                    "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
+                                    "boundary": "MICRO_SWEEP_RECLAIM",
+                                    "boundary_level": round(prior_bar.high, 2),
+                                    "swept_level": round(swept_low, 2),
+                                    "sl_price": sl_price,
+                                    "trigger_sec": sec_in_min,
+                                    "bar_open": round(curr_bar.open, 2),
+                                    "bar_high": round(curr_bar.high, 2),
+                                    "bar_low": round(curr_bar.low, 2),
+                                    "bar_close": round(spot, 2),
+                                    "entry_bar_bucket": int(now_sec // 60),
+                                }
+                    elif direction == "DOWN":
+                        sr_lvl_dn = self._find_swept_sr_level("PUT", prior_bar, min_sweep_depth, atr)
+                        if sr_lvl_dn is not None:
+                            swept_high = sr_lvl_dn.price
+                            sweep_src = "SR_REGISTRY"
+                        else:
+                            prior_5 = list(self.bars_1m)[-6:-1]
+                            swept_high = max(b.high for b in prior_5)
+                            sweep_src = "LOCAL_SWING"
+                        sweep_ok = (prior_bar.high >= swept_high + min_sweep_depth) or (curr_bar.high >= swept_high + min_sweep_depth)
+                        reclaim_ok = spot < swept_high
+                        if sweep_ok and reclaim_ok and spot <= prior_bar.low:
+                            ok_struct, _, _ = self._check_structural_obstacle("PUT", spot)
+                            if ok_struct and self._delta_harmony_ok("DOWN"):
+                                self._mode_b_last_trigger_bar_idx["P2_SWEEP_DOWN"] = bar_idx
+                                highest_high = max(prior_bar.high, curr_bar.high)
+                                sl_price = round(highest_high + 0.15 * atr, 2)
+                                logger.info(f"[PriceActionEngine] [MODE_B_P2] Micro-Sweep PUT In-Flight Reversal Breakdown at spot={spot:.2f} <= prior_low={prior_bar.low:.2f} (T+{sec_in_min}s, src={sweep_src})")
+                                return True, "micro_sweep_reclaim", {
+                                    "pillar": 2,
+                                    "pa_setup_name": "micro_sweep_reclaim",
+                                    "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
+                                    "boundary": "MICRO_SWEEP_RECLAIM",
+                                    "boundary_level": round(prior_bar.low, 2),
+                                    "swept_level": round(swept_high, 2),
+                                    "sl_price": sl_price,
+                                    "trigger_sec": sec_in_min,
+                                    "bar_open": round(curr_bar.open, 2),
+                                    "bar_high": round(curr_bar.high, 2),
+                                    "bar_low": round(curr_bar.low, 2),
+                                    "bar_close": round(spot, 2),
+                                    "entry_bar_bucket": int(now_sec // 60),
+                                }
 
         return False, "no_mode_b_trigger", {}
 
