@@ -259,8 +259,30 @@ class PostTradeMilestoneRecord:
     # Tick-by-Tick Path: [(relative_sec, ltp, return_pct)]
     tick_trajectory: List[Tuple[float, float, float]] = field(default_factory=list)
 
+    # 5-Minute Horizon Checkpoint Returns (% from Entry)
+    ret_30s_pct: Optional[float] = None
+    ret_60s_pct: Optional[float] = None
+    ret_120s_pct: Optional[float] = None
+    ret_180s_pct: Optional[float] = None
+    ret_300s_pct: Optional[float] = None
+
+    # Post-Exit / Post-SL Recovery Telemetry (5-Minute Horizon)
+    exit_pnl_pct: float = 0.0                   # Actual PnL % at exit
+    post_exit_lowest_pct: float = 0.0           # Deepest dip after exit
+    post_exit_highest_pct: float = 0.0          # Highest bounce after exit
+    sl_recovered_to_be: bool = False            # Did price bounce back to Entry Price (>= 0.0%)?
+    time_to_be_sec: float = 0.0                 # Seconds from entry when BE reached
+    sl_recovered_to_tp: bool = False            # Did price bounce back to +4.0% TP?
+    time_to_tp_sec: float = 0.0                 # Seconds from entry when TP reached
+    post_sl_verdict: str = "N/A"
+    # "JUSTIFIED_DISASTER_SAVE": Price crashed deeper post-exit (SL saved capital)
+    # "DEAD_TRADE_STAGNATION"  : Price hovered negative, never recovered
+    # "BOUNCED_TO_BREAKEVEN"   : Price bounced back to BE, but didn't reach TP
+    # "PREMATURE_CHOKE_RECOVERED_TO_TP": Price bounced back and reached TP (+4%)
+    # "WINNER_MAKER_TP_TAKEN"  : Normal winning trade exited on TP
+
     is_complete: bool = False
-    tracking_window_sec: float = 60.0
+    tracking_window_sec: float = 300.0
 
     # Internal tracking helpers (not persisted in summary)
     _highest_after_4pct: float = 0.0
@@ -299,7 +321,7 @@ class PostTradeMilestoneTracker:
         self.tracking_window_sec = (
             float(tracking_window_sec)
             if tracking_window_sec is not None
-            else float(os.getenv("AEGIS_POST_TRADE_TRACK_SEC", "60.0"))
+            else float(os.getenv("AEGIS_POST_TRADE_TRACK_SEC", "300.0"))
         )
         self.active_records: Dict[str, PostTradeMilestoneRecord] = {}
 
@@ -314,7 +336,7 @@ class PostTradeMilestoneTracker:
         pillar: int = 0,
         mode: str = "",
     ) -> Optional[PostTradeMilestoneRecord]:
-        """Registers an executed trade for 60s milestone & flow tracking."""
+        """Registers an executed trade for 5-minute (300s) milestone & post-SL recovery tracking."""
         if entry_price <= 0:
             return None
 
@@ -334,7 +356,7 @@ class PostTradeMilestoneTracker:
         self.active_records[trade_id] = record
         logger.info(
             f"[PostTradeTracker] Registered executed trade {trade_id} ({symbol} {direction} @ ₹{entry_price:.2f}) "
-            f"for {self.tracking_window_sec:.0f}s milestone tracking"
+            f"for {self.tracking_window_sec:.0f}s milestone & recovery tracking"
         )
         return record
 
@@ -345,16 +367,20 @@ class PostTradeMilestoneTracker:
         exit_ts: float,
         exit_reason: str,
     ) -> None:
-        """Notifies the tracker of a broker-side trade exit without interrupting the 60s observation window."""
+        """Notifies the tracker of a broker-side trade exit without interrupting the 5-minute observation window."""
         for rec in self.active_records.values():
             if rec.symbol == symbol and not rec.is_closed_in_broker:
                 rec.exit_price = exit_price
                 rec.exit_ts = exit_ts
                 rec.exit_reason = exit_reason
                 rec.is_closed_in_broker = True
-                logger.debug(
-                    f"[PostTradeTracker] Trade {rec.trade_id} closed at broker ({exit_reason} @ ₹{exit_price:.2f}) "
-                    f"— 60s observation continues"
+                if rec.entry_price > 0:
+                    rec.exit_pnl_pct = round(((exit_price - rec.entry_price) / rec.entry_price) * 100.0, 2)
+                    rec.post_exit_lowest_pct = rec.exit_pnl_pct
+                    rec.post_exit_highest_pct = rec.exit_pnl_pct
+                logger.info(
+                    f"[PostTradeTracker] Trade {rec.trade_id} closed at broker ({exit_reason} @ ₹{exit_price:.2f}, "
+                    f"PnL: {rec.exit_pnl_pct:+.1f}%) — {self.tracking_window_sec:.0f}s post-exit recovery audit running"
                 )
 
     def on_option_tick(
@@ -462,11 +488,39 @@ class PostTradeMilestoneTracker:
                 if pb_6_7 > rec.max_pullback_6_to_7_pct:
                     rec.max_pullback_6_to_7_pct = round(pb_6_7, 2)
 
-            # 4. Tick Path Trajectory Recording (Capped at 1500 ticks)
+            # 4. Checkpoint Horizon Returns (% from Entry)
+            if dt >= 30.0 and rec.ret_30s_pct is None:
+                rec.ret_30s_pct = round(ret_pct, 2)
+            if dt >= 60.0 and rec.ret_60s_pct is None:
+                rec.ret_60s_pct = round(ret_pct, 2)
+            if dt >= 120.0 and rec.ret_120s_pct is None:
+                rec.ret_120s_pct = round(ret_pct, 2)
+            if dt >= 180.0 and rec.ret_180s_pct is None:
+                rec.ret_180s_pct = round(ret_pct, 2)
+            if dt >= 300.0 and rec.ret_300s_pct is None:
+                rec.ret_300s_pct = round(ret_pct, 2)
+
+            # 5. Post-Exit / Post-SL Recovery Telemetry Tracking
+            if rec.is_closed_in_broker:
+                if ret_pct < rec.post_exit_lowest_pct:
+                    rec.post_exit_lowest_pct = round(ret_pct, 2)
+                if ret_pct > rec.post_exit_highest_pct:
+                    rec.post_exit_highest_pct = round(ret_pct, 2)
+
+                # Check if a stopped-out trade recovered during remaining horizon
+                if rec.exit_pnl_pct < 0:
+                    if ret_pct >= 0.0 and not rec.sl_recovered_to_be:
+                        rec.sl_recovered_to_be = True
+                        rec.time_to_be_sec = round(dt, 2)
+                    if ret_pct >= 4.0 and not rec.sl_recovered_to_tp:
+                        rec.sl_recovered_to_tp = True
+                        rec.time_to_tp_sec = round(dt, 2)
+
+            # 6. Tick Path Trajectory Recording (Capped at 1500 ticks)
             if len(rec.tick_trajectory) < 1500:
                 rec.tick_trajectory.append((round(dt, 2), round(current_opt_price, 2), round(ret_pct, 2)))
 
-            # 5. Window Expiry (dt >= tracking_window_sec)
+            # 7. Window Expiry (dt >= tracking_window_sec)
             if dt >= rec.tracking_window_sec:
                 self._finalize_record(rec)
                 completed.append(rec)
@@ -497,6 +551,20 @@ class PostTradeMilestoneTracker:
         else:
             record.flow_character = "NEVER_REACHED_4PCT"
 
+        # Post-Exit / Post-SL Recovery Verdict Attribution
+        if not record.is_closed_in_broker or record.exit_pnl_pct >= 0:
+            record.post_sl_verdict = "WINNER_MAKER_TP_TAKEN" if record.hit_4pct else "NORMAL_PROFIT_EXIT"
+        else:
+            # Trade was stopped out at a loss
+            if record.sl_recovered_to_tp:
+                record.post_sl_verdict = "PREMATURE_CHOKE_RECOVERED_TO_TP"
+            elif record.sl_recovered_to_be:
+                record.post_sl_verdict = "BOUNCED_TO_BREAKEVEN"
+            elif record.post_exit_lowest_pct <= (record.exit_pnl_pct - 2.5):
+                record.post_sl_verdict = "JUSTIFIED_DISASTER_SAVE"
+            else:
+                record.post_sl_verdict = "DEAD_TRADE_STAGNATION"
+
         # 1. Append to daily research JSONL
         date_str = time.strftime("%Y-%m-%d", time.localtime(record.entry_ts))
         filepath = os.path.join(self.log_dir, f"aegis_post_trade_milestones_{date_str}.jsonl")
@@ -511,24 +579,55 @@ class PostTradeMilestoneTracker:
 
         # 3. High-visibility summary log
         hit_4_str = f"YES ({record.time_to_4pct_sec:.1f}s)" if record.hit_4pct else "NO"
-        hit_5_str = f"YES (+{record.sec_4_to_5:.1f}s)" if record.hit_5pct else "NO (>60s)"
-        hit_6_str = f"YES (+{record.sec_5_to_6:.1f}s)" if record.hit_6pct else "NO (>60s)"
-        hit_7_str = f"YES (+{record.sec_6_to_7:.1f}s)" if record.hit_7pct else "NO (>60s)"
+        hit_5_str = f"YES (+{record.sec_4_to_5:.1f}s)" if record.hit_5pct else "NO"
+        hit_6_str = f"YES (+{record.sec_5_to_6:.1f}s)" if record.hit_6pct else "NO"
+        hit_7_str = f"YES (+{record.sec_6_to_7:.1f}s)" if record.hit_7pct else "NO"
 
         logger.info(
-            f"🎯 [AEGIS 60s POST-TRADE MILESTONE] {record.symbol} ({record.direction}) | Entry: ₹{record.entry_price:.2f} | "
+            f"🎯 [AEGIS POST-TRADE MILESTONE] {record.symbol} ({record.direction}) | Entry: ₹{record.entry_price:.2f} | "
             f"4%: {hit_4_str} | 5%: {hit_5_str} | 6%: {hit_6_str} | 7%: {hit_7_str} | "
-            f"60s Peak: +{record.peak_mfe_60s_pct:.1f}% | Post-4% Pullback: {record.max_pullback_post_4pct:.2f}% | "
-            f"Flow: {record.flow_character}"
+            f"Peak: +{record.peak_mfe_60s_pct:.1f}% | Flow: {record.flow_character}"
         )
 
+        # 4. Dedicated Post-SL 5-Minute Recovery Audit Log
+        if record.exit_pnl_pct < 0:
+            if record.post_sl_verdict == "JUSTIFIED_DISASTER_SAVE":
+                logger.info(
+                    f"🛡️ [POST-SL 5M AUDIT] {record.symbol} | Exited @ {record.exit_pnl_pct:+.1f}% | "
+                    f"Plunged deeper to {record.post_exit_lowest_pct:+.1f}% (Post-exit bounce max: {record.post_exit_highest_pct:+.1f}%) | "
+                    f"VERDICT: JUSTIFIED_DISASTER_SAVE (Capital Protected!)"
+                )
+            elif record.post_sl_verdict == "PREMATURE_CHOKE_RECOVERED_TO_TP":
+                logger.warning(
+                    f"⚠️ [POST-SL 5M AUDIT] {record.symbol} | Exited @ {record.exit_pnl_pct:+.1f}% | "
+                    f"Recovered to BE @ {record.time_to_be_sec:.1f}s | Hit +4% TP @ {record.time_to_tp_sec:.1f}s | "
+                    f"VERDICT: PREMATURE_CHOKE_RECOVERED_TO_TP"
+                )
+            elif record.post_sl_verdict == "BOUNCED_TO_BREAKEVEN":
+                logger.info(
+                    f"🔄 [POST-SL 5M AUDIT] {record.symbol} | Exited @ {record.exit_pnl_pct:+.1f}% | "
+                    f"Bounced to BE ({record.post_exit_highest_pct:+.1f}%) but stalled below TP | "
+                    f"VERDICT: BOUNCED_TO_BREAKEVEN"
+                )
+            else:
+                logger.info(
+                    f"💀 [POST-SL 5M AUDIT] {record.symbol} | Exited @ {record.exit_pnl_pct:+.1f}% | "
+                    f"Stagnated in loss (Lowest: {record.post_exit_lowest_pct:+.1f}%, Highest: {record.post_exit_highest_pct:+.1f}%) | "
+                    f"VERDICT: DEAD_TRADE_STAGNATION"
+                )
+
     def _enrich_trade_history(self, record: PostTradeMilestoneRecord) -> None:
-        """Enriches the matching trade record in data/aegis_trade_history.json with milestone analytics."""
-        if not os.path.exists(self.history_file):
+        """Enriches the matching trade record in trade_history.json with milestone analytics."""
+        target_file = None
+        for cand in [self.history_file, "AEGIS/data/trades/trade_history.json", "data/aegis_trade_history.json"]:
+            if cand and os.path.exists(cand):
+                target_file = cand
+                break
+        if not target_file:
             return
 
         try:
-            with open(self.history_file, "r", encoding="utf-8") as f:
+            with open(target_file, "r", encoding="utf-8") as f:
                 history = json.load(f)
 
             if not isinstance(history, list) or not history:
@@ -536,6 +635,21 @@ class PostTradeMilestoneTracker:
 
             updated = False
             summary_dict = record.to_dict(include_trajectory=False)
+            audit_5m = {
+                "exit_pnl_pct": record.exit_pnl_pct,
+                "post_exit_lowest_pct": record.post_exit_lowest_pct,
+                "post_exit_highest_pct": record.post_exit_highest_pct,
+                "sl_recovered_to_be": record.sl_recovered_to_be,
+                "time_to_be_sec": record.time_to_be_sec,
+                "sl_recovered_to_tp": record.sl_recovered_to_tp,
+                "time_to_tp_sec": record.time_to_tp_sec,
+                "post_sl_verdict": record.post_sl_verdict,
+                "ret_30s_pct": record.ret_30s_pct,
+                "ret_60s_pct": record.ret_60s_pct,
+                "ret_120s_pct": record.ret_120s_pct,
+                "ret_180s_pct": record.ret_180s_pct,
+                "ret_300s_pct": record.ret_300s_pct,
+            }
 
             # Match by symbol and entry_time / date
             for entry in reversed(history):
@@ -543,6 +657,7 @@ class PostTradeMilestoneTracker:
                 etime = entry.get("entry_time", "") or entry.get("date", "")
                 if sym == record.symbol and (record.entry_time_str in etime or not etime):
                     entry["extended_60s_milestones"] = summary_dict
+                    entry["post_exit_5m_audit"] = audit_5m
                     updated = True
                     break
 
@@ -551,13 +666,14 @@ class PostTradeMilestoneTracker:
                 for entry in reversed(history):
                     if entry.get("symbol") == record.symbol:
                         entry["extended_60s_milestones"] = summary_dict
+                        entry["post_exit_5m_audit"] = audit_5m
                         updated = True
                         break
 
             if updated:
-                with open(self.history_file, "w", encoding="utf-8") as f:
+                with open(target_file, "w", encoding="utf-8") as f:
                     json.dump(history, f, indent=2)
-                logger.debug(f"[PostTradeTracker] Enriched trade history with 60s milestones for {record.symbol}")
+                logger.debug(f"[PostTradeTracker] Enriched {target_file} with milestones for {record.symbol}")
         except Exception as e_hist:
             logger.warning(f"[PostTradeTracker] Trade history enrichment failed: {e_hist}")
 

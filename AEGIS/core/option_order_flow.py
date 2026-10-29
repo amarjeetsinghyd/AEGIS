@@ -131,7 +131,14 @@ class OptionOrderFlowMixin:
         eff_lot = float(lot_size) if lot_size is not None else getattr(self, "lot_size", 65.0)
         min_vol = float(os.getenv("AEGIS_PAIN_ZONE_MIN_LOTS", "200")) * eff_lot
         req_bars = int(os.getenv("AEGIS_PAIN_ZONE_MIN_BARS", "30")) if min_bars is None else int(min_bars)
-        time_ok = (len(self.bars_1m) >= req_bars) if req_bars > 0 else True
+        last_b = self.bars_1m[-1] if self.bars_1m else None
+        curr_day = int(last_b.ts_start // 86400) if last_b else 0
+        now_epoch = getattr(self, "last_ts", 0.0)
+        if now_epoch > 0 and curr_day > 0 and int(now_epoch // 86400) > curr_day:
+            intraday_bars = 0
+        else:
+            intraday_bars = sum(1 for b in self.bars_1m if (curr_day <= 0 or int(getattr(b, "ts_start", 0) // 86400) == curr_day))
+        time_ok = (intraday_bars >= req_bars) if req_bars > 0 else True
 
         def _v(pv: float, v: float) -> float:
             return pv / v if (time_ok and v >= min_vol) else 0.0
@@ -328,6 +335,16 @@ class OptionOrderFlowMixin:
             self._vwap_cum_vol += delta_vol
             if self._vwap_cum_vol > 0:
                 self.current_vwap = self._vwap_cum_vol_price / self._vwap_cum_vol
+
+        # 5. Live Forming Bar Option Volume Sync (Strictly options volume — spot index has no volume)
+        curr_bar = getattr(self, "_curr_1m_bar", None)
+        if curr_bar is not None:
+            curr_bar.volume = (
+                self._opt_flow_1m.get("call_buy_vol", 0.0)
+                + self._opt_flow_1m.get("call_sell_vol", 0.0)
+                + self._opt_flow_1m.get("put_buy_vol", 0.0)
+                + self._opt_flow_1m.get("put_sell_vol", 0.0)
+            )
 
 
     def _check_wyckoff_harmony(self, direction: str, bar: Any) -> bool:
@@ -771,8 +788,8 @@ class CompositeConvictionEngine:
                 depth_r = r
                 break
 
-        bp1 = float(depth_r[2]) if len(depth_r) > 2 else p1 - 0.05
-        sp1 = float(depth_r[3]) if len(depth_r) > 3 else p1 + 0.05
+        bp1 = float(depth_r[2]) if len(depth_r) > 2 else 0.0
+        sp1 = float(depth_r[3]) if len(depth_r) > 3 else 0.0
 
         b1 = float(depth_r[4]) if len(depth_r) > 4 else 0.0
         a1 = float(depth_r[5]) if len(depth_r) > 5 else 0.0
@@ -789,8 +806,9 @@ class CompositeConvictionEngine:
         tot_ask_depth = a1 + a2 + a3 + a4 + a5
         tot_depth = tot_bid_depth + tot_ask_depth
 
-        mid_px = (bp1 + sp1) / 2.0 if (bp1 > 0 and sp1 > 0) else p1
-        spread_pct = ((sp1 - bp1) / mid_px * 100.0) if (mid_px > 0 and bp1 > 0 and sp1 > 0) else 0.10
+        has_valid_quotes = (bp1 > 0.0 and sp1 > 0.0)
+        mid_px = (bp1 + sp1) / 2.0 if has_valid_quotes else p1
+        spread_pct = ((sp1 - bp1) / mid_px * 100.0) if (has_valid_quotes and mid_px > 0) else 99.0
 
         bp0 = float(first_r[2]) if len(first_r) > 2 else 0.0
         sp0 = float(first_r[3]) if len(first_r) > 3 else 0.0
@@ -830,7 +848,11 @@ class CompositeConvictionEngine:
         }
 
         # Hard Circuit Breakers
-        if spread_pct > 2.5:
+        if not has_valid_quotes:
+            return {**base_metrics, "is_valid": False, "reason": "circuit_breaker_missing_quotes"}
+        if sp1 <= bp1:
+            return {**base_metrics, "is_valid": False, "reason": "circuit_breaker_crossed_quotes"}
+        if spread_pct <= 0.0 or spread_pct > 2.5:
             return {**base_metrics, "is_valid": False, "reason": "circuit_breaker_spread_blowout"}
         if tot_depth < 200:
             return {**base_metrics, "is_valid": False, "reason": "circuit_breaker_ghost_book"}
@@ -953,8 +975,11 @@ class CompositeConvictionEngine:
 
         if wyckoff_conf:
             ofi_aligned = (ofi > 0) if is_up else (ofi < 0)
+            ofi_opposing = (ofi < 0) if is_up else (ofi > 0)
             n1_fp = (wyckoff_details or {}).get("n1_footprint") or {}
-            if ofi_aligned or ofi != 0 or n1_fp.get("n1_vol_dryup", False) or n1_fp.get("n1_stopping_vol", False):
+            if ofi_aligned:
+                agg_pts = max(agg_pts, 34.0)
+            elif not ofi_opposing and (n1_fp.get("n1_vol_dryup", False) or n1_fp.get("n1_stopping_vol", False)):
                 agg_pts = max(agg_pts, 34.0)
 
         # 2. Live Tick Arrival Intensity (35 pts max)
@@ -972,8 +997,8 @@ class CompositeConvictionEngine:
             tick_pts = 30.0 if wyckoff_conf else 26.0
 
         # 3. Contract Tradability & Spread (25 pts max)
-        if spread_pct > 2.50:
-            trad_pts = 0.0  # Circuit breaker blowout
+        if spread_pct <= 0.0 or spread_pct > 2.50:
+            trad_pts = 0.0  # Invalid, crossed quotes, or circuit breaker blowout
         elif spread_pct <= 0.50:
             trad_pts = 25.0
         elif spread_pct <= 1.00:
@@ -1062,10 +1087,11 @@ class CompositeConvictionEngine:
 
         if wyckoff_conf:
             ofi_aligned = (ofi > 0) if is_up else (ofi < 0)
-            if ofi_aligned or ofi != 0:
+            ofi_opposing = (ofi < 0) if is_up else (ofi > 0)
+            if ofi_aligned:
                 flow_pts = max(flow_pts, 34.0)
-            else:
-                flow_pts = max(flow_pts, 32.0)
+            elif not ofi_opposing:
+                flow_pts = max(flow_pts, 28.0)
 
         # 2. Option Premium Return Velocity (35 pts max)
         if micro_ret is not None:
@@ -1083,8 +1109,8 @@ class CompositeConvictionEngine:
             mom_pts = 30.0 if wyckoff_conf else 25.0
 
         # 3. Contract Tradability & Book Depth Support (25 pts max)
-        if spread_pct > 2.50 or (0.0 < tot_depth < 200.0):
-            trad_pts = 0.0  # Circuit breaker blowout or ghost book
+        if spread_pct <= 0.0 or spread_pct > 2.50 or (0.0 < tot_depth < 200.0):
+            trad_pts = 0.0  # Invalid, crossed quotes, circuit breaker blowout or ghost book
         elif spread_pct <= 1.00:
             trad_pts = 25.0
         elif spread_pct <= 1.50:

@@ -11,11 +11,11 @@
 
 > ⚠️ **CRITICAL GOVERNANCE LAWS (DO NOT ALTER ARBITRARILY):**  
 > 1. **Price Action Primary & Mode B Golden Middle Path Law**: AEGIS operates strictly on a **Macro Price Action Primary Trigger** across 4 canonical pillars and Priority Mode B In-Flight Breakthrough:
->    - **Priority Mode B (In-Flight Breakthrough Surge)**: Mid-bar entry from **T:02s onwards (no upper cap)** when forming candle pierces pre-mapped boundary (Pain Zone Top/Bottom, 200 EMA Ribbon, Squeeze Box, S&R) with sweet-spot range ($0.35 \times \text{ATR} \le \text{Range} \le 1.20 \times \text{ATR}$), body ratio $\ge 65\%$, leading wick $\le 0.05 \times \text{ATR}$, 2-tick boundary persistence, and live option delta dominance $\ge 1.30\times$ (or spot tick rate $\ge 1.5$ ticks/sec). Enters ahead of retail, filling resting +4.0% Maker TP before or as candle closes.
+>    - **Priority Mode B (In-Flight Breakthrough Surge)**: Mid-bar entry from **T:02s onwards (no upper cap)** when forming candle pierces pre-mapped boundary (P3 Squeeze Box, P4 Dynamic S/R Registry, P1 20 EMA Reversal Pierce, P2 Micro-Sweep Reclaim Pierce) with single-shot clean execution entering ahead of retail, filling resting +4.0% Maker TP before or as candle closes.
 >    - **Pillar 1**: 20 EMA Pullback & Momentum Rejection (`20_ema_rejection` — `price_action_engine.py`, Bar close T:00s with pre-staged strikes & T:50s early entry).
 >    - **Pillar 2**: Liquidity Sweep & Reclaim (`micro_sweep_reclaim` Priority 1 Dynamic S/R Registry & Day Extreme [PDH/PDL] stop-hunt reclaim + parallel shadow topological sweep).
 >    - **Pillar 3**: Volatility Squeeze to Expansion Breakout (`volatility_squeeze_breakout` — $O(1)$ metric ATR box compression).
->    - **Pillar 4**: 0-D Prominence Hub Structural Breakout (`check_topological_prominence_breakout` via Topological Prominence Hub and Dynamic S/R Registry, $\hat{\pi} \ge 1.75$, $VR_t \ge 1.4$ Volume Ratio vs 60m median volume, 5m structural trend alignment).
+>    - **Pillar 4**: Dynamic S/R Registry Breakout (`topological_prominence_breakout` via Dynamic S/R Registry, `prominence >= 1.25`, governed by Priority Mode B In-Flight Surge [T:02s onwards], Day Extreme Runway Rule, and Wyckoff Stopping Volume Veto; FastMonotonicStack & hvg_engine permanently purged).
 > 2. **Absolute Pain Zone VWAP Band Law**: Single unified directional veto before pillars:
 >    - Spot **ABOVE** Upper Band (`zone_top`) $\implies$ **ONLY CALL** trades allowed.
 >    - Spot **BELOW** Lower Band (`zone_bottom`) $\implies$ **ONLY PUT** trades allowed.
@@ -40,9 +40,7 @@
 >    - Evaluated strictly against the cash index spot price, fully immunizing trades from option spread widening and order book spoofing.
 > 7. **Composite Conviction Continuous Scoring Law**: Replaces rigid, binary boolean gating with continuous 0–100 dual-profile microstructure scoring (`option_order_flow.py`). Zero-Entropy 40-35-25 model (upstream spot structure retired to 0.0 pts):
 >    - **Dual-Profile Microstructure**: Evaluates dedicated **Mode B Profile** (Touch Aggression $I_1$ 40 pts, Live Tick Arrival Intensity 35 pts, Spread Tradability 25 pts) for mid-bar breakouts and **Mode A Profile** (Order Book Support & Deep Pressure 40 pts, 30s Option Return Velocity 35 pts, Contract Tradability & Depth 25 pts) for bar-close rejections.
->    - **Consolidated Microstructure & Circuit Breakers**: `AdaptiveMicroValidator` is 100% merged into `CompositeConvictionEngine` (redundant 60-pt gate eliminated; hard circuit breakers for spread blowout > 2.5%, ghost book < 200 depth, severe dump < -1.5% embedded).
->    - $\ge 85.0$: Admitted as `FULL_SIZE` (2 Lots, +4.0% Maker TP, +3.0% Friday).
->    - $80.0 - 84.9$: Admitted as `STANDARD_SIZE` (1 Lot, +4.0% Maker TP, +3.0% Friday).
+>    - **Continuous Conviction Scoring ($\ge 80.0$)**: Multi-domain real-time scoring (Aggression I1, Tick Intensity, Contract Tradability). Admitted trades execute strictly with 1 Lot (+4.0% Maker TP, +3.0% Friday).
 >    - $< 80.0$: Blocked by conviction threshold with itemized audit drag (`aggression_drag`, `momentum_drag`, `tick_rate_drag`, `tradability_drag`).
 > 8. **Decommissioned Machine Learning Law (14 October 2026)**:
 >    - CatBoost ML Gatekeeper & Standalone CatBoost Paper Trader are **PERMANENTLY DECOMMISSIONED & DISABLED** (18-day trial proved 46.4% win-rate inferior to 84%+ deterministic price action).
@@ -144,7 +142,7 @@ flowchart TD
         EX_STEP2 -->|YES| CL_STEP2["Cost-Shield Scratch Exit (0.0% Breakeven)<br/>(Loss Permanently Prevented!)"]
         
         MANAGE --> EX_STEP1{"Stepped Safety Net?<br/>Peak ≥ +3.0% (Fri: +2.0%) AND Bid ≤ Entry - 3.0%"}
-        EX_STEP1 -->|YES| CL_STEP1["Stepped Safety Net SL (-3.0%)<br/>(SL compressed from -12% to -3%)"]
+        EX_STEP1 -->|YES| CL_STEP1["Stepped Safety Net SL (-3.0%)<br/>(SL compressed from -8.0% to -3.0%)"]
         
         MANAGE --> EX_STAG{"0DTE Stagnation Trap?<br/>Expiry PM (≥12:30), Hold ≥ 90s, Gain < +0.5%<br/>AND 50-EMA Opposed Structure"}
         EX_STAG -->|YES| CL_STAG["0DTE Stagnation Trap Exit"]
@@ -158,8 +156,8 @@ flowchart TD
         MANAGE --> EX_TIME{"Time Ceiling Hit?<br/>• Baseline Max Hold: 300s (5 Minutes)<br/>(3-min harvest choke decommissioned)"]
         EX_TIME -->|YES| CL_TIME["Time Stop Exit (300s Runway)"]
         
-        MANAGE --> EX_DISASTER{"Disaster Circuit Breaker?<br/>(Option Bid Drops ≤ Entry - 12.0%)"}
-        EX_DISASTER -->|YES| CL_DISASTER["Disaster Circuit Breaker (-12.0% Floor)<br/>(Catastrophic Black-Swan Shield)"]
+        MANAGE --> EX_DISASTER{"Disaster Circuit Breaker?<br/>(Option Bid Drops ≤ Entry - 8.0%)"}
+        EX_DISASTER -->|YES| CL_DISASTER["Disaster Circuit Breaker (-8.0% Floor)<br/>(Catastrophic Black-Swan Shield)"]
         
         MANAGE --> EX_FLAT{"Session Force Flatten?<br/>(now ≥ 15:08 IST) - CAS Shield"}
         EX_FLAT -->|YES| CL_FLAT["CAS Square-Off Force Flatten"]
@@ -296,8 +294,7 @@ Active at `T:50s Pre-Close` or `T:00s Close`, focusing on sustained book absorpt
    - $\text{Spread} > 2.50\%$ or $\text{Total Depth} < 200 \implies 0.0\text{ pts}$ (ghost book / blowout).
 
 ### 3. Admission Hurdles & Sizing Tiers
-- **$\ge 85.0$ Total Score**: `FULL_SIZE` (2 Lots, +4.0% Maker TP, +3.0% Fri)
-- **$80.0 - 84.9$ Total Score**: `STANDARD_SIZE` (1 Lot, +4.0% Maker TP, +3.0% Fri)
+- **$\ge 80.0$ Total Score**: `ADMITTED` (Strict 1 Lot locked per User Mandate, +4.0% Maker TP, +3.0% Fri)
 - **$< 80.0$ Total Score**: `BLOCKED` with itemized audit drags (`aggression_drag`, `momentum_drag`, `tick_rate_drag`, `tradability_drag`)
 
 Passively models the continuous price-volume distribution (inspired by the Maxwell-Boltzmann distribution):
@@ -345,15 +342,16 @@ Passively models the continuous price-volume distribution (inspired by the Maxwe
 
 AEGIS employs a **Hybrid Intra-Bar Execution Architecture**:
 - **Mode A (Reversal / Retest / Sweep)**: Evaluates finalized 1-minute bars at **T:00s** (with pre-staged strikes & **T:50s–T:58s** pre-close confirmation) for **Pillar 1** (`20_ema_rejection`) and **Pillar 2** (`micro_sweep_reclaim`).
-- **Priority Mode B (In-Flight Breakthrough Surge)**: Evaluates live forming bars mid-bar from **T:02s onwards (no upper cap)** for **Pillar 3** (`volatility_squeeze_breakout`), **Pillar 4** (`topological_prominence_breakout` + Dynamic S/R Registry), Absolute Pain Zone boundaries, and 200 EMA Ribbon pierces.
+- **Priority Mode B (In-Flight Breakthrough Surge)**: Evaluates live forming bars mid-bar from **T:02s onwards (no upper cap)** across **ALL 4 Pillars** (Pillar 3 `volatility_squeeze_breakout`, Pillar 4 `topological_prominence_breakout` / Dynamic S/R Registry, Pillar 1 `20_ema_rejection` in-flight reversal pierce, and Pillar 2 `micro_sweep_reclaim` in-flight reclaim pierce). Live Mode B boundaries are Squeeze Box, S/R Registry, and EMA Band / Prior Bar Extremes; Absolute Pain Zone and 200 EMA breakthroughs are tracked in parallel by the `ShadowBoundaryObserver`.
 
 ### Priority Mode B: In-Flight Mid-Bar Breakthrough Surge (`check_mode_b_breakthrough`)
 - **Execution Window**: Evaluated strictly mid-bar from **T:02s onwards (no upper cap)** on active forming tick stream.
-- **Sweet-Spot Range**: Forming candle range must be within $0.35 \times \text{ATR}_{1m} \le \text{Range} \le 1.20 \times \text{ATR}_{1m}$ (avoids both micro-noise and exhausted anti-climax bars).
-- **Body Ratio**: Solid directional candle body $\ge 65\%$ of range with minimal leading wick ($\le 0.05 \times \text{ATR}_{1m}$).
-- **Boundary Persistence**: Minimum 2 consecutive ticks maintaining price beyond the breached level (Pain Zone, 200 EMA Ribbon, Squeeze Box High/Low, or Session S/R Level).
-- **Order Flow & Velocity Gate**: Live in-flight option volume delta ratio $\ge 1.30\times$ (or spot tick rate $\ge 1.5$ ticks/sec).
-- **Mode B Failed Close Escape Rule (`MODE_B_FAILED_CLOSE_ESCAPE`)**: If a trade entered via Mode B closes back inside the broken boundary at `T:60s`, an immediate scratch escape is triggered at market.
+- **Coverage**: Covers all 4 Macro Price Action Pillars in-flight:
+  1. *Pillar 3 (Squeeze Box Breakout)*: Instantaneous breakout above box_high / below box_low.
+  2. *Pillar 4 (Dynamic S/R Registry Breakout)*: Immediate pierce of prominent session resistance/support.
+  3. *Pillar 1 (20 EMA In-Flight Reversal)*: Forming bar tests 20 EMA Band and pierces prior pullback bar High/Low with Dow structural alignment.
+  4. *Pillar 2 (Micro-Sweep & Reclaim)*: Forming bar reclaims registered major structural level and pierces prior sweep bar High/Low (outside 11:15–13:00 IST lunch chop).
+- **Execution Mechanics**: Single-shot clean trigger entering ahead of retail to fill resting Maker TP before or as candle closes, without artificial body ratio or wick chokes.
 
 ### 1. Pillar 1: Classical Dow Theory 20 EMA Retracement Engine (`20_ema_rejection`)
 - **Trend Age & Filter**: Trend Age $\ge 10$ bars continuously on the active side of the 20 EMA Band. 20 EMA slope aligned with trade direction.
@@ -389,11 +387,10 @@ AEGIS employs a **Hybrid Intra-Bar Execution Architecture**:
   - Scale-invariant clearance requirement:
     $$\text{min\_runway\_pts} = \max(1.25 \times \text{ATR}_{1m}, 0.0008 \times \text{Spot})$$
   - Rejects CALL entries within `min_runway_pts` of Day High / PDH, and PUT entries within `min_runway_pts` of Day Low / PDL.
-- **Priority 2: T-2 0-D Prominence Hub Breakout**:
-  - Topological anchor identified with prominence ratio $\hat{\pi} \ge 1.75$ (`FastMonotonicStack` purged).
-  - Volume Ratio Gate: Current volume $VR_t \ge 1.4\times$ rolling 60-minute median volume.
-  - Wyckoff Stopping Volume Veto: Opposing institutional delta swamping ($> 2.2\times$) triggers instant discard.
-  - Note: `hvg_network_phase_shift` is strictly `SHADOW_ONLY`.
+- **Priority 2: Dynamic S/R Registry Breakout (`topological_prominence_breakout`)**:
+  - Structural level from Dynamic S/R Registry with `prominence >= 1.25` (legacy `FastMonotonicStack` and `hvg_engine` permanently purged).
+  - Governed by Day Extreme Runway Shield and Wyckoff stopping volume delta harmony gate.
+  - Evaluated via Mode B In-Flight Surge (T:02s onwards) and Mode A finalized structures.
 
 ---
 
@@ -411,7 +408,7 @@ Monitored at 2 Hz by `_manage_open_trade()` (`aegis_execution_manager.py`):
    - If price pulls back $\ge 0.8\%$ (0.5% on Friday) from peak, an instant market exit executes to lock profit (`Near-Target Profit Lock`), guaranteeing net green exit.
 4. **Stepped Risk Compression & Cost-Shield Scratch Engine (V4.1)**:
    - Scale-invariant normalized percentage model:
-     - **Step 1 (Stepped Safety Net)**: When peak gain reaches $\ge +3.0\%$ (Mon–Thu) or $\ge +2.0\%$ (Friday), SL is tightened from the -12% disaster floor to **-3.0%**, giving wide breathing room.
+     - **Step 1 (Stepped Safety Net)**: When peak gain reaches $\ge +3.0\%$ (Mon–Thu) or $\ge +2.0\%$ (Friday), SL is tightened from the -8.0% disaster floor (-6.5% Friday) to **-3.0%**, giving wide breathing room.
      - **Step 2 (Cost-Shield Scratch)**: When peak gain reaches $\ge +3.5\%$ (Mon–Thu) or $\ge +2.2\%$ (Friday), SL is permanently locked to **0.0% (Entry Price)**. A winning trade is mathematically prevented from ever turning into a loss!
 5. **3-Minute Profit Harvest Choke (DECOMMISSIONED 2026-10-09)**:
    - Permanently removed to give profitable running trades the full 5-minute (`MAX_HOLD_SEC = 300s`) breathing runway to reach their full resting maker target (+4.0% TP). A trade in green is never prematurely choked at 180s.
@@ -427,9 +424,10 @@ Monitored at 2 Hz by `_manage_open_trade()` (`aegis_execution_manager.py`):
 8. **Spot Adverse Movement SL & Trend Reversal Exit**:
    - Spot moves $\ge 6.5\text{ bps}$ + 1.0x ATR against trade direction.
    - Completed 1m bar close breaking 50-EMA or structure turning opposed triggers immediate `Trend Reversal Exit` (9-EMA bar-close choke was permanently decommissioned on 2026-10-07).
-9. **Tick-Cadence Option Premium Disaster Circuit Breaker (-12.0% Floor)**:
-   - `PREMIUM_HARD_SL_PCT = 0.120` (-12.0% disaster floor).
-   - Allows natural option bid-ask noise and normal spread flutter to breathe without premature stop-outs, while catching catastrophic black-swan flash crashes.
+9. **Tick-Cadence Option Premium Disaster Circuit Breaker (-8.0% Floor / -6.5% Friday)**:
+   - `DEFAULT_PREMIUM_HARD_SL_PCT = 0.080` (-8.0% disaster floor, calibrated to -6.5% on Friday 4 DTE).
+   - Allows natural option bid-ask noise and normal spread flutter to breathe (covering 94.1% of historical winning trades' MAE) while catching adverse momentum early to protect account capital.
+   - Coupled with continuous 5-Minute Post-SL Recovery Auditor to detect any premature stop-out vs justified capital save.
 10. **Pre-Trade Abort Slot Rollback**:
     - If an order is rejected or aborted prior to execution, `_rollback_slot()` immediately restores the consumed daily trade slot.
 11. **15:08:00 IST CAS Square-Off Force Flatten**:

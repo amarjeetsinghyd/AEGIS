@@ -204,7 +204,7 @@ class AegisPipelineOrchestrator:
 
         # ─── Quality Stack (SHADOW-first safety gear) ───
         # 3-quality-slots/day policy + shadow AND-gate + post-trigger stability telemetry.
-        self.quality_stack_mode = str(self.P.get("quality_stack_mode", os.getenv("AEGIS_QUALITY_STACK_MODE", "SHADOW"))).upper()
+        self.quality_stack_mode = str(self.P.get("quality_stack_mode", os.getenv("AEGIS_QUALITY_STACK_MODE", "ACTIVE"))).upper()
         self.quality_energy_min = float(self.P.get("quality_energy_min", 70.0))
         self.quality_max_spread_pct = float(self.P.get("quality_max_spread_pct", 0.5))
         self.quality_stability_window_sec = float(self.P.get("quality_stability_window_sec", 10.0))
@@ -807,8 +807,10 @@ class AegisPipelineOrchestrator:
                                     else:
                                         current_bar = (self.price_action_engine.bars_1m[-1] if self.price_action_engine.bars_1m else None) or self.price_action_engine._curr_1m_bar
                                     wyckoff_context = dict(pa_details.get("wyckoff_metrics") or {})
-                                    if wyckoff_passed:
+                                    if wyckoff_passed and bool(wyckoff_context.get("wyckoff_confirmed", False)):
                                         wyckoff_context["wyckoff_confirmed"] = True
+                                    else:
+                                        wyckoff_context["wyckoff_confirmed"] = False
 
                                     conviction_res = self.conviction_engine.compute_conviction_score(
                                         direction=direction,

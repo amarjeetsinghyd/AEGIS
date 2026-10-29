@@ -426,12 +426,14 @@ class DowMacroShieldsMixin:
 
         curr_bar = self.bars_1m[-1]
         curr_day = int(curr_bar.ts_start // 86400) if curr_bar else self._current_vwap_day
+        is_inflight = (self._curr_1m_bar is not None and getattr(self._curr_1m_bar, "tick_count", 0) > 0)
+        source_bars = list(self.bars_1m) if is_inflight else list(self.bars_1m)[:-1]
         intraday_prior_bars = [
-            b for b in list(self.bars_1m)[:-1]
+            b for b in source_bars
             if (curr_day <= 0 or int(b.ts_start // 86400) == curr_day)
         ]
         if not intraday_prior_bars and len(self.bars_1m) >= 2:
-            intraday_prior_bars = list(self.bars_1m)[:-1]
+            intraday_prior_bars = source_bars
 
         if not intraday_prior_bars or len(intraday_prior_bars) < 3:
             return True, "clear_insufficient_prior_bars", {}
@@ -516,7 +518,9 @@ class DowMacroShieldsMixin:
 
         # 1m Structural Horizontal Pivots / Multi-Touch Clusters
         if len(self.bars_1m) >= 4:
-            bars = list(self.bars_1m)[:-1][-lookback:]
+            is_inflight_obs = (self._curr_1m_bar is not None and getattr(self._curr_1m_bar, "tick_count", 0) > 0)
+            bars_src = list(self.bars_1m) if is_inflight_obs else list(self.bars_1m)[:-1]
+            bars = bars_src[-lookback:]
             pivot_lows = []
             pivot_highs = []
             prom = 0.10 * self.current_atr_1m

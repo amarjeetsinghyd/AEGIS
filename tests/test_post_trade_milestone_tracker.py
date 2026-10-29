@@ -264,3 +264,68 @@ def test_persistence_and_enrichment(tmp_path):
         m_snap = enriched_history[0]["extended_60s_milestones"]
         assert m_snap["hit_7pct"] is True
         assert m_snap["flow_character"] == "CLEAN_MONOTONIC_FLOW"
+
+
+def test_post_sl_justified_disaster_save(tmp_path):
+    log_dir = str(tmp_path / "logs")
+    hist_file = str(tmp_path / "trade_history.json")
+    tracker = PostTradeMilestoneTracker(log_dir=log_dir, history_file=hist_file, tracking_window_sec=300.0)
+
+    rec = tracker.register_executed_trade(
+        trade_id="NIFTY_SL_SAVE",
+        symbol="NIFTY24400CE",
+        direction="CALL",
+        entry_price=100.0,
+        entry_ts=1000.0,
+    )
+
+    # Exits at T+20s due to -8.0% Hard SL (92.0)
+    tracker.on_option_tick("NIFTY24400CE", 92.0, 1020.0)
+    tracker.notify_trade_exit("NIFTY24400CE", exit_price=92.0, exit_ts=1020.0, exit_reason="Premium Hard SL (-8.0%)")
+
+    # In post-exit window, price drops further to 80.0 (-20%)
+    tracker.on_option_tick("NIFTY24400CE", 85.0, 1060.0)
+    tracker.on_option_tick("NIFTY24400CE", 80.0, 1180.0)
+
+    # T+300s window completion
+    completed = tracker.on_option_tick("NIFTY24400CE", 81.0, 1300.0)
+    assert len(completed) == 1
+    res = completed[0]
+    assert res.exit_pnl_pct == -8.0
+    assert res.post_exit_lowest_pct == -20.0
+    assert res.sl_recovered_to_be is False
+    assert res.sl_recovered_to_tp is False
+    assert res.post_sl_verdict == "JUSTIFIED_DISASTER_SAVE"
+
+
+def test_post_sl_premature_choke_recovery(tmp_path):
+    log_dir = str(tmp_path / "logs")
+    hist_file = str(tmp_path / "trade_history.json")
+    tracker = PostTradeMilestoneTracker(log_dir=log_dir, history_file=hist_file, tracking_window_sec=300.0)
+
+    rec = tracker.register_executed_trade(
+        trade_id="NIFTY_CHOKE",
+        symbol="NIFTY24400PE",
+        direction="PUT",
+        entry_price=100.0,
+        entry_ts=1000.0,
+    )
+
+    # Exits at T+15s due to -8.0% Hard SL (92.0)
+    tracker.on_option_tick("NIFTY24400PE", 92.0, 1015.0)
+    tracker.notify_trade_exit("NIFTY24400PE", exit_price=92.0, exit_ts=1015.0, exit_reason="Premium Hard SL (-8.0%)")
+
+    # Later price reverses and climbs back to BE at 100.0 (T+60s) and hits +4.5% at 104.5 (T+150s)
+    tracker.on_option_tick("NIFTY24400PE", 100.0, 1060.0)
+    tracker.on_option_tick("NIFTY24400PE", 104.5, 1150.0)
+
+    # T+300s completion
+    completed = tracker.on_option_tick("NIFTY24400PE", 103.0, 1300.0)
+    assert len(completed) == 1
+    res = completed[0]
+    assert res.exit_pnl_pct == -8.0
+    assert res.sl_recovered_to_be is True
+    assert res.time_to_be_sec == 60.0
+    assert res.sl_recovered_to_tp is True
+    assert res.time_to_tp_sec == 150.0
+    assert res.post_sl_verdict == "PREMATURE_CHOKE_RECOVERED_TO_TP"

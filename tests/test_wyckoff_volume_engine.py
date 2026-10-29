@@ -325,4 +325,49 @@ def test_wyckoff_pillar_1_dow_counter_flow_dominance_veto():
     assert reason == "wyckoff_pullback_counter_flow_dominance"
 
 
+def test_wyckoff_inflight_fastpath_3_states():
+    """Verifies that in-flight Mode A/B fastpath differentiates aligned, opposing, and neutral flow."""
+    engine = WyckoffVolumeEngine(mode="ACTIVE")
+    
+    # 1. Aligned Flow (CALL with positive delta & volume)
+    pa_aligned = {
+        "mode": "MODE_B",
+        "pa_setup_name": "mode_b_breakthrough",
+        "opt_delta_flow": +500.0,
+        "opt_total_vol": 1200.0,
+    }
+    p_al, r_al, m_al = engine.evaluate(pillar=3, direction="CALL", bars=[], atr=10.0, pa_details=pa_aligned)
+    assert p_al is True
+    assert r_al == "wyckoff_intrabar_inflight_confirmed"
+    assert m_al["wyckoff_confirmed"] is True
+    assert m_al["flow_state"] == "aligned"
+
+    # 2. Opposing Flow (CALL with negative delta & volume) -> Hard VETO
+    pa_opposing = {
+        "mode": "MODE_B",
+        "pa_setup_name": "mode_b_breakthrough",
+        "opt_delta_flow": -350.0,
+        "opt_total_vol": 1200.0,
+    }
+    p_op, r_op, m_op = engine.evaluate(pillar=3, direction="CALL", bars=[], atr=10.0, pa_details=pa_opposing)
+    assert p_op is False
+    assert r_op == "wyckoff_intrabar_opposing_flow_veto"
+    assert m_op["wyckoff_confirmed"] is False
+    assert m_op["flow_state"] == "opposing"
+
+    # 3. Neutral / Zero Flow (CALL with zero delta/volume) -> Fails-open, but unconfirmed
+    pa_neutral = {
+        "mode": "MODE_B",
+        "pa_setup_name": "mode_b_breakthrough",
+        "opt_delta_flow": 0.0,
+        "opt_total_vol": 0.0,
+    }
+    p_ne, r_ne, m_ne = engine.evaluate(pillar=3, direction="CALL", bars=[], atr=10.0, pa_details=pa_neutral)
+    assert p_ne is True
+    assert r_ne == "wyckoff_intrabar_neutral_flow"
+    assert m_ne["wyckoff_confirmed"] is False
+    assert m_ne["flow_state"] == "neutral"
+
+
+
 

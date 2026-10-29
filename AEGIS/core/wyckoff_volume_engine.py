@@ -114,7 +114,16 @@ class WyckoffVolumeEngine:
             n1_fp = (pa_details or {}).get("n1_footprint", {})
             vdr_val = 0.50 if n1_fp.get("n1_vol_dryup", False) else 1.0
             absorption = 2.0 if n1_fp.get("n1_stopping_vol", False) else 1.0
-            return True, "wyckoff_intrabar_inflight_confirmed", {
+            is_up = direction.upper() in ("UP", "CALL")
+            
+            # Explicit 3-State In-Flight Flow Contract:
+            # 1. Aligned Flow: Delta matches trade direction -> Approved & wyckoff_confirmed=True
+            # 2. Opposing Flow: Delta swamps against trade direction -> Hard Veto & wyckoff_confirmed=False
+            # 3. Neutral / Zero Volume: Fails-open for synthetic/cold start -> Passed, but wyckoff_confirmed=False
+            is_opposing = (live_delta < 0 and live_vol > 0) if is_up else (live_delta > 0 and live_vol > 0)
+            is_aligned = (live_delta > 0 and live_vol > 0) if is_up else (live_delta < 0 and live_vol > 0)
+
+            base_metrics = {
                 "in_flight_validated": True,
                 "setup_name": pa_name or mode_val,
                 "atr": round(max(float(atr or 10.0), 1.0), 2),
@@ -124,8 +133,26 @@ class WyckoffVolumeEngine:
                 "vdr": round(vdr_val, 2),
                 "absorption_score": round(absorption, 1),
                 "n1_footprint": n1_fp,
-                "wyckoff_confirmed": True,
             }
+
+            if is_opposing:
+                return False, "wyckoff_intrabar_opposing_flow_veto", {
+                    **base_metrics,
+                    "wyckoff_confirmed": False,
+                    "flow_state": "opposing",
+                }
+            elif is_aligned:
+                return True, "wyckoff_intrabar_inflight_confirmed", {
+                    **base_metrics,
+                    "wyckoff_confirmed": True,
+                    "flow_state": "aligned",
+                }
+            else:
+                return True, "wyckoff_intrabar_neutral_flow", {
+                    **base_metrics,
+                    "wyckoff_confirmed": False,
+                    "flow_state": "neutral",
+                }
 
         if not bars or len(bars) < 4:
             # Insufficient bars at market open -> fail open

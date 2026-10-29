@@ -1326,6 +1326,7 @@ def test_mode_b_p2_micro_sweep_inflight_reversal_breakout():
         )
         pa.bars_1m.append(b)
     pa._total_bars_seen = 10
+    pa.pdl = 22450.0
 
     # Bar N-1: sweeps swing low (swept down to 22444.0 < 22450.0 - min_sweep), High is 22455.0
     sweep_bar = OHLCBar(

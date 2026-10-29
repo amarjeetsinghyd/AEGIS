@@ -65,8 +65,8 @@ the `common/` shared branches alone and ask. Never add new kronos code.**
    - **Primary Focus**: All development, telemetry, execution, and live trading center exclusively on AEGIS.
    - **Architecture & Rules**: Conform all edits to `AEGIS/AEGIS_V1.0_ARCHITECTURE.md`:
      * **4 Macro Price Action Pillars + Hybrid Intra-Bar Execution**:
-       - **Mode A (Rejection & Pierce / T:00s Close & T:50s Pre-Close)** for Pillar 1 (`20_ema_rejection`) & Pillar 2 (`micro_sweep_reclaim`).
-        - **Priority Mode B (In-Flight Mid-Bar Breakthrough Surge from T:08s onwards / No Upper Cap)** for Pillar 3 (`volatility_squeeze_breakout`) & Pillar 4 (`topological_prominence_breakout` + Dynamic S/R Registry). Live Mode B boundaries are **Squeeze Box + S/R Registry only**; Pain Zone / 200 EMA breakthroughs are tracked **exclusively** by the `ShadowBoundaryObserver` (shadow experiment).
+       - **Priority Mode B (In-Flight Mid-Bar Breakthrough Surge from T:02s onwards / No Upper Cap)**: Evaluates live forming bars across **ALL 4 Pillars** (Pillar 3 `volatility_squeeze_breakout`, Pillar 4 `topological_prominence_breakout` + Dynamic S/R Registry, Pillar 1 `20_ema_rejection` in-flight reversal pierce, and Pillar 2 `micro_sweep_reclaim` in-flight reclaim pierce). Single-shot clean execution entering ahead of retail before candle close. Live Mode B boundaries are **Squeeze Box + S/R Registry + EMA Band / Prior Bar Extremes**; Pain Zone / 200 EMA breakthroughs are tracked **exclusively** by the `ShadowBoundaryObserver` (shadow experiment).
+       - **Mode A (Rejection & Pierce / T:00s Close & T:50s Pre-Close)** for Pillar 1 (`20_ema_rejection`) & Pillar 2 (`micro_sweep_reclaim`) on finalized/pre-close candle structures.
      * **Dynamic Session S/R Level Registry (`StructuralLevel`)**: Monotonic `seq_idx` tracking, multi-touch boost (`+0.35`), dynamic post-excursion prominence, and Order Flow footprint.
      * **Scale-Invariant Day Extreme Runway Shield**: `min_runway_pts = max(1.25 * ATR_1m, 0.0008 * Spot)`.
      * **Single-Shot Clean Entry Mandate**: Atomic `0.75s` fill window, zero order chasing, immediate `_drain_signal_queue()`, powered by Rolling 5-Second Hot Strikes Pre-Staging Cache.
@@ -92,11 +92,11 @@ Shared library: `common/` (broker / execution / market / ipc / runtime / config 
 > **Every AI agent starting a new conversation MUST honor these exact production rules:**
 
 ### 1. Macro Price Action 4 Pillars (Primary Triggers)
-* **Pillar 1 (`20_ema_rejection`)**: Classical Dow Theory `HL2` (CALL) / `LH2` (PUT) 2nd-touch confirmation into 20 EMA High-Low Band + Mode A execution.
-* **Pillar 2 (`micro_sweep_reclaim`)**: Priority 1 Dynamic S/R Registry & Day Extreme (PDH/PDL) Liquidity Sweep & Reclaim (eliminates random 5-bar noise) + Mode A execution (with 11:15–13:00 IST Lunch Chop Veto).
-* **Pillar 3 (`volatility_squeeze_breakout`)**: 3–4 bar tight box (`<= 1.25x ATR`) expansion breakout + Mode B In-Flight Surge (`T:08s onwards / No Upper Cap`) + Anti-Climax Cap (`<= 1.35x ATR`).
-* **Pillar 4 (`topological_prominence_breakout`)**: Priority 1 Dynamic S/R Registry Breakout + Priority 2 Topological Prominence Hub, governed by Mode B In-Flight Surge, Day Extreme Runway Rule, and Wyckoff Stopping Volume Veto (`FastMonotonicStack`, `hvg_engine` and its 5m structural veto are permanently DECOMMISSIONED & ARCHIVED).
-* **Priority Mode B (`check_mode_b_breakthrough`)**: Mid-bar entry from `T:08s onwards (No Upper Cap)` on sweet-spot range (`0.35x–1.20x ATR`), body $\ge 65\%$, leading wick $\le 0.05 \times \text{ATR}$, 2-tick boundary persistence, and live `_opt_flow_1m` delta $\ge 1.30\times$ (or spot tick rate $\ge 1.5$ ticks/sec). Enters ahead of retail, filling resting +4.0% Maker TP (+3.0% on Friday) before or as candle closes.
+* **Pillar 1 (`20_ema_rejection`)**: Classical Dow Theory `HL2` (CALL) / `LH2` (PUT) 2nd-touch confirmation into 20 EMA High-Low Band; executes via Mode A (bar close / pre-close) and Priority Mode B (in-flight reversal pierce above/below prior bar extreme).
+* **Pillar 2 (`micro_sweep_reclaim`)**: Priority 1 Dynamic S/R Registry & Day Extreme (PDH/PDL) Liquidity Sweep & Reclaim (eliminates random 5-bar noise, with 11:15–13:00 IST Lunch Chop Veto); executes via Mode A (bar close / pre-close) and Priority Mode B (in-flight reclaim pierce).
+* **Pillar 3 (`volatility_squeeze_breakout`)**: 5–7 bar tight box compression (`<= 1.15x ATR`, individual candle `<= 0.85x ATR`, median touch `>= 50%`) expansion breakout + Priority Mode B In-Flight Surge (`T:02s onwards / No Upper Cap`) + Anti-Climax Cap (`<= 1.35x ATR`).
+* **Pillar 4 (`topological_prominence_breakout`)**: Dynamic S/R Registry Breakout (`prominence >= 1.25`), governed by Priority Mode B In-Flight Surge (`T:02s onwards`), Day Extreme Runway Rule, and Wyckoff Stopping Volume Veto (`FastMonotonicStack`, `hvg_engine` and its 5m structural veto are permanently DECOMMISSIONED & ARCHIVED).
+* **Priority Mode B (`check_mode_b_breakthrough`)**: Evaluates live forming bars mid-bar from `T:02s onwards (No Upper Cap)` across **ALL 4 Pillars** (P3 Squeeze Breakout, P4 S/R Registry Breakout, P1 20 EMA Reversal Pierce, P2 Micro-Sweep Reclaim Pierce). Executes single-shot clean entry entering ahead of retail, filling resting +4.0% Maker TP (+3.0% on Friday) before or as candle closes.
 
 ### 2. Absolute Pain Zone VWAP Band (v1.0 Production Early Veto)
 * Single unified veto before pillars:
@@ -108,13 +108,13 @@ Shared library: `common/` (broker / execution / market / ipc / runtime / config 
 * Volume-to-Dispersion Ratio ($VDR \ge 1.0$) and positive order-flow intensity (OFI) delta harmony required to confirm institutional participation.
 
 ### 4. Strike Selection & Subscription Universe (25 OTM Depth)
-* **Subscription Universe**: ATM $\pm 25$ strikes (51 strikes total, 102 tokens CE+PE) tracked on WebSocket ($t+d$).
+* **Subscription Universe & Order Flow Window**: ATM $\pm 25$ strikes (51 strikes total, 102 tokens CE+PE) tracked on WebSocket ($t+d$) for low-capital strike selection, while Order Flow (OFI Delta, PCR, Pain Zone VWAPs) is strictly aggregated on **ATM $\pm 7$ strikes** to eliminate far-OTM illiquid noise.
 * **Index Futures Passive Feed**: Subscribes 1 active near-month Index Future token (passive WebSocket feed, 0 polling loops, 0 extra REST calls) solely for emergency cold-boot candle seeding fallback and basis/telemetry. AEGIS does NOT trade futures; execution is strictly on options.
 * **Low-Capital Testing Mode (`funds < 5000`)**: `StrikeSelector` scans all available OTM strikes (`TESTING_DEEP_DEPTH = 32`, min premium ₹4.00 charges floor). Automatically selects the closest affordable OTM strike for 1 lot (e.g. ₹15–₹28).
 * **Index Option Liquidity**: Major Indian index options (NIFTY/SENSEX) have massive liquidity (millions of shares). **NEVER** apply artificial 2% spread blocks or thin-ask blocks.
 
 ### 5. Adaptive Exits & Near-Target Profit Lock (v1.0 Production Locked)
-* **Hard Disaster Floor**: `-12.0%` option premium circuit breaker.
+* **Hard Disaster Floor**: `-8.0%` option premium circuit breaker (calibrated to `-6.5%` on Friday 4 DTE). Post-SL 5-Minute Recovery Auditor continuously audits post-exit recovery to detect premature chokes vs justified capital saves.
 * **Step 1 (Safety Net)**: Peak $\ge +3.0\% \implies$ SL compressed from -12% to `-3.0%` (wide breathing room; premature +2.0% choke permanently removed; on Friday 4 DTE compressed at $+2.0\%$).
 * **Step 2 (Cost-Shield / Breakeven)**: Peak $\ge +3.5\% \implies$ SL compressed to `0.0%` (Entry Price scratch; on Friday 4 DTE compressed at $+2.2\%$).
 * **Universal Spot Invalidation (All 4 Pillars & Mode B)**: CALL exits if Spot $\le \text{Entry Candle Low} - (0.10 \times \text{ATR})$; PUT exits if Spot $\ge \text{Entry Candle High} + (0.10 \times \text{ATR})$ with structural trailing (immunizes trade from option spread/wick noise; 9-EMA bar-close choke is permanently removed).

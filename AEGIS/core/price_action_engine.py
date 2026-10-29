@@ -181,6 +181,12 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
             if self._curr_1m_bar is not None:
                 self._on_1m_bar_close(self._curr_1m_bar)
             self._curr_1m_bucket = bucket_1m
+            in_flight_opt_vol = (
+                self._opt_flow_1m.get("call_buy_vol", 0.0)
+                + self._opt_flow_1m.get("call_sell_vol", 0.0)
+                + self._opt_flow_1m.get("put_buy_vol", 0.0)
+                + self._opt_flow_1m.get("put_sell_vol", 0.0)
+            )
             self._curr_1m_bar = OHLCBar(
                 ts_start=float(bucket_1m * 60),
                 ts_end=float((bucket_1m + 1) * 60),
@@ -188,7 +194,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                 high=price,
                 low=price,
                 close=price,
-                volume=1.0,
+                volume=in_flight_opt_vol,
                 tick_count=1,
             )
         else:
@@ -199,7 +205,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                 if price < bar.low:
                     bar.low = price
                 bar.close = price
-                bar.volume += 1.0
+                # Spot ticks count spot index price arrival updates ONLY — never leak into bar.volume!
                 bar.tick_count += 1
 
     def _on_1m_bar_close(self, bar: OHLCBar) -> None:
@@ -223,13 +229,22 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
             bar.put_sell_vol = ps
             bar.opt_delta_flow = cb - pb
             bar.opt_total_vol = cb + cs + pb + ps
-            if bar.opt_total_vol > 0:
-                bar.volume = bar.opt_total_vol
+            bar.volume = bar.opt_total_vol
             bar.opt_pcr = round((pb + ps) / max(cb + cs, 1.0), 3)
-        elif bar.opt_total_vol <= 0 and (bar.call_buy_vol > 0 or bar.put_buy_vol > 0 or bar.call_sell_vol > 0 or bar.put_sell_vol > 0):
+        elif bar.opt_total_vol > 0:
+            bar.volume = bar.opt_total_vol
+            bar.opt_pcr = round((bar.put_buy_vol + bar.put_sell_vol) / max(bar.call_buy_vol + bar.call_sell_vol, 1.0), 3)
+        elif (bar.call_buy_vol > 0 or bar.put_buy_vol > 0 or bar.call_sell_vol > 0 or bar.put_sell_vol > 0):
             bar.opt_delta_flow = bar.call_buy_vol - bar.put_buy_vol
             bar.opt_total_vol = bar.call_buy_vol + bar.call_sell_vol + bar.put_buy_vol + bar.put_sell_vol
+            bar.volume = bar.opt_total_vol
             bar.opt_pcr = round((bar.put_buy_vol + bar.put_sell_vol) / max(bar.call_buy_vol + bar.call_sell_vol, 1.0), 3)
+        elif bar.volume > 0:
+            # Preserves synthetic test-bar volume and historical pre-seeded volume without inventing fake option flow
+            pass
+        else:
+            bar.opt_total_vol = 0.0
+            bar.volume = 0.0  # Spot tick count NEVER leaks into bar.volume!
 
         # Reset accumulator for the next 1-minute bucket
         self._opt_flow_1m = {
@@ -1345,7 +1360,8 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
             return 0.0
         n = min(len(self.bars_1m), max(1, lookback))
         vols = [float(getattr(b, "volume", 0.0) or 0.0) for b in list(self.bars_1m)[-n:]]
-        return (sum(vols) / float(n)) if n > 0 else 0.0
+        pos_vols = [v for v in vols if v > 0]
+        return (sum(pos_vols) / float(len(pos_vols))) if pos_vols else 0.0
 
     def get_relative_bar_metrics(self, bar: Optional[OHLCBar] = None) -> Dict[str, Any]:
         """Calculates scale-invariant bar geometry, body %, wick %, and volume ratio."""
@@ -1361,8 +1377,6 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         atr = max(self.current_atr_1m, 1.0)
         range_atr = rng / atr
         vol_sma = self.get_volume_sma(10)
-        b_vol = float(getattr(b, "volume", 1.0) or 1.0)
-        vol_ratio = (b_vol / vol_sma) if vol_sma > 0 else 1.0
         cb = float(getattr(b, "call_buy_vol", 0.0) or 0.0)
         cs = float(getattr(b, "call_sell_vol", 0.0) or 0.0)
         pb = float(getattr(b, "put_buy_vol", 0.0) or 0.0)
@@ -1385,6 +1399,8 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                 opt_vol = _cb + _cs + _pb + _ps
                 opt_delta = _cb - _pb
                 opt_pcr = (_pb + _ps) / max(_cb + _cs, 1.0)
+        b_vol = opt_vol if opt_vol > 0 else float(getattr(b, "volume", 0.0) or 0.0)
+        vol_ratio = (b_vol / vol_sma) if (vol_sma > 0 and b_vol > 0) else 1.0
         bull_flow = cb + ps
         bear_flow = pb + cs
 
@@ -1697,7 +1713,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                     "mode": "MODE_A_PIERCE",
                     "boundary": b_name,
                     "boundary_level": round(setup.get("boundary_level", spot), 2),
-                    "sl_price": round(anchor_l - 0.15 * atr if direction == "UP" else anchor_h + 0.15 * atr, 2),
+                    "sl_price": round(anchor_l - 0.10 * atr if direction == "UP" else anchor_h + 0.10 * atr, 2),
                     "trigger_sec": sec_in_min,
                     "bar_open": b_open,
                     "bar_high": anchor_h,
@@ -1765,7 +1781,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                     high=curr_bar.high,
                     low=curr_bar.low,
                     close=spot,
-                    volume=float(getattr(curr_bar, "volume", 1.0) or 1.0),
+                    volume=float(getattr(curr_bar, "volume", 0.0) or 0.0),
                     tick_count=getattr(curr_bar, "tick_count", 0),
                 )
                 dow = self._validate_dow_hl2_lh2_structure("CALL", touch2_offset=0, virtual_bar=forming_snapshot)
@@ -1779,7 +1795,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                         "mode": "MODE_A_PRECLOSE",
                         "boundary": "20_EMA_BAND",
                         "boundary_level": round(band_high, 2),
-                        "sl_price": round(curr_bar.low - 0.15 * atr, 2),
+                        "sl_price": round(curr_bar.low - 0.10 * atr, 2),
                         "trigger_sec": sec_in_min,
                         "bar_open": round(curr_bar.open, 2),
                         "bar_high": round(curr_bar.high, 2),
@@ -1806,7 +1822,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                     high=curr_bar.high,
                     low=curr_bar.low,
                     close=spot,
-                    volume=float(getattr(curr_bar, "volume", 1.0) or 1.0),
+                    volume=float(getattr(curr_bar, "volume", 0.0) or 0.0),
                     tick_count=getattr(curr_bar, "tick_count", 0),
                 )
                 dow = self._validate_dow_hl2_lh2_structure("PUT", touch2_offset=0, virtual_bar=forming_snapshot_dn)
@@ -1820,7 +1836,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                         "mode": "MODE_A_PRECLOSE",
                         "boundary": "20_EMA_BAND",
                         "boundary_level": round(band_low, 2),
-                        "sl_price": round(curr_bar.high + 0.15 * atr, 2),
+                        "sl_price": round(curr_bar.high + 0.10 * atr, 2),
                         "trigger_sec": sec_in_min,
                         "bar_open": round(curr_bar.open, 2),
                         "bar_high": round(curr_bar.high, 2),
@@ -1881,7 +1897,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                     "level_role": getattr(sr_lvl, "level_role", "FALLBACK_LOCAL_SWING") if sr_lvl else "FALLBACK_LOCAL_SWING",
                                     "breakout_tier": getattr(sr_lvl, "breakout_tier", "B_SWEEP_ONLY") if sr_lvl else "FALLBACK",
                                     "is_previous_day": getattr(sr_lvl, "is_previous_day", False) if sr_lvl else False,
-                                    "sl_price": round(curr_bar.low - 0.15 * atr, 2),
+                                    "sl_price": round(curr_bar.low - 0.10 * atr, 2),
                                     "trigger_sec": sec_in_min,
                                     "bar_open": round(curr_bar.open, 2),
                                     "bar_high": round(curr_bar.high, 2),
@@ -1929,7 +1945,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                     "level_role": getattr(sr_lvl, "level_role", "FALLBACK_LOCAL_SWING") if sr_lvl else "FALLBACK_LOCAL_SWING",
                                     "breakout_tier": getattr(sr_lvl, "breakout_tier", "B_SWEEP_ONLY") if sr_lvl else "FALLBACK",
                                     "is_previous_day": getattr(sr_lvl, "is_previous_day", False) if sr_lvl else False,
-                                    "sl_price": round(curr_bar.high + 0.15 * atr, 2),
+                                    "sl_price": round(curr_bar.high + 0.10 * atr, 2),
                                     "trigger_sec": sec_in_min,
                                     "bar_open": round(curr_bar.open, 2),
                                     "bar_high": round(curr_bar.high, 2),
@@ -1955,14 +1971,14 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         Criteria:
           1. Duration: 5 to 7 closed 1m bars.
           2. Gross Box Compression: (box_high - box_low) <= 1.15 * ATR.
-          3. Per-Bar Compression: every individual bar range <= 0.65 * ATR.
+          3. Per-Bar Compression: every individual bar range <= 0.85 * ATR.
           4. Net Directional Drift Cap: |Close(last) - Open(first)| <= 0.50 * Box Range.
           5. Pre-Established Boundary (Anti-Staircase):
              - PUT: Lowest low must be pre-established (cannot be set by recent_bars[-1]).
                     No 3 consecutive lower lows & lower closes at the tail.
              - CALL: Highest high must be pre-established (cannot be set by recent_bars[-1]).
                     No 3 consecutive higher highs & higher closes at the tail.
-          6. Median Oscillation / Core Overlap: at least 60% of bars cross or touch (box_high + box_low)/2.
+          6. Median Oscillation / Core Overlap: at least 50% of bars cross or touch (box_high + box_low)/2.
         """
         n = len(recent_bars)
         if n < 5:
@@ -2014,7 +2030,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                (recent_bars[-1].high > recent_bars[-2].high > recent_bars[-3].high):
                 return False, "consecutive_upward_staircase", {}
 
-        # 6. Median Oscillation / Core Overlap: at least 60% of bars cross or touch the center-line
+        # 6. Median Oscillation / Core Overlap: at least 50% of bars cross or touch the center-line
         mid_level = (box_high + box_low) / 2.0
         touch_count = sum(1 for b in recent_bars if b.low <= mid_level <= b.high)
         if (touch_count / float(n)) < 0.50:
@@ -2083,8 +2099,8 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         last_p3 = self._mode_b_last_trigger_bar_idx.get("P3_BOX_BREAKTHROUGH", -100)
         p3_box_valid = False
         box_meta: Dict[str, Any] = {}
-        if len(self.bars_1m) >= 4 and (bar_idx - last_p3) >= 3:
-            for n_cand in (6, 5, 4, 7):
+        if len(self.bars_1m) >= 5 and (bar_idx - last_p3) >= 3:
+            for n_cand in (6, 5, 7):
                 if len(self.bars_1m) >= n_cand:
                     cand_bars = list(self.bars_1m)[-n_cand:]
                     ok_box, _, meta = self._is_valid_squeeze_box(cand_bars, atr, direction)
@@ -2096,7 +2112,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         if p3_box_valid:
             box_high = float(box_meta["box_high"])
             box_low = float(box_meta["box_low"])
-            box_bars_n = int(box_meta.get("bar_count", 4))
+            box_bars_n = int(box_meta.get("bar_count", 5))
             if direction == "UP":
                 # Instant breakout: candle opened inside/at box, spot crossed above box_high
                 if curr_bar.open <= box_high and spot > box_high:
@@ -2111,7 +2127,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                             "box_high": round(box_high, 2),
                             "box_low": round(box_low, 2),
                             "boundary_level": round(box_high, 2),
-                            "sl_price": round(curr_bar.low - 0.15 * atr, 2),
+                            "sl_price": round(curr_bar.low - 0.10 * atr, 2),
                             "trigger_sec": sec_in_min,
                             "bar_open": round(curr_bar.open, 2),
                             "bar_high": round(curr_bar.high, 2),
@@ -2134,7 +2150,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                             "box_high": round(box_high, 2),
                             "box_low": round(box_low, 2),
                             "boundary_level": round(box_low, 2),
-                            "sl_price": round(curr_bar.high + 0.15 * atr, 2),
+                            "sl_price": round(curr_bar.high + 0.10 * atr, 2),
                             "trigger_sec": sec_in_min,
                             "bar_open": round(curr_bar.open, 2),
                             "bar_high": round(curr_bar.high, 2),
@@ -2178,13 +2194,13 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                             logger.info(f"[PriceActionEngine] [MODE_B_P4] Dynamic S/R CALL Breakout at spot={spot:.2f} > res={r_lvl.price:.2f} role={getattr(r_lvl, 'level_role', 'UNKNOWN')} (T+{sec_in_min}s)")
                             return True, "sr_breakout", {
                                 "pillar": 4,
-                                "pa_setup_name": "sr_breakout",
+                                "pa_setup_name": "topological_prominence_breakout",
                                 "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
                                 "boundary_level": round(r_lvl.price, 2),
                                 "level_role": getattr(r_lvl, "level_role", "UNKNOWN"),
                                 "breakout_tier": getattr(r_lvl, "breakout_tier", "UNKNOWN"),
                                 "is_previous_day": getattr(r_lvl, "is_previous_day", False),
-                                "sl_price": round(curr_bar.low - 0.15 * atr, 2),
+                                "sl_price": round(curr_bar.low - 0.10 * atr, 2),
                                 "trigger_sec": sec_in_min,
                                 "bar_open": round(curr_bar.open, 2),
                                 "bar_high": round(curr_bar.high, 2),
@@ -2221,13 +2237,13 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                             logger.info(f"[PriceActionEngine] [MODE_B_P4] Dynamic S/R PUT Breakout at spot={spot:.2f} < sup={s_lvl.price:.2f} role={getattr(s_lvl, 'level_role', 'UNKNOWN')} (T+{sec_in_min}s)")
                             return True, "sr_breakout", {
                                 "pillar": 4,
-                                "pa_setup_name": "sr_breakout",
+                                "pa_setup_name": "topological_prominence_breakout",
                                 "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
                                 "boundary_level": round(s_lvl.price, 2),
                                 "level_role": getattr(s_lvl, "level_role", "UNKNOWN"),
                                 "breakout_tier": getattr(s_lvl, "breakout_tier", "UNKNOWN"),
                                 "is_previous_day": getattr(s_lvl, "is_previous_day", False),
-                                "sl_price": round(curr_bar.high + 0.15 * atr, 2),
+                                "sl_price": round(curr_bar.high + 0.10 * atr, 2),
                                 "trigger_sec": sec_in_min,
                                 "bar_open": round(curr_bar.open, 2),
                                 "bar_high": round(curr_bar.high, 2),
@@ -2266,7 +2282,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                 high=curr_bar.high,
                                 low=curr_bar.low,
                                 close=spot,
-                                volume=float(getattr(curr_bar, "volume", 1.0) or 1.0),
+                                volume=float(getattr(curr_bar, "volume", 0.0) or 0.0),
                                 tick_count=getattr(curr_bar, "tick_count", 0),
                             )
                             dow = self._validate_dow_hl2_lh2_structure("CALL", touch2_offset=0, virtual_bar=forming_snapshot)
@@ -2275,7 +2291,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                 if ok_struct and self._delta_harmony_ok("UP"):
                                     self._mode_b_last_trigger_bar_idx["P1_EMA20_UP"] = bar_idx
                                     lowest_low = min(prior_bar.low, curr_bar.low)
-                                    sl_price = round(lowest_low - 0.15 * atr, 2)
+                                    sl_price = round(lowest_low - 0.10 * atr, 2)
                                     n1_fp = self.compute_n1_footprint(prior_bar, atr)
                                     logger.info(f"[PriceActionEngine] [MODE_B_P1] 20 EMA CALL In-Flight Reversal Breakout at spot={spot:.2f} >= prior_high={prior_bar.high:.2f} (T+{sec_in_min}s) | N1Dry={n1_fp.get('n1_vol_dryup')}")
                                     return True, "20_ema_rejection", {
@@ -2306,7 +2322,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                 high=curr_bar.high,
                                 low=curr_bar.low,
                                 close=spot,
-                                volume=float(getattr(curr_bar, "volume", 1.0) or 1.0),
+                                volume=float(getattr(curr_bar, "volume", 0.0) or 0.0),
                                 tick_count=getattr(curr_bar, "tick_count", 0),
                             )
                             dow = self._validate_dow_hl2_lh2_structure("PUT", touch2_offset=0, virtual_bar=forming_snapshot_dn)
@@ -2315,7 +2331,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                 if ok_struct and self._delta_harmony_ok("DOWN"):
                                     self._mode_b_last_trigger_bar_idx["P1_EMA20_DOWN"] = bar_idx
                                     highest_high = max(prior_bar.high, curr_bar.high)
-                                    sl_price = round(highest_high + 0.15 * atr, 2)
+                                    sl_price = round(highest_high + 0.10 * atr, 2)
                                     n1_fp = self.compute_n1_footprint(prior_bar, atr)
                                     logger.info(f"[PriceActionEngine] [MODE_B_P1] 20 EMA PUT In-Flight Reversal Breakdown at spot={spot:.2f} <= prior_low={prior_bar.low:.2f} (T+{sec_in_min}s) | N1Dry={n1_fp.get('n1_vol_dryup')}")
                                     return True, "20_ema_rejection", {
@@ -2362,7 +2378,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                             if ok_struct and self._delta_harmony_ok("UP"):
                                 self._mode_b_last_trigger_bar_idx["P2_SWEEP_UP"] = bar_idx
                                 lowest_low = min(prior_bar.low, curr_bar.low)
-                                sl_price = round(lowest_low - 0.15 * atr, 2)
+                                sl_price = round(lowest_low - 0.10 * atr, 2)
                                 n1_fp = self.compute_n1_footprint(prior_bar, atr)
                                 logger.info(f"[PriceActionEngine] [MODE_B_P2] Micro-Sweep CALL In-Flight Reversal Breakout at spot={spot:.2f} >= prior_high={prior_bar.high:.2f} (T+{sec_in_min}s, sr_lvl={swept_low:.2f}, role={getattr(sr_lvl_up, 'level_role', 'UNKNOWN')}) | N1Dry={n1_fp.get('n1_vol_dryup')}")
                                 return True, "micro_sweep_reclaim", {
@@ -2394,7 +2410,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                             if ok_struct and self._delta_harmony_ok("DOWN"):
                                 self._mode_b_last_trigger_bar_idx["P2_SWEEP_DOWN"] = bar_idx
                                 highest_high = max(prior_bar.high, curr_bar.high)
-                                sl_price = round(highest_high + 0.15 * atr, 2)
+                                sl_price = round(highest_high + 0.10 * atr, 2)
                                 n1_fp = self.compute_n1_footprint(prior_bar, atr)
                                 logger.info(f"[PriceActionEngine] [MODE_B_P2] Micro-Sweep PUT In-Flight Reversal Breakdown at spot={spot:.2f} <= prior_low={prior_bar.low:.2f} (T+{sec_in_min}s, sr_lvl={swept_high:.2f}, role={getattr(sr_lvl_dn, 'level_role', 'UNKNOWN')}) | N1Dry={n1_fp.get('n1_vol_dryup')}")
                                 return True, "micro_sweep_reclaim", {

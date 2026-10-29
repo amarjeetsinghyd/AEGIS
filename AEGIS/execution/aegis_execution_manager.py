@@ -247,7 +247,7 @@ DELTA_MIN_SPOT_BPS = 1.25               # 1.25 bps minimum spot move for empiric
 MIN_STRUCTURAL_BAR_RANGE_BPS = float(os.environ.get("AEGIS_MIN_STRUCTURAL_RANGE_BPS", "2.0"))   # 2.0 bps (0.02% ~4.6 pts NIFTY, ~14.7 pts SENSEX) hurdle against thin candles/dojis
 MIN_STRUCTURAL_BAR_RANGE_ATR_MULT = 0.30                                                       # 0.30x 1m ATR regime floor
 STRUCTURAL_SL_BUFFER_BPS = float(os.environ.get("AEGIS_STRUCTURAL_SL_BUFFER_BPS", "0.5"))     # 0.5 bps (~1.15 pts NIFTY, ~3.9 pts SENSEX) sub-tick breathing cushion
-STRUCTURAL_SL_BUFFER_ATR_MULT = float(os.environ.get("AEGIS_STRUCTURAL_SL_BUFFER_ATR_MULT", "0.15"))                                                           # 0.10x 1m ATR regime cushion
+STRUCTURAL_SL_BUFFER_ATR_MULT = float(os.environ.get("AEGIS_STRUCTURAL_SL_BUFFER_ATR_MULT", "0.10"))                                                           # 0.10x 1m ATR regime cushion
 
 # Legacy fallbacks maintained for external callers/tests
 TARGET_PROFIT_PCT = RESTING_TP_LIMIT_PCT
@@ -255,7 +255,9 @@ EMERGENCY_MAX_SL_PCT = 0.35
 
 # ─── AEGIS V4.1 Stepped Risk Compression + Cost-Shield + Near-Target Engine ───
 # Scale-Invariant Normalized Percentage Model (strictly %, no fixed paise)
-PREMIUM_HARD_SL_PCT = float(os.environ.get("AEGIS_PREMIUM_HARD_SL_PCT", "0.120"))   # Tick-cadence option premium disaster circuit breaker (-12.0%)
+DEFAULT_PREMIUM_HARD_SL_PCT = 0.080  # Calibrated from 0.120 -> 0.080 (-8.0% disaster floor)
+PREMIUM_HARD_SL_PCT = float(os.environ.get("AEGIS_PREMIUM_HARD_SL_PCT", str(DEFAULT_PREMIUM_HARD_SL_PCT)))
+FRIDAY_HARD_SL_PCT = float(os.environ.get("AEGIS_FRIDAY_HARD_SL_PCT", "0.065"))     # Friday 4-DTE calibrated disaster floor (-6.5%)
 V4_SINGLE_TARGET_MODE = True  # Runner trailing disabled; 100% qty TP/SL/time exits
 STEP1_TRIGGER_PCT = float(os.environ.get("AEGIS_STEP1_TRIGGER_PCT", "0.030"))         # +3.0% peak gain arms stepped safety net (wide breathing room; +2% choke removed)
 STEP1_SL_PCT = float(os.environ.get("AEGIS_STEP1_SL_PCT", "-0.030"))                  # Tightens disaster floor from -12% to -3.0%
@@ -548,7 +550,8 @@ class AegisExecutionManager:
         if cache is not None:
             age = now_epoch - cache.get("ts", 0.0)
             spot_drift = abs(spot_price - cache.get("spot", 0.0))
-            if age < 5.0 and spot_drift < 15.0:
+            drift_hurdle = max(15.0, spot_price * 0.0006)
+            if age < 5.0 and spot_drift < drift_hurdle:
                 return
 
         params = self.get_instrument_params()
@@ -831,7 +834,7 @@ class AegisExecutionManager:
             params = self.get_instrument_params()
 
             # Map signal direction to option type
-            signal_type = "CALL" if direction == "UP" else "PUT"
+            signal_type = "CALL" if str(direction).upper() in ("UP", "CALL", "CE", "C") else "PUT"
 
             # ─── Spot-Level Delta Inflection Trap Window (2026-10-26) ───
             # Defense-in-depth: gamma's direction-wide trap window (opened when ANY
@@ -864,7 +867,7 @@ class AegisExecutionManager:
             if (
                 cached
                 and (now_epoch - hot_cache.get("ts", 0.0) <= 20.0)
-                and abs(spot_price - hot_cache.get("spot", 0.0)) <= 40.0
+                and abs(spot_price - hot_cache.get("spot", 0.0)) <= max(40.0, spot_price * 0.0016)
             ):
                 opt_row, raw_quantity, ltp = cached
                 # ─── Hot-Strike Live Re-Validation (2026-10-26) ───
@@ -1075,6 +1078,7 @@ class AegisExecutionManager:
                 )
                 leg = TradeLeg(token_str, symbol, float(opt_row["strike"]), signal_type, quantity, ltp)
                 
+                is_entry_filled = False
                 try:
                     if not self.order_lifecycle.execute_entry(leg, live_ask=live_ask or ltp):
                         logger.error(f"[AegisEM] Entry order rejected/unfilled for {symbol} — aborting and purging queue")
@@ -1082,7 +1086,7 @@ class AegisExecutionManager:
                         self._rollback_slot()
                         self._drain_signal_queue(reason="entry_rejected_or_unfilled")
                         return
-                    
+                    is_entry_filled = True
                     fill_ts = time.time()
                     entry_latency_ms = max(0.0, round((fill_ts - signal_ts) * 1000.0, 1))
 
@@ -1173,11 +1177,16 @@ class AegisExecutionManager:
                         f"(Type: {dp['rejection_type']}, Spot SL: {dp['spot_sl_price']:.1f})"
                     )
                 except Exception as e_entry:
-                    logger.critical(f"[AegisEM] Entry order execution crashed: {e_entry}", exc_info=True)
-                    self.trade_context = None
-                    self._rollback_slot()
-                    self._drain_signal_queue(reason="entry_crash")
-                    return
+                    logger.critical(f"[AegisEM] Entry order execution exception: {e_entry}", exc_info=True)
+                    if not is_entry_filled:
+                        self.trade_context = None
+                        self._rollback_slot()
+                        self._drain_signal_queue(reason="entry_crash")
+                        return
+                    else:
+                        logger.warning(f"[AegisEM] Order already filled at broker — preserving trade_context despite metadata exception.")
+                        if leg not in self.trade_context.legs:
+                            self.trade_context.add_leg(leg)
 
             self.capital_engine.deduct_funds(leg.entry_price * quantity * params["lot_size"])
             self.trades_today += 1
@@ -1414,13 +1423,18 @@ class AegisExecutionManager:
         for leg in legs:
             if leg.status != "OPEN":
                 continue
+            # L1 Book Snapshot: Query true top-of-book bid & ask from live tick stream
+            b_ts, b_lp, b_bid, b_ask = self._latest_option_book(leg.symbol)
             opt_cache = getattr(self, "_option_cache", None)
-            if opt_cache and leg.token in opt_cache:
+            if b_bid > 0 and b_ask > 0:
+                leg.current_price = b_lp if b_lp > 0 else b_bid
+                live_bid = b_bid
+                live_ask = b_ask
+            elif opt_cache and leg.token in opt_cache and opt_cache[leg.token] > 0:
                 c_lp = opt_cache[leg.token]
-                if c_lp > 0:
-                    leg.current_price = c_lp
-                    live_bid = c_lp
-                    live_ask = c_lp
+                leg.current_price = c_lp
+                live_bid = c_lp
+                live_ask = c_lp
             else:
                 try:
                     q = self.broker.market_data_provider.get_quote(exch_seg, leg.token)
@@ -1524,17 +1538,20 @@ class AegisExecutionManager:
                     )
                     return
 
-        # 0C. Tick-Cadence Option Premium Hard SL (-12.0% disaster floor).
-        # Aborts the millisecond the option bid drops >= 12.0% under entry (disaster circuit breaker).
+        # 0C. Tick-Cadence Option Premium Hard SL (-8.0% disaster floor, calibrated to -6.5% on Friday 4 DTE).
+        # Aborts the millisecond the option bid drops >= hard floor under entry (disaster circuit breaker).
         for leg in legs:
             if leg.status != "OPEN" or leg.entry_price <= 0:
                 continue
             eff_px = live_bid if live_bid > 0 else leg.current_price
             if eff_px > 0:
                 loss_frac = (eff_px - leg.entry_price) / leg.entry_price
-                if loss_frac <= -PREMIUM_HARD_SL_PCT:
+                init_tp = float(getattr(leg, "initial_tp_pct", RESTING_TP_LIMIT_PCT) or RESTING_TP_LIMIT_PCT)
+                is_reduced_tp = init_tp <= 0.032
+                eff_hard_sl = FRIDAY_HARD_SL_PCT if is_reduced_tp else PREMIUM_HARD_SL_PCT
+                if loss_frac <= -eff_hard_sl:
                     self._close_all_legs(
-                        f"Premium Hard SL (-{PREMIUM_HARD_SL_PCT*100:.1f}% disaster floor: {loss_frac*100:.1f}% @ {eff_px:.2f})"
+                        f"Premium Hard SL (-{eff_hard_sl*100:.1f}% disaster floor: {loss_frac*100:.1f}% @ {eff_px:.2f})"
                     )
                     return
 
@@ -1947,6 +1964,18 @@ class AegisExecutionManager:
         """Limit exit execution — preserves TP maker fills and chases emergency exits."""
         try:
             self._do_chase_exit(reason, is_tp_maker, limit_fill_price)
+        except Exception as e_chase:
+            logger.critical(f"[AegisEM] Exit chaser thread crashed: {e_chase}", exc_info=True)
+            with self.trade_lock:
+                if self.trade_context and self.has_open_trade():
+                    # Attempt emergency fallback market close to prevent position from being orphaned
+                    logger.warning(f"[AegisEM] Triggering emergency fallback market exit for unclosed trade...")
+                    try:
+                        self.order_lifecycle.close_all_market(reason=f"chase_crash_fallback_{reason}")
+                    except Exception as e_em:
+                        logger.critical(f"[AegisEM] Emergency market fallback also failed: {e_em}", exc_info=True)
+                        # Revert status to OPEN so subsequent ticks and 15:08 CAS flatten can retry!
+                        self.trade_context.status = "OPEN"
         finally:
             with self.trade_lock:
                 self._is_exiting = False
@@ -2011,23 +2040,17 @@ class AegisExecutionManager:
                                         f"{fill_price:.2f} (limit_fill_price={limit_fill_price:.2f})"
                                     )
                                 else:
-                                    logger.info(
-                                        f"[AegisEM] Case A: TP order {check_ordno} hist check unconfirmed "
-                                        f"— accepting limit_fill_price={limit_fill_price:.2f} as fill reference"
+                                    logger.warning(
+                                        f"[AegisEM] Case A: TP order {check_ordno} hist check UNCONFIRMED/UNFILLED "
+                                        f"— falling through to active chase exit to guarantee broker fill"
                                     )
-                                    filled = True
-                                    fill_price = limit_fill_price
+                                    filled = False
                         except Exception as e_tp:
-                            logger.warning(f"[AegisEM] Maker TP status check warning: {e_tp}")
-                    
-                    if not filled:
-                        # Bid >= TP price already confirmed in Section 0B — treat as maker fill
-                        logger.info(
-                            f"[AegisEM] Case A fallback: no ordno available but bid >= tp_price, "
-                            f"accepting limit_fill_price={limit_fill_price:.2f}"
-                        )
-                        filled = True
-                        fill_price = limit_fill_price
+                            logger.warning(f"[AegisEM] Maker TP status check warning: {e_tp} — falling through to active chase exit")
+                            filled = False
+                    else:
+                        logger.warning("[AegisEM] Case A: No check_ordno or api available — falling through to active chase exit")
+                        filled = False
 
             # Case B: Emergency or Trail Exit Chase (Anchored to live bid: Bid-0% -> Bid-1% -> Bid-2%)
             # Parse urgency tier from close reason
@@ -2135,9 +2158,12 @@ class AegisExecutionManager:
                             }
                         place = getattr(api, "place_order", None)
                         if place:
-                            resp = place(**kwargs)
-                            if isinstance(resp, dict) and resp.get("stat") == "Ok":
-                                ordno = resp.get("norenordno")
+                            try:
+                                resp = place(**kwargs)
+                                if isinstance(resp, dict) and resp.get("stat") == "Ok":
+                                    ordno = resp.get("norenordno")
+                            except Exception as e_p1:
+                                logger.error(f"[AegisEM] place_order step 1 exception: {e_p1}")
                 
                 if ordno:
                     time.sleep(0.8)
@@ -2156,8 +2182,11 @@ class AegisExecutionManager:
                             best_ask=live_ask_2
                         )) if live_bid_2 > 0 else _round_tick(leg.current_price * 0.98)
                         if api and hasattr(api, "modify_order"):
-                            api.modify_order(exchange=exch_seg, tradingsymbol=leg.symbol, orderno=ordno,
-                                             newquantity=qty, newprice_type="LMT", newprice=f"{price_2:.2f}")
+                            try:
+                                api.modify_order(exchange=exch_seg, tradingsymbol=leg.symbol, orderno=ordno,
+                                                 newquantity=qty, newprice_type="LMT", newprice=f"{price_2:.2f}")
+                            except Exception as e_mod2:
+                                logger.error(f"[AegisEM] modify_order step 2 exception: {e_mod2}")
                         time.sleep(1.0)
                         history = api.single_order_history(orderno=ordno) if hasattr(api, "single_order_history") else []
                         h_filled, h_px = self._check_hist_filled(history)
@@ -2167,7 +2196,10 @@ class AegisExecutionManager:
                         else:
                             # Step 3: Cancel & Replace at aggressive exit 2% below fresh live bid
                             if api and hasattr(api, "cancel_order"):
-                                api.cancel_order(orderno=ordno)
+                                try:
+                                    api.cancel_order(orderno=ordno)
+                                except Exception:
+                                    pass
                             live_bid_3 = _get_live_bid(price_2)
                             price_3 = _round_tick(min(live_bid_3 * 0.98, leg.current_price * 0.97))
                             if api and hasattr(self.order_lifecycle, "_build_kwargs"):
@@ -2175,8 +2207,12 @@ class AegisExecutionManager:
                                 place = getattr(api, "place_order", None)
                                 if place:
                                     logger.warning(f"[AegisEM Chaser] Final aggressive exit @ {price_3:.2f} (live_bid={live_bid_3:.2f})")
-                                    resp = place(**kwargs)
-                                    ordno_3 = resp.get("norenordno") if isinstance(resp, dict) and resp.get("stat") == "Ok" else None
+                                    try:
+                                        resp = place(**kwargs)
+                                        ordno_3 = resp.get("norenordno") if isinstance(resp, dict) and resp.get("stat") == "Ok" else None
+                                    except Exception as e_p3:
+                                        logger.error(f"[AegisEM Chaser] Step-3 aggressive exit place exception: {e_p3}")
+                                        ordno_3 = None
                                     if ordno_3:
                                         time.sleep(0.8)
                                         history = api.single_order_history(orderno=ordno_3) if hasattr(api, "single_order_history") else []
@@ -2293,7 +2329,11 @@ class AegisExecutionManager:
         pnl_pct = round(((exit_px - entry_px) / entry_px * 100.0), 2) if entry_px > 0 else 0.0
 
         sym_str = leg0.symbol if leg0 else ""
-        lot_sz = 20 if "SENSEX" in sym_str else 65
+        try:
+            params = self.get_instrument_params() if hasattr(self, "get_instrument_params") else {}
+        except Exception:
+            params = {}
+        lot_sz = int(params.get("lot_size", 20 if "SENSEX" in sym_str else 65))
         tot_units = (leg0.quantity if leg0 else 1) * lot_sz
         buy_turnover = (entry_px * tot_units) if entry_px > 0 else 0.0
         sell_turnover = (exit_px * tot_units) if exit_px > 0 else 0.0
@@ -2313,7 +2353,7 @@ class AegisExecutionManager:
         now_epoch = time.time()
         cooldown_interval = int(now_epoch - self.last_trade_exit_time) if self.last_trade_exit_time > 0 else 0
         self.last_trade_exit_time = now_epoch
-        self.last_trade_loss = (gross_pnl < 0)
+        self.last_trade_loss = (net_pnl < 0)
 
         # Notify 60s post-trade milestone tracker of broker exit
         if self.aegis_engine and getattr(self.aegis_engine, "post_trade_tracker", None) and sym_str:
@@ -2328,7 +2368,7 @@ class AegisExecutionManager:
                 logger.debug(f"[AegisEM] Post-trade exit notification error: {_e_nex}")
 
         # Quality Stack: consecutive-loss tracking + engine cross-wire
-        if gross_pnl < 0:
+        if net_pnl < 0:
             self._consec_losses = int(getattr(self, "_consec_losses", 0)) + 1
         else:
             self._consec_losses = 0
@@ -2402,8 +2442,8 @@ class AegisExecutionManager:
         micro_score = float(dp.get("microstructure_score", 0.0) or dp.get("conviction", 0.0) or 0.0)
         persistence_score = float(dp.get("persistence_score", 0.0) or 0.0)
 
-        is_win = total_pnl > 0
-        is_scratch = total_pnl == 0
+        is_win = net_pnl > 0
+        is_scratch = net_pnl == 0
         outcome = "WINNER" if is_win else ("SCRATCH" if is_scratch else "LOSER")
 
         # Determine classification tag

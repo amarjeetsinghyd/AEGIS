@@ -114,7 +114,7 @@ class SimulatedPositionManager:
         charges_per_trade: float = 16.50,
         lot_size: int = 65,   # default NIFTY 65; SENSEX 20
         target_pct: float = 4.0,   # Fast +4.0% Scalp Take-Profit (live RESTING_TP_LIMIT_PCT parity)
-        stop_loss_pct: float = 12.0,  # V4 premium floor parity (live PREMIUM_HARD_SL_PCT)
+        stop_loss_pct: float = 8.0,  # V4 premium floor parity (live PREMIUM_HARD_SL_PCT calibrated to -8.0%)
         breakeven_trigger_pct: float = 3.0,
         breakeven_lock_pct: float = 0.5,
         runner_trigger_pct: float = 7.0,
@@ -412,7 +412,7 @@ class AegisParquetBacktester:
         start_capital: float = 2000.0,
         charges_per_trade: float = 16.50,
         target_pct: float = 6.5,
-        stop_loss_pct: float = 12.0,  # V4 premium floor parity (live PREMIUM_HARD_SL_PCT)
+        stop_loss_pct: float = 8.0,  # V4 premium floor parity (live PREMIUM_HARD_SL_PCT calibrated to -8.0%)
         cooldown_sec: float = 120.0,
         max_trades_per_day: int = 8,
         use_statutory_charges: bool = True,
