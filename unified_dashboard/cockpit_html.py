@@ -1368,9 +1368,12 @@ function renderDashboard(data) {
       const gross = parseFloat(t.gross_pl !== undefined ? t.gross_pl : (t.pnl_rs || 0.0));
       const chg = parseFloat(t.charges !== undefined ? t.charges : 12.85);
       const gainPct = parseFloat(t.opt_pct !== undefined ? t.opt_pct : (((parseFloat(t.exit_price || 0) - parseFloat(t.entry_price || 1)) / parseFloat(t.entry_price || 1)) * 100));
-      const pnlColor = net >= 0 ? "var(--green-bright)" : "var(--red-bright)";
-      const pnlSign = net >= 0 ? "+₹" : "₹";
+      const gainColor = gainPct >= 0 ? "var(--green-bright)" : "var(--red-bright)";
       const gainSign = gainPct >= 0 ? "+" : "";
+      const grossColor = gross >= 0 ? "var(--green-bright)" : "var(--red-bright)";
+      const grossSign = gross >= 0 ? "+₹" : "₹";
+      const netColor = net >= 0 ? "var(--green-bright)" : "var(--red-bright)";
+      const netSign = net >= 0 ? "+₹" : "₹";
 
       let setupDisp = String(t.pillar || 'Pillar 1 (20 EMA)');
       if (setupDisp.includes('topological') || setupDisp.includes('BOS') || setupDisp.includes('Prominence') || setupDisp === 'sr_breakout') {
@@ -1383,10 +1386,10 @@ function renderDashboard(data) {
         <td data-label="Side"><span class="pill ${sideClass}">${isCall ? 'CALL' : 'PUT'}</span></td>
         <td data-label="Fill Price" class="mono">₹${parseFloat(t.entry_price || 0).toFixed(2)}</td>
         <td data-label="Exit Price" class="mono">₹${parseFloat(t.exit_price || 0).toFixed(2)}</td>
-        <td data-label="Gain %" class="mono" style="color:${pnlColor}; font-weight:700;">${gainSign}${gainPct.toFixed(2)}%</td>
-        <td data-label="Gross PnL" class="mono" style="color:${pnlColor}; font-weight:600;">${pnlSign}${gross.toFixed(2)}</td>
+        <td data-label="Gain %" class="mono" style="color:${gainColor}; font-weight:700;">${gainSign}${gainPct.toFixed(2)}%</td>
+        <td data-label="Gross PnL" class="mono" style="color:${grossColor}; font-weight:600;">${grossSign}${gross.toFixed(2)}</td>
         <td data-label="Charges" class="mono" style="color:var(--text-muted); font-size:11px;">₹${chg.toFixed(2)}</td>
-        <td data-label="Net PnL" class="mono" style="color:${pnlColor}; font-weight:800;">${pnlSign}${net.toFixed(2)}</td>
+        <td data-label="Net PnL" class="mono" style="color:${netColor}; font-weight:800;">${netSign}${net.toFixed(2)}</td>
         <td data-label="Setup" class="mono" style="color:var(--purple); font-size:11px;">${setupDisp}</td>
       `;
       tbody.appendChild(tr);

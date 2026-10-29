@@ -840,9 +840,12 @@ function updateDashboardUI(data) {
       const net = parseFloat(t.net_pl !== undefined ? t.net_pl : (t.pnl_rs || 0.0));
       const gross = parseFloat(t.gross_pl !== undefined ? t.gross_pl : (t.pnl_rs || 0.0));
       const gainPct = parseFloat(t.opt_pct !== undefined ? t.opt_pct : (((parseFloat(t.exit_price || 0) - parseFloat(t.entry_price || 1)) / parseFloat(t.entry_price || 1)) * 100));
-      const pnlColor = net >= 0 ? "var(--emerald-bright)" : "var(--rose-bright)";
-      const pnlSign = net >= 0 ? "+₹" : "₹";
+      const gainColor = gainPct >= 0 ? "var(--emerald-bright)" : "var(--rose-bright)";
       const gainSign = gainPct >= 0 ? "+" : "";
+      const grossColor = gross >= 0 ? "var(--emerald-bright)" : "var(--rose-bright)";
+      const grossSign = gross >= 0 ? "+₹" : "₹";
+      const netColor = net >= 0 ? "var(--emerald-bright)" : "var(--rose-bright)";
+      const netSign = net >= 0 ? "+₹" : "₹";
 
       tr.innerHTML = `
         <td data-label="Time" class="mono" style="color:var(--text-muted);"><span class="pill-badge win" style="font-size:9.5px; margin-right:4px;">TODAY</span>${t.date || '—'}</td>
@@ -850,9 +853,9 @@ function updateDashboardUI(data) {
         <td data-label="Side"><span class="pill-badge ${sideClass}">${t.signal || '—'}</span></td>
         <td data-label="Fill Price" class="mono">₹${parseFloat(t.entry_price || 0).toFixed(2)}</td>
         <td data-label="Exit Price" class="mono">₹${parseFloat(t.exit_price || 0).toFixed(2)}</td>
-        <td data-label="Gain %" class="mono" style="color:${pnlColor}; font-weight:700;">${gainSign}${gainPct.toFixed(2)}%</td>
-        <td data-label="Gross PnL" class="mono" style="color:${pnlColor}; font-weight:600;">${pnlSign}${gross.toFixed(2)}</td>
-        <td data-label="Net PnL" class="mono" style="color:${pnlColor}; font-weight:800;">${pnlSign}${net.toFixed(2)}</td>
+        <td data-label="Gain %" class="mono" style="color:${gainColor}; font-weight:700;">${gainSign}${gainPct.toFixed(2)}%</td>
+        <td data-label="Gross PnL" class="mono" style="color:${grossColor}; font-weight:600;">${grossSign}${gross.toFixed(2)}</td>
+        <td data-label="Net PnL" class="mono" style="color:${netColor}; font-weight:800;">${netSign}${net.toFixed(2)}</td>
         <td data-label="Setup" class="mono" style="color:var(--purple); font-size:11px;">${t.pillar || 'Pillar 1 (20 EMA)'}</td>
       `;
       tbody.appendChild(tr);
