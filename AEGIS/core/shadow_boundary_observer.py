@@ -74,6 +74,7 @@ class ShadowTrade:
     # Pain Zone 4-Line Snapshot & Band Spread (Empirical Tracking)
     pz_top: float = 0.0
     pz_bottom: float = 0.0
+    pz_mid: float = 0.0
     pz_spread_pts: float = 0.0
     pz_call_buy: float = 0.0
     pz_call_sell: float = 0.0
@@ -473,6 +474,34 @@ class ShadowBoundaryObserver:
                             self._open_shadow_trade("PAIN_ZONE_BREAKOUT", "DOWN", spot, highest_high, lowest_low, now_sec, n1_fp)
                             return
 
+        # 4b. Pain Zone Mid (Central Institutional VWAP) Direct Breakout / Breakdown
+        # Triggers at the true market equilibrium inflection point when spot crosses Zone Mid
+        pz_mid = self._get_pain_zone_mid()
+        if pz_mid > 0:
+            last_trig_pz_mid = max(self.last_trigger_bar_idx.get("PAIN_ZONE_MID_BREAKOUT", -100), self.last_trigger_bar_idx.get("PAIN_ZONE_BREAKOUT", -100))
+            if (bar_idx - last_trig_pz_mid) >= 3:
+                # Bullish Breakout: Candle opened at/below Zone Mid, spot breaks above Zone Mid
+                if (curr_bar.open <= pz_mid or prior_bar.close <= pz_mid) and spot > pz_mid:
+                    if self._check_dow_thrust_progression("UP", curr_bar, spot, atr):
+                        if self._check_wyckoff_harmony("UP", curr_bar):
+                            self.last_trigger_bar_idx["PAIN_ZONE_MID_BREAKOUT"] = bar_idx
+                            lowest_low = min(prior_bar.low, curr_bar.low)
+                            highest_high = max(spot, curr_bar.high)
+                            logger.info(f"[SHADOW_INTRABAR_SURGE] PAIN_ZONE_MID_BREAKOUT CALL | Spot: {spot:.2f} > ZoneMid: {pz_mid:.2f} at T+{sec_in_min}s | Dow Thrust OK")
+                            self._open_shadow_trade("PAIN_ZONE_MID_BREAKOUT", "UP", spot, highest_high, lowest_low, now_sec, n1_fp)
+                            return
+
+                # Bearish Breakdown: Candle opened at/above Zone Mid, spot breaks below Zone Mid
+                if (curr_bar.open >= pz_mid or prior_bar.close >= pz_mid) and spot < pz_mid:
+                    if self._check_dow_thrust_progression("DOWN", curr_bar, spot, atr):
+                        if self._check_wyckoff_harmony("DOWN", curr_bar):
+                            self.last_trigger_bar_idx["PAIN_ZONE_MID_BREAKOUT"] = bar_idx
+                            highest_high = max(prior_bar.high, curr_bar.high)
+                            lowest_low = min(spot, curr_bar.low)
+                            logger.info(f"[SHADOW_INTRABAR_SURGE] PAIN_ZONE_MID_BREAKOUT PUT | Spot: {spot:.2f} < ZoneMid: {pz_mid:.2f} at T+{sec_in_min}s | Dow Thrust OK")
+                            self._open_shadow_trade("PAIN_ZONE_MID_BREAKOUT", "DOWN", spot, highest_high, lowest_low, now_sec, n1_fp)
+                            return
+
         # 5. 200 EMA Direct Breakout / Breakdown (Mode B In-Flight Surge)
         # S/R Breakout parity: Triggers instantly when spot crosses 200 EMA to the upside (CALL)
         # or breaks below 200 EMA low / ribbon lower boundary (PUT)
@@ -626,6 +655,14 @@ class ShadowBoundaryObserver:
         except Exception:
             return 0.0, 0.0
 
+    def _get_pain_zone_mid(self) -> float:
+        """Fetches live Pain Zone composite midpoint (Zone Mid / Central Institutional VWAP)."""
+        try:
+            pz = self.pa_engine.get_pain_zone_vwaps()
+            return float(pz.get("zone_mid", 0.0) or 0.0)
+        except Exception:
+            return 0.0
+
     def _get_ema200_levels(self, atr: float) -> Tuple[float, float]:
         """Fetches live 200 EMA ribbon levels from PriceActionEngine."""
         try:
@@ -754,6 +791,7 @@ class ShadowBoundaryObserver:
             n1_stopping_vol=bool(n1.get("n1_stopping_vol", False)),
             pz_top=pz_top_val,
             pz_bottom=pz_bot_val,
+            pz_mid=float(pz_dict.get("zone_mid", 0.0) or 0.0),
             pz_spread_pts=pz_spread,
             pz_call_buy=float(pz_dict.get("vwap_call_buy", 0.0) or 0.0),
             pz_call_sell=float(pz_dict.get("vwap_call_sell", 0.0) or 0.0),

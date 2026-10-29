@@ -748,3 +748,57 @@ def test_dow_thrust_vetoes_chop_breakdown_put():
 
 
 
+
+
+def test_pain_zone_mid_breakout_call():
+    """Verify in-flight Mode B breakthrough when spot crosses Pain Zone Mid (CALL)."""
+    mock_pae = MagicMock()
+    bar_n2 = MagicMock()
+    bar_n2.open = 22490.0
+    bar_n2.high = 22495.0
+    bar_n2.low = 22485.0
+    bar_n2.close = 22492.0
+    bar_n2.volume = 1000.0
+
+    prior_bar = MagicMock()
+    prior_bar.open = 22493.0
+    prior_bar.high = 22502.0  # > 22495 (HH)
+    prior_bar.low = 22490.0   # > 22485 (HL)
+    prior_bar.close = 22500.0
+    prior_bar.volume = 1500.0
+
+    forming_bar = MagicMock()
+    forming_bar.tick_count = 25
+    forming_bar.open = 22499.0
+    forming_bar.high = 22506.0
+    forming_bar.low = 22498.0  # >= 22490 (HL)
+    forming_bar.close = 22505.0
+    forming_bar.volume = 2000.0
+
+    mock_pae.bars_1m = [bar_n2] * 20 + [bar_n2, prior_bar]
+    mock_pae._curr_1m_bar = forming_bar
+    mock_pae._opt_flow_1m = {"call_buy_vol": 5000.0, "put_buy_vol": 500.0}
+    # zone_top is 22515 (not broken yet), but zone_mid is 22502 (broken by spot 22505!)
+    mock_pae.get_pain_zone_vwaps.return_value = {
+        "zone_top": 22515.0,
+        "zone_bottom": 22485.0,
+        "zone_mid": 22502.0,
+    }
+    mock_pae.current_atr_1m = 10.0
+    mock_pae.ema_200_1m = 22450.0
+    mock_pae.ema_20_1m = 22450.0
+
+    observer = ShadowBoundaryObserver(price_action_engine=mock_pae, strike_step=50.0, log_dir="scratch")
+    observer.current_atm_strike = 22500.0
+    observer.strike_to_symbol = {(0, 22750.0): "NIFTY_22750_CE"}
+    observer.option_cache = {"NIFTY_22750_CE": 50.0}
+
+    now_sec = 1700000000.0 + 15.0
+    # Spot is 22505.0 > zone_mid 22502.0 (but < zone_top 22515.0)
+    observer._check_inflight_breakthrough(spot=22505.0, now_sec=now_sec)
+    assert len(observer.active_trades) == 1
+    trade = observer.active_trades[0]
+    assert trade.boundary == "PAIN_ZONE_MID_BREAKOUT"
+    assert trade.direction == "UP"
+    assert trade.spot_entry == 22505.0
+    assert trade.pz_mid == 22502.0
