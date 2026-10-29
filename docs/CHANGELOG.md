@@ -46,6 +46,49 @@
 - Executed full targeted test suite: **72 passed in 5.31s** across modified components with 0 failures.
 - Synchronized all modified modules to Oracle Cloud VPS (`aegis-vps`) and verified clean PM2 restart.
 
+## [Unreleased] - 2026-10-29 (Morning Execution Hardening, Quote Integrity & Telemetry Upgrades)
+
+### Execution & Exit Management Hardening
+- **Execution Manager Exit Chaser & Maker TP Hardening** (`AEGIS/execution/aegis_execution_manager.py`):
+  - Resolved execution manager exit chaser thread race conditions and reinforced the atomic 0.75s fill window (`_drain_signal_queue` on reject).
+  - Hardened resting Maker TP limit order logic (+4.0% Mon–Thu, calibrated to +3.0% on Friday 4 DTE).
+  - Implemented local quote cache fallback (`_option_cache`) in `_query_option_quote`, preventing extraneous broker queries on recently seen contract ticks.
+- **In-Flight Wyckoff Delta Fast-Path Audit** (`AEGIS/core/wyckoff_volume_engine.py` & `AEGIS/core/price_action_engine.py`):
+  - Mode B in-flight signals now evaluate live delta flow directly from `_opt_flow_1m`, completely bypassing closed-bar lag.
+- **Outcome & Milestone Telemetry Tracker Elevation** (`AEGIS/core/outcome_telemetry.py`):
+  - Enhanced `PostTradeMilestoneTracker` to log sub-minute forward return trajectories (30s, 60s, 180s, 300s) directly into daily JSONL telemetry files.
+- **Unified Dashboard Execution Table UI Alignment** (`unified_dashboard/cockpit_html.py` & `unified_dashboard/quantum_cockpit_html.py`):
+  - Decoupled Gain % and Gross PnL colors from Net PnL, displaying clean green styling for profitable gross trades even if statutory broker friction caused a small negative net scratch.
+
+## [Unreleased] - 2026-10-28 (All-4 Pillars Mode B Expansion, T:02s Window, S/R Registry Re-Anchoring & Latency De-Bloat)
+
+### Multi-Pillar Mode B In-Flight Breakthrough Expansion
+- **Priority Mode B Expansion Across ALL 4 Macro Price Action Pillars** (`AEGIS/core/price_action_engine.py`):
+  - Expanded Mode B from evaluating only Pillar 3 & Pillar 4 breakouts to covering all 4 Pillars:
+    - **Pillar 1 (`20_ema_rejection`)**: Added in-flight reversal pierce above/below prior bar extreme.
+    - **Pillar 2 (`micro_sweep_reclaim`)**: Added in-flight liquidity reclaim pierce.
+    - **Pillar 3 (`volatility_squeeze_breakout`)**: Tight 5-7 bar squeeze expansion.
+    - **Pillar 4 (`topological_prominence_breakout`)**: Dynamic S/R Registry breakout.
+  - Enabled single-shot clean execution entering ahead of retail before candle close across all setups.
+- **Mode B Execution Window Advanced to T:02s Onwards (No Upper Cap)** (`AEGIS/core/price_action_engine.py`):
+  - Advanced the Mode B start time from `T:08s` to `T:02s`, leaving only a 2-second rollover safety guard. Allows immediate in-flight entries from `T:02s onwards` without artificial upper time caps.
+- **Artificial Latency Gate Elimination (Zero-Entropy Execution)** (`AEGIS/core/price_action_engine.py`):
+  - Purged artificial execution blockers from Mode B: removed 65% candle body ratio check, minimum clearance requirement, wick choke filters, and the 2-tick debounce delay.
+  - Eliminated artificial 0.10x ATR pierce buffer from Mode A rejection trades for instant single-tick entry.
+
+### Macro Price Action & S/R Registry Hardening
+- **Pillar 2 Dynamic S/R Registry Re-Anchoring & Swing Fallback Purge** (`AEGIS/core/price_action_engine.py` & `AEGIS/core/structural_registry.py`):
+  - Completely purged noisy 5-bar local swing fallbacks from Pillar 2 (`micro_sweep_reclaim`), re-anchoring liquidity sweep detection exclusively to genuine `SR_REGISTRY` levels and Day Extremes (`PDH` / `PDL`).
+  - Strengthened `StructuralRegistryMixin` with monotonic `seq_idx` tracking, multi-touch prominence boost (`+0.35`), and role classification (`OUTERMOST_ROOF`, `INTERIOR_CLUSTER`).
+  - Decoupled historical 5m bar seeding: removed `@staticmethod` from `seed_historical_bars` for clean instance state binding.
+- **Pillar 3 Volatility Squeeze Box Hardening** (`AEGIS/core/price_action_engine.py`):
+  - Hardened Pillar 3 box geometry: strictly 5–7 bars window, box range $\le 1.15 	imes 	ext{ATR}$, individual candle range $\le 0.85 	imes 	ext{ATR}$, median touch $\ge 50\%$, expansion breakout cap $\le 1.35 	imes 	ext{ATR}$, and anti-staircase drift floor.
+- **Live Intra-Bar Option Flow Sync & N-1 Wyckoff Footprint** (`AEGIS/core/option_order_flow.py` & `AEGIS/core/wyckoff_volume_engine.py`):
+  - Synchronized live forming bar option flow (`_opt_flow_1m`) into `get_relative_bar_metrics()`, enabling Mode A and Mode B signals to carry real in-flight option delta into conviction scoring.
+  - Added candle N-1 Wyckoff footprint verification (Volume Dry-Up, Synthetic Net Delta, Stopping Volume).
+- **Shadow Boundary Observer Parity** (`AEGIS/core/shadow_boundary_observer.py`):
+  - Aligned boundary breakthrough logic with single-shot zero-gate Mode B parameters.
+
 ## [Unreleased] - 2026-10-27 (Zero-Entropy Core Modularization, AegisPipelineOrchestrator Elevation & Pure Tape-Reading Consolidation)
 
 ### Architectural Restructuring & Consolidation
