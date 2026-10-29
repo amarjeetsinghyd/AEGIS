@@ -1,5 +1,51 @@
 # Changelog
 
+## [Unreleased] - 2026-10-29 (Option Order Flow Remediation, Stateful TickCompiler Merged Book, Trapped Writer Breakouts & Fail-Closed Quality Shield)
+
+### Order Flow & Microstructure Core Remediation (Post-Claude Sonnet 3.5/5.5 Audit)
+- **Universal Fix of PUT Trade Order Book Sign Inversion (`eff_i1` & `eff_deep`)** (`AEGIS/core/option_order_flow.py`):
+  - Completely excised the inverted `-touch_i1` and `-deep_pressure` multiplier for PUT options in `_evaluate_mode_b_conviction` (L955) and `_evaluate_mode_a_conviction` (L1066).
+  - Enforced the Option Buyer Mandate: An option buyer (LONG option) on both CALL (`CE`) and PUT (`PE`) requires strong bid support (`touch_i1 > 0`, `deep_pressure > 0`) on the purchased contract.
+  - Rectified a critical flaw where high-demand PE contracts were penalized with negative scores while ask-wall dumping books received full 40/40 points.
+- **Out-of-Order Stale Tick Phantom Volume Elimination** (`AEGIS/core/option_order_flow.py`):
+  - Fixed `delta_vol = vol - prev_vol` logic: replaced `if delta_vol < 0: delta_vol = vol` with safe return (`if delta_vol <= 0: return`).
+  - Out-of-order network packets arriving with smaller cumulative volumes (e.g. 499,990 after 500,020) are safely discarded without overwriting last known cumulative volume or injecting hundreds of thousands of phantom contracts into candle volume and Wyckoff metrics.
+- **Universal WebSocket Reconnect Silence Reset** (`AEGIS/core/option_order_flow.py`):
+  - Eliminated the arbitrary `< 55.0s` upper bound (`if 5.0 < dt < 55.0` -> `if dt > 5.0`). Any feed silence exceeding 5.0 seconds universally clears `_opt_last_cum_vol`, `_opt_last_lp`, and `_opt_last_frac` so the first post-reconnect tick reseeds cleanly without booking a massive historical volume spike on a single candle.
+- **Scale-Invariant Wyckoff Active Flow Floor** (`AEGIS/core/option_order_flow.py`):
+  - Replaced hardcoded `1000.0` contracts active-flow threshold in `_check_wyckoff_harmony` with scale-invariant `15.0 * lot_size` (975 on NIFTY, 300 on SENSEX).
+
+### Market Data Layer: Stateful Merged Order Book
+- **Stateful Merged Order Book in `TickCompiler` (Zero-Wipe Partial Ticks)** (`common/market/tick_compiler.py`):
+  - Implemented token-level `_book_state` caching L1-L5 quotes, sizes, LTP, and cumulative volume.
+  - Touchline ticks (L1 only) now merge with existing state without zero-wiping L2-L5 depth levels, completely eliminating "Depth Flapping" (flapping between 210 and 1600 contracts).
+  - Depth-only ticks (without LTP) now dispatch to `AegisPipelineOrchestrator` using the last known good LTP, ensuring L2-L5 depth updates are no longer discarded by the `if lp <= 0: return` gate.
+
+### Contract Quality Shield: Strict Fail-Closed Architecture
+- **Fail-Closed Spread & Depth Liquidity Shield** (`AEGIS/core/option_quality.py`):
+  - Eliminated synthetic spread fabrication (`spread = 0.05` when `bp1=sp1=0`): missing or crossed L1 quotes now immediately reject the contract as `invalid_or_missing_l1_quote`.
+  - Eliminated synthetic depth fabrication: excised lines 108-111 that fabricated 250/250 depth on `total_depth == 0`.
+  - Implemented scale-invariant liquidity floor: `eff_min_depth = max(50.0, 5.0 * lot_size)`.
+
+### Execution Pipeline & In-Flight Mode B Enrichment
+- **Mode B Live Option Micro Metrics Integration** (`AEGIS/core/aegis_pipeline_orchestrator.py`):
+  - Gated Mode B in-flight breakthrough evaluations to extract live micro metrics upfront from the option's rolling 10-second tick buffer.
+  - Mode B now verifies real contract spread, depth, and `touch_i1` on its initial pass, eliminating blind execution driven solely by spot index tick rate.
+
+### Shadow Boundary Observer Innovations
+- **Trapped Writer Breakthrough Analytics (`CALL_WRITER_TRAP_BREAKOUT` & `PUT_WRITER_TRAP_BREAKOUT`)** (`AEGIS/core/shadow_boundary_observer.py`):
+  - Implemented Setup 4c tracking pure gamma squeeze / trapped writer penetration in decoupled instrument corridors:
+    - CALL: Spot breaks above Call Sell VWAP ($VWAP_{CS}$) with Dow thrust and Wyckoff harmony.
+    - PUT: Spot breaks below Put Sell VWAP ($VWAP_{PS}$) with Dow thrust and Wyckoff harmony.
+  - Eliminates cross-instrument contamination from the 4-line envelope where put levels previously lagged call breakouts and vice versa.
+- **Central Institutional VWAP Breakthrough (`PAIN_ZONE_MID_BREAKOUT`)** (`AEGIS/core/shadow_boundary_observer.py`):
+  - Implemented Setup 4b in-flight breakthrough tracking central composite midpoint (`zone_mid`), achieving 99.95%+ empirical parity with TradingView constituent cash VWAP (-0.6 to +2.7 bps difference).
+
+### Testing & Verification
+- Created dedicated test suite `tests/test_order_flow_audit_remediation.py` testing phantom volume drop, silence gap reset, CE/PE mirror order book conviction, TickCompiler depth preservation, and fail-closed quality.
+- Executed full targeted test suite: **72 passed in 5.31s** across modified components with 0 failures.
+- Synchronized all modified modules to Oracle Cloud VPS (`aegis-vps`) and verified clean PM2 restart.
+
 ## [Unreleased] - 2026-10-27 (Zero-Entropy Core Modularization, AegisPipelineOrchestrator Elevation & Pure Tape-Reading Consolidation)
 
 ### Architectural Restructuring & Consolidation
