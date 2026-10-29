@@ -502,6 +502,49 @@ class ShadowBoundaryObserver:
                             self._open_shadow_trade("PAIN_ZONE_MID_BREAKOUT", "DOWN", spot, highest_high, lowest_low, now_sec, n1_fp)
                             return
 
+        # 4c. Trapped Writer Penetration Breakout / Breakdown (Decoupled Corridors)
+        # Specifically attacks the counterparty's pain point:
+        # CALL: Spot breaks above Call Sell VWAP (Call Writers Trapped -> Short Covering Squeeze)
+        # PUT: Spot breaks below Put Sell VWAP (Put Writers Trapped -> Long Liquidation Flush)
+        cs, ps = self._get_pain_zone_writer_levels()
+        if cs > 0:
+            last_trig_call_trap = self.last_trigger_bar_idx.get("CALL_WRITER_TRAP_BREAKOUT", -100)
+            if (bar_idx - last_trig_call_trap) >= 3:
+                # Bullish Breakout: Candle opened at/below Call Sell VWAP, spot crosses above Call Sell VWAP
+                if (curr_bar.open <= cs or prior_bar.close <= cs) and spot > cs:
+                    if self._check_dow_thrust_progression("UP", curr_bar, spot, atr):
+                        if self._check_wyckoff_harmony("UP", curr_bar):
+                            self.last_trigger_bar_idx["CALL_WRITER_TRAP_BREAKOUT"] = bar_idx
+                            lowest_low = min(prior_bar.low, curr_bar.low)
+                            highest_high = max(spot, curr_bar.high)
+                            logger.info(
+                                f"[SHADOW_INTRABAR_SURGE] CALL_WRITER_TRAP_BREAKOUT CALL | "
+                                f"Spot: {spot:.2f} > CallSellVWAP: {cs:.2f} at T+{sec_in_min}s | Dow Thrust OK"
+                            )
+                            self._open_shadow_trade(
+                                "CALL_WRITER_TRAP_BREAKOUT", "UP", spot, highest_high, lowest_low, now_sec, n1_fp
+                            )
+                            return
+
+        if ps > 0:
+            last_trig_put_trap = self.last_trigger_bar_idx.get("PUT_WRITER_TRAP_BREAKOUT", -100)
+            if (bar_idx - last_trig_put_trap) >= 3:
+                # Bearish Breakdown: Candle opened at/above Put Sell VWAP, spot breaks below Put Sell VWAP
+                if (curr_bar.open >= ps or prior_bar.close >= ps) and spot < ps:
+                    if self._check_dow_thrust_progression("DOWN", curr_bar, spot, atr):
+                        if self._check_wyckoff_harmony("DOWN", curr_bar):
+                            self.last_trigger_bar_idx["PUT_WRITER_TRAP_BREAKOUT"] = bar_idx
+                            highest_high = max(prior_bar.high, curr_bar.high)
+                            lowest_low = min(spot, curr_bar.low)
+                            logger.info(
+                                f"[SHADOW_INTRABAR_SURGE] PUT_WRITER_TRAP_BREAKOUT PUT | "
+                                f"Spot: {spot:.2f} < PutSellVWAP: {ps:.2f} at T+{sec_in_min}s | Dow Thrust OK"
+                            )
+                            self._open_shadow_trade(
+                                "PUT_WRITER_TRAP_BREAKOUT", "DOWN", spot, highest_high, lowest_low, now_sec, n1_fp
+                            )
+                            return
+
         # 5. 200 EMA Direct Breakout / Breakdown (Mode B In-Flight Surge)
         # S/R Breakout parity: Triggers instantly when spot crosses 200 EMA to the upside (CALL)
         # or breaks below 200 EMA low / ribbon lower boundary (PUT)
@@ -662,6 +705,16 @@ class ShadowBoundaryObserver:
             return float(pz.get("zone_mid", 0.0) or 0.0)
         except Exception:
             return 0.0
+
+    def _get_pain_zone_writer_levels(self) -> Tuple[float, float]:
+        """Fetches live Call Writer VWAP (vwap_call_sell) and Put Writer VWAP (vwap_put_sell)."""
+        try:
+            pz = self.pa_engine.get_pain_zone_vwaps()
+            cs = float(pz.get("vwap_call_sell", 0.0) or 0.0)
+            ps = float(pz.get("vwap_put_sell", 0.0) or 0.0)
+            return cs, ps
+        except Exception:
+            return 0.0, 0.0
 
     def _get_ema200_levels(self, atr: float) -> Tuple[float, float]:
         """Fetches live 200 EMA ribbon levels from PriceActionEngine."""

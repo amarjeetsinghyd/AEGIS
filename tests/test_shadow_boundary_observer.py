@@ -802,3 +802,116 @@ def test_pain_zone_mid_breakout_call():
     assert trade.direction == "UP"
     assert trade.spot_entry == 22505.0
     assert trade.pz_mid == 22502.0
+
+
+
+def test_call_writer_trap_breakout():
+    """Verify in-flight Mode B breakthrough when spot crosses Call Sell VWAP (Call Writers Trapped)."""
+    mock_pae = MagicMock()
+    bar_n2 = MagicMock()
+    bar_n2.open = 22490.0
+    bar_n2.high = 22495.0
+    bar_n2.low = 22485.0
+    bar_n2.close = 22492.0
+    bar_n2.volume = 1000.0
+
+    prior_bar = MagicMock()
+    prior_bar.open = 22493.0
+    prior_bar.high = 22502.0
+    prior_bar.low = 22490.0
+    prior_bar.close = 22500.0
+    prior_bar.volume = 1500.0
+
+    forming_bar = MagicMock()
+    forming_bar.tick_count = 25
+    forming_bar.open = 22499.0
+    forming_bar.high = 22506.0
+    forming_bar.low = 22498.0
+    forming_bar.close = 22505.0
+    forming_bar.volume = 2000.0
+
+    mock_pae.bars_1m = [bar_n2] * 20 + [bar_n2, prior_bar]
+    mock_pae._curr_1m_bar = forming_bar
+    mock_pae._opt_flow_1m = {"call_buy_vol": 5000.0, "put_buy_vol": 500.0}
+    # zone_top is 22525 and zone_mid is 22515 (neither broken by 22505!), but Call Sell VWAP is 22502!
+    mock_pae.get_pain_zone_vwaps.return_value = {
+        "zone_top": 22525.0,
+        "zone_bottom": 22475.0,
+        "zone_mid": 22515.0,
+        "vwap_call_sell": 22502.0,
+        "vwap_put_sell": 22480.0,
+    }
+    mock_pae.current_atr_1m = 10.0
+    mock_pae.ema_200_1m = 22450.0
+    mock_pae.ema_20_1m = 22450.0
+
+    observer = ShadowBoundaryObserver(price_action_engine=mock_pae, strike_step=50.0, log_dir="scratch")
+    observer.current_atm_strike = 22500.0
+    observer.strike_to_symbol = {(0, 22750.0): "NIFTY_22750_CE"}
+    observer.option_cache = {"NIFTY_22750_CE": 50.0}
+
+    now_sec = 1700000000.0 + 15.0
+    # Spot is 22505.0 > vwap_call_sell 22502.0
+    observer._check_inflight_breakthrough(spot=22505.0, now_sec=now_sec)
+    assert len(observer.active_trades) == 1
+    trade = observer.active_trades[0]
+    assert trade.boundary == "CALL_WRITER_TRAP_BREAKOUT"
+    assert trade.direction == "UP"
+    assert trade.spot_entry == 22505.0
+    assert trade.pz_call_sell == 22502.0
+
+
+def test_put_writer_trap_breakout():
+    """Verify in-flight Mode B breakdown when spot breaks below Put Sell VWAP (Put Writers Trapped)."""
+    mock_pae = MagicMock()
+    bar_n2 = MagicMock()
+    bar_n2.open = 22510.0
+    bar_n2.high = 22515.0
+    bar_n2.low = 22505.0
+    bar_n2.close = 22508.0
+    bar_n2.volume = 1000.0
+
+    prior_bar = MagicMock()
+    prior_bar.open = 22507.0
+    prior_bar.high = 22508.0  # < 22515 (LH)
+    prior_bar.low = 22498.0   # < 22505 (LL)
+    prior_bar.close = 22500.0
+    prior_bar.volume = 1500.0
+
+    forming_bar = MagicMock()
+    forming_bar.tick_count = 25
+    forming_bar.open = 22501.0
+    forming_bar.high = 22502.0  # <= 22508 (LH)
+    forming_bar.low = 22494.0   # < 22498 (LL)
+    forming_bar.close = 22495.0
+    forming_bar.volume = 2000.0
+
+    mock_pae.bars_1m = [bar_n2] * 20 + [bar_n2, prior_bar]
+    mock_pae._curr_1m_bar = forming_bar
+    mock_pae._opt_flow_1m = {"put_buy_vol": 5000.0, "call_buy_vol": 500.0}
+    # zone_bottom is 22475 and zone_mid is 22485 (neither broken by 22495!), but Put Sell VWAP is 22498!
+    mock_pae.get_pain_zone_vwaps.return_value = {
+        "zone_top": 22525.0,
+        "zone_bottom": 22475.0,
+        "zone_mid": 22485.0,
+        "vwap_call_sell": 22520.0,
+        "vwap_put_sell": 22498.0,
+    }
+    mock_pae.current_atr_1m = 10.0
+    mock_pae.ema_200_1m = 22550.0
+    mock_pae.ema_20_1m = 22550.0
+
+    observer = ShadowBoundaryObserver(price_action_engine=mock_pae, strike_step=50.0, log_dir="scratch")
+    observer.current_atm_strike = 22500.0
+    observer.strike_to_symbol = {(1, 22250.0): "NIFTY_22250_PE"}
+    observer.option_cache = {"NIFTY_22250_PE": 50.0}
+
+    now_sec = 1700000000.0 + 15.0
+    # Spot is 22495.0 < vwap_put_sell 22498.0
+    observer._check_inflight_breakthrough(spot=22495.0, now_sec=now_sec)
+    assert len(observer.active_trades) == 1
+    trade = observer.active_trades[0]
+    assert trade.boundary == "PUT_WRITER_TRAP_BREAKOUT"
+    assert trade.direction == "DOWN"
+    assert trade.spot_entry == 22495.0
+    assert trade.pz_put_sell == 22498.0
