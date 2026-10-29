@@ -1,5 +1,5 @@
-"""Tick compiler: alias-tolerant WS parsing, tick-rule footprints,
-end-weighted + persistence-aware L2 depth, dual bar books (3m + 15m)
+"""Tick compiler: alias-tolerant WS parsing, stateful L1-L5 depth,
+dual bar books (3m + 15m)
 SYMBOL-keyed via set_symbol_map. market_depth preserves last good values."""
 from __future__ import annotations
 import os
@@ -19,12 +19,6 @@ from common.market.bar_book import ThreeMinuteBarBook, BarBook
 
 logger = get_logger("tick_compiler")
 
-# Distance-weighting for L2: best level full weight, decaying outward.
-_LEVEL_WEIGHTS = (1.0, 0.5, 1.0 / 3.0, 0.25, 0.2)
-# Wall considered "held/replenished" if it stays within 2% of previous tick.
-_PERSIST_HOLD = 0.98
-
-
 class ParsedTick:
     """Zero-allocation parsed tick for hot path. Reused per symbol."""
     __slots__ = ('tok', 'lp', 'vol', 'bp', 'bq', 'sp', 'sq', 'ts')
@@ -42,14 +36,12 @@ class ParsedTick:
 class TickCompiler:
     def __init__(self, broker):
         self.broker = broker
-        self.footprints = defaultdict(list)
         self.market_depth = {}
         self.lock = threading.Lock()
         self.bar_book = ThreeMinuteBarBook()
         self.bar_book_15 = BarBook(15)
         self._keys_logged = False
         self._t2s = {}
-        self._prev_l2w = {}  # token -> (bid_weighted, ask_weighted) for persistence
         self._tick_pool = {}  # sym -> ParsedTick (reused)
         self.engine = None  # Set via set_engine()
         self._book_state = {}  # token -> dict holding stateful merged L1-L5 order book and last good lp/vol
@@ -134,61 +126,10 @@ class TickCompiler:
                     "ts": time.time()
                 }
 
-            # L2 depth: simple sums (legacy) + end-weighted sums (new)
-            l2_bid = 0.0
-            l2_ask = 0.0
-            l2_bid_w = 0.0
-            l2_ask_w = 0.0
-            have_levels = False
-            for i in range(1, 6):
-                bq = self._as_float(message, f"bq{i}", default=0.0)
-                sq = self._as_float(message, f"sq{i}", default=0.0)
-                l2_bid += bq
-                l2_ask += sq
-                wgt = _LEVEL_WEIGHTS[i - 1]
-                l2_bid_w += bq * wgt
-                l2_ask_w += sq * wgt
-                if bq > 0 or sq > 0:
-                    have_levels = True
-            if not have_levels or (l2_bid <= 0 and l2_ask <= 0):
-                l2_bid = self._as_float(message, "bv", default=0.0)
-                l2_ask = self._as_float(message, "sv", default=0.0)
-                l2_bid_w = l2_bid
-                l2_ask_w = l2_ask
-
-            # Persistence: is each side's wall holding/replenishing tick-over-tick?
-            with self.lock:
-                prevw = self._prev_l2w.get(token)
-                if prevw is not None and (prevw[0] > 0 or prevw[1] > 0):
-                    bid_persist = 1.0 if l2_bid_w >= prevw[0] * _PERSIST_HOLD else 0.0
-                    ask_persist = 1.0 if l2_ask_w >= prevw[1] * _PERSIST_HOLD else 0.0
-                else:
-                    bid_persist = 0.5
-                    ask_persist = 0.5
-                self._prev_l2w[token] = (l2_bid_w, l2_ask_w)
-
-            # Tick-rule classification
-            trade_type = None
-            if lp > 0:
-                if sp1 > 0 and lp >= sp1:
-                    trade_type = "BUY"
-                elif bp1 > 0 and lp <= bp1:
-                    trade_type = "SELL"
-
             key = self._t2s.get(token, token)
             if lp > 0:
                 self.bar_book.on_tick(key, lp, ts, volume_delta=vol_delta)
                 self.bar_book_15.on_tick(key, lp, ts, volume_delta=vol_delta)
-
-            if trade_type and vol_delta > 0:
-                with self.lock:
-                    self.footprints[token].append({
-                        "price": lp, "volume": vol_delta, "type": trade_type,
-                        "l2_bid": l2_bid, "l2_ask": l2_ask,
-                        "l2_bid_w": l2_bid_w, "l2_ask_w": l2_ask_w,
-                        "bid_persist": bid_persist, "ask_persist": ask_persist,
-                        "ts": ts.isoformat(),
-                    })
 
             # ── TIER 2 INTRADAY FILTER (15-min rolling stats) ───
             # Collect per-symbol stats for 15-min filter (only if symbol in tier2 or engine set)
@@ -306,51 +247,9 @@ class TickCompiler:
         except Exception as e:
             logger.debug(f"on_message error: {e}")
 
-    def get_compiled_footprints(self) -> dict:
-        with self.lock:
-            out = {}
-            for token, trades in self.footprints.items():
-                total_buy = 0.0
-                total_sell = 0.0
-                l2_bid_sum = 0.0
-                l2_ask_sum = 0.0
-                ew_bid_sum = 0.0
-                ew_ask_sum = 0.0
-                bp_sum = 0.0
-                ap_sum = 0.0
-                n = 0
-                for t in trades:
-                    if t["type"] == "BUY":
-                        total_buy += float(t["volume"])
-                    else:
-                        total_sell += float(t["volume"])
-                    l2_bid_sum += float(t["l2_bid"])
-                    l2_ask_sum += float(t["l2_ask"])
-                    ew_bid_sum += float(t["l2_bid_w"])
-                    ew_ask_sum += float(t["l2_ask_w"])
-                    bp_sum += float(t["bid_persist"])
-                    ap_sum += float(t["ask_persist"])
-                    n += 1
-                out[token] = {
-                    "total_buy_vol": total_buy,
-                    "total_sell_vol": total_sell,
-                    "delta": total_buy - total_sell,
-                    "avg_l2_bid": l2_bid_sum / n if n else 0.0,
-                    "avg_l2_ask": l2_ask_sum / n if n else 0.0,
-                    "ew_l2_bid": ew_bid_sum / n if n else 0.0,
-                    "ew_l2_ask": ew_ask_sum / n if n else 0.0,
-                    "bid_persistence": bp_sum / n if n else 0.5,
-                    "ask_persistence": ap_sum / n if n else 0.5,
-                }
-            return out
-
     def get_market_depth_snapshot(self) -> dict:
         with self.lock:
             return {k: dict(v) for k, v in self.market_depth.items()}
-
-    def reset_for_new_candle(self):
-        with self.lock:
-            self.footprints.clear()
 
     def subscribe(self, tokens: list, exchange: str = "NSE"):
         mdp = None
@@ -390,7 +289,7 @@ class TickCompiler:
                 self._subscribe_feeds(mdp, tokens, exchange)
             except Exception as e_sub:
                 logger.warning(f"Subscribe deferred ({exchange} {len(tokens)} tokens): {e_sub}")
-        logger.info(f"Subscribed {len(tokens)} equities on {exchange} (touchline+depth) for 3m+15m WS candles + footprints.")
+        logger.info(f"Subscribed {len(tokens)} equities on {exchange} (touchline+depth) for 3m+15m WS candles.")
 
     @staticmethod
     def _subscribe_feeds(mdp, tokens, exchange) -> None:

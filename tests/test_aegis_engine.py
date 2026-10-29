@@ -52,6 +52,75 @@ def test_aegis_initialization_and_params():
     assert engine.scorer is not None
 
 
+def test_budget_cluster_uses_otm_rank_and_waterfall_priority_for_both_sides():
+    token_to_symbol = {"26000": "NIFTY"}
+    token_map = {"26000": {"side": 0, "strike": 0.0, "is_index": True}}
+    for token, side, strike in (
+        ("c_itm", 0, 23950.0),
+        ("c_atm", 0, 24000.0),
+        ("c_otm1", 0, 24050.0),
+        ("c_target", 0, 24100.0),
+        ("c_otm3", 0, 24150.0),
+        ("p_itm", 1, 24050.0),
+        ("p_atm", 1, 24000.0),
+        ("p_otm1", 1, 23950.0),
+        ("p_target", 1, 23900.0),
+        ("p_otm3", 1, 23850.0),
+    ):
+        symbol = f"NIFTY{int(strike)}{'CE' if side == 0 else 'PE'}"
+        token_to_symbol[token] = symbol
+        token_map[token] = {"side": side, "strike": strike}
+
+    engine = create_aegis_engine(
+        token_to_symbol=token_to_symbol,
+        token_map=token_map,
+        strike_step=50.0,
+    )
+    engine.current_atm_strike = 24000.0
+    engine.set_budget_strike_targets({
+        "UP": {"token": "c_target", "symbol": token_to_symbol["c_target"], "strike": 24100.0},
+        "DOWN": {"token": "p_target", "symbol": token_to_symbol["p_target"], "strike": 23900.0},
+    })
+
+    call_cluster = engine._get_budget_strike_cluster("UP")
+    put_cluster = engine._get_budget_strike_cluster("DOWN")
+    assert [(item["priority"], item["strike"]) for item in call_cluster] == [
+        ("target", 24100.0),
+        ("minus_one", 24150.0),
+        ("plus_one", 24050.0),
+    ]
+    assert [(item["priority"], item["strike"]) for item in put_cluster] == [
+        ("target", 23900.0),
+        ("minus_one", 23850.0),
+        ("plus_one", 23950.0),
+    ]
+
+    eligible = [
+        {"candidate": item, "conviction": item["priority"]}
+        for item in (call_cluster[1], call_cluster[2])
+    ]
+    assert engine._choose_budget_cluster_candidate(call_cluster, eligible) == eligible[0]
+    target_eligible = {"candidate": call_cluster[0], "conviction": "target"}
+    assert engine._choose_budget_cluster_candidate(
+        call_cluster,
+        [eligible[0], target_eligible, eligible[1]],
+    ) == target_eligible
+    assert engine._get_budget_strike_cluster("UNKNOWN") == []
+
+    engine.set_budget_strike_targets({
+        "UP": {"token": "c_atm", "symbol": token_to_symbol["c_atm"], "strike": 24000.0},
+        "DOWN": {"token": "p_atm", "symbol": token_to_symbol["p_atm"], "strike": 24000.0},
+    })
+    assert [(item["priority"], item["strike"]) for item in engine._get_budget_strike_cluster("UP")] == [
+        ("target", 24000.0),
+        ("minus_one", 24050.0),
+    ]
+    assert [(item["priority"], item["strike"]) for item in engine._get_budget_strike_cluster("DOWN")] == [
+        ("target", 24000.0),
+        ("minus_one", 23950.0),
+    ]
+
+
 def test_aegis_spot_tick_and_dynamic_atm_roll():
     token_to_symbol = {
         "26000": "NIFTY",
@@ -93,6 +162,37 @@ def test_aegis_spot_tick_and_dynamic_atm_roll():
     assert engine.current_atm_strike == 24100.0
 
 
+def test_stale_spot_blocks_option_signal_evaluation():
+    token_to_symbol = {
+        "26000": "NIFTY",
+        "1001": "NIFTY2682024000CE",
+    }
+    token_map = {
+        "26000": {"side": 0, "strike": 0.0, "is_index": True},
+        "1001": {"side": 0, "strike": 24000.0},
+    }
+    engine = create_aegis_engine(
+        token_to_symbol=token_to_symbol,
+        token_map=token_map,
+        strike_step=50.0,
+        signal_queue=queue.Queue(),
+    )
+    tick_ts = 1787023500.0
+    engine.last_spot = 24000.0
+    engine._last_spot_ts = tick_ts - 2.01
+
+    engine.on_tick_parsed(
+        MockParsedTick(
+            "1001",
+            lp=150.0,
+            vol=500,
+            ts=int(tick_ts * 1000),
+        )
+    )
+
+    assert "NIFTY2682024000CE" not in engine.scorer.history
+
+
 def test_aegis_microstructure_signal_emission():
     # PA-only mode: pure microstructure burst WITHOUT a pillar setup must NOT emit.
     # Hidden 4th route removed — pillars are the sole trigger source.
@@ -129,6 +229,27 @@ def test_aegis_microstructure_signal_emission():
         engine.on_tick_parsed(tick)
 
     assert sig_q.empty()  # PA-only: no pillar setup, no signal.
+
+
+def test_emit_signal_reports_queue_delivery():
+    sig_q = queue.Queue(maxsize=1)
+    engine = create_aegis_engine(
+        token_to_symbol={"26000": "NIFTY"},
+        token_map={"26000": {"side": 0, "strike": 0.0, "is_index": True}},
+        strike_step=50.0,
+        signal_queue=sig_q,
+    )
+    args = {
+        "sym": "NIFTY24000CE",
+        "lp": 100.0,
+        "direction": "UP",
+        "conviction": 85.0,
+        "gates": {},
+        "metrics": {},
+    }
+
+    assert engine._emit_signal(**args) is True
+    assert engine._emit_signal(**args) is False
 
 
 def test_strike_selector_otm_sweet_spot():

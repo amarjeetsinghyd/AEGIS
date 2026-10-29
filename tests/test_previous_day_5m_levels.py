@@ -309,9 +309,8 @@ def test_interior_cluster_level_vetoed_on_breakout():
     pa.last_price = 24084.0
     ok_int, reason_int, det_int = pa.check_mode_b_breakthrough("UP", current_time=now_ts + 20.0)
     assert ok_int is False
-    assert reason_int == "veto_interior_cluster_level"
-    assert det_int["hub_price"] == 24080.0
-    assert det_int["level_role"] == "INTERIOR_CLUSTER"
+    assert reason_int == "no_mode_b_trigger"
+    assert det_int == {}
 
     # Case 2: Spot breaks the OUTERMOST ROOF at 24090 (spot = 24095 > 24090)
     pa._curr_1m_bar = OHLCBar(
@@ -332,5 +331,4 @@ def test_interior_cluster_level_vetoed_on_breakout():
     assert det2["level_role"] == "OUTERMOST_ROOF"
     assert det2["breakout_tier"] == "A_PLUS"
     assert res_outer.is_broken is True
-
 

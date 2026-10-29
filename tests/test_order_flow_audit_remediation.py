@@ -109,6 +109,7 @@ def test_tick_compiler_merged_book_preserves_depth():
     """Verify that TickCompiler maintains stateful merged book across Touchline and Depth messages."""
     broker = MagicMock()
     tc = TickCompiler(broker)
+    assert not hasattr(tc, "footprints")
 
     token = "45892"
     key = "NIFTY26OCT22500CE"

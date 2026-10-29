@@ -54,15 +54,34 @@ class DummyDataFetcher:
 
 
 class DummyEngine:
-    def __init__(self):
+    def __init__(self, data_fetcher):
         self.option_cache = {}
         self.time_bar_engine = None
+        self.data_fetcher = data_fetcher
+        self._spot_override = None
+        self._spot_timestamp_override = None
+
+    @property
+    def last_spot(self):
+        return self._spot_override if self._spot_override is not None else self.data_fetcher._spot
+
+    @last_spot.setter
+    def last_spot(self, value):
+        self._spot_override = value
+
+    @property
+    def _last_spot_ts(self):
+        return self._spot_timestamp_override if self._spot_timestamp_override is not None else time.time()
+
+    @_last_spot_ts.setter
+    def _last_spot_ts(self, value):
+        self._spot_timestamp_override = value
 
 
 def create_test_manager(entry_price=19.30, spot_entry=23700.0, signal_type="PUT"):
     broker = DummyBroker(ltp=entry_price, bp1=entry_price - 0.10, sp1=entry_price + 0.10)
     data_fetcher = DummyDataFetcher(spot=spot_entry)
-    engine = DummyEngine()
+    engine = DummyEngine(data_fetcher)
     
     # Instantiate manager without starting background loop
     em = AegisExecutionManager.__new__(AegisExecutionManager)
@@ -72,6 +91,10 @@ def create_test_manager(entry_price=19.30, spot_entry=23700.0, signal_type="PUT"
     em.tp_order_id = None
     import threading
     em.trade_lock = threading.Lock()
+    em._order_update_lock = threading.Lock()
+    em._order_updates = {}
+    em._order_history_poll_ts = {}
+    em._order_history_poll_interval_sec = 2.5
     em._trade_quote_history = deque(maxlen=60)
     em._option_cache = {}
     em._prestaged_cache = {}
@@ -90,6 +113,12 @@ def create_test_manager(entry_price=19.30, spot_entry=23700.0, signal_type="PUT"
     em._consec_losses = 0
     em._is_exiting = False
     em._is_entering = False
+    em._latest_option_book = lambda _symbol: (
+        time.time() - 0.05,
+        float(broker.market_data_provider._quote.get("ltp", 0.0)),
+        float(broker.market_data_provider._quote.get("bp1", 0.0)),
+        float(broker.market_data_provider._quote.get("sp1", 0.0)),
+    )
 
     # Clock independence: after 15:10 IST the real must_force_flatten() returns
     # True and force-flattens every open trade, breaking exit-behavior assertions.
@@ -145,6 +174,47 @@ def create_test_manager(entry_price=19.30, spot_entry=23700.0, signal_type="PUT"
     em.must_force_flatten = lambda now=None: False
     
     return em, context, leg
+
+
+def attach_scored_contract(em, signal, token="9001", strike=None):
+    """Adds the exact option identity required by the live execution contract."""
+    symbol = str(signal.get("sym", ""))
+    signal_type = "CALL" if str(signal.get("signal", "")).upper() in ("UP", "CALL") else "PUT"
+    suffix = "CE" if signal_type == "CALL" else "PE"
+    if not symbol.upper().endswith(suffix):
+        symbol = f"{symbol.rstrip('0123456789CEPUT')}{int(strike or signal.get('spot', 0))}{suffix}"
+    strike_value = float(strike or signal.get("metrics", {}).get("strike", 0.0) or 0.0)
+    if strike_value <= 0.0:
+        import re
+        match = re.search(r"(\d+)(?:CE|PE)$", symbol.upper())
+        assert match is not None, f"Could not determine strike from {symbol}"
+        strike_value = float(match.group(1))
+
+    signal["sym"] = symbol
+    signal["contract_token"] = str(token)
+    signal.setdefault("metrics", {}).update({
+        "strike": strike_value,
+        "side": suffix,
+    })
+    if em.aegis_engine is not None:
+        em.aegis_engine.token_map = {
+            str(token): {"side": 0 if signal_type == "CALL" else 1, "strike": strike_value}
+        }
+        em.aegis_engine.t2s = {str(token): symbol}
+        em.aegis_engine.history_30s = {
+            symbol: deque([(
+                float(signal.get("timestamp") or time.time()),
+                float(signal.get("lp", 0.0) or 100.0),
+                float(signal.get("lp", 0.0) or 100.0) - 0.1,
+                float(signal.get("lp", 0.0) or 100.0) + 0.1,
+                100.0,
+                100.0,
+            )])
+        }
+    if not isinstance(getattr(em, "_option_cache", None), dict):
+        em._option_cache = {}
+    em._option_cache[str(token)] = float(signal.get("lp", 0.0) or 100.0)
+    return signal
 
 
 def test_noise_floor_calculation():
@@ -539,6 +609,8 @@ def test_consecutive_route_lockout_and_alternate_route_switch():
         "sym": "NIFTY24000CE",
         "metrics": {"pa_setup_name": "20_ema_rejection"}
     }
+    attach_scored_contract(em, alt_signal)
+    attach_scored_contract(em, same_signal)
     import pandas as pd
     weekly_df = pd.DataFrame([
         {"strike": 24000.0, "option_type": "CE", "token": "1001", "symbol": "NIFTY24000CE"}
@@ -1014,6 +1086,11 @@ def test_atomic_modify_in_place_on_exit():
         def modify_order(self, **kwargs):
             modified_orders.append(kwargs)
             self.modified = True
+            em.on_order_update({
+                "norenordno": kwargs.get("orderno"),
+                "status": "COMPLETE",
+                "avgprc": "102.70",
+            })
             return {"stat": "Ok", "result": kwargs.get("orderno")}
         def cancel_order(self, orderno):
             cancelled_orders.append(orderno)
@@ -1560,6 +1637,7 @@ def test_argon_last_mile_spot_hygiene_gate_abort_and_pass():
                 "atr_1m": 52.0,
             },
         }
+        attach_scored_contract(em, put_signal, token="1001", strike=74300.0)
 
         # Case 1: Adverse bounce (live_spot = 74380.0 > 74358.87 + 11.15 noise_buf) -> ABORTED!
         em._process_aegis_signal(put_signal)
@@ -1580,10 +1658,9 @@ def test_argon_last_mile_spot_hygiene_gate_abort_and_pass():
         aegis_engine.slot_policy.rollback_admission.assert_not_called()
 
 
-def test_t50_strike_pre_staging_cache_and_fast_lookup():
+def test_execution_uses_the_scored_contract_without_strike_reselection():
     """
-    UPGRADE 1: T:50s Pre-Close Strike Pre-Staging in AegisExecutionManager.
-    Verifies that strikes pre-staged at T:48-T:58 are consumed instantly by _process_aegis_signal.
+    Execution must use the exact contract scored upstream, not choose a new strike.
     """
     from unittest.mock import MagicMock, patch
     em, ctx, leg = create_test_manager(entry_price=100.0, spot_entry=73400.0, signal_type="CALL")
@@ -1591,26 +1668,18 @@ def test_t50_strike_pre_staging_cache_and_fast_lookup():
     em.trades_today = 0
     em.can_enter = lambda now: True
 
-    # Pre-stage cache populated at T:50s
-    t50_epoch = 1700000050.0  # 50s into the minute
-    cached_opt_row = {"symbol": "SENSEX74400CE", "token": "2001", "strike": 74400.0}
-    em._prestaged_cache = {
-        "minute_bucket": int(t50_epoch // 60),
-        "ts": t50_epoch,
-        "spot": 73400.0,
-        "params": em.get_instrument_params(),
-        "CALL": (cached_opt_row, 1, 28.5),
-        "PUT": None,
-    }
-
-    # Signal arrives at T:01 of the new minute (5s later, spot identical)
+    t50_epoch = 1700000050.0
     signal = {
         "type": "GAMMA_BURST_ENTRY",
         "signal": "UP",
         "conviction": 85.0,
         "spot": 73405.0,  # moved only 5 pts <= 40 pts
+        "timestamp": t50_epoch + 5.0,
+        "sym": "SENSEX73400CE",
+        "lp": 28.5,
         "metrics": {"atr_1m": 45.0, "bar_close": 73405.0, "pa_setup_name": "volatility_squeeze_breakout"},
     }
+    attach_scored_contract(em, signal, token="2001", strike=73400.0)
 
     with patch("common.execution.strike_selector.StrikeSelector.select_strikes") as mock_select:
         em.order_lifecycle = MagicMock()
@@ -1618,10 +1687,69 @@ def test_t50_strike_pre_staging_cache_and_fast_lookup():
         with patch("time.time", return_value=t50_epoch + 5.0):
             em._process_aegis_signal(signal)
 
-        # StrikeSelector.select_strikes should NOT have been called because pre-staged cache was used!
+        # A new strike must never be selected after scoring.
         mock_select.assert_not_called()
         assert em.trade_context is not None
         assert em.trade_context.signal_type == "CALL"
+        assert em.trade_context.legs[0].token == "2001"
+        assert em.trade_context.legs[0].symbol == "SENSEX73400CE"
+
+
+def test_execution_rejects_contract_identity_mismatch():
+    em, _, _ = create_test_manager(entry_price=100.0, spot_entry=24000.0, signal_type="CALL")
+    em.trade_context = None
+    em.can_enter = lambda now: True
+    signal = {
+        "type": "GAMMA_BURST_ENTRY",
+        "signal": "UP",
+        "conviction": 85.0,
+        "lp": 100.0,
+        "spot": 24000.0,
+        "sym": "NIFTY24000CE",
+        "contract_token": "9001",
+        "timestamp": time.time(),
+        "metrics": {"strike": 24000.0, "side": "CE"},
+    }
+    em.aegis_engine.token_map = {"9001": {"side": 0, "strike": 24000.0}}
+    em.aegis_engine.t2s = {"9001": "NIFTY24050CE"}
+    em._option_cache = {"9001": 100.0}
+
+    em._process_aegis_signal(signal)
+
+    assert em.trade_context is None
+
+
+def test_premarket_bridge_only_shifts_atm_and_stops_at_open():
+    from unittest.mock import MagicMock, patch
+    from AEGIS import aegis_execution_manager as execution_manager_module
+
+    em, _, _ = create_test_manager()
+    em.aegis_engine.shift_atm = MagicMock()
+    em.aegis_engine._on_underlying_tick = MagicMock()
+    preopen = datetime(2026, 10, 30, 9, 14, 0)
+
+    with patch.object(execution_manager_module, "read_premarket_state", return_value={
+        "indicative_spot": 23726.0,
+        "gap_pct": 0.2,
+    }) as read_state:
+        with patch.object(execution_manager_module, "datetime") as mock_datetime:
+            mock_datetime.now.return_value = preopen
+            em._handle_premarket_bridge()
+            em.aegis_engine.shift_atm.assert_called_once_with(0, new_atm=23750)
+            em.aegis_engine._on_underlying_tick.assert_not_called()
+
+            mock_datetime.now.return_value = datetime(2026, 10, 30, 9, 15, 0)
+            em._handle_premarket_bridge()
+            assert read_state.call_count == 1
+
+
+def test_current_spot_prefers_the_engine_feed_used_for_entry():
+    em, _, _ = create_test_manager(spot_entry=23700.0)
+    em.aegis_engine.last_spot = 23725.0
+    em.aegis_engine._last_spot_ts = time.time()
+    em.data_fetcher._spot = 23690.0
+
+    assert em._get_current_spot() == 23725.0
 
 
 def test_last_mile_in_flight_continuation_and_drawdown_gate():
@@ -1650,6 +1778,9 @@ def test_last_mile_in_flight_continuation_and_drawdown_gate():
         "signal": "UP",
         "conviction": 85.0,
         "spot": 73410.0,
+        "lp": 28.5,
+        "sym": "SENSEX74400CE",
+        "timestamp": time.time() - 0.5,
         "metrics": {
             "atr_1m": 40.0,
             "bar_close": 73410.0,
@@ -1658,6 +1789,7 @@ def test_last_mile_in_flight_continuation_and_drawdown_gate():
             "pa_setup_name": "volatility_squeeze_breakout",
         },
     }
+    attach_scored_contract(em, call_signal, token="2001", strike=74400.0)
 
     # 1. Peak Drawdown Abortion:
     # New bar opened at 73410, spiked to 73425, then dumped to 73403.
@@ -1667,8 +1799,11 @@ def test_last_mile_in_flight_continuation_and_drawdown_gate():
     tb_engine.current_bar = in_flight_bar
     tb_engine.current_atr_1m = 40.0
     aegis_engine.time_bar_engine = tb_engine
+    aegis_engine.spot_history = [
+        (call_signal["timestamp"], 73410.0),
+        (call_signal["timestamp"] + 0.2, 73425.0),
+    ]
 
-    em._prestaged_cache = {}
     import pandas as pd
     weekly_df = pd.DataFrame([{"strike": 74400.0, "option_type": "CE", "token": "2001", "symbol": "SENSEX74400CE"}])
     em.data_fetcher.get_active_instrument = lambda: ("SENSEX", "SENSEX")

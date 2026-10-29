@@ -316,6 +316,10 @@ class AegisExecutionManager:
         self._option_cache: Dict = getattr(aegis_engine, "option_cache", {}) if aegis_engine else {}
         self.tp_order_id: Optional[str] = None
         self.last_tp_order_id: Optional[str] = None
+        self._order_update_lock = threading.Lock()
+        self._order_updates: Dict[str, Dict[str, Any]] = {}
+        self._order_history_poll_ts: Dict[str, float] = {}
+        self._order_history_poll_interval_sec = 2.5
         self.trade_lock = threading.Lock()
         self._trade_quote_history = deque(maxlen=60)
         
@@ -349,19 +353,73 @@ class AegisExecutionManager:
         self._load_daily_pnl()
         self._load_trades_today()
 
-        # Pre-staged strike cache (eliminates 6-11s selection latency at T:00)
-        self._prestaged_cache: Dict[str, Any] = {
-            "minute_bucket": -1,
-            "ts": 0.0,
-            "spot": 0.0,
-            "params": None,
-            "CALL": None,
-            "PUT": None,
-        }
-
         # Main loop polling
         self._running = False
         self._main_thread: Optional[threading.Thread] = None
+        self._last_budget_target_refresh = 0.0
+        market_data = getattr(self.broker, "market_data_provider", None)
+        if market_data is not None and hasattr(market_data, "add_order_listener"):
+            market_data.add_order_listener(self.on_order_update)
+
+    def on_order_update(self, message: Any) -> None:
+        """Cache broker order events so exit management can inspect fills without REST."""
+        if not isinstance(message, dict):
+            return
+        order_id = str(
+            message.get("norenordno")
+            or message.get("orderno")
+            or message.get("order_id")
+            or ""
+        )
+        if not order_id:
+            return
+        with self._order_update_lock:
+            self._order_updates[order_id] = dict(message)
+            while len(self._order_updates) > 256:
+                self._order_updates.pop(next(iter(self._order_updates)))
+
+    def _order_fill(self, order_id: str, allow_rest: bool = False) -> Tuple[bool, float]:
+        """Resolve an order fill from WebSocket state first, REST only when throttled."""
+        order_id = str(order_id or "")
+        if not order_id or order_id.startswith("PAPER_"):
+            return False, 0.0
+
+        now_mono = time.monotonic()
+        with self._order_update_lock:
+            update = self._order_updates.get(order_id)
+            filled, fill_price = self._check_hist_filled([update] if update else [])
+            if filled or not allow_rest:
+                return filled, fill_price
+
+            poll_times = getattr(self, "_order_history_poll_ts", None)
+            if poll_times is None:
+                poll_times = {}
+                self._order_history_poll_ts = poll_times
+            last_poll = poll_times.get(order_id)
+            if (
+                last_poll is not None
+                and now_mono - last_poll < getattr(self, "_order_history_poll_interval_sec", 2.5)
+            ):
+                return False, 0.0
+            poll_times[order_id] = now_mono
+
+        api = getattr(self.broker, "_api", None)
+        history = getattr(api, "single_order_history", None)
+        if not callable(history):
+            return False, 0.0
+        try:
+            filled, fill_price = self._check_hist_filled(history(orderno=order_id))
+        except Exception as exc:
+            logger.warning(f"[AegisEM] Order history safety poll failed for {order_id}: {exc}")
+            return False, 0.0
+        if filled:
+            with self._order_update_lock:
+                self._order_updates[order_id] = {
+                    "norenordno": order_id,
+                    "status": "FILLED",
+                    "avgprc": fill_price,
+                }
+        return filled, fill_price
 
     # ─── Persistence ───
     def _load_trades_today(self):
@@ -532,80 +590,93 @@ class AegisExecutionManager:
             pass
         return 0.0, 0.0, 0.0, 0.0
 
-    def _refresh_hot_strikes_cache(self, now_epoch: float) -> None:
-        """
-        Event-driven rolling 5-second strike pre-stager.
-        Ensures CALL and PUT option contracts are pre-resolved in memory so that
-        any intra-bar signal (Mode A at T+02s or Mode B at T+26s) resolves strikes in <1ms.
-        """
-        if self.has_open_trade() or self.trades_today >= MAX_TRADES_PER_DAY:
+    def _refresh_budget_strike_targets(self) -> None:
+        """Pre-stage independently affordable CALL and PUT anchors every 10 seconds."""
+        now_mono = time.monotonic()
+        if now_mono - self._last_budget_target_refresh < 10.0:
             return
-        spot_price = float(getattr(self.aegis_engine, "last_spot", 0.0) or 0.0)
-        if spot_price <= 0.0:
-            spot_price = self._get_current_spot()
-        if spot_price <= 0.0:
+        self._last_budget_target_refresh = now_mono
+
+        engine = self.aegis_engine
+        if engine is None:
             return
 
-        cache = getattr(self, "_hot_strikes_cache", None)
-        if cache is not None:
-            age = now_epoch - cache.get("ts", 0.0)
-            spot_drift = abs(spot_price - cache.get("spot", 0.0))
-            drift_hurdle = max(15.0, spot_price * 0.0006)
-            if age < 5.0 and spot_drift < drift_hurdle:
-                return
-
+        engine.set_budget_strike_targets({})
         params = self.get_instrument_params()
-        cached_opts = getattr(self, "_cached_weekly_opts", None)
-        if cached_opts is None or (hasattr(cached_opts, "empty") and cached_opts.empty):
-            cached_opts = (
-                self.data_fetcher.get_weekly_option_tokens()
-                if hasattr(self.data_fetcher, "get_weekly_option_tokens")
-                else None
+        funds = float(self.capital_engine.get_available_funds())
+        spot = float(getattr(engine, "last_spot", 0.0) or 0.0)
+        if funds <= 0.0 or spot <= 0.0:
+            logger.warning(
+                f"[AegisEM] Budget strike anchors unavailable "
+                f"(funds={funds:.2f}, spot={spot:.2f}); cluster entries disabled"
             )
-            self._cached_weekly_opts = cached_opts
-
-        if self._cached_weekly_opts is None or (hasattr(self._cached_weekly_opts, "empty") and self._cached_weekly_opts.empty):
             return
-        avail_funds = self.capital_engine.get_available_funds()
-        mdp = getattr(self.broker, "market_data_provider", None)
 
-        c_alloc = StrikeSelector.select_strikes(
-            signal_type="CALL",
-            index_price=spot_price,
-            index_name=params["index_name"],
-            weekly_opts=self._cached_weekly_opts,
-            option_cache=self._option_cache,
-            available_funds=avail_funds,
-            lot_size=params["lot_size"],
-            market_data_provider=mdp,
-            premium_min=params.get("premium_min"),
-            premium_max=params.get("premium_max"),
-        )
-        p_alloc = StrikeSelector.select_strikes(
-            signal_type="PUT",
-            index_price=spot_price,
-            index_name=params["index_name"],
-            weekly_opts=self._cached_weekly_opts,
-            option_cache=self._option_cache,
-            available_funds=avail_funds,
-            lot_size=params["lot_size"],
-            market_data_provider=mdp,
-            premium_min=params.get("premium_min"),
-            premium_max=params.get("premium_max"),
-        )
+        import pandas as pd
 
-        self._hot_strikes_cache = {
-            "ts": now_epoch,
-            "spot": spot_price,
-            "params": params,
-            "CALL": c_alloc[0] if c_alloc else None,
-            "PUT": p_alloc[0] if p_alloc else None,
-        }
-        self._prestaged_cache = self._hot_strikes_cache
+        token_map = getattr(engine, "token_map", {})
+        token_to_symbol = getattr(engine, "t2s", {})
+        option_rows = [
+            {
+                "token": str(token),
+                "symbol": str(token_to_symbol.get(str(token), "")),
+                "strike": float(info.get("strike", 0.0) or 0.0),
+                "expiry": info.get("expiry"),
+                "side": int(info.get("side", -1)),
+            }
+            for token, info in token_map.items()
+            if int(info.get("side", -1)) in (0, 1)
+            and float(info.get("strike", 0.0) or 0.0) > 0.0
+            and token_to_symbol.get(str(token))
+        ]
+        if not option_rows:
+            logger.error("[AegisEM] Cannot stage budget strike anchors: option token universe is empty")
+            return
 
-    def _prestage_strikes_at_t50(self, now_epoch: float) -> None:
-        """Backwards-compatible wrapper routing to rolling 5s hot strike cache."""
-        self._refresh_hot_strikes_cache(now_epoch)
+        weekly_opts = pd.DataFrame(option_rows)
+        option_cache = getattr(engine, "option_cache", {})
+        targets: Dict[str, Dict[str, Any]] = {}
+        for signal_type, direction, expected_side in (
+            ("CALL", "UP", 0),
+            ("PUT", "DOWN", 1),
+        ):
+            side_universe = weekly_opts[weekly_opts["side"] == expected_side]
+            allocation = StrikeSelector.select_strikes(
+                signal_type=signal_type,
+                index_price=spot,
+                index_name=params["index_name"],
+                weekly_opts=side_universe,
+                option_cache=option_cache,
+                available_funds=funds,
+                lot_size=int(params["lot_size"]),
+                premium_min=float(params["premium_min"]),
+                premium_max=float(params["premium_max"]),
+            )
+            if not allocation:
+                logger.info(
+                    f"[AegisEM] No affordable {signal_type} target in the subscribed universe "
+                    f"(funds={funds:.2f})"
+                )
+                continue
+
+            row, _quantity, ltp = allocation[0]
+            effective_min = effective_premium_floor(
+                float(params["premium_min"]),
+                funds,
+                int(params["lot_size"]),
+            )
+            targets[direction] = {
+                "token": str(row["token"]),
+                "symbol": str(row["symbol"]),
+                "strike": float(row["strike"]),
+                "ltp": float(ltp),
+                "available_funds": funds,
+                "lot_size": int(params["lot_size"]),
+                "effective_premium_min": float(effective_min),
+                "premium_max": float(params["premium_max"]),
+            }
+
+        engine.set_budget_strike_targets(targets)
 
     # ─── Main Loop ───
     def start(self):
@@ -637,22 +708,16 @@ class AegisExecutionManager:
                     self.daily_net_pnl = 0.0
                     self.last_trade_date = today_d
 
-                # Pre-stage strikes at T:48-T:58 of each minute
-                try:
-                    self._refresh_hot_strikes_cache(time.time())
-                except Exception as e_cache:
-                    logger.warning(f"[AegisEM] Hot strikes refresh error (non-fatal): {e_cache}")
-
-                # 1. Process AEGIS signals (non-blocking fast poll with 50ms timeout)
-                try:
-                    signal = self.signal_queue.get(timeout=0.05)
-                    self._process_aegis_signal(signal)
-                except queue.Empty:
-                    pass
-
-                # 2. Manage open trade (exits, force flatten)
+                # Service live exits before any entry preparation or queue wait.
                 if self.has_open_trade():
                     self._manage_open_trade()
+                else:
+                    self._refresh_budget_strike_targets()
+                    try:
+                        signal = self.signal_queue.get(timeout=0.05)
+                        self._process_aegis_signal(signal)
+                    except queue.Empty:
+                        pass
 
                 # 3. Check pending edge measures for AEGIS latency tracking
                 # (P0-3: engine resolves the *option premium* LTP internally via
@@ -660,9 +725,9 @@ class AegisExecutionManager:
                 if self.aegis_engine:
                     self.aegis_engine.check_pending_edges(time.time())
 
-                # 4. Check pre-market bridge (09:08 - 09:15:30)
+                # 4. Check pre-market bridge (09:08 - 09:15:00, ATM alignment only)
                 now_t = datetime.now().time()
-                if dt_time(9, 8, 0) <= now_t <= dt_time(9, 15, 30):
+                if dt_time(9, 8, 0) <= now_t < dt_time(9, 15, 0):
                     self._handle_premarket_bridge()
 
             except Exception as e:
@@ -670,13 +735,16 @@ class AegisExecutionManager:
                 time.sleep(1.0)
 
     def _handle_premarket_bridge(self):
-        """Processes 09:08-09:14 Pre-Market equilibrium from ARGUS (ATM pre-alignment only).
+        """Uses pre-open indicative spot only to pre-align the ATM strike.
 
         P1-9: the 09:15 blind gap auto-fire (conviction 5.0, no microstructure
         confirmation) is permanently disabled. Indicative price is used ONLY
         to pre-align the ATM strike; orders still require a full
         microstructure-scored GAMMA_BURST_ENTRY signal.
         """
+        now_t = datetime.now().time()
+        if not (dt_time(9, 8, 0) <= now_t < dt_time(9, 15, 0)):
+            return
         pm_state = read_premarket_state()
         if not pm_state:
             return
@@ -684,12 +752,30 @@ class AegisExecutionManager:
         gap_pct = pm_state.get("gap_pct", 0.0)
 
         if ind_spot > 0 and self.aegis_engine:
-            if self.aegis_engine.last_spot != ind_spot:
-                logger.info(f"[AegisEM] Pre-Market Bridge: Pre-aligning ATM to {ind_spot:.2f} (Gap: {gap_pct:+.2f}%)")
-                self.aegis_engine._on_underlying_tick("INDEX", ind_spot, time.time())
+            params = self.get_instrument_params()
+            atm_strike = StrikeSelector.calculate_atm_strike(ind_spot, params["index_name"])
+            if float(getattr(self.aegis_engine, "current_atm_strike", 0.0) or 0.0) != atm_strike:
+                logger.info(f"[AegisEM] Pre-Market Bridge: Pre-aligning ATM to {atm_strike:.2f} from indicative spot {ind_spot:.2f} (Gap: {gap_pct:+.2f}%)")
+                self.aegis_engine.shift_atm(0, new_atm=atm_strike)
 
-    def _get_current_spot(self) -> float:
-        """Fetch current spot price for AEGIS edge measurement."""
+    def _get_current_spot(self, local_only: bool = False) -> float:
+        """Prefer the engine's live spot feed; use the provider only when it is unavailable."""
+        engine = self.aegis_engine
+        engine_spot = float(getattr(engine, "last_spot", 0.0) or 0.0) if engine else 0.0
+        if engine_spot > 0.0:
+            engine_ts = getattr(engine, "_last_spot_ts", 0.0)
+            try:
+                engine_ts = float(engine_ts or 0.0)
+                spot_age = time.time() - engine_ts
+            except (TypeError, ValueError):
+                engine_ts = 0.0
+                spot_age = 0.0
+            if engine_ts <= 0.0 or 0.0 <= spot_age <= 5.0:
+                return engine_spot
+            if local_only:
+                return 0.0
+        if local_only:
+            return 0.0
         try:
             return self.data_fetcher.get_index_ltp()
         except Exception:
@@ -862,70 +948,95 @@ class AegisExecutionManager:
             if spot_price <= 0.0:
                 spot_price = self._get_current_spot()
 
-            hot_cache = getattr(self, "_hot_strikes_cache", None) or getattr(self, "_prestaged_cache", None) or {}
-            cached = hot_cache.get(signal_type)
+            contract_token = str(signal.get("contract_token") or "")
+            contract_symbol = str(sym or "")
+            contract_map = getattr(self.aegis_engine, "token_map", {})
+            contract_info = contract_map.get(contract_token, {}) if isinstance(contract_map, dict) else {}
+            mapped_symbol = getattr(self.aegis_engine, "t2s", {}).get(contract_token)
+            expected_side = 0 if signal_type == "CALL" else 1
+            expected_suffix = "CE" if signal_type == "CALL" else "PE"
+            strike = float(metrics.get("strike", 0.0) or 0.0)
+            signal_side = str(metrics.get("side", "")).upper()
+            contract_side = contract_info.get("side")
+            contract_strike = float(contract_info.get("strike", 0.0) or 0.0)
+
             if (
-                cached
-                and (now_epoch - hot_cache.get("ts", 0.0) <= 20.0)
-                and abs(spot_price - hot_cache.get("spot", 0.0)) <= max(40.0, spot_price * 0.0016)
+                not contract_token
+                or not contract_symbol
+                or not contract_info
+                or not mapped_symbol
+                or not contract_symbol.upper().endswith(expected_suffix)
+                or strike <= 0.0
+                or signal_side not in (expected_suffix, "CALL" if signal_type == "CALL" else "PUT")
+                or (mapped_symbol and str(mapped_symbol) != contract_symbol)
+                or (contract_side is not None and int(contract_side) != expected_side)
+                or (contract_strike > 0.0 and abs(contract_strike - strike) > 1e-6)
             ):
-                opt_row, raw_quantity, ltp = cached
-                # ─── Hot-Strike Live Re-Validation (2026-10-26) ───
-                # Gates evaluated on signal symbols must be re-checked on the
-                # executed strike: premium floor + spread cap (V4 unprimed 1%-of-mid
-                # rule). Fail-open on stale/absent quotes — never block on missing data.
-                _rv_reject = None
-                _rv_ts, _rv_lp, _rv_bid, _rv_ask = self._latest_option_book(opt_row["symbol"])
-                if _rv_lp > 0 and (now_epoch - _rv_ts) <= 10.0:
-                    _pmin = float(params.get('premium_min', 0.0) or 0.0)
-                    avail_funds = float(self.capital_engine.get_available_funds()) if hasattr(self, 'capital_engine') and self.capital_engine and hasattr(self.capital_engine, 'get_available_funds') else 0.0
-                    _eff_pmin = effective_premium_floor(_pmin, avail_funds, int(params.get('lot_size', 1)))
-                    if _eff_pmin > 0 and _rv_lp < _eff_pmin:
-                        _rv_reject = f"premium_too_low ({_rv_lp:.2f} < {_eff_pmin:.2f} [eff_floor for funds ₹{avail_funds:.0f}])"
-                    elif _rv_bid > 0 and _rv_ask > 0:
-                        _rv_spread = _rv_ask - _rv_bid
-                        _rv_mid = (_rv_ask + _rv_bid) * 0.5
-                        if _rv_mid > 0 and (_rv_spread / _rv_mid) > 0.01:
-                            _rv_reject = f"spread_unprimed_cap ({_rv_spread:.2f} > 1.0% of mid {_rv_mid:.2f})"
-                if _rv_reject is not None:
-                    logger.warning(
-                        f"[AegisEM] Pre-staged hot strike {opt_row['symbol']} rejected on live re-validation: {_rv_reject}"
-                    )
-                    self._rollback_slot()
-                    self._drain_signal_queue(reason="hot_strike_revalidation_fail")
-                    return
-                logger.info(
-                    f"[AegisEM] Using PRE-STAGED/HOT strike for {signal_type}: {opt_row['symbol']} "
-                    f"(latency <1ms, re-validated: lp={_rv_lp:.2f}, bid={_rv_bid:.2f}, ask={_rv_ask:.2f})"
+                logger.warning(
+                    f"[AegisEM] Entry blocked — signal contract metadata is missing or inconsistent "
+                    f"(symbol={contract_symbol!r}, token={contract_token!r}, side={signal_side!r}, strike={strike:.2f})"
                 )
-            else:
-                weekly_opts = getattr(self, "_cached_weekly_opts", None)
-                if weekly_opts is None or (hasattr(weekly_opts, "empty") and weekly_opts.empty):
-                    weekly_opts = (
-                        self.data_fetcher.get_weekly_option_tokens()
-                        if hasattr(self.data_fetcher, "get_weekly_option_tokens")
-                        else None
-                    )
-                    self._cached_weekly_opts = weekly_opts
-                allocations = StrikeSelector.select_strikes(
-                    signal_type=signal_type,
-                    index_price=spot_price,
-                    index_name=params["index_name"],
-                    weekly_opts=weekly_opts,
-                    option_cache=self._option_cache,
-                    available_funds=self.capital_engine.get_available_funds(),
-                    lot_size=params["lot_size"],
-                    market_data_provider=getattr(self.broker, "market_data_provider", None),
-                    premium_min=params.get("premium_min"),
-                    premium_max=params.get("premium_max"),
+                self._rollback_slot()
+                self._drain_signal_queue(reason="invalid_signal_contract")
+                return
+
+            option_cache = getattr(self, "_option_cache", {}) or {}
+            ltp = float(option_cache.get(contract_token) or signal.get("lp", 0.0) or 0.0)
+            if ltp <= 0.0:
+                logger.warning(f"[AegisEM] Entry blocked — no valid premium for scored contract {contract_symbol}")
+                self._rollback_slot()
+                self._drain_signal_queue(reason="missing_signal_contract_price")
+                return
+
+            available_funds = (
+                float(self.capital_engine.get_available_funds())
+                if getattr(self, "capital_engine", None)
+                and hasattr(self.capital_engine, "get_available_funds")
+                else 0.0
+            )
+            effective_min = effective_premium_floor(
+                float(params.get("premium_min", 0.0) or 0.0),
+                available_funds,
+                int(params["lot_size"]),
+            )
+            premium_max = float(params.get("premium_max", 0.0) or 0.0)
+            if (
+                (effective_min > 0.0 and ltp < effective_min)
+                or (premium_max > 0.0 and ltp > premium_max)
+                or (available_funds > 0.0 and ltp * int(params["lot_size"]) > available_funds)
+            ):
+                logger.warning(
+                    f"[AegisEM] Entry blocked — scored contract {contract_symbol} is outside "
+                    f"the affordable premium range (premium={ltp:.2f}, floor={effective_min:.2f}, "
+                    f"ceiling={premium_max:.2f}, funds={available_funds:.2f})"
                 )
+                self._rollback_slot()
+                return
 
-                if not allocations:
-                    logger.warning(f"[AegisEM] No affordable strike for {signal_type}")
-                    self._rollback_slot()
-                    return
-
-                opt_row, raw_quantity, ltp = allocations[0]
+            opt_row = {
+                "symbol": contract_symbol,
+                "token": contract_token,
+                "strike": strike,
+            }
+            book_ts, book_ltp, book_bid, book_ask = self._latest_option_book(contract_symbol)
+            quote_age = now_epoch - book_ts
+            if (
+                book_ts <= 0.0
+                or quote_age < 0.0
+                or quote_age > 1.5
+                or book_ltp <= 0.0
+                or book_bid <= 0.0
+                or book_ask <= book_bid
+            ):
+                logger.warning(
+                    f"[AegisEM] Entry blocked — scored contract quote is missing, invalid, or stale "
+                    f"({contract_symbol}, age={quote_age:.2f}s)"
+                )
+                self._rollback_slot()
+                self._drain_signal_queue(reason="stale_scored_contract_quote")
+                return
+            ltp = book_ltp
+            logger.info(f"[AegisEM] Executing the scored contract {contract_symbol} ({contract_token})")
             symbol = opt_row["symbol"]
             token_str = str(opt_row["token"])
 
@@ -961,6 +1072,22 @@ class AegisExecutionManager:
                             live_ask = ask
                 except Exception as e:
                     logger.debug(f"[AegisEM] Live ask in-memory resolution: {e}")
+            if live_ask <= 0.0:
+                live_ask = book_ask
+            if (
+                live_ask <= 0.0
+                or (available_funds > 0.0 and live_ask * int(params["lot_size"]) > available_funds)
+                or (premium_max > 0.0 and live_ask > premium_max)
+            ):
+                logger.warning(
+                    f"[AegisEM] Entry blocked — live ask for selected contract is outside "
+                    f"the affordable premium range (ask={live_ask:.2f}, "
+                    f"ceiling={available_funds / int(params['lot_size']):.2f}, "
+                    f"premium_max={premium_max:.2f})"
+                )
+                self._rollback_slot()
+                self._drain_signal_queue(reason="selected_contract_ask_unaffordable")
+                return
 
             # Last-Mile Pre-Trade Spot & In-Flight Continuation Gate
             # Guards against post-candle reversal / dead-cat bounce / adverse fill during order dispatch latency
@@ -977,6 +1104,7 @@ class AegisExecutionManager:
             sig_bar_high = float(metrics.get("bar_high", 0.0) or 0.0)
             sig_bar_low = float(metrics.get("bar_low", 0.0) or 0.0)
             sig_bar_range = (sig_bar_high - sig_bar_low) if (sig_bar_high > sig_bar_low) else live_atr_1m
+            signal_ts = float(signal.get("timestamp") or now_epoch)
 
             if live_spot > 0.0 and sig_bar_close > 0.0 and live_atr_1m > 0.0:
                 noise_buf = max(0.12 * live_atr_1m, 0.00015 * live_spot)
@@ -992,11 +1120,16 @@ class AegisExecutionManager:
                 if curr_bar is None and pa_engine:
                     curr_bar = getattr(pa_engine, "current_bar", None) or getattr(pa_engine, "_curr_1m_bar", None)
 
-                curr_bar_low = getattr(curr_bar, "low", None)
-                post_sig_trough = min(float(curr_bar_low), sig_bar_close) if isinstance(curr_bar_low, (int, float)) else sig_bar_close
-
-                curr_bar_high = getattr(curr_bar, "high", None)
-                post_sig_peak = max(float(curr_bar_high), sig_bar_close) if isinstance(curr_bar_high, (int, float)) else sig_bar_close
+                spot_history = getattr(self.aegis_engine, "spot_history", ())
+                spot_snapshot = spot_history.copy() if hasattr(spot_history, "copy") else list(spot_history)
+                post_signal_spots = [
+                    float(price)
+                    for ts, price in spot_snapshot
+                    if float(ts) >= signal_ts and float(price) > 0.0
+                ]
+                signal_spot = float(signal.get("spot") or sig_bar_close)
+                post_sig_trough = min([signal_spot, *post_signal_spots]) if signal_spot > 0 else sig_bar_close
+                post_sig_peak = max([signal_spot, *post_signal_spots]) if signal_spot > 0 else sig_bar_close
 
                 curr_bar_open = getattr(curr_bar, "open", None)
                 curr_open = float(curr_bar_open) if isinstance(curr_bar_open, (int, float)) else 0.0
@@ -1016,7 +1149,14 @@ class AegisExecutionManager:
                     is_retrace_reversing = (live_spot > (sig_bar_close + retrace_limit)) and (spot_delta_3s > 0.0)
 
                     is_peak_drawdown = (live_spot - post_sig_trough) > max_peak_drawdown
-                    is_bar_opposite_color = (curr_open > 0.0 and live_spot > (curr_open + 0.10 * live_atr_1m))
+                    is_mode_b = str(metrics.get("mode", "")).startswith("MODE_B")
+                    is_pillar = int(metrics.get("pillar", 0) or 0)
+                    check_opposite_color = not is_mode_b or is_pillar in (3, 4)
+                    is_bar_opposite_color = (
+                        check_opposite_color
+                        and curr_open > 0.0
+                        and live_spot > (curr_open + 0.10 * live_atr_1m)
+                    )
                     is_delta_reversed = (total_if_vol >= 500.0 and if_bull > (1.25 * max(if_bear, 1.0)))
 
                     if is_noise_blown or is_retrace_reversing or is_peak_drawdown or is_bar_opposite_color or is_delta_reversed:
@@ -1041,7 +1181,14 @@ class AegisExecutionManager:
                     is_retrace_reversing = (live_spot < (sig_bar_close - retrace_limit)) and (spot_delta_3s < 0.0)
 
                     is_peak_drawdown = (post_sig_peak - live_spot) > max_peak_drawdown
-                    is_bar_opposite_color = (curr_open > 0.0 and live_spot < (curr_open - 0.10 * live_atr_1m))
+                    is_mode_b = str(metrics.get("mode", "")).startswith("MODE_B")
+                    is_pillar = int(metrics.get("pillar", 0) or 0)
+                    check_opposite_color = not is_mode_b or is_pillar in (3, 4)
+                    is_bar_opposite_color = (
+                        check_opposite_color
+                        and curr_open > 0.0
+                        and live_spot < (curr_open - 0.10 * live_atr_1m)
+                    )
                     is_delta_reversed = (total_if_vol >= 500.0 and if_bear > (1.25 * max(if_bull, 1.0)))
 
                     if is_noise_blown or is_retrace_reversing or is_peak_drawdown or is_bar_opposite_color or is_delta_reversed:
@@ -1287,9 +1434,7 @@ class AegisExecutionManager:
         try:
             api = getattr(self.broker, "_api", None)
             if api and hasattr(api, "single_order_history"):
-                # Fast check if already filled before cancelling
-                hist = api.single_order_history(orderno=ordno)
-                filled, fill_px = self._check_hist_filled(hist)
+                filled, fill_px = self._order_fill(ordno, allow_rest=True)
                 if filled:
                     logger.info(f"[AegisEM] Resting TP order {ordno} already FILLED at broker @ {fill_px:.2f}! Skipping cancel.")
                     self.tp_order_id = None
@@ -1413,9 +1558,7 @@ class AegisExecutionManager:
             context = self.trade_context
             legs = list(context.legs)
 
-        params = self.get_instrument_params()
-        exch_seg = params["exchange"]
-        curr_spot = self._get_current_spot()
+        curr_spot = self._get_current_spot(local_only=True)
         
         # Refresh marks and update highest price
         live_bid = 0.0
@@ -1435,16 +1578,6 @@ class AegisExecutionManager:
                 leg.current_price = c_lp
                 live_bid = c_lp
                 live_ask = c_lp
-            else:
-                try:
-                    q = self.broker.market_data_provider.get_quote(exch_seg, leg.token)
-                    if q:
-                        if float(q.get("ltp") or 0) > 0:
-                            leg.current_price = float(q["ltp"])
-                        live_bid = float(q.get("bp1") or leg.current_price)
-                        live_ask = float(q.get("sp1") or leg.current_price)
-                except Exception:
-                    live_bid = leg.current_price
 
             # Update excursion metrics (MFE & MAE tracking)
             hold_sec_now = (now - context.entry_time).total_seconds() if context.entry_time else 0.0
@@ -1463,7 +1596,7 @@ class AegisExecutionManager:
 
         # Update spot excursion metrics (Spot MFE & Spot MAE tracking)
         entry_spot = float(getattr(context, "index_entry", 0.0) or 0.0)
-        curr_spot_val = float(curr_spot) if curr_spot > 0 else self._get_current_spot()
+        curr_spot_val = float(curr_spot)
         hold_sec_now = (now - context.entry_time).total_seconds() if context.entry_time else 0.0
         if entry_spot > 0 and curr_spot_val > 0:
             sig_type = getattr(context, "signal_type", "CALL")
@@ -1482,26 +1615,20 @@ class AegisExecutionManager:
                 context.spot_time_to_mae_sec = round(hold_sec_now, 3)
                 context.spot_at_mae = round(curr_spot_val, 2)
 
-        # 0. Check if resting TP order was ALREADY filled at the broker!
+        # Order updates are read from local memory before any local exit rules.
         if self.tp_order_id and not str(self.tp_order_id).startswith("PAPER_"):
-            api = getattr(self.broker, "_api", None)
-            if api and hasattr(api, "single_order_history"):
-                try:
-                    hist = api.single_order_history(orderno=self.tp_order_id)
-                    filled, fill_px = self._check_hist_filled(hist)
-                    if filled:
-                        actual_px = fill_px if fill_px > 0 else float(getattr(legs[0], "tp_price", 0.0))
-                        logger.info(f"🎉 [AegisEM] Resting TP order {self.tp_order_id} was FILLED at broker @ {actual_px:.2f}!")
-                        self.last_tp_order_id = self.tp_order_id
-                        self.tp_order_id = None
-                        self._close_all_legs(
-                            f"Take-Profit Hit (+{(actual_px - legs[0].entry_price)/legs[0].entry_price*100:.1f}% @ {actual_px:.2f})",
-                            is_tp_maker=True,
-                            limit_fill_price=actual_px,
-                        )
-                        return
-                except Exception as e_tp_check:
-                    logger.warning(f"[AegisEM] Error checking TP order status: {e_tp_check}")
+            filled, fill_px = self._order_fill(self.tp_order_id)
+            if filled:
+                actual_px = fill_px if fill_px > 0 else float(getattr(legs[0], "tp_price", 0.0))
+                logger.info(f"[AegisEM] Resting TP order {self.tp_order_id} FILLED via order update @ {actual_px:.2f}")
+                self.last_tp_order_id = self.tp_order_id
+                self.tp_order_id = None
+                self._close_all_legs(
+                    f"Take-Profit Hit (+{(actual_px - legs[0].entry_price)/legs[0].entry_price*100:.1f}% @ {actual_px:.2f})",
+                    is_tp_maker=True,
+                    limit_fill_price=actual_px,
+                )
+                return
 
         # 0B. Local Take-Profit Hit Check (Paper + Live backstop — never depends on
         # broker resting-order fill polling alone). Fires the instant bid touch/crosses
@@ -1519,16 +1646,10 @@ class AegisExecutionManager:
                     )
                     actual_fill_px = tp_price
                     if self.tp_order_id and not str(self.tp_order_id).startswith("PAPER_"):
-                        api = getattr(self.broker, "_api", None)
-                        if api and hasattr(api, "single_order_history"):
-                            try:
-                                hist = api.single_order_history(orderno=self.tp_order_id)
-                                filled, fill_px = self._check_hist_filled(hist)
-                                if filled and fill_px > 0:
-                                    actual_fill_px = fill_px
-                                    logger.info(f"🎉 [AegisEM] Resting TP {self.tp_order_id} verified FILLED @ {actual_fill_px:.2f}")
-                            except Exception as e_tp:
-                                logger.debug(f"[AegisEM] Error checking TP order in 0B: {e_tp}")
+                        filled, fill_px = self._order_fill(self.tp_order_id)
+                        if filled and fill_px > 0:
+                            actual_fill_px = fill_px
+                            logger.info(f"[AegisEM] Resting TP {self.tp_order_id} verified FILLED via order update @ {actual_fill_px:.2f}")
                     self.last_tp_order_id = self.tp_order_id
                     self.tp_order_id = None
                     self._close_all_legs(
@@ -1653,7 +1774,8 @@ class AegisExecutionManager:
                     # scratch a healthy breakout prematurely.
                     entry_bar = None
                     try:
-                        for _b in reversed(pa_eng.bars_1m):
+                        closed_bars = pa_eng.bars_1m.copy()
+                        for _b in reversed(closed_bars):
                             if int(getattr(_b, "ts_start", 0.0) // 60) == int(entry_bucket):
                                 entry_bar = _b
                                 break
@@ -1750,7 +1872,8 @@ class AegisExecutionManager:
         )
 
         if is_pillar_trade and tb_engine and getattr(tb_engine, "bars_1m", None) and entry_ts > 0:
-            for b in tb_engine.bars_1m:
+            closed_bars = tb_engine.bars_1m.copy()
+            for b in closed_bars:
                 b_end = getattr(b, "ts_end", getattr(b, "timestamp", 0.0))
                 b_start = getattr(b, "ts_start", b_end - 60.0)
                 if b_end > entry_ts:
@@ -1945,6 +2068,19 @@ class AegisExecutionManager:
             context._last_context_save_ts = now_ts
             self._save_active_context()
 
+        if self.tp_order_id and not str(self.tp_order_id).startswith("PAPER_"):
+            filled, fill_px = self._order_fill(self.tp_order_id, allow_rest=True)
+            if filled:
+                actual_px = fill_px if fill_px > 0 else float(getattr(legs[0], "tp_price", 0.0))
+                logger.info(f"[AegisEM] Resting TP order {self.tp_order_id} confirmed by order update or safety poll @ {actual_px:.2f}")
+                self.last_tp_order_id = self.tp_order_id
+                self.tp_order_id = None
+                self._close_all_legs(
+                    f"Take-Profit Hit (+{(actual_px - legs[0].entry_price)/legs[0].entry_price*100:.1f}% @ {actual_px:.2f})",
+                    is_tp_maker=True,
+                    limit_fill_price=actual_px,
+                )
+
 
     def _close_all_legs(self, reason: str, is_tp_maker: bool = False, limit_fill_price: float = 0.0):
         with self.trade_lock:
@@ -2028,23 +2164,20 @@ class AegisExecutionManager:
                     check_ordno = self.tp_order_id or self.last_tp_order_id
                     if check_ordno and api:
                         try:
-                            time.sleep(0.5)
-                            if hasattr(api, "single_order_history"):
-                                hist = api.single_order_history(orderno=check_ordno)
-                                hist_filled, hist_fill_px = self._check_hist_filled(hist)
-                                if hist_filled:
-                                    filled = True
-                                    fill_price = hist_fill_px if hist_fill_px > 0 else limit_fill_price
-                                    logger.info(
-                                        f"🎉 [AegisEM] Case A: TP order {check_ordno} CONFIRMED FILLED @ "
-                                        f"{fill_price:.2f} (limit_fill_price={limit_fill_price:.2f})"
-                                    )
-                                else:
-                                    logger.warning(
-                                        f"[AegisEM] Case A: TP order {check_ordno} hist check UNCONFIRMED/UNFILLED "
-                                        f"— falling through to active chase exit to guarantee broker fill"
-                                    )
-                                    filled = False
+                            hist_filled, hist_fill_px = self._order_fill(check_ordno, allow_rest=True)
+                            if hist_filled:
+                                filled = True
+                                fill_price = hist_fill_px if hist_fill_px > 0 else limit_fill_price
+                                logger.info(
+                                    f"[AegisEM] Case A: TP order {check_ordno} confirmed FILLED @ "
+                                    f"{fill_price:.2f}"
+                                )
+                            else:
+                                logger.warning(
+                                    f"[AegisEM] Case A: TP order {check_ordno} not confirmed; "
+                                    "falling through to active chase exit"
+                                )
+                                filled = False
                         except Exception as e_tp:
                             logger.warning(f"[AegisEM] Maker TP status check warning: {e_tp} — falling through to active chase exit")
                             filled = False
@@ -2087,8 +2220,7 @@ class AegisExecutionManager:
                 check_ordno = self.tp_order_id or self.last_tp_order_id
                 if check_ordno and not str(check_ordno).startswith("PAPER_") and api and hasattr(api, "single_order_history"):
                     try:
-                        hist = api.single_order_history(orderno=check_ordno)
-                        hist_filled, hist_fill_px = self._check_hist_filled(hist)
+                        hist_filled, hist_fill_px = self._order_fill(check_ordno, allow_rest=True)
                         if hist_filled:
                             filled = True
                             fill_price = hist_fill_px if hist_fill_px > 0 else (getattr(leg, "tp_price", 0.0) or leg.current_price)
@@ -2167,8 +2299,7 @@ class AegisExecutionManager:
                 
                 if ordno:
                     time.sleep(0.8)
-                    history = api.single_order_history(orderno=ordno) if hasattr(api, "single_order_history") else []
-                    h_filled, h_px = self._check_hist_filled(history)
+                    h_filled, h_px = self._order_fill(ordno, allow_rest=True)
                     if h_filled:
                         filled = True
                         fill_price = h_px if h_px > 0 else price_1
@@ -2188,8 +2319,7 @@ class AegisExecutionManager:
                             except Exception as e_mod2:
                                 logger.error(f"[AegisEM] modify_order step 2 exception: {e_mod2}")
                         time.sleep(1.0)
-                        history = api.single_order_history(orderno=ordno) if hasattr(api, "single_order_history") else []
-                        h_filled, h_px = self._check_hist_filled(history)
+                        h_filled, h_px = self._order_fill(ordno, allow_rest=True)
                         if h_filled:
                             filled = True
                             fill_price = h_px if h_px > 0 else price_2
@@ -2215,14 +2345,14 @@ class AegisExecutionManager:
                                         ordno_3 = None
                                     if ordno_3:
                                         time.sleep(0.8)
-                                        history = api.single_order_history(orderno=ordno_3) if hasattr(api, "single_order_history") else []
-                                        h_filled, h_px = self._check_hist_filled(history)
+                                        h_filled, h_px = self._order_fill(ordno_3, allow_rest=True)
                                         if h_filled:
                                             fill_price = h_px if h_px > 0 else price_3
                                             filled = True
                                             fill_ts = time.time()
                                         else:
-                                            latest = history[0] if history and isinstance(history, list) and isinstance(history[0], dict) else {}
+                                            with self._order_update_lock:
+                                                latest = self._order_updates.get(ordno_3, {})
                                             status = latest.get("status", "OPEN")
                                             logger.error(f"[AegisEM Chaser] Step-3 exit order {ordno_3} NOT filled (status={status}) — position may still be open at broker")
                                     else:

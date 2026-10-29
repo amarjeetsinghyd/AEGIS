@@ -149,6 +149,7 @@ class AegisPipelineOrchestrator:
         self.spot_ema_fast = 0.0
         self.spot_ema_slow = 0.0
         self.current_atm_strike = 0.0
+        self.budget_strike_targets: Dict[str, Dict[str, Any]] = {}
         self.last_atm_iv = 0.15
         self.cooldowns: Dict[str, float] = {}  # sym -> last_signal_ts
         self._pending: Dict[str, Dict] = {}
@@ -475,17 +476,32 @@ class AegisPipelineOrchestrator:
                     atm_strike=self.current_atm_strike,
                 )
 
+            if self.price_action_engine is not None and getattr(self.price_action_engine, "backfill_pending", False):
+                self._throttled_veto_log(
+                    "reconnect_backfill_pending",
+                    f"[CANDLE BACKFILL VETO] {sym} entry evaluation paused until missing spot bars are restored",
+                )
+                return None
+
+            spot_age = now_sec - self._last_spot_ts
+            if self._last_spot_ts <= 0.0 or spot_age < 0.0 or spot_age > 2.0:
+                self._throttled_veto_log(
+                    "stale_spot_entry_veto",
+                    f"[SPOT FRESHNESS VETO] {sym} entry evaluation skipped "
+                    f"(spot age={spot_age:.2f}s; maximum=2.00s)",
+                )
+                return None
 
             if self.scorer is not None:
                 self.scorer.update_tick(sym, now_sec, lp, bp1, sp1, b1, a1, b2, a2, b3, a3, b4, a4, b5, a5, vol=vol_val)
 
                 direction = "UP" if side == 0 else "DOWN"  # 0=CE -> UP, 1=PE -> DOWN
 
-                # Entry Candidate Gate: Only tradable strikes (within 8 steps of ATM) evaluate entry setups.
-                # Deep OTM strikes (e.g. 21500 PE when ATM is 22700) are tracked 100% for Option Flow
-                # (OFI, PCR, Delta above), but must NEVER trigger trade entry or depth guard vetoes!
-                if self.current_atm_strike > 0.0 and abs(strike - self.current_atm_strike) > (8 * self.strike_step):
+                # Only pre-staged budget targets and their two adjacent strikes may trigger entry evaluation.
+                cluster = self._get_budget_strike_cluster(direction)
+                if not cluster or sym not in {candidate["symbol"] for candidate in cluster}:
                     return None
+                cluster_scoring = True
 
                 # ─── Phase 1 (V4.1b): Absolute Pain Zone Band Veto ───
                 # Vetoes entry trade consideration for opposing direction while
@@ -498,8 +514,9 @@ class AegisPipelineOrchestrator:
                         _vetoed, _pz_top, _pz_bottom, _pz_buf = self.price_action_engine.band_veto_blocks(
                             direction, spot=self.last_spot
                         )
-                    except Exception:
-                        _vetoed, _pz_top, _pz_bottom = False, 0.0, 0.0
+                    except Exception as exc:
+                        logger.error(f"[PAIN ZONE VETO ERROR] Blocking {direction} entry: {exc}")
+                        _vetoed, _pz_top, _pz_bottom = True, 0.0, 0.0
 
                 try:
                     _dg = self.__dict__.setdefault("_band_diag", {"m": -1, "up_p": 0, "up_b": 0, "dn_p": 0, "dn_b": 0})
@@ -548,7 +565,7 @@ class AegisPipelineOrchestrator:
                     current_vwap = getattr(self.price_action_engine, "current_vwap", 0.0)
                     if sym in self._l2_depth_history:
                         self.price_action_engine._l2_depth_history = list(self._l2_depth_history[sym])
-                    is_pa_setup, pa_setup_name, pa_details = self.price_action_engine.evaluate_setup(direction, current_vwap, current_time=now_sec)
+                    is_pa_setup, pa_setup_name, pa_details = self.price_action_engine.peek_setup(direction, current_vwap, current_time=now_sec)
 
                 # Legacy alias (V4.0 retired albrooks from the ladder: always False).
                 is_50ema_pullback = False
@@ -566,14 +583,12 @@ class AegisPipelineOrchestrator:
                 anchor_T = self._get_last_closed_bar_T()
                 use_anchor = self._is_T_fresh(anchor_T, now_sec, 120.0)
                 anchor_arg = anchor_T if use_anchor else None
+                setup_mode = str(pa_details.get("mode", ""))
+                is_mode_b_setup = setup_mode == "MODE_B_INFLIGHT_BREAKTHROUGH"
+                is_preclose_setup = setup_mode == "MODE_A_PRECLOSE"
+                live_lookback = 10.0 if is_mode_b_setup else 30.0 if is_preclose_setup else None
 
-                score, is_high_conv, feats = self.scorer.compute_score(
-                    sym,
-                    now_sec,
-                    adjacent_otm_returns={},
-                    opp_side_return=0.0,
-                    anchor_ts_sec=anchor_arg,
-                )
+                score = 0.0
 
                 self._purge_impulse_memory(sym)
 
@@ -658,7 +673,7 @@ class AegisPipelineOrchestrator:
                         opt_qualified = True
                         opt_reason = "option_ok"
                         opt_metrics = {}
-                        if self.option_quality_engine:
+                        if self.option_quality_engine and not cluster_scoring:
                             opt_qualified, opt_reason, opt_metrics = self.option_quality_engine.qualify_option(
                                 sym=sym,
                                 lp=lp,
@@ -698,7 +713,8 @@ class AegisPipelineOrchestrator:
                             # Macro structure and candle geometry (Body >= 65%, edge, wicks, ATR expansion)
                             # are verified directly by PriceActionEngine. Legacy 60s tick-counting spot persistence
                             # veto is permanently decommissioned (Zero-Entropy Logic De-bloat).
-                            is_mode_b = (pa_details.get("mode") == "MODE_B_INFLIGHT_BREAKTHROUGH")
+                            is_mode_b = is_mode_b_setup
+                            is_preclose = is_preclose_setup
                             pers_score = float(pa_details.get("dp_micro", 1.0))
                             pers_confirmed = True
 
@@ -710,31 +726,45 @@ class AegisPipelineOrchestrator:
                             energy_score = 100.0
                             micro_m = {}
                             time_since_close = (now_sec - anchor_T) if (anchor_T and anchor_T > 0) else 0.0
-                            if is_mode_b:
+                            if (is_mode_b or is_preclose) and not cluster_scoring:
                                 # Mode B In-Flight: extract live micro metrics from immediate rolling 10s buffer
                                 # to ensure touch_i1, real spread_pct and depth are verified upfront
-                                if self.conviction_engine and self.scorer:
-                                    buf = self.scorer.history.get(sym, [])
-                                    if buf:
-                                        micro_m = self.conviction_engine.extract_micro_metrics(
-                                            tick_buffer=buf,
-                                            anchor_T=now_sec,
-                                            lookback_sec=10.0,
-                                        )
-                                        if not micro_m.get("is_valid", True):
-                                            micro_30_m = self.conviction_engine.extract_micro_metrics(
-                                                tick_buffer=buf,
-                                                anchor_T=now_sec,
-                                                lookback_sec=30.0,
-                                            )
-                                            if micro_30_m.get("is_valid", True):
-                                                micro_m = micro_30_m
-                                        if micro_m.get("is_valid", True):
-                                            tot_bid_depth = micro_m.get("tot_bid_depth", tot_bid_depth)
-                                            tot_ask_depth = micro_m.get("tot_ask_depth", tot_ask_depth)
-                                            bp1 = micro_m.get("bp1", bp1)
-                                            sp1 = micro_m.get("sp1", sp1)
-                            elif not is_mode_b and use_anchor and self.conviction_engine and self.scorer:
+                                if not self.conviction_engine or not self.scorer:
+                                    self._purge_impulse_memory(sym)
+                                    self._throttled_veto_log(
+                                        "v3_circuit_breaker",
+                                        f"[V3 CIRCUIT BREAKER] {sym} ({direction}) {pa_setup_name} P{pillar} blocked in Mode B: "
+                                        "microstructure_validator_unavailable",
+                                    )
+                                    return None
+                                buf = self.scorer.history.get(sym)
+                                if not buf:
+                                    self._purge_impulse_memory(sym)
+                                    self._throttled_veto_log(
+                                        "v3_circuit_breaker",
+                                        f"[V3 CIRCUIT BREAKER] {sym} ({direction}) {pa_setup_name} P{pillar} blocked in Mode B: no_ticks_in_buffer",
+                                    )
+                                    return None
+                                micro_m = self.conviction_engine.extract_micro_metrics(
+                                    tick_buffer=buf,
+                                    anchor_T=now_sec,
+                                    lookback_sec=10.0 if is_mode_b else 30.0,
+                                )
+                                if not micro_m.get("is_valid", False):
+                                    self._purge_impulse_memory(sym)
+                                    self._throttled_veto_log(
+                                        "v3_circuit_breaker",
+                                        f"[V3 CIRCUIT BREAKER] {sym} ({direction}) {pa_setup_name} P{pillar} blocked in Mode B: "
+                                        f"{micro_m.get('reason', 'invalid_microstructure')} "
+                                        f"(ret={micro_m.get('micro_ret_30s', 0.0):+.4f}, "
+                                        f"spread={micro_m.get('spread_pct', 0.0):.2f}%, depth={micro_m.get('tot_depth', 0)})"
+                                    )
+                                    return None
+                                tot_bid_depth = micro_m.get("tot_bid_depth", tot_bid_depth)
+                                tot_ask_depth = micro_m.get("tot_ask_depth", tot_ask_depth)
+                                bp1 = micro_m.get("bp1", bp1)
+                                sp1 = micro_m.get("sp1", sp1)
+                            elif not is_mode_b and use_anchor and self.conviction_engine and self.scorer and not cluster_scoring:
                                 buf = self.scorer.history.get(sym, [])
                                 if buf:
                                     micro_m = self.conviction_engine.extract_micro_metrics(
@@ -768,7 +798,7 @@ class AegisPipelineOrchestrator:
                                     tot_ask_depth = micro_m.get("tot_ask_depth", tot_ask_depth)
                                     bp1 = micro_m.get("bp1", bp1)
                                     sp1 = micro_m.get("sp1", sp1)
-                            elif not is_mode_b and not use_anchor:
+                            elif not is_mode_b and not use_anchor and not cluster_scoring:
                                 # Stale-T unit-test fallback: basic depth wall and spread checks
                                 tot_depth = tot_bid_depth + tot_ask_depth
                                 if tot_depth > 0:
@@ -825,7 +855,8 @@ class AegisPipelineOrchestrator:
                                 conviction_score_val = float(eqs)
                                 conviction_breakdown = {}
                                 conviction_sub_scores = {}
-                                if self.conviction_engine and self.price_action_engine:
+                                selected_candidate = None
+                                if self.conviction_engine and self.price_action_engine and self.scorer:
                                     if str(pa_details.get("mode", "")).startswith("MODE_") and self.price_action_engine._curr_1m_bar is not None:
                                         current_bar = self.price_action_engine._curr_1m_bar
                                     else:
@@ -836,149 +867,174 @@ class AegisPipelineOrchestrator:
                                     else:
                                         wyckoff_context["wyckoff_confirmed"] = False
 
-                                    conviction_res = self.conviction_engine.compute_conviction_score(
-                                        direction=direction,
-                                        setup_name=pa_setup_name,
-                                        spot_price=self.last_spot,
-                                        prior_bars=list(self.price_action_engine.bars_1m),
-                                        current_bar=current_bar,
-                                        atr=atr_1m_val,
-                                        ema_20=getattr(self.price_action_engine, "ema_20_1m", 0.0),
-                                        ema_50=getattr(self.price_action_engine, "ema_50_1m", 0.0),
-                                        vwap=vwap_val,
-                                        pdh=getattr(self.price_action_engine, "pdh", 0.0),
-                                        pdl=getattr(self.price_action_engine, "pdl", 0.0),
-                                        vol_sma10=self.price_action_engine.get_volume_sma(10),
-                                        persistence_dp=pers_score,
-                                        touch_i1=float(micro_m.get("touch_i1", 0.0)),
-                                        delta_fut_60s_bps=float(fut_basis_m.get("delta_fut_60s_bps", 0.0)),
-                                        delta_basis_60s_bps=float(fut_basis_m.get("basis_change_60s_bps", 0.0)),
-                                        option_delta=None,
-                                        option_strike=float(strike),
-                                        spread_pct=float(spread_val or (micro_m.get("spread_pct", 0.5))),
-                                        pa_details=pa_details,
-                                        wyckoff_details=wyckoff_context,
-                                        micro_metrics=micro_m,
-                                    )
+                                    target_meta = self.budget_strike_targets.get(direction, {})
+                                    available_funds = float(target_meta.get("available_funds", 0.0) or 0.0)
+                                    lot_size = int(target_meta.get("lot_size", 0) or 0)
+                                    premium_min = float(target_meta.get("effective_premium_min", 0.0) or 0.0)
+                                    premium_max = float(target_meta.get("premium_max", 0.0) or 0.0)
+                                    micro_anchor = now_sec if live_lookback is not None else (anchor_arg if use_anchor else None)
+                                    micro_lookback = 10.0 if is_mode_b_setup else 30.0
+                                    approval_floor = max(80.0, self.conviction_engine.min_approval_score)
+                                    rejection_reasons = []
+                                    eligible_candidates = []
 
-                                    if not conviction_res.is_approved:
-                                        # 1) Pre-Close 60s Lookback [T-60, T]:
-                                        # Check if flow during the entire prior 60s candle formation approves conviction (>= 80.0)
-                                        if use_anchor and anchor_T is not None and anchor_T > 0 and self.scorer and self.conviction_engine:
-                                            buf = self.scorer.history.get(sym, [])
-                                            past_60_m = self.conviction_engine.extract_micro_metrics(
-                                                tick_buffer=buf,
-                                                anchor_T=anchor_T,
-                                                lookback_sec=60.0,
+                                    for candidate in cluster:
+                                        candidate_sym = candidate["symbol"]
+                                        candidate_token = candidate["token"]
+                                        candidate_strike = float(candidate["strike"])
+                                        candidate_history = self.scorer.history.get(candidate_sym)
+                                        if not candidate_history or len(candidate_history) < 2:
+                                            rejection_reasons.append(f"{candidate['priority']}:insufficient_ticks")
+                                            continue
+
+                                        latest = candidate_history[-1]
+                                        quote_age = now_sec - float(latest[0])
+                                        if quote_age < 0.0 or quote_age > 1.5:
+                                            rejection_reasons.append(f"{candidate['priority']}:stale_quote")
+                                            continue
+
+                                        candidate_micro = self.conviction_engine.extract_micro_metrics(
+                                            tick_buffer=candidate_history,
+                                            anchor_T=micro_anchor,
+                                            lookback_sec=micro_lookback,
+                                        )
+                                        if not candidate_micro.get("is_valid", False):
+                                            rejection_reasons.append(
+                                                f"{candidate['priority']}:{candidate_micro.get('reason', 'invalid_microstructure')}"
                                             )
-                                            if past_60_m.get("is_valid", True):
-                                                past_conv_res = self.conviction_engine.compute_conviction_score(
-                                                    direction=direction,
-                                                    setup_name=pa_setup_name,
-                                                    spot_price=self.last_spot,
-                                                    prior_bars=list(self.price_action_engine.bars_1m),
-                                                    current_bar=current_bar,
-                                                    atr=atr_1m_val,
-                                                    ema_20=getattr(self.price_action_engine, "ema_20_1m", 0.0),
-                                                    ema_50=getattr(self.price_action_engine, "ema_50_1m", 0.0),
-                                                    vwap=vwap_val,
-                                                    pdh=getattr(self.price_action_engine, "pdh", 0.0),
-                                                    pdl=getattr(self.price_action_engine, "pdl", 0.0),
-                                                    vol_sma10=self.price_action_engine.get_volume_sma(10),
-                                                    persistence_dp=pers_score,
-                                                    touch_i1=float(past_60_m.get("touch_i1", 0.0)),
-                                                    delta_fut_60s_bps=float(fut_basis_m.get("delta_fut_60s_bps", 0.0)),
-                                                    delta_basis_60s_bps=float(fut_basis_m.get("basis_change_60s_bps", 0.0)),
-                                                    option_delta=None,
-                                                    option_strike=float(strike),
-                                                    spread_pct=float(spread_val or (past_60_m.get("spread_pct", 0.5))),
-                                                    pa_details=pa_details,
-                                                    wyckoff_details=wyckoff_context,
-                                                    micro_metrics=past_60_m,
-                                                )
-                                                if past_conv_res.is_approved:
-                                                    conviction_res = past_conv_res
-                                                    micro_m = past_60_m
-                                                    logger.info(
-                                                        f"[AEGIS V3 PRE-CLOSE 60S FIRED] {sym} ({direction}) {pa_setup_name} "
-                                                        f"order flow confirmed from prior 60s candle | "
-                                                        f"Conviction: {conviction_res.total_score:.1f}/100"
-                                                    )
+                                            continue
 
-                                    if not conviction_res.is_approved:
-                                        # 2) 60s Asynchronous Order Flow Confirmation Window (Future):
-                                        # If pre-close conviction failed, evaluate live trailing flow [now_sec-30, now_sec] / [now_sec-60, now_sec]
-                                        # within 60s of candle close to confirm post-breakout surge
-                                        if 0.0 < time_since_close <= 60.0 and self.scorer and self.conviction_engine:
-                                            buf = self.scorer.history.get(sym, [])
-                                            live_micro_m = self.conviction_engine.extract_micro_metrics(
-                                                tick_buffer=buf,
-                                                anchor_T=now_sec,
-                                                lookback_sec=30.0,
+                                        candidate_ltp = float(latest[1])
+                                        candidate_bid = float(latest[2])
+                                        candidate_ask = float(latest[3])
+                                        if (
+                                            available_funds <= 0.0
+                                            or lot_size <= 0
+                                            or candidate_ltp * lot_size > available_funds
+                                            or candidate_ask * lot_size > available_funds
+                                            or (premium_min > 0.0 and candidate_ltp < premium_min)
+                                            or (premium_max > 0.0 and candidate_ltp > premium_max)
+                                            or (premium_max > 0.0 and candidate_ask > premium_max)
+                                        ):
+                                            rejection_reasons.append(f"{candidate['priority']}:outside_budget")
+                                            continue
+
+                                        candidate_quality = {}
+                                        candidate_is_qualified = True
+                                        if self.option_quality_engine:
+                                            qualified, quality_reason, candidate_quality = self.option_quality_engine.qualify_option(
+                                                sym=candidate_sym,
+                                                lp=candidate_ltp,
+                                                bp1=candidate_bid,
+                                                sp1=candidate_ask,
+                                                top5_bid_qty=float(candidate_micro.get("tot_bid_depth", 0.0)),
+                                                top5_ask_qty=float(candidate_micro.get("tot_ask_depth", 0.0)),
+                                                available_funds=available_funds,
+                                                lot_size=lot_size,
                                             )
-                                            live_energy = 100.0
-                                            live_ok = live_micro_m.get("is_valid", True)
-                                            if not live_ok:
-                                                live_micro_m = self.conviction_engine.extract_micro_metrics(
-                                                    tick_buffer=buf,
-                                                    anchor_T=now_sec,
-                                                    lookback_sec=60.0,
-                                                )
-                                                live_ok = live_micro_m.get("is_valid", True)
+                                            candidate_is_qualified = qualified
+                                            if not qualified and self.option_quality_mode == "ACTIVE":
+                                                rejection_reasons.append(f"{candidate['priority']}:{quality_reason}")
+                                                continue
 
-                                            if live_ok:
-                                                live_conv_res = self.conviction_engine.compute_conviction_score(
-                                                    direction=direction,
-                                                    setup_name=pa_setup_name,
-                                                    spot_price=self.last_spot,
-                                                    prior_bars=list(self.price_action_engine.bars_1m),
-                                                    current_bar=current_bar,
-                                                    atr=atr_1m_val,
-                                                    ema_20=getattr(self.price_action_engine, "ema_20_1m", 0.0),
-                                                    ema_50=getattr(self.price_action_engine, "ema_50_1m", 0.0),
-                                                    vwap=vwap_val,
-                                                    pdh=getattr(self.price_action_engine, "pdh", 0.0),
-                                                    pdl=getattr(self.price_action_engine, "pdl", 0.0),
-                                                    vol_sma10=self.price_action_engine.get_volume_sma(10),
-                                                    persistence_dp=pers_score,
-                                                    touch_i1=float(live_micro_m.get("touch_i1", 0.0)),
-                                                    delta_fut_60s_bps=float(fut_basis_m.get("delta_fut_60s_bps", 0.0)),
-                                                    delta_basis_60s_bps=float(fut_basis_m.get("basis_change_60s_bps", 0.0)),
-                                                    option_delta=None,
-                                                    option_strike=float(strike),
-                                                    spread_pct=float(spread_val or (live_micro_m.get("spread_pct", 0.5))),
-                                                    pa_details=pa_details,
-                                                    wyckoff_details=wyckoff_context,
-                                                    micro_metrics=live_micro_m,
-                                                )
-                                                if live_conv_res.is_approved:
-                                                    conviction_res = live_conv_res
-                                                    micro_m = live_micro_m
-                                                    energy_score = live_energy
-                                                    logger.info(
-                                                        f"[AEGIS V3 60S ARMED FIRED] {sym} ({direction}) {pa_setup_name} "
-                                                        f"order flow confirmed at T+{time_since_close:.1f}s | "
-                                                        f"Conviction: {conviction_res.total_score:.1f}/100"
-                                                    )
+                                        candidate_conviction = self.conviction_engine.compute_conviction_score(
+                                            direction=direction,
+                                            setup_name=pa_setup_name,
+                                            spot_price=self.last_spot,
+                                            prior_bars=list(self.price_action_engine.bars_1m),
+                                            current_bar=current_bar,
+                                            atr=atr_1m_val,
+                                            ema_20=getattr(self.price_action_engine, "ema_20_1m", 0.0),
+                                            ema_50=getattr(self.price_action_engine, "ema_50_1m", 0.0),
+                                            vwap=vwap_val,
+                                            pdh=getattr(self.price_action_engine, "pdh", 0.0),
+                                            pdl=getattr(self.price_action_engine, "pdl", 0.0),
+                                            vol_sma10=self.price_action_engine.get_volume_sma(10),
+                                            persistence_dp=pers_score,
+                                            touch_i1=float(candidate_micro.get("touch_i1", 0.0)),
+                                            delta_fut_60s_bps=float(fut_basis_m.get("delta_fut_60s_bps", 0.0)),
+                                            delta_basis_60s_bps=float(fut_basis_m.get("basis_change_60s_bps", 0.0)),
+                                            option_delta=None,
+                                            option_strike=candidate_strike,
+                                            spread_pct=float(candidate_micro.get("spread_pct", 99.0)),
+                                            pa_details=pa_details,
+                                            wyckoff_details=wyckoff_context,
+                                            micro_metrics=candidate_micro,
+                                        )
+                                        if (
+                                            candidate_conviction.total_score < approval_floor
+                                            or not candidate_conviction.is_approved
+                                        ):
+                                            rejection_reasons.append(
+                                                f"{candidate['priority']}:conviction_{candidate_conviction.total_score:.1f}"
+                                            )
+                                            continue
 
-                                    if not conviction_res.is_approved:
+                                        eligible_candidates.append({
+                                            "candidate": candidate,
+                                            "micro_metrics": candidate_micro,
+                                            "conviction": candidate_conviction,
+                                            "quality_metrics": candidate_quality,
+                                            "option_qualified": candidate_is_qualified,
+                                            "ltp": candidate_ltp,
+                                            "bid": candidate_bid,
+                                            "ask": candidate_ask,
+                                        })
+
+                                    if eligible_candidates:
+                                        selected_candidate = self._choose_budget_cluster_candidate(
+                                            cluster,
+                                            eligible_candidates,
+                                        )
+
+                                    if selected_candidate is None:
                                         self._purge_impulse_memory(sym)
                                         self._throttled_veto_log(
-                                            "conviction_veto",
-                                            f"[CONVICTION VETO] {sym} ({direction}) {pa_setup_name} blocked: "
-                                            f"Score {conviction_res.total_score:.1f}/100 < {self.conviction_engine.min_approval_score:.1f} ({conviction_res.reason}) | "
-                                            f"Aggression: {conviction_res.sub_scores.get('touch_aggression', conviction_res.sub_scores.get('flow', 0))} | "
-                                            f"Momentum: {conviction_res.sub_scores.get('micro_momentum', conviction_res.sub_scores.get('impulse', 0))} | "
-                                            f"Contract: {conviction_res.sub_scores.get('contract_tradability', conviction_res.sub_scores.get('contract', 0))}"
+                                            f"budget_cluster_veto_{direction}",
+                                            f"[BUDGET CLUSTER VETO] {direction} {pa_setup_name}: "
+                                            f"no target / adjacent contract passed score, quote, spread and budget checks "
+                                            f"({', '.join(rejection_reasons) or 'no candidates'})",
                                         )
                                         return None
 
-                                    # Sizing tier and dynamic TP scaling
+                                    selected = selected_candidate["candidate"]
+                                    sym = selected["symbol"]
+                                    tok_str = selected["token"]
+                                    strike = float(selected["strike"])
+                                    side = int(selected["side"])
+                                    lp = float(selected_candidate["ltp"])
+                                    bp1 = float(selected_candidate["bid"])
+                                    sp1 = float(selected_candidate["ask"])
+                                    micro_m = selected_candidate["micro_metrics"]
+                                    opt_metrics = selected_candidate["quality_metrics"]
+                                    tot_bid_depth = float(micro_m.get("tot_bid_depth", 0.0))
+                                    tot_ask_depth = float(micro_m.get("tot_ask_depth", 0.0))
+                                    tot_depth_val = float(micro_m.get("tot_depth", 0.0))
+                                    spread_val = float(micro_m.get("spread_pct", 99.0))
+                                    opt_qualified = bool(selected_candidate["option_qualified"])
+                                    pa_details["cluster_priority"] = selected["priority"]
+                                    pa_details["cluster_candidates"] = [
+                                        {
+                                            "priority": item["priority"],
+                                            "symbol": item["symbol"],
+                                            "strike": item["strike"],
+                                        }
+                                        for item in cluster
+                                    ]
+                                    conviction_res = selected_candidate["conviction"]
                                     recommended_tp_pct = conviction_res.recommended_tp_pct
                                     sizing_tier = conviction_res.sizing_tier
                                     conviction_score_val = conviction_res.total_score
                                     conviction_breakdown = conviction_res.breakdown
                                     conviction_sub_scores = conviction_res.sub_scores
+                                    score = conviction_score_val
+                                else:
+                                    self._purge_impulse_memory(sym)
+                                    self._throttled_veto_log(
+                                        "conviction_engine_unavailable",
+                                        f"[BUDGET CLUSTER VETO] {direction} {pa_setup_name}: conviction components unavailable",
+                                    )
+                                    return None
 
                                 # ─── Quality Stack 3-Slot Policy Gate ───
                                 slot_admit = True
@@ -1010,10 +1066,10 @@ class AegisPipelineOrchestrator:
                                     return None
 
                                 # ─── EXECUTION COMMIT & IMMEDIATE DISPATCH (<0.8ms from Tick) ───
+                                slot_marked = False
                                 if self.slot_policy and slot_admit:
                                     self.slot_policy.mark_admitted(slot_score, now_sec=now_sec)
-
-                                self.cooldowns[sym] = now_sec
+                                    slot_marked = True
 
                                 pz_snap = (
                                     self.price_action_engine.get_pain_zone_vwaps()
@@ -1066,15 +1122,15 @@ class AegisPipelineOrchestrator:
                                     **pa_details,
                                     **micro_m,
                                     **fut_basis_m,
-                                    **feats,
                                     **eqs_breakdown,
                                     **perm_metrics,
                                 }
 
                                 # Dispatch live signal to execution manager IMMEDIATELY!
                                 # Order placement starts on downstream execution thread with zero delay.
-                                self._emit_signal(
+                                signal_enqueued = self._emit_signal(
                                     sym=sym,
+                                    contract_token=tok_str,
                                     lp=lp,
                                     direction=direction,
                                     conviction=conviction_score_val,
@@ -1087,6 +1143,16 @@ class AegisPipelineOrchestrator:
                                     },
                                     metrics=live_signal_metrics,
                                 )
+                                if not signal_enqueued:
+                                    if slot_marked and self.slot_policy:
+                                        self.slot_policy.rollback_admission()
+                                    return None
+
+                                if self.price_action_engine is not None and pa_details:
+                                    self.price_action_engine.commit_setup(pa_details)
+
+                                for candidate in cluster:
+                                    self.cooldowns[candidate["symbol"]] = now_sec
 
                                 # ─── POST-DISPATCH SHADOW & TELEMETRY ENRICHMENT ───
                                 # Runs immediately after order dispatch; live execution is never delayed.
@@ -1123,7 +1189,6 @@ class AegisPipelineOrchestrator:
                                             entry_spot_price=self.last_spot,
                                             eqs_score=eqs,
                                             features_snapshot={
-                                                **feats,
                                                 **eqs_breakdown,
                                                 **perm_metrics,
                                                 **live_signal_metrics,
@@ -1613,14 +1678,126 @@ class AegisPipelineOrchestrator:
         if new_atm > 0:
             self.current_atm_strike = new_atm
 
-    def _emit_signal(self, sym: str, lp: float, direction: str, conviction: float, gates: Dict, metrics: Dict):
+    def set_budget_strike_targets(self, targets: Dict[str, Dict[str, Any]]) -> None:
+        """Atomically replace the independently staged CALL and PUT budget anchors."""
+        normalized: Dict[str, Dict[str, Any]] = {}
+        for direction, target in targets.items():
+            side = str(direction).upper()
+            if side not in ("UP", "DOWN") or not isinstance(target, dict):
+                raise ValueError(f"Invalid budget strike target for {direction!r}")
+            token = str(target.get("token") or "")
+            symbol = str(target.get("symbol") or "")
+            strike = float(target.get("strike") or 0.0)
+            if not token or not symbol or strike <= 0.0:
+                raise ValueError(f"Incomplete budget strike target for {side}")
+            normalized[side] = {
+                **target,
+                "token": token,
+                "symbol": symbol,
+                "strike": strike,
+                "side": 0 if side == "UP" else 1,
+            }
+        self.budget_strike_targets = normalized
+
+    def _get_budget_strike_cluster(self, direction: str) -> List[Dict[str, Any]]:
+        """Return target, farther-OTM fallback, then nearer-ATM fallback."""
+        direction_key = str(direction).upper()
+        if direction_key not in ("UP", "CALL", "CE", "DOWN", "PUT", "PE"):
+            return []
+        side_key = "UP" if direction_key in ("UP", "CALL", "CE") else "DOWN"
+        target = self.budget_strike_targets.get(side_key)
+        atm = float(self.current_atm_strike or 0.0)
+        step = float(self.strike_step or 0.0)
+        if not target or atm <= 0.0 or step <= 0.0:
+            return []
+
+        target_strike = float(target["strike"])
+        target_info = self.token_map.get(str(target["token"]), {})
+        expected_side = 0 if side_key == "UP" else 1
+        if (
+            int(target_info.get("side", -1)) != expected_side
+            or abs(float(target_info.get("strike", 0.0) or 0.0) - target_strike) > 1e-6
+            or self.t2s.get(str(target["token"])) != str(target["symbol"])
+        ):
+            return []
+
+        signed_depth = (target_strike - atm) / step if side_key == "UP" else (atm - target_strike) / step
+        depth = int(round(signed_depth))
+        if depth < 0 or abs(signed_depth - depth) > 1e-6:
+            return []
+
+        contracts_by_strike: Dict[float, Tuple[str, str]] = {}
+        for token, info in self.token_map.items():
+            if int(info.get("side", -1)) != expected_side:
+                continue
+            contract_strike = float(info.get("strike", 0.0) or 0.0)
+            symbol = self.t2s.get(str(token), "")
+            if contract_strike > 0.0 and symbol:
+                contracts_by_strike.setdefault(contract_strike, (str(token), symbol))
+
+        ordered_depths = (
+            ("target", depth),
+            ("minus_one", depth + 1),
+            ("plus_one", depth - 1),
+        )
+        cluster: List[Dict[str, Any]] = []
+        seen_strikes = set()
+        for priority, otm_depth in ordered_depths:
+            if otm_depth < 0:
+                continue
+            candidate_strike = atm + (otm_depth * step) if side_key == "UP" else atm - (otm_depth * step)
+            if candidate_strike in seen_strikes:
+                continue
+            seen_strikes.add(candidate_strike)
+            if priority == "target":
+                token, symbol = str(target["token"]), str(target["symbol"])
+            else:
+                contract = contracts_by_strike.get(candidate_strike)
+                if contract is None:
+                    continue
+                token, symbol = contract
+            cluster.append({
+                "priority": priority,
+                "token": token,
+                "symbol": symbol,
+                "strike": candidate_strike,
+                "side": expected_side,
+            })
+        return cluster
+
+    @staticmethod
+    def _choose_budget_cluster_candidate(
+        cluster: List[Dict[str, Any]],
+        eligible_candidates: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Pick the first eligible member in target, farther-OTM, nearer-ATM order."""
+        eligible_by_token = {
+            entry["candidate"]["token"]: entry
+            for entry in eligible_candidates
+        }
+        return next(
+            (eligible_by_token[candidate["token"]] for candidate in cluster if candidate["token"] in eligible_by_token),
+            None,
+        )
+
+    def _emit_signal(
+        self,
+        sym: str,
+        lp: float,
+        direction: str,
+        conviction: float,
+        gates: Dict,
+        metrics: Dict,
+        contract_token: Optional[str] = None,
+    ) -> bool:
         """Emits signal to AegisExecutionManager queue."""
         if not self.signal_queue:
             logger.warning("[AEGIS] Signal queue is not connected — signal dropped")
-            return
+            return False
         payload = {
             "type": "GAMMA_BURST_ENTRY",
             "sym": sym,
+            "contract_token": str(contract_token) if contract_token is not None else None,
             "signal": direction,
             "lp": lp,
             "spot": self.last_spot,
@@ -1633,8 +1810,9 @@ class AegisPipelineOrchestrator:
             self.signal_queue.put_nowait(payload)
         except queue.Full:
             logger.warning(f"[AEGIS] Signal queue full ({self.signal_queue.qsize()}/{self.signal_queue.maxsize}) — dropping {sym} {direction} {conviction:.1f}")
-            return
+            return False
         logger.info(f"[AEGIS SIGNAL EMITTED] {direction} {sym} @ {lp:.2f} (Score={conviction:.1f})")
+        return True
 
     # ═══════════════════════════════════════════════════════════
     # EXECUTION FEEDBACK LOOP
@@ -1746,7 +1924,3 @@ def create_aegis_engine(
         signal_queue=signal_queue,
         log_path=log_path,
     )
-
-
-
-

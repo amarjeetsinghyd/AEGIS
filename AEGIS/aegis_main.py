@@ -8,6 +8,7 @@ import time
 import queue
 import contextlib
 import logging
+import threading
 from datetime import datetime, timedelta
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
@@ -29,6 +30,88 @@ from AEGIS.l2_options_archiver import attach_aegis_archiver
 from common.market.tick_compiler import TickCompiler
 
 logger = get_logger("aegis_main")
+
+
+def _register_spot_reconnect_backfill(broker, price_action_engine, exchange, token):
+    market_data = getattr(broker, "market_data_provider", None)
+    api = getattr(broker, "_api", None)
+    if (
+        market_data is None
+        or api is None
+        or price_action_engine is None
+        or not hasattr(market_data, "add_open_listener")
+        or not hasattr(api, "get_time_price_series")
+    ):
+        return False
+
+    backfill_lock = threading.Lock()
+
+    def on_reconnect():
+        if not backfill_lock.acquire(blocking=False):
+            return
+
+        def fetch_missing_bars():
+            pending_marked = False
+            try:
+                from common.market.market_calendar import is_bot_active_hours, is_trading_day
+
+                now_dt = datetime.now()
+                if not is_trading_day(now_dt.date()) or not is_bot_active_hours(now_dt):
+                    return
+
+                now_ts = time.time()
+                session_open = now_dt.replace(hour=9, minute=15, second=0, microsecond=0).timestamp()
+                last_end = (
+                    float(price_action_engine.bars_1m[-1].ts_end)
+                    if price_action_engine.bars_1m
+                    else 0.0
+                )
+                start_ts = max(last_end, session_open)
+                end_ts = float(int(now_ts // 60) * 60)
+                if end_ts - start_ts < 60.0:
+                    return
+
+                price_action_engine.mark_backfill_pending()
+                pending_marked = True
+                for attempt in range(2):
+                    now_ts = time.time()
+                    end_ts = float(int(now_ts // 60) * 60)
+                    try:
+                        candles = api.get_time_price_series(
+                            exchange=exchange,
+                            token=str(token),
+                            starttime=int(start_ts),
+                            endtime=int(end_ts),
+                            interval=1,
+                        )
+                    except Exception as exc:
+                        candles = []
+                        logger.warning(f"[AegisMain] Reconnect candle backfill attempt {attempt + 1} failed: {exc}")
+                    if isinstance(candles, list) and candles:
+                        price_action_engine.queue_historical_backfill(candles, now_ts)
+                    else:
+                        price_action_engine.queue_historical_backfill([], now_ts)
+                        logger.warning("[AegisMain] Reconnect candle backfill returned no 1m data")
+
+                    if attempt == 0:
+                        time.sleep(1.0)
+                        if not price_action_engine.backfill_pending:
+                            return
+            except Exception as exc:
+                if pending_marked:
+                    price_action_engine.queue_historical_backfill([], time.time())
+                logger.error(f"[AegisMain] Reconnect candle backfill failed: {exc}")
+            finally:
+                backfill_lock.release()
+
+        threading.Thread(
+            target=fetch_missing_bars,
+            name="aegis-spot-candle-backfill",
+            daemon=True,
+        ).start()
+
+    market_data.add_open_listener(on_reconnect)
+    return True
 
 
 # ─── Pre-market Setup ───
@@ -544,7 +627,11 @@ def main():
         if opt_only:
             compiler.subscribe(opt_only, opt_exch_seg)
         logger.info(f"[AegisMain] Tick feed wired: Shoonya → TickCompiler → AEGIS Engine ({len(token_to_symbol)} instruments)")
-        
+
+        pa_eng = getattr(aegis_engine, "price_action_engine", None) or getattr(aegis_engine, "time_bar_engine", None)
+        if _register_spot_reconnect_backfill(broker, pa_eng, spot_exch, spot_token):
+            logger.info("[AegisMain] Spot candle backfill armed for WebSocket reconnects")
+
         # ─── Attach AEGIS L2 Options Archiver (Raw Data Persistence) ───
         # Passive recorder: consumes the raw std_msg dict path (separate from the
         # engine's ParsedTick contract) so it cannot perturb the hot path.

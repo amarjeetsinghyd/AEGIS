@@ -306,6 +306,8 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
         self._option_oi_latest = {}
         self._tick_listeners = []  # extra consumers (e.g. Stock Order Flow) — do not start a 2nd WS
         self._close_listeners = []  # WS close consumers (e.g. TickCompiler reconnect) — do not start a 2nd WS
+        self._order_listeners = []
+        self._open_listeners = []
 
     def get_quotes(self, instrument_ids: list) -> dict:
         res = {}
@@ -456,7 +458,7 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                         logger.debug(f"tick listener error: {exc}")
 
         def event_handler_order_update(message):
-            pass
+            self._dispatch_order_update(message)
 
         # Debounce state for close_callback to prevent storm from NorenApi's tight reconnect loop
         self._close_debounce_timer = None
@@ -483,6 +485,11 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                         logger.warning(f"Shoonya WebSocket auto re-subscribe on connect failed: {e}")
             if on_open_callback:
                 on_open_callback()
+            for listener in list(getattr(self, "_open_listeners", []) or []):
+                try:
+                    listener()
+                except Exception as exc:
+                    logger.warning(f"Shoonya WebSocket open listener error: {exc}")
 
         def error_callback(err):
             logger.error(f"Shoonya WebSocket error callback: {err}")
@@ -702,6 +709,31 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
             self._tick_listeners = []
         if callback not in self._tick_listeners:
             self._tick_listeners.append(callback)
+
+    def add_order_listener(self, callback) -> None:
+        """Register an order-update consumer without opening another WebSocket."""
+        if callback is not None and callback not in self._order_listeners:
+            self._order_listeners.append(callback)
+
+    def remove_order_listener(self, callback) -> None:
+        try:
+            self._order_listeners.remove(callback)
+        except ValueError:
+            pass
+
+    def _dispatch_order_update(self, message) -> None:
+        if not isinstance(message, dict):
+            return
+        for listener in list(getattr(self, "_order_listeners", []) or []):
+            try:
+                listener(message)
+            except Exception as exc:
+                logger.warning(f"Shoonya order listener error: {exc}")
+
+    def add_open_listener(self, callback) -> None:
+        """Register a callback invoked after initial connect and each reconnect."""
+        if callback is not None and callback not in self._open_listeners:
+            self._open_listeners.append(callback)
 
     def add_close_listener(self, callback) -> None:
         """Register a WebSocket-close consumer. The callback is invoked from the

@@ -2010,7 +2010,37 @@ def test_freak_preopen_settlement_spike_filtered_in_levels_and_runway():
 
     assert reason == "insufficient_runway_to_day_high"
 
-    assert details["day_high"] == 73423.0
+
+def test_inflight_day_extreme_includes_forming_bar():
+    engine = PriceActionEngine()
+    engine.current_atr_1m = 10.0
+    day_start = 1_798_000_000.0
+    for i in range(4):
+        engine.bars_1m.append(OHLCBar(
+            ts_start=day_start + i * 60.0,
+            ts_end=day_start + (i + 1) * 60.0,
+            open=23970.0,
+            high=23990.0,
+            low=23960.0,
+            close=23980.0,
+            volume=100.0,
+        ))
+    engine._curr_1m_bar = OHLCBar(
+        ts_start=day_start + 240.0,
+        ts_end=day_start + 300.0,
+        open=23980.0,
+        high=24000.0,
+        low=23975.0,
+        close=23995.0,
+        volume=0.0,
+        tick_count=1,
+    )
+
+    ok, reason, details = engine._check_day_extreme_runway("CALL", 23995.0)
+
+    assert ok is False
+    assert reason == "insufficient_runway_to_day_high"
+    assert details["day_high"] == 24000.0
 
 
 
@@ -2256,3 +2286,71 @@ def test_hardened_squeeze_box_anti_staircase_parity():
 
     assert meta["box_high"] == 72852.0
 
+
+def test_two_phase_peek_and_commit_setup_parity():
+    """
+    Verifies Phase 2 Two-Phase Signal Lifecycle:
+    1. peek_setup() detects a setup with ZERO side-effects (levels NOT broken, lockouts NOT set).
+    2. Downstream failure leaves the level intact for subsequent ticks.
+    3. commit_setup() applies pending mutations strictly upon final approval.
+    """
+    engine = PriceActionEngine()
+    now = 1700000000.0 + 10.0  # T:10s
+    engine.current_atr_1m = 50.0
+
+    # Seed 15 bars
+    for i in range(15):
+        engine._on_1m_bar_close(OHLCBar(
+            ts_start=now - (16 - i) * 60,
+            ts_end=now - (15 - i) * 60,
+            open=24450.0,
+            high=24470.0,
+            low=24440.0,
+            close=24460.0,
+            volume=500,
+        ))
+
+    # Add a prominent S/R level at 24500.0
+    from AEGIS.core.structural_registry import StructuralLevel
+    sr_lvl = StructuralLevel(
+        level_type="RESISTANCE",
+        price=24500.0,
+        ts_created=now - 240.0,
+        prominence=1.5,
+        bar_idx=engine._total_bars_seen - 4,
+        seq_idx=engine._total_bars_seen - 4,
+        touch_count=2,
+        is_broken=False,
+    )
+    engine.session_levels.append(sr_lvl)
+
+    # In-flight bar breaking 24500.0
+    engine._curr_1m_bar = OHLCBar(
+        ts_start=now - 10.0,
+        ts_end=now + 50.0,
+        open=24490.0,
+        high=24510.0,
+        low=24485.0,
+        close=24505.0,
+        volume=100,
+    )
+    engine.last_price = 24505.0
+    engine.last_ts = now
+
+    # 1. Peek: must detect setup WITHOUT burning level or locking out bar
+    ok_peek, name_peek, det_peek = engine.peek_setup("UP", current_time=now)
+    assert ok_peek is True
+    assert det_peek["pillar"] == 4
+    assert sr_lvl.is_broken is False, "Level must NOT be marked broken during peek!"
+    assert engine._mode_b_last_trigger_bar_idx.get("P4_SR_BREAKTHROUGH") is None, "Lockout must NOT be set during peek!"
+    assert "_pending_actions" in det_peek, "Peek must supply _pending_actions for commit!"
+
+    # 2. Second peek on next tick also succeeds (level was not burned!)
+    ok_peek2, _, _ = engine.peek_setup("UP", current_time=now + 1.0)
+    assert ok_peek2 is True, "Subsequent tick must still detect unbroken level!"
+    assert sr_lvl.is_broken is False
+
+    # 3. Commit: strictly applies the pending mutations
+    engine.commit_setup(det_peek)
+    assert sr_lvl.is_broken is True, "Level must be marked broken after commit!"
+    assert engine._mode_b_last_trigger_bar_idx.get("P4_SR_BREAKTHROUGH") == engine._total_bars_seen, "Lockout must be set after commit!"

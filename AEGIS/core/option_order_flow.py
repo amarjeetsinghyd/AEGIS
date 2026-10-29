@@ -175,35 +175,28 @@ class OptionOrderFlowMixin:
         pz = self.get_pain_zone_vwaps(lot_size=lot_size, min_bars=min_bars)
         return float(pz.get("zone_top", 0.0) or 0.0), float(pz.get("zone_bottom", 0.0) or 0.0)
 
-    # ATR buffer multiple for the absolute band veto (V4.1b). The raw zone is
-    # razor-thin (~0.2-7 pts on NIFTY): gating on raw edges vetoes ~90% of ticks
-    # and whole minutes single-sided on 1-2 pt margins. The buffer keeps the
-    # intent (deep trapped zones still veto) while passing buffer-range noise.
-    BAND_VETO_ATR_BUFFER_MULT = 0.3
-
     def band_veto_blocks(self, direction: str, spot: Optional[float] = None) -> Tuple[bool, float, float, float]:
-        """Absolute Pain Zone band decision with ATR buffer.
+        """Apply the strict Absolute Pain Zone directional boundary.
 
-        Returns (blocked, zone_top, zone_bottom, buffer). Warmup (lines at 0)
-        or missing spot/ATR never blocks. UP blocked only when spot is
-        decisively below the band (spot < top - buf); DOWN only when spot is
-        decisively above it (spot > bottom + buf). Inside band+buffer both pass.
+        Returns (blocked, zone_top, zone_bottom, 0.0). Warmup (missing lines)
+        or missing spot never blocks. UP requires spot strictly above zone_top;
+        DOWN requires spot strictly below zone_bottom. The band edges are neutral.
         """
         curr_spot = float(spot or self.last_price or 0.0)
         try:
             pz = self.get_pain_zone_vwaps()
         except Exception:
-            return False, 0.0, 0.0, 0.0
+            return True, 0.0, 0.0, 0.0
         top = float(pz.get("zone_top", 0.0) or 0.0)
         bottom = float(pz.get("zone_bottom", 0.0) or 0.0)
-        atr = float(getattr(self, "current_atr_1m", 0.0) or 0.0)
-        if top <= 0 or bottom <= 0 or curr_spot <= 0 or atr <= 0:
+        if top <= 0 or bottom <= 0 or curr_spot <= 0:
             return False, top, bottom, 0.0
-        buf = self.BAND_VETO_ATR_BUFFER_MULT * atr
+        if bottom > top:
+            return True, top, bottom, 0.0
         is_up = str(direction).upper() in ("UP", "CALL", "CE", "C")
         if is_up:
-            return (curr_spot < top - buf), top, bottom, buf
-        return (curr_spot > bottom + buf), top, bottom, buf
+            return curr_spot <= top, top, bottom, 0.0
+        return curr_spot >= bottom, top, bottom, 0.0
 
     def _pain_zone_vwap_aligned(self, direction: str, price: float, eff_vwap: float = 0.0) -> bool:
         """
@@ -428,7 +421,7 @@ class MicrostructureScorer:
                 pass
                 
         self.history: Dict[str, deque] = {}
-        self.max_window_sec = 30.0
+        self.max_window_sec = 90.0  # C1 fix: expanded from 30s → 90s to capture T:50–58s Mode A pre-close window
         self._running_ofi: Dict[str, float] = {}
         self._running_tot_q: Dict[str, float] = {}
 
@@ -452,7 +445,7 @@ class MicrostructureScorer:
         vol: float = 0.0,
         **kwargs: Any
     ) -> None:
-        """Records a new tick for symbol and prunes history older than 30 seconds."""
+        """Records a tick and prunes rows older than the configured scoring window."""
         # Backward compatibility for legacy callers passing (bq1, sq1, deep_bid_qty, deep_ask_qty)
         if "bq1" in kwargs:
             b1 = float(kwargs["bq1"])
@@ -469,7 +462,7 @@ class MicrostructureScorer:
             a3 = da / 3.0; a4 = da / 3.0; a5 = da / 3.0
 
         if sym not in self.history:
-            self.history[sym] = deque(maxlen=200)
+            self.history[sym] = deque(maxlen=1000)  # C1 fix: expanded from 200 → 1000 to match 90s window @ ~10 ticks/s
             self._running_ofi[sym] = 0.0
             self._running_tot_q[sym] = 0.0
             
@@ -502,6 +495,7 @@ class MicrostructureScorer:
         adjacent_otm_returns: Optional[Dict[int, float]] = None,
         opp_side_return: float = 0.0,
         anchor_ts_sec: Optional[float] = None,
+        lookback_sec: Optional[float] = None,
     ) -> Tuple[float, bool, Dict[str, float]]:
         """
         Computes the empirical microstructure confidence score for target_sym.
@@ -526,6 +520,11 @@ class MicrostructureScorer:
                 return 0.0, False, {"error": "INSUFFICIENT_ANCHORED_BUFFER"}
             # Work on a plain list slice so first/last are T-bound, not T+1s.
             buf = anchored
+        elif lookback_sec is not None:
+            window_start = now_ts_sec - max(float(lookback_sec), 1.0)
+            buf = [r for r in buf if window_start <= r[0] <= now_ts_sec]
+            if len(buf) < 2:
+                return 0.0, False, {"error": "INSUFFICIENT_LIVE_BUFFER"}
             
         first = buf[0]
         last = buf[-1]
@@ -534,7 +533,11 @@ class MicrostructureScorer:
         t0, p0, bp1_0, sp1_0, b1_0, a1_0, b2_0, a2_0, b3_0, a3_0, b4_0, a4_0, b5_0, a5_0 = first[:14]
         t1, p1, bp1_1, sp1_1, b1_1, a1_1, b2_1, a2_1, b3_1, a3_1, b4_1, a4_1, b5_1, a5_1 = last[:14]
         
-        dt = max(0.5, t1 - t0)
+        dt = (
+            max(float(lookback_sec), 1.0)
+            if lookback_sec is not None
+            else max(0.5, t1 - t0)
+        )
         
         # 1. Tick Intensity (arrival rate)
         tick_intensity = len(buf) / dt
@@ -827,8 +830,8 @@ class CompositeConvictionEngine:
         deep_pressure = (i3 + i4 + i5) / 3.0
 
         n_ticks = len(sl)
-        dt = max(float(last_r[0] - first_r[0]), 0.5)
-        tick_intensity = float(n_ticks) / dt
+        effective_dt = max(float(lookback), 1.0)
+        tick_intensity = float(n_ticks) / effective_dt
 
         base_metrics = {
             "is_valid": True,
@@ -983,10 +986,14 @@ class CompositeConvictionEngine:
             ofi_aligned = (ofi > 0) if is_up else (ofi < 0)
             ofi_opposing = (ofi < 0) if is_up else (ofi > 0)
             n1_fp = (wyckoff_details or {}).get("n1_footprint") or {}
-            if ofi_aligned:
-                agg_pts = max(agg_pts, 34.0)
-            elif not ofi_opposing and (n1_fp.get("n1_vol_dryup", False) or n1_fp.get("n1_stopping_vol", False)):
-                agg_pts = max(agg_pts, 34.0)
+            # C4 fix: Only grant Wyckoff floor when flow is NOT an opposing ask wall (eff_i1 >= -0.20).
+            # When eff_i1 < -0.20 (strong ask wall opposing our direction), Wyckoff floor is vetoed —
+            # the hollow floor that allowed 34+22+25=81 on a bearish ask wall is now closed.
+            if eff_i1 >= -0.20:
+                if ofi_aligned:
+                    agg_pts = max(agg_pts, 34.0)
+                elif not ofi_opposing and (n1_fp.get("n1_vol_dryup", False) or n1_fp.get("n1_stopping_vol", False)):
+                    agg_pts = max(agg_pts, 34.0)
 
         # 2. Live Tick Arrival Intensity (35 pts max)
         if tick_rate is not None:

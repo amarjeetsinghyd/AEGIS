@@ -297,6 +297,12 @@ Active at `T:50s Pre-Close` or `T:00s Close`, focusing on sustained book absorpt
 - **$\ge 80.0$ Total Score**: `ADMITTED` (Strict 1 Lot locked per User Mandate, +4.0% Maker TP, +3.0% Fri)
 - **$< 80.0$ Total Score**: `BLOCKED` with itemized audit drags (`aggression_drag`, `momentum_drag`, `tick_rate_drag`, `tradability_drag`)
 
+### 4. Budget-Anchored Three-Strike Cluster
+- The execution manager stages separate CALL and PUT budget targets from the subscribed option universe and refreshes them every 10 seconds using current funds and quotes.
+- Entry evaluation is restricted to the staged target and available adjacent OTM ranks: target first, one step farther OTM second, and one step nearer ATM third. The nearer-ATM fallback is omitted when the target is already ATM, so the cluster never adds an ITM contract. Unstaged option ticks still update telemetry but cannot independently trigger entry evaluation.
+- Each cluster member is scored from its own option tick history and L1-L5 book. A candidate must pass the existing conviction hurdle (at least 80), quote freshness, spread/option-quality gates, premium bounds, and one-lot affordability checks using both LTP and ask.
+- Dispatch follows the same priority order: target, farther OTM, then nearer ATM. The selected candidate's token, symbol, strike, side, and live quote are carried together; the execution manager validates that metadata against the token map and rechecks the scored contract's live quote and affordability before placing an order.
+
 Passively models the continuous price-volume distribution (inspired by the Maxwell-Boltzmann distribution):
 
 1. **Spot Volume Profile (Horizontal Price Bins)**:
@@ -376,7 +382,6 @@ AEGIS employs a **Hybrid Intra-Bar Execution Architecture**:
 ### 3. Pillar 3: Volatility Squeeze Breakout (`volatility_squeeze_breakout`)
 - **Box Compression**: 3 to 4 prior closed bars compress tightly within $\le 1.25\times \text{ATR}_{14}$.
 - **Decisive Breakout**: Bar closes completely outside box high (CALL) or box low (PUT) with opposing wick $\le 18\%$.
-- **Anti-Climax Cap**: Breakout candle range must not exceed $\le 1.35\times \text{ATR}_{14}$ (prevents buying at climax exhaustion).
 - **Trend Alignment**: 20 EMA $\ge$ 50 EMA for CALL, 20 EMA $\le$ 50 EMA for PUT.
 
 ### 4. Pillar 4: Topological Prominence Breakout (`topological_prominence_breakout`)
