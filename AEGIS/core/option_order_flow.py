@@ -278,10 +278,12 @@ class OptionOrderFlowMixin:
         now_ts = self.last_ts if self.last_ts > 0 else _time.time()
 
         # Global WebSocket Reconnect / Freeze Guard:
-        # If the entire options feed went silent between 5.0s and 55.0s, clear cum vols
-        # so every symbol cleanly reseeds its baseline on its first post-reconnect tick.
-        if self._last_global_opt_tick_ts > 0 and 5.0 < (now_ts - self._last_global_opt_tick_ts) < 55.0:
+        # If the entire options feed went silent for > 5.0s (any duration), clear cum vols
+        # and cached tick state so every symbol cleanly reseeds its baseline on its first post-reconnect tick.
+        if self._last_global_opt_tick_ts > 0 and (now_ts - self._last_global_opt_tick_ts) > 5.0:
             self._opt_last_cum_vol.clear()
+            self._opt_last_lp.clear()
+            self._opt_last_frac.clear()
         self._last_global_opt_tick_ts = now_ts
 
         # 1. Day-cumulative volume differencing + session rollover guard
@@ -292,11 +294,11 @@ class OptionOrderFlowMixin:
             return  # Baseline seed tick
 
         delta_vol = vol - prev_vol
-        self._opt_last_cum_vol[sym] = vol
-        if delta_vol < 0:
-            delta_vol = vol        # New session: day-cum reset to 0
         if delta_vol <= 0:
+            # Out-of-order stale tick or zero-volume quote update: discard safely.
+            # Never overwrite _opt_last_cum_vol with a smaller stale volume or create phantom volume.
             return
+        self._opt_last_cum_vol[sym] = vol
 
         # 2. Window Filter: ATM ± 7 strikes
         ref_atm = atm_strike or (round(self.last_price / self.strike_step) * self.strike_step)
@@ -351,7 +353,9 @@ class OptionOrderFlowMixin:
         """Verifies institutional order flow delta harmony (no opposing liquidation dump)."""
         cb = float(getattr(bar, "call_buy_vol", 0.0) or 0.0)
         pb = float(getattr(bar, "put_buy_vol", 0.0) or 0.0)
-        if cb > 1000.0 or pb > 1000.0:
+        eff_lot = getattr(self, "lot_size", 65.0) or 65.0
+        min_v = 15.0 * eff_lot  # Scale-invariant (15 lots minimum active flow)
+        if cb > min_v or pb > min_v:
             if direction == "UP" and pb > 2.5 * max(cb, 1.0):
                 return False
             elif direction == "DOWN" and cb > 2.5 * max(pb, 1.0):
@@ -952,7 +956,9 @@ class CompositeConvictionEngine:
           3. Contract Tradability & Spread: 25 pts
         """
         is_up = direction.upper() in ("UP", "CALL")
-        eff_i1 = touch_i1 if is_up else -touch_i1
+        # Option Buyer mandate: Whether buying CE (UP) or PE (DOWN), the trader is LONG the option.
+        # Strong bid support (touch_i1 > 0) on the option contract is always bullish for that option.
+        eff_i1 = touch_i1
         wyckoff_conf = bool((wyckoff_details or {}).get("wyckoff_confirmed", False))
         ofi = float(
             (wyckoff_details or {}).get("opt_delta_flow")
@@ -1063,8 +1069,9 @@ class CompositeConvictionEngine:
           3. Contract Tradability & Book Depth Support: 25 pts
         """
         is_up = direction.upper() in ("UP", "CALL")
-        eff_i1 = touch_i1 if is_up else -touch_i1
-        eff_deep = deep_pressure if is_up else -deep_pressure
+        # Option Buyer mandate: Strong bid support on the option book is always positive for both CE and PE:
+        eff_i1 = touch_i1
+        eff_deep = deep_pressure
         wyckoff_conf = bool((wyckoff_details or {}).get("wyckoff_confirmed", False))
         ofi = float(
             (wyckoff_details or {}).get("opt_delta_flow")

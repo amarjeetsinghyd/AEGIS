@@ -710,7 +710,31 @@ class AegisPipelineOrchestrator:
                             energy_score = 100.0
                             micro_m = {}
                             time_since_close = (now_sec - anchor_T) if (anchor_T and anchor_T > 0) else 0.0
-                            if not is_mode_b and use_anchor and self.conviction_engine and self.scorer:
+                            if is_mode_b:
+                                # Mode B In-Flight: extract live micro metrics from immediate rolling 10s buffer
+                                # to ensure touch_i1, real spread_pct and depth are verified upfront
+                                if self.conviction_engine and self.scorer:
+                                    buf = self.scorer.history.get(sym, [])
+                                    if buf:
+                                        micro_m = self.conviction_engine.extract_micro_metrics(
+                                            tick_buffer=buf,
+                                            anchor_T=now_sec,
+                                            lookback_sec=10.0,
+                                        )
+                                        if not micro_m.get("is_valid", True):
+                                            micro_30_m = self.conviction_engine.extract_micro_metrics(
+                                                tick_buffer=buf,
+                                                anchor_T=now_sec,
+                                                lookback_sec=30.0,
+                                            )
+                                            if micro_30_m.get("is_valid", True):
+                                                micro_m = micro_30_m
+                                        if micro_m.get("is_valid", True):
+                                            tot_bid_depth = micro_m.get("tot_bid_depth", tot_bid_depth)
+                                            tot_ask_depth = micro_m.get("tot_ask_depth", tot_ask_depth)
+                                            bp1 = micro_m.get("bp1", bp1)
+                                            sp1 = micro_m.get("sp1", sp1)
+                            elif not is_mode_b and use_anchor and self.conviction_engine and self.scorer:
                                 buf = self.scorer.history.get(sym, [])
                                 if buf:
                                     micro_m = self.conviction_engine.extract_micro_metrics(

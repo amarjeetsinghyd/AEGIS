@@ -93,23 +93,22 @@ class OptionQualityEngine:
         if lp > self.max_premium:
             return False, f"premium_too_high ({lp:.2f} > {self.max_premium})", metrics
 
-        # 2. Spread calculation
-        mid = (bp1 + sp1) / 2.0 if (bp1 > 0 and sp1 > 0) else lp
-        spread = max(0.0, sp1 - bp1) if (bp1 > 0 and sp1 > 0) else 0.05
-        spread_pct = (spread / mid * 100.0) if mid > 0 else 999.0
+        # 2. Spread calculation (Fail-closed: missing quote or crossed quote rejects immediately)
+        if bp1 <= 0 or sp1 <= 0 or sp1 <= bp1:
+            return False, f"invalid_or_missing_l1_quote (bp1={bp1}, sp1={sp1})", metrics
+
+        mid = (bp1 + sp1) / 2.0
+        spread = sp1 - bp1
+        spread_pct = (spread / mid) * 100.0
         metrics["spread_pct"] = round(spread_pct, 2)
 
         if spread_pct > self.max_spread_pct:
             return False, f"spread_too_wide ({spread_pct:.2f}% > {self.max_spread_pct}%)", metrics
 
-        # 3. Depth liquidity check (fail-closed: missing/zero depth rejects, with liquid touchline fallback)
+        # 3. Depth liquidity check (Fail-closed: zero depth rejects immediately, scale-invariant)
         total_depth = top5_bid_qty + top5_ask_qty
-        if total_depth < self.min_top5_depth_qty:
-            if total_depth == 0 and spread_pct <= 1.0 and bp1 > 0 and sp1 > 0:
-                total_depth = self.min_top5_depth_qty
-                metrics["top5_bid_qty"] = self.min_top5_depth_qty / 2.0
-                metrics["top5_ask_qty"] = self.min_top5_depth_qty / 2.0
-            else:
-                return False, f"insufficient_depth ({total_depth:.0f} < {self.min_top5_depth_qty})", metrics
+        eff_min_depth = max(50.0, 5.0 * lot_size)  # Scale-invariant (5 lots minimum depth)
+        if total_depth < eff_min_depth:
+            return False, f"insufficient_depth ({total_depth:.0f} < {eff_min_depth:.0f})", metrics
 
         return True, "option_qualified", metrics

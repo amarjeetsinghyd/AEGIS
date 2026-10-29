@@ -52,6 +52,7 @@ class TickCompiler:
         self._prev_l2w = {}  # token -> (bid_weighted, ask_weighted) for persistence
         self._tick_pool = {}  # sym -> ParsedTick (reused)
         self.engine = None  # Set via set_engine()
+        self._book_state = {}  # token -> dict holding stateful merged L1-L5 order book and last good lp/vol
         # ─── MN-4: WebSocket reconnection bookkeeping ───
         # Reconnect is listener-owned (see ShoonyaMarketDataProvider.add_close_listener).
         # The backoff thread is OFF the hot path — on_message is never blocked.
@@ -212,19 +213,72 @@ class TickCompiler:
                     st['oib_sum'] += (bq1 - sq1) / (bq1 + sq1)
                     st['oib_cnt'] += 1
 
+            # ── STATEFUL MERGED BOOK UPDATE (ELIMINATES PARTIAL-TICK ZERO-WIPING) ──
+            if token not in self._book_state:
+                self._book_state[token] = {
+                    "lp": 0.0, "vol": 0.0,
+                    "bp": [0.0] * 5, "bq": [0] * 5,
+                    "sp": [0.0] * 5, "sq": [0] * 5,
+                }
+            st = self._book_state[token]
+
+            # 1. Update last traded price and cumulative volume only when present and positive
+            if lp > 0:
+                st["lp"] = lp
+            if new_vol > 0 and new_vol >= st["vol"]:
+                st["vol"] = new_vol
+
+            # 2. Update order book levels only when explicitly present in message
+            # Touchline (L1) or Depth (L1-L5) updates merge seamlessly without zero-wiping existing levels
+            for i in range(1, 6):
+                raw_bp = message.get(f"bp{i}")
+                if raw_bp is not None and str(raw_bp).strip() != "":
+                    try:
+                        v_bp = float(raw_bp)
+                        if v_bp >= 0: st["bp"][i - 1] = v_bp
+                    except (ValueError, TypeError):
+                        pass
+                raw_bq = message.get(f"bq{i}")
+                if raw_bq is not None and str(raw_bq).strip() != "":
+                    try:
+                        v_bq = int(float(raw_bq))
+                        if v_bq >= 0: st["bq"][i - 1] = v_bq
+                    except (ValueError, TypeError):
+                        pass
+                raw_sp = message.get(f"sp{i}")
+                if raw_sp is not None and str(raw_sp).strip() != "":
+                    try:
+                        v_sp = float(raw_sp)
+                        if v_sp >= 0: st["sp"][i - 1] = v_sp
+                    except (ValueError, TypeError):
+                        pass
+                raw_sq = message.get(f"sq{i}")
+                if raw_sq is not None and str(raw_sq).strip() != "":
+                    try:
+                        v_sq = int(float(raw_sq))
+                        if v_sq >= 0: st["sq"][i - 1] = v_sq
+                    except (ValueError, TypeError):
+                        pass
+
+            if bp1 > 0:
+                st["bp"][0] = bp1
+            if sp1 > 0:
+                st["sp"][0] = sp1
+
             # ── UNIFIED ZERO-COPY DISPATCH TO ENGINE (ALL 110 SYMBOLS DIRECT) ──
-            # Parse directly into pre-allocated ParsedTick, bypass dict creation
+            # Parse directly into pre-allocated ParsedTick using clean statefully merged book
             if self.engine and key in self._tick_pool:
                 tick = self._tick_pool[key]
                 tick.tok = token
-                tick.lp = lp
-                tick.vol = new_vol
+                # Merged state: use last known good lp and vol so depth-only messages don't drop
+                tick.lp = st["lp"] if st["lp"] > 0 else lp
+                tick.vol = st["vol"] if st["vol"] > 0 else new_vol
                 tick.ts = time.time()
                 for i in range(5):
-                    tick.bp[i] = self._as_float(message, f"bp{i+1}", default=0.0)
-                    tick.bq[i] = int(self._as_float(message, f"bq{i+1}", default=0.0))
-                    tick.sp[i] = self._as_float(message, f"sp{i+1}", default=0.0)
-                    tick.sq[i] = int(self._as_float(message, f"sq{i+1}", default=0.0))
+                    tick.bp[i] = st["bp"][i]
+                    tick.bq[i] = st["bq"][i]
+                    tick.sp[i] = st["sp"][i]
+                    tick.sq[i] = st["sq"][i]
                 # Non-blocking dispatch - engine processes in same thread
                 self.engine.on_tick_parsed(tick)
 
