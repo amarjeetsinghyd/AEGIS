@@ -32,9 +32,12 @@ class TestMicrostructureScorer:
             )
             
         buf = scorer.history[sym]
-        # Should have pruned ticks older than 30s
-        assert len(buf) <= 32
-        assert buf[-1][0] - buf[0][0] <= 30.5
+        # Buffer now holds up to 1000 ticks (C1 fix: expanded from 200 → 1000 for 90s window).
+        # All 40 ticks are retained since maxlen is large enough.
+        # Pruning of stale ticks happens at extraction time (cutoff = ts - max_window_sec),
+        # so the deque length itself is not bounded to the window size anymore.
+        assert len(buf) == 40  # All 40 ticks stored (within maxlen=1000)
+        assert buf[-1][0] - buf[0][0] <= 30.5 + 10.0  # time span matches input range
 
     def test_score_bounds_and_features(self):
         scorer = MicrostructureScorer(high_conviction_threshold=75.0)
@@ -66,6 +69,32 @@ class TestMicrostructureScorer:
         assert "book_slope" in feats
         assert "i1" in feats
         assert "i5" in feats
+
+    def test_live_tick_intensity_uses_window_not_tick_spacing(self):
+        scorer = MicrostructureScorer()
+        sym = "NIFTY26AUG24500CE"
+        for ts in (1000.0, 1000.9):
+            scorer.update_tick(
+                sym=sym,
+                ts_sec=ts,
+                lp=100.0,
+                bp1=99.9,
+                sp1=100.1,
+                b1=100,
+                a1=100,
+            )
+
+        _, _, features = scorer.compute_score(sym, 1001.0, lookback_sec=10.0)
+        assert features["target_tick_intensity"] == pytest.approx(0.2)
+
+        from AEGIS.core.option_order_flow import CompositeConvictionEngine
+        micro = CompositeConvictionEngine.extract_micro_metrics(
+            tick_buffer=scorer.history[sym],
+            anchor_T=1001.0,
+            lookback_sec=10.0,
+        )
+        assert micro["is_valid"] is True
+        assert micro["tick_intensity"] == pytest.approx(0.2)
 
     def test_layered_decomposition_math(self):
         scorer = MicrostructureScorer()

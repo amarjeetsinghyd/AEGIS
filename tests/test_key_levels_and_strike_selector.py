@@ -34,6 +34,28 @@ def test_strike_selector_picks_highest_affordable_without_testing_band():
     assert ltp == 29.45
 
 
+def test_strike_selector_respects_configured_premium_ceiling():
+    weekly_opts = pd.DataFrame([
+        {"symbol": "NIFTY2613010500CE", "token": "201", "strike": 1050.0},
+        {"symbol": "NIFTY2613011000CE", "token": "202", "strike": 1100.0},
+    ])
+    allocation = StrikeSelector.select_strikes(
+        signal_type="CALL",
+        index_price=1000.0,
+        index_name="NIFTY",
+        weekly_opts=weekly_opts,
+        option_cache={"201": 30.0, "202": 20.0},
+        available_funds=1000.0,
+        lot_size=10,
+        premium_min=4.0,
+        premium_max=25.0,
+    )
+    assert len(allocation) == 1
+    chosen_row, _, ltp = allocation[0]
+    assert chosen_row["token"] == "202"
+    assert ltp == 20.0
+
+
 def test_strike_selector_0dte_depth_guard():
     """Verify that on 0DTE (expiry day), deep OTM strikes (> 5 strikes away) are capped."""
     # Build 10 OTM strikes
@@ -192,5 +214,4 @@ def test_strike_selector_selects_otm12_for_tiny_funds_sensex():
     assert chosen_row["strike"] == 73900.0
     assert ltp == 24.50
     assert ltp * 20 <= 588.36
-
 

@@ -188,13 +188,17 @@ class DowMacroShieldsMixin:
             found_pair = False
             idx_hh1, hh1_price, idx_hl1, hl1_price = -1, -1.0, -1, 1e18
 
-            for m in range(trend_start + 1, idx_hh2 - 3):
+            for m in range(idx_hh2 - 4, trend_start, -1):
+                if m <= 0 or m + 1 >= idx_hh2:
+                    continue
                 if bars[m].high <= e_high[m]:
                     continue
                 cand_hh1 = bars[m].high
 
                 trough_idx = min(range(m + 1, idx_hh2), key=lambda x: bars[x].low)
                 cand_hl1 = bars[trough_idx].low
+                if trough_idx <= m or trough_idx >= idx_hh2:
+                    continue
                 trough_tested = cand_hl1 <= (e_high[trough_idx] + tol_pts)
 
                 if (
@@ -329,13 +333,17 @@ class DowMacroShieldsMixin:
             found_pair = False
             idx_ll1, ll1_price, idx_lh1, lh1_price = -1, 1e18, -1, -1.0
 
-            for m in range(trend_start + 1, idx_ll2 - 3):
+            for m in range(idx_ll2 - 4, trend_start, -1):
+                if m <= 0 or m + 1 >= idx_ll2:
+                    continue
                 if bars[m].low >= e_low[m]:
                     continue
                 cand_ll1 = bars[m].low
 
                 peak_idx = max(range(m + 1, idx_ll2), key=lambda x: bars[x].high)
                 cand_lh1 = bars[peak_idx].high
+                if peak_idx <= m or peak_idx >= idx_ll2:
+                    continue
                 peak_tested = cand_lh1 >= (e_low[peak_idx] - tol_pts)
 
                 if (
@@ -428,6 +436,16 @@ class DowMacroShieldsMixin:
         curr_day = int(curr_bar.ts_start // 86400) if curr_bar else self._current_vwap_day
         is_inflight = (self._curr_1m_bar is not None and getattr(self._curr_1m_bar, "tick_count", 0) > 0)
         source_bars = list(self.bars_1m) if is_inflight else list(self.bars_1m)[:-1]
+        if is_inflight:
+            forming_bar = self._curr_1m_bar
+            live_extreme_gap = max(0.10 * self.current_atr_1m, 0.0001 * current_price)
+            forming_extreme_is_behind_price = (
+                forming_bar.high - current_price >= live_extreme_gap
+                if direction.upper() in ("UP", "CALL")
+                else current_price - forming_bar.low >= live_extreme_gap
+            )
+            if forming_extreme_is_behind_price:
+                source_bars.append(forming_bar)
         intraday_prior_bars = [
             b for b in source_bars
             if (curr_day <= 0 or int(b.ts_start // 86400) == curr_day)
@@ -573,4 +591,3 @@ class DowMacroShieldsMixin:
                 return False, r_de, det_de
 
         return True, "clear_of_structural_obstacles", {}
-

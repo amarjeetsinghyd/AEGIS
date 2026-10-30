@@ -141,6 +141,7 @@ class StrikeSelector:
 
         otm_strikes = StrikeSelector.get_otm_strikes(atm_strike, signal_type, index_name, max_depth=_depth)
         _configured_min = float(kwargs.get("premium_min") or float(os.getenv("AEGIS_MIN_PREMIUM", "4.0")))
+        premium_max = float(kwargs.get("premium_max") or 0.0)
         # Dead-zone fix: clamp the hardcoded production floor (15) down to the
         # budget-aware effective floor when tiny funds would otherwise make
         # selection mathematically impossible.
@@ -193,6 +194,8 @@ class StrikeSelector:
             
             if ltp is not None and ltp > 0:
                 if ltp < _prem_min:
+                    continue
+                if premium_max > 0.0 and ltp > premium_max:
                     continue
                 cost_for_one_lot = ltp * lot_size
                 if cost_for_one_lot <= available_funds:
