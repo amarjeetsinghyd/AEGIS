@@ -27,46 +27,74 @@ if BASE_DIR not in sys.path:
 from common.logger import get_logger
 from common.config import get_data_dir
 
+# ─── Resilient Isolated Core Imports (Zero Cascading Fallback) ───
 try:
     from AEGIS.core.price_action_engine import PriceActionEngine
+except ImportError:
+    try:
+        from core.price_action_engine import PriceActionEngine
+    except ImportError:
+        PriceActionEngine = None
+
+try:
     from AEGIS.core.option_order_flow import (
         MicrostructureScorer,
         CompositeConvictionEngine,
         ConvictionResult,
     )
-    from AEGIS.core.option_quality import OptionQualityEngine
-    from AEGIS.core.outcome_telemetry import OutcomeTelemetryEngine, PostTradeMilestoneTracker
-
-    from AEGIS.execution.aegis_execution_manager import QualitySlotPolicy, PostTriggerStabilityTracker
-    from AEGIS.core.wyckoff_volume_engine import WyckoffVolumeEngine
-    from AEGIS.core.shadow_boundary_observer import ShadowBoundaryObserver
 except ImportError:
     try:
-        from core.price_action_engine import PriceActionEngine
         from core.option_order_flow import (
             MicrostructureScorer,
             CompositeConvictionEngine,
             ConvictionResult,
         )
-        from core.option_quality import OptionQualityEngine
-        from core.outcome_telemetry import OutcomeTelemetryEngine, PostTradeMilestoneTracker
-
-        from execution.aegis_execution_manager import QualitySlotPolicy, PostTriggerStabilityTracker
-        from core.wyckoff_volume_engine import WyckoffVolumeEngine
-        from core.shadow_boundary_observer import ShadowBoundaryObserver
     except ImportError:
-        PriceActionEngine = None
         MicrostructureScorer = None
         CompositeConvictionEngine = None
-        WyckoffVolumeEngine = None
-        AdaptiveMicroValidator = None
+        ConvictionResult = None
+
+try:
+    from AEGIS.core.option_quality import OptionQualityEngine
+except ImportError:
+    try:
+        from core.option_quality import OptionQualityEngine
+    except ImportError:
         OptionQualityEngine = None
+
+try:
+    from AEGIS.core.outcome_telemetry import OutcomeTelemetryEngine, PostTradeMilestoneTracker
+except ImportError:
+    try:
+        from core.outcome_telemetry import OutcomeTelemetryEngine, PostTradeMilestoneTracker
+    except ImportError:
         OutcomeTelemetryEngine = None
         PostTradeMilestoneTracker = None
 
-        ShadowBoundaryObserver = None
+try:
+    from AEGIS.execution.aegis_execution_manager import QualitySlotPolicy, PostTriggerStabilityTracker
+except ImportError:
+    try:
+        from execution.aegis_execution_manager import QualitySlotPolicy, PostTriggerStabilityTracker
+    except ImportError:
         QualitySlotPolicy = None
         PostTriggerStabilityTracker = None
+
+try:
+    from AEGIS.core.wyckoff_volume_engine import WyckoffVolumeEngine
+except ImportError:
+    try:
+        from core.wyckoff_volume_engine import WyckoffVolumeEngine
+    except ImportError:
+        WyckoffVolumeEngine = None
+
+try:
+    from AEGIS.core.shadow_boundary_observer import ShadowBoundaryObserver
+except ImportError:
+    try:
+        from core.shadow_boundary_observer import ShadowBoundaryObserver
+    except ImportError:
+        ShadowBoundaryObserver = None
 
 # ─── Resilient optional imports (hardening 2026-09-21: each isolated so one
 # missing/stale module on a deploy target can never kill engine init; every
@@ -119,6 +147,10 @@ class AegisPipelineOrchestrator:
 
         # Build fast (side, strike) -> symbol lookup for cross-strike coherence
         self.strike_to_symbol: Dict[Tuple[int, float], str] = {}
+        self._contracts_by_side_strike: Dict[Tuple[int, float], Tuple[str, str]] = {}
+        self._targets_version: int = 0
+        self._map_version: int = 0
+        self._budget_cluster_cache: Dict[str, Tuple[Tuple[Any, ...], List[Dict[str, Any]], FrozenSet[str]]] = {}
         self.tick_ring: Dict[str, deque] = {}  # rolling 30.0s tick arrival timestamps
         self.history_30s: Dict[str, deque] = {} # rolling 30.0s (ts, lp, bp1, sp1, b1, a1)
         # Rebuild is defined below as _rebuild_strike_to_symbol(); warm tick_ring after t2s known
@@ -369,6 +401,9 @@ class AegisPipelineOrchestrator:
                 self.post_trade_tracker.on_option_tick(sym, lp, now_sec)
             if getattr(self, "shadow_boundary_observer", None) and sym:
                 self.shadow_boundary_observer.on_option_tick(sym, lp, now_sec)
+            em = getattr(self, "execution_manager", None)
+            if em is not None:
+                em.on_option_tick(tick)
 
             info = self.token_map.get(tok_str)
             if not info:
@@ -487,8 +522,10 @@ class AegisPipelineOrchestrator:
             if self._last_spot_ts <= 0.0 or spot_age < 0.0 or spot_age > 2.0:
                 self._throttled_veto_log(
                     "stale_spot_entry_veto",
-                    f"[SPOT FRESHNESS VETO] {sym} entry evaluation skipped "
-                    f"(spot age={spot_age:.2f}s; maximum=2.00s)",
+                    lambda: (
+                        f"[SPOT FRESHNESS VETO] {sym} entry evaluation skipped "
+                        f"(spot age={spot_age:.2f}s; maximum=2.00s)"
+                    ),
                 )
                 return None
 
@@ -498,8 +535,8 @@ class AegisPipelineOrchestrator:
                 direction = "UP" if side == 0 else "DOWN"  # 0=CE -> UP, 1=PE -> DOWN
 
                 # Only pre-staged budget targets and their two adjacent strikes may trigger entry evaluation.
-                cluster = self._get_budget_strike_cluster(direction)
-                if not cluster or sym not in {candidate["symbol"] for candidate in cluster}:
+                cluster, cluster_symbols = self._get_budget_strike_cluster_cached(direction)
+                if not cluster or sym not in cluster_symbols:
                     return None
                 cluster_scoring = True
 
@@ -563,8 +600,6 @@ class AegisPipelineOrchestrator:
                 pa_details = {}
                 if self.price_action_engine:
                     current_vwap = getattr(self.price_action_engine, "current_vwap", 0.0)
-                    if sym in self._l2_depth_history:
-                        self.price_action_engine._l2_depth_history = list(self._l2_depth_history[sym])
                     is_pa_setup, pa_setup_name, pa_details = self.price_action_engine.peek_setup(direction, current_vwap, current_time=now_sec)
 
                 # Legacy alias (V4.0 retired albrooks from the ladder: always False).
@@ -631,16 +666,7 @@ class AegisPipelineOrchestrator:
 
 
 
-                # Adaptive Conviction Threshold based on Spot Drift confirmation or Price Action trigger
-                drift_60_bps = self.get_spot_drift_bps(now_sec, 60.0) if len(self.spot_history) >= 2 else 0.0
-                is_trend_confirmed = (direction == "UP" and drift_60_bps >= self.macro_drift_target_bps) or \
-                                     (direction == "DOWN" and drift_60_bps <= -self.macro_drift_target_bps) or \
-                                     is_pa_setup
-
-                effective_threshold = self.moderate_conviction_threshold if is_trend_confirmed else self.high_conviction_threshold
-                
-                # Trigger is eligible ONLY on 3 verified Price Action Setups.
-                # Microstructure score stays as flexible validator inside PA flow.
+                # Trigger is eligible ONLY on 4 verified Price Action Setups.
                 is_trigger_eligible = is_pa_setup
 
                 # Check Trigger Eligibility
@@ -941,7 +967,7 @@ class AegisPipelineOrchestrator:
                                             direction=direction,
                                             setup_name=pa_setup_name,
                                             spot_price=self.last_spot,
-                                            prior_bars=list(self.price_action_engine.bars_1m),
+                                            prior_bars=self.price_action_engine.bars_1m,
                                             current_bar=current_bar,
                                             atr=atr_1m_val,
                                             ema_20=getattr(self.price_action_engine, "ema_20_1m", 0.0),
@@ -1511,9 +1537,10 @@ class AegisPipelineOrchestrator:
         except Exception:
             pass
 
-    def _throttled_veto_log(self, key: str, msg: str, interval_sec: Optional[float] = None) -> None:
+    def _throttled_veto_log(self, key: str, msg: Any, interval_sec: Optional[float] = None) -> None:
         """Hot-path log throttle: first hit immediate, then at most once per
-        interval with suppressed-count summary. Keeps CPU < 10% (no per-tick disk writes)."""
+        interval with suppressed-count summary. Keeps CPU < 10% (no per-tick disk writes).
+        Supports msg as callable (lambda) for lazy evaluation without per-tick string formatting."""
         try:
             now = time.time()
             interval = float(interval_sec if interval_sec is not None else (getattr(self, "_veto_log_interval_sec", 60.0) or 60.0))
@@ -1522,10 +1549,11 @@ class AegisPipelineOrchestrator:
                 suppressed = int(self._veto_log_suppressed.get(key, 0))
                 self._veto_log_ts[key] = now
                 self._veto_log_suppressed[key] = 0
+                resolved_msg = msg() if callable(msg) else str(msg)
                 if suppressed > 0:
-                    logger.info(f"{msg} (suppressed {suppressed}x in last {interval:.0f}s)")
+                    logger.info(f"{resolved_msg} (suppressed {suppressed}x in last {interval:.0f}s)")
                 else:
-                    logger.info(msg)
+                    logger.info(resolved_msg)
             else:
                 self._veto_log_suppressed[key] = int(self._veto_log_suppressed.get(key, 0)) + 1
         except Exception:
@@ -1573,10 +1601,9 @@ class AegisPipelineOrchestrator:
             return 0.0
         target_ts = now_sec - lookback_sec
         ref_price = self.spot_history[0][1]
-        for ts, price in self.spot_history:
+        for ts, price in reversed(self.spot_history):
             if ts <= target_ts:
                 ref_price = price
-            else:
                 break
         return self.last_spot - ref_price
 
@@ -1588,10 +1615,9 @@ class AegisPipelineOrchestrator:
             return 0.0
         target_ts = now_sec - lookback_sec
         ref_price = self.spot_history[0][1]
-        for ts, price in self.spot_history:
+        for ts, price in reversed(self.spot_history):
             if ts <= target_ts:
                 ref_price = price
-            else:
                 break
         if ref_price <= 0 or abs(self.last_spot - ref_price) > 5000:
             # Token switch / uninitialized history jump protection
@@ -1650,11 +1676,16 @@ class AegisPipelineOrchestrator:
     def _rebuild_strike_to_symbol(self):
         """Rebuild (side,strike)→symbol after token-map refresh (fixes P1.4 universe drift)."""
         self.strike_to_symbol.clear()
+        self._contracts_by_side_strike.clear()
         for tok, info in self.token_map.items():
             sym_name = self.t2s.get(str(tok))
             if sym_name and "side" in info and "strike" in info:
                 try:
-                    self.strike_to_symbol[(int(info["side"]), float(info["strike"]))] = sym_name
+                    side_int = int(info["side"])
+                    strike_flt = float(info["strike"])
+                    self.strike_to_symbol[(side_int, strike_flt)] = sym_name
+                    # setdefault ensures the first token in iteration order wins (bit-identical parity)
+                    self._contracts_by_side_strike.setdefault((side_int, strike_flt), (str(tok), sym_name))
                 except Exception:
                     continue
         if getattr(self, "shadow_boundary_observer", None) is not None:
@@ -1664,6 +1695,8 @@ class AegisPipelineOrchestrator:
         """Hot-refresh after expiry roll / ATM rebuild (called by aegis_main on 1-min boundary)."""
         self.t2s = {str(k): str(v) for k, v in token_to_symbol.items()}
         self.token_map = {str(k): v for k, v in token_map.items()}
+        self._map_version += 1
+        self._budget_cluster_cache.clear()
         self._rebuild_strike_to_symbol()
         # Warm tick_ring & history_30s for any new symbols without disturbing existing deques
         for sym in self.t2s.values():
@@ -1677,6 +1710,7 @@ class AegisPipelineOrchestrator:
         """External shift method."""
         if new_atm > 0:
             self.current_atm_strike = new_atm
+            self._budget_cluster_cache.clear()
 
     def set_budget_strike_targets(self, targets: Dict[str, Dict[str, Any]]) -> None:
         """Atomically replace the independently staged CALL and PUT budget anchors."""
@@ -1698,15 +1732,28 @@ class AegisPipelineOrchestrator:
                 "side": 0 if side == "UP" else 1,
             }
         self.budget_strike_targets = normalized
+        self._targets_version += 1
+        self._budget_cluster_cache.clear()
 
-    def _get_budget_strike_cluster(self, direction: str) -> List[Dict[str, Any]]:
-        """Return target, farther-OTM fallback, then nearer-ATM fallback."""
+    def _get_budget_strike_cluster_cached(self, direction: str) -> Tuple[List[Dict[str, Any]], FrozenSet[str]]:
+        """O(1) cached cluster and symbols set lookup."""
         direction_key = str(direction).upper()
         if direction_key not in ("UP", "CALL", "CE", "DOWN", "PUT", "PE"):
-            return []
+            return [], frozenset()
         side_key = "UP" if direction_key in ("UP", "CALL", "CE") else "DOWN"
-        target = self.budget_strike_targets.get(side_key)
         atm = float(self.current_atm_strike or 0.0)
+        cache_key = (side_key, atm, self._targets_version, self._map_version)
+        cached = self._budget_cluster_cache.get(side_key)
+        if cached is not None and cached[0] == cache_key:
+            return cached[1], cached[2]
+
+        cluster = self._build_budget_strike_cluster(side_key, atm)
+        sym_set = frozenset(c["symbol"] for c in cluster)
+        self._budget_cluster_cache[side_key] = (cache_key, cluster, sym_set)
+        return cluster, sym_set
+
+    def _build_budget_strike_cluster(self, side_key: str, atm: float) -> List[Dict[str, Any]]:
+        target = self.budget_strike_targets.get(side_key)
         step = float(self.strike_step or 0.0)
         if not target or atm <= 0.0 or step <= 0.0:
             return []
@@ -1726,15 +1773,6 @@ class AegisPipelineOrchestrator:
         if depth < 0 or abs(signed_depth - depth) > 1e-6:
             return []
 
-        contracts_by_strike: Dict[float, Tuple[str, str]] = {}
-        for token, info in self.token_map.items():
-            if int(info.get("side", -1)) != expected_side:
-                continue
-            contract_strike = float(info.get("strike", 0.0) or 0.0)
-            symbol = self.t2s.get(str(token), "")
-            if contract_strike > 0.0 and symbol:
-                contracts_by_strike.setdefault(contract_strike, (str(token), symbol))
-
         ordered_depths = (
             ("target", depth),
             ("minus_one", depth + 1),
@@ -1752,7 +1790,7 @@ class AegisPipelineOrchestrator:
             if priority == "target":
                 token, symbol = str(target["token"]), str(target["symbol"])
             else:
-                contract = contracts_by_strike.get(candidate_strike)
+                contract = self._contracts_by_side_strike.get((expected_side, candidate_strike))
                 if contract is None:
                     continue
                 token, symbol = contract
@@ -1763,6 +1801,11 @@ class AegisPipelineOrchestrator:
                 "strike": candidate_strike,
                 "side": expected_side,
             })
+        return cluster
+
+    def _get_budget_strike_cluster(self, direction: str) -> List[Dict[str, Any]]:
+        """Return target, farther-OTM fallback, then nearer-ATM fallback."""
+        cluster, _ = self._get_budget_strike_cluster_cached(direction)
         return cluster
 
     @staticmethod

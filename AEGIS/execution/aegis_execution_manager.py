@@ -39,6 +39,10 @@ from common.execution.trade_context import TradeContext, TradeLeg
 from common.execution.realistic_paper_broker import calculate_nse_option_charges, OptionCharges
 from common.market.market_calendar import is_trading_day
 from common.ipc.premarket_bridge import read_premarket_state
+try:
+    from AEGIS.execution.dump_detector import DumpDetector
+except ImportError:
+    from execution.dump_detector import DumpDetector
 
 logger = get_logger("aegis_execution_manager")
 
@@ -323,6 +327,18 @@ class AegisExecutionManager:
         self.trade_lock = threading.Lock()
         self._trade_quote_history = deque(maxlen=60)
         
+        # Sub-Millisecond Institutional Dump Detector at +2.0% Profit Zone (Pure O(1))
+        lot_size = SENSEX_LOT_SIZE if getattr(self, "is_sensex", False) else NIFTY_LOT_SIZE
+        self.dump_detector = DumpDetector(
+            tick=OPTION_TICK_SIZE,
+            lot=int(lot_size),
+            tp_pct=0.04,
+            sl_pct=-0.08,
+            arm_pct=0.02,
+            pull_ticks=2.0,
+            theta_min=0.50,
+        )
+
         # Cooldown & Inter-trade Intervals
         self.last_trade_exit_time: float = 0.0
         self.last_trade_loss: bool = False
@@ -590,6 +606,49 @@ class AegisExecutionManager:
             pass
         return 0.0, 0.0, 0.0, 0.0
 
+    def on_option_tick(self, tick: Any) -> None:
+        """
+        Sub-millisecond direct tick feed for open option leg.
+        Evaluates O(1) Institutional Dump Detector on incoming Level 1-5 book depth.
+        """
+        if not self.has_open_trade() or getattr(self, "_is_exiting", False):
+            return
+        context = self.trade_context
+        if not context or not context.legs:
+            return
+        leg = context.legs[0]
+        tok_str = str(getattr(tick, "tok", ""))
+        sym = str(getattr(tick, "sym", "") or "")
+        if tok_str != str(leg.token) and sym != leg.symbol:
+            return
+
+        det = getattr(self, "dump_detector", None)
+        if det is None or not det.armed:
+            return
+
+        bp = getattr(tick, "bp", None)
+        sp = getattr(tick, "sp", None)
+        bq = getattr(tick, "bq", None)
+        sq = getattr(tick, "sq", None)
+        if bp is None or sp is None or bq is None or sq is None or len(bp) < 5 or len(sp) < 5:
+            return
+
+        try:
+            raw_ts = float(tick.ts) if hasattr(tick, "ts") else time.time()
+            ts = raw_ts if raw_ts > 1e9 else raw_ts * 1000.0
+            ts_sec = ts / 1000.0 if ts > 1e11 else ts
+            lp = float(getattr(tick, "lp", 0.0) or 0.0)
+            vol = float(getattr(tick, "vol", 0.0) or 0.0)
+            if lp <= 0.0:
+                return
+
+            if det.on_tick(ts_sec, lp, vol, bp, bq, sp, sq) == 1:
+                reason = det.reason()
+                logger.warning(f"[AegisEM] 🚨 Sub-millisecond Institutional Dump Detected at +2% zone: {reason}")
+                self._close_all_legs(f"INSTITUTIONAL_DUMP_EXIT ({reason})")
+        except Exception as e_dump:
+            logger.debug(f"[AegisEM] Dump detector tick evaluation exception: {e_dump}")
+
     def _refresh_budget_strike_targets(self) -> None:
         """Pre-stage independently affordable CALL and PUT anchors every 10 seconds."""
         now_mono = time.monotonic()
@@ -601,7 +660,6 @@ class AegisExecutionManager:
         if engine is None:
             return
 
-        engine.set_budget_strike_targets({})
         params = self.get_instrument_params()
         funds = float(self.capital_engine.get_available_funds())
         spot = float(getattr(engine, "last_spot", 0.0) or 0.0)
@@ -610,6 +668,7 @@ class AegisExecutionManager:
                 f"[AegisEM] Budget strike anchors unavailable "
                 f"(funds={funds:.2f}, spot={spot:.2f}); cluster entries disabled"
             )
+            engine.set_budget_strike_targets({})
             return
 
         import pandas as pd
@@ -712,12 +771,17 @@ class AegisExecutionManager:
                 if self.has_open_trade():
                     self._manage_open_trade()
                 else:
-                    self._refresh_budget_strike_targets()
+                    # Check signal queue first (non-blocking) so waiting live signals are never delayed
                     try:
-                        signal = self.signal_queue.get(timeout=0.05)
+                        signal = self.signal_queue.get(block=False)
                         self._process_aegis_signal(signal)
                     except queue.Empty:
-                        pass
+                        self._refresh_budget_strike_targets()
+                        try:
+                            signal = self.signal_queue.get(timeout=0.05)
+                            self._process_aegis_signal(signal)
+                        except queue.Empty:
+                            pass
 
                 # 3. Check pending edge measures for AEGIS latency tracking
                 # (P0-3: engine resolves the *option premium* LTP internally via
@@ -1121,12 +1185,17 @@ class AegisExecutionManager:
                     curr_bar = getattr(pa_engine, "current_bar", None) or getattr(pa_engine, "_curr_1m_bar", None)
 
                 spot_history = getattr(self.aegis_engine, "spot_history", ())
-                spot_snapshot = spot_history.copy() if hasattr(spot_history, "copy") else list(spot_history)
-                post_signal_spots = [
-                    float(price)
-                    for ts, price in spot_snapshot
-                    if float(ts) >= signal_ts and float(price) > 0.0
-                ]
+                post_signal_spots: List[float] = []
+                for item in reversed(spot_history):
+                    try:
+                        ts, price = item[0], item[1]
+                        if float(ts) < signal_ts:
+                            break
+                        p = float(price)
+                        if p > 0.0:
+                            post_signal_spots.append(p)
+                    except Exception:
+                        break
                 signal_spot = float(signal.get("spot") or sig_bar_close)
                 post_sig_trough = min([signal_spot, *post_signal_spots]) if signal_spot > 0 else sig_bar_close
                 post_sig_peak = max([signal_spot, *post_signal_spots]) if signal_spot > 0 else sig_bar_close
@@ -1236,6 +1305,17 @@ class AegisExecutionManager:
                     is_entry_filled = True
                     fill_ts = time.time()
                     entry_latency_ms = max(0.0, round((fill_ts - signal_ts) * 1000.0, 1))
+
+                    # Arm Institutional Dump Detector for the filled contract
+                    if getattr(self, "dump_detector", None) is not None:
+                        is_fri = datetime.now().weekday() == 4
+                        tp_p = 0.03 if is_fri else 0.04
+                        sl_p = -0.065 if is_fri else -0.08
+                        self.dump_detector.arm(leg.entry_price, tp_pct=tp_p, sl_pct=sl_p)
+                        logger.info(
+                            f"[AegisEM] 🎯 DumpDetector ARMED at entry {leg.entry_price:.2f} "
+                            f"(TP: {tp_p*100:+.1f}%, SL: {sl_p*100:+.1f}%, arm_pct: +2.0%)"
+                        )
 
                     # Enrich decision_payload with exact execution timestamps & microstructure context
                     fut_px = float(metrics.get("futures_price", 0.0) or getattr(self.aegis_engine, "last_futures_price", 0.0))
@@ -2090,6 +2170,9 @@ class AegisExecutionManager:
             if self.trade_context:
                 self.trade_context.status = "EXIT_PENDING"
         
+        if getattr(self, "dump_detector", None) is not None:
+            self.dump_detector.disarm()
+        
         threading.Thread(
             target=self._chase_exit_thread,
             args=(reason, is_tp_maker, limit_fill_price),
@@ -2398,7 +2481,10 @@ class AegisExecutionManager:
                 leg.status = "CLOSED"
                 leg.exit_time = datetime.now()
                 leg.exit_price = fill_price
-                leg_units = leg.quantity * params["lot_size"]
+                lot_sz = int(params.get("lot_size", 20 if "SENSEX" in leg.symbol else 65))
+                raw_qty = int(leg.quantity if leg.quantity else 1)
+                # Unit safety: if raw_qty is already in shares (>= lot_sz), do not multiply by lot_sz again
+                leg_units = raw_qty if (raw_qty >= lot_sz and raw_qty % lot_sz == 0) else (raw_qty * lot_sz)
                 leg.pnl = (fill_price - leg.entry_price) * leg_units
                 total_pnl += leg.pnl
                 self.capital_engine.add_funds(fill_price * leg_units)
@@ -2473,7 +2559,8 @@ class AegisExecutionManager:
         except Exception:
             params = {}
         lot_sz = int(params.get("lot_size", 20 if "SENSEX" in sym_str else 65))
-        tot_units = (leg0.quantity if leg0 else 1) * lot_sz
+        raw_q0 = int(leg0.quantity if (leg0 and leg0.quantity) else 1)
+        tot_units = raw_q0 if (raw_q0 >= lot_sz and raw_q0 % lot_sz == 0) else (raw_q0 * lot_sz)
         buy_turnover = (entry_px * tot_units) if entry_px > 0 else 0.0
         sell_turnover = (exit_px * tot_units) if exit_px > 0 else 0.0
         charges_obj = calculate_nse_option_charges(buy_turnover, sell_turnover, brokerage_per_order=5.0)

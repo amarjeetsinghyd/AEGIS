@@ -155,6 +155,12 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         self._mode_a_last_trigger_bar_idx: Dict[str, int] = {}
         self._mode_b_last_trigger_bar_idx: Dict[str, int] = {}
 
+        # ─── O(1) Bar-Close & State Caches for Hot Path ───
+        self._squeeze_box_cache: Dict[Tuple[int, str], Tuple[bool, Dict[str, Any]]] = {}
+        self._session_levels_version: int = 0
+        self._cached_sr_candidates: Dict[str, Tuple[int, int, float, List[StructuralLevel]]] = {}
+        self._lunch_veto_enabled: bool = (os.getenv("AEGIS_LUNCH_SWEEP_VETO_ENABLED", "1") != "0")
+
     @property
     def current_bar(self) -> Optional[OHLCBar]:
         """Returns the in-flight 1-minute OHLC bar if building."""
@@ -270,6 +276,9 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
             )
 
         self.bars_1m.append(bar)
+        self._update_pz_intraday_bar_count()
+        self._squeeze_box_cache.clear()
+        self._cached_sr_candidates.clear()
 
         # Update 5-minute bar
         bucket_5m = int(bar.ts_start // 300)
@@ -309,45 +318,6 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
             b5.opt_total_vol += bar.opt_total_vol
             b5.opt_delta_flow += bar.opt_delta_flow
 
-        # Update 15-minute bar
-        bucket_15m = int(bar.ts_start // 900)
-        new_15m_bar = False
-        if self._curr_15m_bar is None or int(self._curr_15m_bar.ts_start // 900) != bucket_15m:
-            if self._curr_15m_bar is not None:
-                self.bars_15m.append(self._curr_15m_bar)
-                new_15m_bar = True
-            self._curr_15m_bar = OHLCBar(
-                ts_start=float(bucket_15m * 900),
-                ts_end=float((bucket_15m + 1) * 900),
-                open=bar.open,
-                high=bar.high,
-                low=bar.low,
-                close=bar.close,
-                volume=bar.volume,
-                call_buy_vol=bar.call_buy_vol,
-                call_sell_vol=bar.call_sell_vol,
-                put_buy_vol=bar.put_buy_vol,
-                put_sell_vol=bar.put_sell_vol,
-                opt_delta_flow=bar.opt_delta_flow,
-                opt_total_vol=bar.opt_total_vol,
-                opt_pcr=bar.opt_pcr,
-            )
-        else:
-            b15 = self._curr_15m_bar
-            if bar.high > b15.high:
-                b15.high = bar.high
-            if bar.low < b15.low:
-                b15.low = bar.low
-            b15.close = bar.close
-            b15.volume += bar.volume
-            b15.call_buy_vol += bar.call_buy_vol
-            b15.call_sell_vol += bar.call_sell_vol
-            b15.put_buy_vol += bar.put_buy_vol
-            b15.put_sell_vol += bar.put_sell_vol
-            b15.opt_total_vol += bar.opt_total_vol
-            b15.opt_delta_flow += bar.opt_delta_flow
-
-
         # 1. Update 20 EMA (Close, High, Low Band)
         k20 = 2.0 / (20.0 + 1.0)
         if self.ema_20_1m <= 0:
@@ -367,18 +337,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         self.ema_20_high_history.append(self.ema_20_high_1m)
         self.ema_20_low_history.append(self.ema_20_low_1m)
 
-        # 2. Update 50 EMA
-        k50 = 2.0 / (50.0 + 1.0)
-        if self.ema_50_1m <= 0:
-            self.ema_50_1m = bar.close
-            self.ema_50_1m_prev = bar.close
-            self.ema_50_1m_slope = 0.0
-        else:
-            self.ema_50_1m_prev = self.ema_50_1m
-            self.ema_50_1m = (bar.close * k50) + (self.ema_50_1m * (1.0 - k50))
-            self.ema_50_1m_slope = self.ema_50_1m - self.ema_50_1m_prev
-
-        # 3. Update 200 EMA
+        # 2. Update 200 EMA
         k200 = 2.0 / (200.0 + 1.0)
         if self.ema_200_1m <= 0:
             self.ema_200_1m = bar.close
@@ -415,8 +374,8 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
             self.baseline_atr_1m = self.current_atr_1m
             self.atr_ratio = 1.0
 
-        # 5. Dynamic Session S/R Level Registry Update
-        self._update_structural_levels(bar, new_5m_bar=new_5m_bar, new_15m_bar=new_15m_bar)
+        # 4. Dynamic Session S/R Level Registry Update (5m + 1m)
+        self._update_structural_levels(bar, new_5m_bar=new_5m_bar, new_15m_bar=False)
 
         # 6. Mode A Boundary Rejection Arming (Pain Zone & 200 EMA)
         self._evaluate_mode_a_arming(bar)
@@ -439,30 +398,16 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         return live_ema_20, live_slope_20_bps
 
     def get_live_50_ema_and_slope(self) -> Tuple[float, float]:
-        """
-        Computes dynamic 50-EMA and slope on the active in-flight tick price.
-        Returns:
-            (live_ema_50, live_slope_50_bps)
-        """
-        ref = self.last_price if self.last_price > 0 else 1.0
-        k50 = 2.0 / (50.0 + 1.0)
-        if self._curr_1m_bar is not None and self.ema_50_1m > 0 and self.last_price > 0:
-            live_ema_50 = (self.last_price * k50) + (self.ema_50_1m * (1.0 - k50))
-            live_slope_50 = live_ema_50 - self.ema_50_1m
-        else:
-            live_ema_50 = self.ema_50_1m if self.ema_50_1m > 0 else self.last_price
-            live_slope_50 = self.ema_50_1m_slope
-        live_slope_50_bps = (live_slope_50 / ref) * 10000.0
-        return live_ema_50, live_slope_50_bps
+        """Legacy stub for 50 EMA (purged from AEGIS v1.1). Returns (0.0, 0.0)."""
+        return 0.0, 0.0
 
     def get_live_ema_and_slope(self) -> Tuple[float, float, float, float]:
         """
-        Returns (live_ema_20, live_slope_20_bps, live_ema_50, live_slope_50_bps)
+        Returns (live_ema_20, live_slope_20_bps, 0.0, 0.0)
         for backward compatibility with legacy callers expecting 4-tuple EMA & slope metrics.
         """
         live_ema_20, live_slope_20_bps = self.get_live_20_ema_and_slope()
-        live_ema_50, live_slope_50_bps = self.get_live_50_ema_and_slope()
-        return live_ema_20, live_slope_20_bps, live_ema_50, live_slope_50_bps
+        return live_ema_20, live_slope_20_bps, 0.0, 0.0
 
     def seed_historical_bars(self, candles: List[Dict[str, Any]]) -> int:
         """
@@ -510,7 +455,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
 
         if self.bars_1m:
             self.last_price = self.bars_1m[-1].close
-        logger.info(f"[PriceActionEngine] Seeded {count} historical bars. Live 20 EMA: {self.ema_20_1m:.1f}, 50 EMA: {self.ema_50_1m:.1f}, 200 EMA: {self.ema_200_1m:.1f}")
+        logger.info(f"[PriceActionEngine] Seeded {count} historical bars. Live 20 EMA: {self.ema_20_1m:.1f}, 200 EMA: {self.ema_200_1m:.1f}")
         return count
 
     def queue_historical_backfill(self, candles: List[Dict[str, Any]], current_ts: float) -> None:
@@ -1236,16 +1181,17 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         # ─── LUNCH CHOP REGIME VETO (11:15 to 13:00 IST) ───
         # Micro-sweeps during midday lunch consolidation represent low-volume retail wick noise,
         # lacking institutional expansion follow-through.
-        if os.getenv("AEGIS_LUNCH_SWEEP_VETO_ENABLED", "1") != "0":
+        if getattr(self, "_lunch_veto_enabled", True):
             eval_ts = current_time if current_time > 0 else (
                 self.bars_1m[-1].ts_start if (self.bars_1m and getattr(self.bars_1m[-1], "ts_start", 0) > 0) else getattr(self, "last_ts", 0.0)
             )
             if eval_ts > 0:
-                from datetime import datetime as _dt, timezone as _tz, timedelta as _td
-                _IST = _tz(_td(hours=5, minutes=30))
-                dt_ist = _dt.fromtimestamp(eval_ts, _IST)
-                time_mins = dt_ist.hour * 60 + dt_ist.minute
+                # Fast epoch IST minute calculation (UTC+5:30 = +19800s, no DST in IST)
+                time_mins = ((int(eval_ts) + 19800) // 60) % 1440
                 if 675 <= time_mins < 780:
+                    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+                    _IST = _tz(_td(hours=5, minutes=30))
+                    dt_ist = _dt.fromtimestamp(eval_ts, _IST)
                     return False, "lunch_chop_sweep_veto", {
                         "time_ist": dt_ist.strftime("%H:%M:%S"),
                         "time_mins": time_mins,
@@ -1281,8 +1227,6 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                         "max_allowed_s": 15.0,
                     }
 
-        # Lookback prior 5 closed bars (excluding current bar)
-        prior_bars = list(self.bars_1m)[-(lookback_bars + 1):-1]
         buffer_pts = max(5.0, (ref_spot / 24000.0) * 5.0)
         min_sweep_depth = max(1.5, (ref_spot / 24000.0) * 1.5, 0.08 * _atr_ref)
 
@@ -1311,7 +1255,6 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                 }
 
         live_ema_20, live_slope_20_bps = self.get_live_20_ema_and_slope()
-        live_ema_50, live_slope_50_bps = self.get_live_50_ema_and_slope()
 
         if direction.upper() in ("UP", "CALL"):
             # Macro trend / VWAP alignment
@@ -1581,10 +1524,10 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         # ─── 1. Pillar 1: CALL 20 EMA Pullback Rejection Arming ───
         last_p1_up_idx = self._mode_a_last_trigger_bar_idx.get("P1_EMA20_UP", -100)
         if (bar_idx - last_p1_up_idx) >= 3:
-            uptrend_ok = (live_slope_20_bps >= -0.10) and (self.ema_20_1m >= self.ema_50_1m or self.ema_50_1m <= 0)
+            uptrend_ok = (live_slope_20_bps >= -0.10)
             vwap_ok = (self.current_vwap <= 0 or bar.close > self.current_vwap)
             # Breakout-from-below VETO: Price must have opened at/above band and prior bars must have been above band!
-            prior_bars = list(self.bars_1m)[-4:-1]
+            prior_bars = self._tail_list(self.bars_1m, 4)[:-1]
             came_from_above = (bar.open >= band_low - 0.25 * atr) and any(b.high >= band_high for b in prior_bars)
             # Band Touch
             band_tested = (bar.low <= band_high + tol_pts) and (bar.close >= band_low - 0.25 * atr)
@@ -1621,9 +1564,9 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         # ─── 2. Pillar 1: PUT 20 EMA Pullback Rejection Arming ───
         last_p1_down_idx = self._mode_a_last_trigger_bar_idx.get("P1_EMA20_DOWN", -100)
         if (bar_idx - last_p1_down_idx) >= 3:
-            downtrend_ok = (live_slope_20_bps <= 0.10) and (self.ema_20_1m <= self.ema_50_1m or self.ema_50_1m <= 0)
+            downtrend_ok = (live_slope_20_bps <= 0.10)
             vwap_ok = (self.current_vwap <= 0 or bar.close < self.current_vwap)
-            prior_bars = list(self.bars_1m)[-4:-1]
+            prior_bars = self._tail_list(self.bars_1m, 4)[:-1]
             came_from_below = (bar.open <= band_high + 0.25 * atr) and any(b.low <= band_low for b in prior_bars)
             band_tested = (bar.high >= band_low - tol_pts) and (bar.close <= band_high + 0.25 * atr)
             rej_geom = (upper_wick_ratio >= 0.20) and (bar.close <= bar.high - 0.40 * c_range)
@@ -1885,7 +1828,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         if direction == "UP":
             last_p1 = self._mode_a_last_trigger_bar_idx.get("P1_EMA20_UP", -100)
             if (bar_idx - last_p1) >= 3:
-                uptrend_ok = (live_slope_20_bps >= -0.10) and (self.ema_20_1m >= self.ema_50_1m or self.ema_50_1m <= 0)
+                uptrend_ok = (live_slope_20_bps >= -0.10)
                 vwap_ok = (self.current_vwap <= 0 or spot > self.current_vwap)
                 came_from_above = curr_bar.open >= (band_low - 0.25 * atr)
                 band_tested = (curr_bar.low <= band_high + tol_pts) and (spot >= band_low - 0.25 * atr)
@@ -1929,7 +1872,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         elif direction == "DOWN":
             last_p1 = self._mode_a_last_trigger_bar_idx.get("P1_EMA20_DOWN", -100)
             if (bar_idx - last_p1) >= 3:
-                downtrend_ok = (live_slope_20_bps <= 0.10) and (self.ema_20_1m <= self.ema_50_1m or self.ema_50_1m <= 0)
+                downtrend_ok = (live_slope_20_bps <= 0.10)
                 vwap_ok = (self.current_vwap <= 0 or spot < self.current_vwap)
                 came_from_below = curr_bar.open <= (band_high + 0.25 * atr)
                 band_tested = (curr_bar.high >= band_low - tol_pts) and (spot <= band_high + 0.25 * atr)
@@ -2176,6 +2119,56 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
             "bar_count": n,
         }
 
+    def _get_squeeze_box_cached(self, direction: str, atr: float, bar_idx: int, last_p3: int) -> Tuple[bool, Dict[str, Any]]:
+        """O(1) cached squeeze box lookup per 1m closed bar."""
+        cache_key = (bar_idx, direction)
+        cached = self._squeeze_box_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        p3_box_valid = False
+        box_meta: Dict[str, Any] = {}
+        if len(self.bars_1m) >= 5 and (bar_idx - last_p3) >= 3:
+            bars_list = self._tail_list(self.bars_1m, 7)
+            for n_cand in (6, 5, 7):
+                if len(bars_list) >= n_cand:
+                    cand_bars = bars_list[-n_cand:]
+                    ok_box, _, meta = self._is_valid_squeeze_box(cand_bars, atr, direction)
+                    if ok_box:
+                        p3_box_valid = True
+                        box_meta = meta
+                        break
+        result = (p3_box_valid, box_meta)
+        self._squeeze_box_cache[cache_key] = result
+        return result
+
+    def _get_sr_breakout_candidates(self, direction: str, now_sec: float) -> List[StructuralLevel]:
+        """O(1) cached sorted structural S/R breakout candidates."""
+        cache_entry = self._cached_sr_candidates.get(direction)
+        if cache_entry is not None:
+            ver, bars_seen, exp_ts, cands = cache_entry
+            if ver == self._session_levels_version and bars_seen == self._total_bars_seen and now_sec < exp_ts:
+                return cands
+
+        target_type = "RESISTANCE" if direction == "UP" else "SUPPORT"
+        candidates = []
+        next_flip_ts = float("inf")
+        for lvl in self.session_levels:
+            if lvl.level_type != target_type or lvl.is_broken or lvl.prominence < 1.25:
+                continue
+            bar_age = self._total_bars_seen - lvl.seq_idx
+            time_age = now_sec - lvl.ts_created
+            if bar_age >= 3 or time_age >= 180.0:
+                candidates.append(lvl)
+            else:
+                flip_at = lvl.ts_created + 180.0
+                if flip_at < next_flip_ts:
+                    next_flip_ts = flip_at
+
+        candidates.sort(key=lambda l: (l.touch_count * 0.5 + l.prominence), reverse=True)
+        self._cached_sr_candidates[direction] = (self._session_levels_version, self._total_bars_seen, next_flip_ts, candidates)
+        return candidates
+
     def check_mode_b_breakthrough(
         self,
         direction: str,
@@ -2211,13 +2204,15 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         bear_flow = pb + cs
         opt_delta_flow = cb - pb
         opt_total_vol = cb + cs + pb + ps
-        flow_dict = {
-            "opt_delta_flow": round(opt_delta_flow, 1),
-            "opt_total_vol": round(opt_total_vol, 1),
-            "bull_flow": round(bull_flow, 1),
-            "bear_flow": round(bear_flow, 1),
-            "trigger_sec": sec_in_min,
-        }
+
+        def _get_flow_dict() -> Dict[str, Any]:
+            return {
+                "opt_delta_flow": round(opt_delta_flow, 1),
+                "opt_total_vol": round(opt_total_vol, 1),
+                "bull_flow": round(bull_flow, 1),
+                "bear_flow": round(bear_flow, 1),
+                "trigger_sec": sec_in_min,
+            }
 
         # ─── Pain Zone VWAP Alignment Gate ───
         eff_vwap_mb = external_vwap if external_vwap > 0 else self.current_vwap
@@ -2230,17 +2225,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
 
         # ─── 1. PILLAR 3: Squeeze Box Breakout (Mode B) ───
         last_p3 = self._mode_b_last_trigger_bar_idx.get("P3_BOX_BREAKTHROUGH", -100)
-        p3_box_valid = False
-        box_meta: Dict[str, Any] = {}
-        if len(self.bars_1m) >= 5 and (bar_idx - last_p3) >= 3:
-            for n_cand in (6, 5, 7):
-                if len(self.bars_1m) >= n_cand:
-                    cand_bars = list(self.bars_1m)[-n_cand:]
-                    ok_box, _, meta = self._is_valid_squeeze_box(cand_bars, atr, direction)
-                    if ok_box:
-                        p3_box_valid = True
-                        box_meta = meta
-                        break
+        p3_box_valid, box_meta = self._get_squeeze_box_cached(direction, atr, bar_idx, last_p3)
 
         if p3_box_valid:
             box_high = float(box_meta["box_high"])
@@ -2270,7 +2255,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                             "bar_close": round(spot, 2),
                             "entry_bar_bucket": int(now_sec // 60),
                             "_pending_actions": pending,
-                            **flow_dict,
+                            **_get_flow_dict(),
                         }
             elif direction == "DOWN":
                 # Instant breakout: candle opened inside/at box, spot crossed below box_low
@@ -2296,7 +2281,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                             "bar_close": round(spot, 2),
                             "entry_bar_bucket": int(now_sec // 60),
                             "_pending_actions": pending,
-                            **flow_dict,
+                            **_get_flow_dict(),
                         }
 
         # ─── 2. PILLAR 4: Dynamic Session S/R Registry & T-2 Prominence Hub Breakout (Mode B) ───
@@ -2310,14 +2295,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         last_p4 = self._mode_b_last_trigger_bar_idx.get("P4_SR_BREAKTHROUGH", -100)
         if (bar_idx - last_p4) >= 3:
             if direction == "UP":
-                candidates = [
-                    lvl for lvl in self.session_levels
-                    if lvl.level_type == "RESISTANCE"
-                    and not lvl.is_broken
-                    and lvl.prominence >= 1.25
-                    and ((self._total_bars_seen - lvl.seq_idx) >= 3 or (now_sec - lvl.ts_created) >= 180.0)
-                ]
-                candidates.sort(key=lambda l: (l.touch_count * 0.5 + l.prominence), reverse=True)
+                candidates = self._get_sr_breakout_candidates("UP", now_sec)
                 interior_vetoed_up = None
                 for r_lvl in candidates:
                     if curr_bar.open <= r_lvl.price and spot > r_lvl.price:
@@ -2334,11 +2312,12 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                 self._mode_b_last_trigger_bar_idx["P4_SR_BREAKTHROUGH"] = bar_idx
                                 r_lvl.is_broken = True
                                 r_lvl.ts_broken = now_sec
+                                self._session_levels_version += 1
                                 self._classify_level_roles()
                                 logger.info(f"[PriceActionEngine] [MODE_B_P4] Dynamic S/R CALL Breakout at spot={spot:.2f} > res={r_lvl.price:.2f} role={getattr(r_lvl, 'level_role', 'UNKNOWN')} (T+{sec_in_min}s)")
                             return True, "sr_breakout", {
                                 "pillar": 4,
-                                "pa_setup_name": "topological_prominence_breakout",
+                                "pa_setup_name": "sr_breakout",
                                 "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
                                 "boundary_level": round(r_lvl.price, 2),
                                 "level_role": getattr(r_lvl, "level_role", "UNKNOWN"),
@@ -2359,14 +2338,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                         f"role={getattr(interior_vetoed_up, 'level_role', 'INTERIOR_CLUSTER')} — continuing to other pillars"
                     )
             elif direction == "DOWN":
-                candidates = [
-                    lvl for lvl in self.session_levels
-                    if lvl.level_type == "SUPPORT"
-                    and not lvl.is_broken
-                    and lvl.prominence >= 1.25
-                    and ((self._total_bars_seen - lvl.seq_idx) >= 3 or (now_sec - lvl.ts_created) >= 180.0)
-                ]
-                candidates.sort(key=lambda l: (l.touch_count * 0.5 + l.prominence), reverse=True)
+                candidates = self._get_sr_breakout_candidates("DOWN", now_sec)
                 interior_vetoed_dn = None
                 for s_lvl in candidates:
                     if curr_bar.open >= s_lvl.price and spot < s_lvl.price:
@@ -2383,11 +2355,12 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                 self._mode_b_last_trigger_bar_idx["P4_SR_BREAKTHROUGH"] = bar_idx
                                 s_lvl.is_broken = True
                                 s_lvl.ts_broken = now_sec
+                                self._session_levels_version += 1
                                 self._classify_level_roles()
                                 logger.info(f"[PriceActionEngine] [MODE_B_P4] Dynamic S/R PUT Breakout at spot={spot:.2f} < sup={s_lvl.price:.2f} role={getattr(s_lvl, 'level_role', 'UNKNOWN')} (T+{sec_in_min}s)")
                             return True, "sr_breakout", {
                                 "pillar": 4,
-                                "pa_setup_name": "topological_prominence_breakout",
+                                "pa_setup_name": "sr_breakout",
                                 "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
                                 "boundary_level": round(s_lvl.price, 2),
                                 "level_role": getattr(s_lvl, "level_role", "UNKNOWN"),
@@ -2422,7 +2395,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                 last_p1 = self._mode_b_last_trigger_bar_idx.get(f"P1_EMA20_{direction}", -100)
                 if (bar_idx - last_p1) >= 3:
                     if direction == "UP":
-                        uptrend_ok = (live_slope_20_bps >= -0.10) and (self.ema_20_1m >= self.ema_50_1m or self.ema_50_1m <= 0)
+                        uptrend_ok = (live_slope_20_bps >= -0.10)
                         ema_tested = (prior_bar.low <= band_high + tol_pts and prior_bar.high >= band_low - tol_pts) or (curr_bar.low <= band_high + tol_pts)
                         is_pullback = (prior_bar.close <= prior_bar.open) or (prior_bar.close <= band_high + 0.25 * atr)
                         if uptrend_ok and ema_tested and is_pullback and spot >= prior_bar.high:
@@ -2463,10 +2436,10 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                         "entry_bar_bucket": int(now_sec // 60),
                                         "n1_footprint": n1_fp,
                                         "_pending_actions": pending,
-                                        **flow_dict,
+                                        **_get_flow_dict(),
                                     }
                     elif direction == "DOWN":
-                        downtrend_ok = (live_slope_20_bps <= 0.10) and (self.ema_20_1m <= self.ema_50_1m or self.ema_50_1m <= 0)
+                        downtrend_ok = (live_slope_20_bps <= 0.10)
                         ema_tested = (prior_bar.high >= band_low - tol_pts and prior_bar.low <= band_high + tol_pts) or (curr_bar.high >= band_low - tol_pts)
                         is_pullback = (prior_bar.close >= prior_bar.open) or (prior_bar.close >= band_low - 0.25 * atr)
                         if downtrend_ok and ema_tested and is_pullback and spot <= prior_bar.low:
@@ -2507,7 +2480,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                         "entry_bar_bucket": int(now_sec // 60),
                                         "n1_footprint": n1_fp,
                                         "_pending_actions": pending,
-                                        **flow_dict,
+                                        **_get_flow_dict(),
                                     }
 
         # ─── 4. PILLAR 2: Micro-Sweep & Reclaim In-Flight Reversal Breakout (Mode B) ───
@@ -2561,7 +2534,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                     "entry_bar_bucket": int(now_sec // 60),
                                     "n1_footprint": n1_fp,
                                     "_pending_actions": pending,
-                                    **flow_dict,
+                                    **_get_flow_dict(),
                                 }
                     elif direction == "DOWN":
                         sr_lvl_dn = self._find_inflight_swept_sr_level("PUT", prior_bar, curr_bar, spot, min_sweep_depth, atr)
@@ -2596,7 +2569,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                     "entry_bar_bucket": int(now_sec // 60),
                                     "n1_footprint": n1_fp,
                                     "_pending_actions": pending,
-                                    **flow_dict,
+                                    **_get_flow_dict(),
                                 }
 
         return False, "no_mode_b_trigger", {}
@@ -2684,8 +2657,6 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
 
         ok_mp, reason_mp, details_mp = self.check_mode_a_pre_close(direction, eff_vwap, current_time=current_time, commit=commit)
         if ok_mp:
-            setup_name = details_mp.get("pa_setup_name", reason_mp)
-            return True, setup_name, self._enrich_details(details_mp)
             setup_name = details_mp.get("pa_setup_name", reason_mp)
             return True, setup_name, self._enrich_details(details_mp)
 

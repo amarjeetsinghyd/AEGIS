@@ -268,15 +268,18 @@ class ShoonyaOrderLifecycle(OrderLifecycle):
                             if status in ["FILLED", "COMPLETE"]:
                                 fill_confirmed = True
                                 avg_prc = float(history[0].get("avgprc", limit_price))
+                                fs = int(history[0].get("fillshares", 0) or 0)
+                                if fs > 0:
+                                    leg.quantity = fs
                                 break
-                            elif status in ["REJECTED", "CANCELLED"]:
+                            elif status in ["REJECTED", "CANCELLED", "CANCELED"]:
                                 logger.warning(f"[ShoonyaOrderLifecycle] Entry order {ordno} {status} by broker. Immediate abort (no chase).")
                                 return False
                     
                     if fill_confirmed:
                         leg.current_price = avg_prc
                         leg.entry_price = avg_prc
-                        logger.info(f"[ShoonyaOrderLifecycle] ✅ Entry FILLED @ Avg Price: {avg_prc:.2f} (Order: {ordno})")
+                        logger.info(f"[ShoonyaOrderLifecycle] ✅ Entry FILLED ({leg.quantity} shares) @ Avg Price: {avg_prc:.2f} (Order: {ordno})")
                     else:
                         # One-Shot Clean Entry Rule: Zero chasing. Cancel immediately on 0.75s timeout!
                         logger.warning(
@@ -297,6 +300,8 @@ class ShoonyaOrderLifecycle(OrderLifecycle):
                                         avg_prc = float(h_check[0].get("avgprc", limit_price))
                                         leg.current_price = avg_prc
                                         leg.entry_price = avg_prc
+                                        if fs > 0:
+                                            leg.quantity = fs
                                         logger.warning(f"[ShoonyaOrderLifecycle] Entry fill reconciled during cancel: {fs} shares @ {avg_prc:.2f}")
                                         leg.status = "OPEN"
                                         return True

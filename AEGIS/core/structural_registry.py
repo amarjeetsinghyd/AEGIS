@@ -151,17 +151,6 @@ class StructuralRegistryMixin:
             ref_highs = [b.high for b in window_left] + [curr.high]
             depth_high = cand.high - (min(ref_lows) if ref_lows else min(prev.low, curr.low))
             depth_low = (max(ref_highs) if ref_highs else max(prev.high, curr.high)) - cand.low
-            # Check 15m confluence
-            if len(self.bars_15m) >= 3:
-                cand_15 = self.bars_15m[-2]
-                prev_15 = self.bars_15m[-3]
-                curr_15 = self.bars_15m[-1]
-                if abs(cand.high - cand_15.high) <= tol and (cand_15.high >= prev_15.high and cand_15.high > curr_15.high):
-                    tf_name = "15m"
-                    tf_prom_boost += 0.50
-                elif abs(cand.low - cand_15.low) <= tol and (cand_15.low <= prev_15.low and cand_15.low < curr_15.low):
-                    tf_name = "15m"
-                    tf_prom_boost += 0.50
         else:
             cand = self.bars_1m[-2]
             prev = self.bars_1m[-3]

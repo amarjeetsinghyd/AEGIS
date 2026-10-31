@@ -23,6 +23,23 @@ NSE_HOLIDAYS_2026 = {
     date(2026, 12, 25), # Christmas
 }
 
+# Official NSE / BSE Trading Holidays 2027
+NSE_HOLIDAYS_2027 = {
+    date(2027, 1, 26),  # Republic Day (Tuesday)
+    date(2027, 3, 22),  # Holi (Monday)
+    date(2027, 3, 26),  # Good Friday
+    date(2027, 4, 14),  # Ambedkar Jayanti (Wednesday)
+    date(2027, 5, 1),   # Maharashtra Day
+    date(2027, 8, 15),  # Independence Day
+    date(2027, 10, 2),  # Gandhi Jayanti
+    date(2027, 10, 9),  # Dussehra
+    date(2027, 10, 29), # Diwali Laxmi Pujan
+    date(2027, 11, 24), # Gurunanak Jayanti
+    date(2027, 12, 25), # Christmas
+}
+
+ALL_NSE_HOLIDAYS = NSE_HOLIDAYS_2026 | NSE_HOLIDAYS_2027
+
 MARKET_OPEN_TIME = dt_time(9, 15, 0)
 # CAS era (from Aug 2026): continuous cash for F&O-eligible underlyings is 09:15–15:15.
 # House standard for Kronos/data: treat continuous session as 09:15 open → 15:15 close.
@@ -47,7 +64,7 @@ def is_exchange_trading_day(d: date = None) -> bool:
         d = datetime.now().date()
     if d.weekday() >= 5:  # Saturday = 5, Sunday = 6
         return False
-    if d in NSE_HOLIDAYS_2026:
+    if d in ALL_NSE_HOLIDAYS:
         return False
     return True
 
@@ -78,7 +95,7 @@ def is_trading_day(d: date = None) -> bool:
         return False
     if d.weekday() == 4 and os.getenv("AEGIS_FRIDAY_TRADING_ENABLED", "0") == "0":
         return False
-    if d in NSE_HOLIDAYS_2026:
+    if d in ALL_NSE_HOLIDAYS:
         return False
     return True
 

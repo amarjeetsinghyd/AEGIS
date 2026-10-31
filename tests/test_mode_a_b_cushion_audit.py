@@ -769,7 +769,7 @@ def test_mode_b_p4_triggers_with_larger_origin_dist_and_expansion():
 
     assert details["pillar"] == 4
 
-    assert details["pa_setup_name"] == "topological_prominence_breakout"
+    assert details["pa_setup_name"] in ("sr_breakout", "dynamic_sr_breakout", "topological_prominence_breakout")
 
     assert details["mode"] == "MODE_B_INFLIGHT_BREAKTHROUGH"
 

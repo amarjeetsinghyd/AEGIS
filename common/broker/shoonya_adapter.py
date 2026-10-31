@@ -3,6 +3,7 @@ import json
 import time
 import logging
 import threading
+from datetime import datetime, time as dt_time
 
 from common.broker.exceptions import BrokerFeatureUnavailableError
 from common.broker.manifest import BrokerManifest, IdentityCapability, AuthenticationCapability, RateLimitCapability, WebSocketCapability, MarketDataCapability, HistoricalDataCapability, OrderManagementCapability, ProductSupportCapability, ExchangeSupportCapability, FeatureFlagCapability, PerformanceRecommendation
@@ -123,8 +124,12 @@ class ShoonyaSessionProvider(ISessionProvider):
                 return False
             self.susertoken = data["susertoken"]
             actid = data.get("actid", self.userid)
-            self._api.set_session(self.userid, self.password, self.susertoken, self.susertoken)
-            self._api.injectOAuthHeader(self.susertoken, self.userid, actid)
+            try:
+                self._api.set_session(self.userid, self.password, self.susertoken)
+            except TypeError:
+                self._api.set_session(self.userid, self.password, self.susertoken, self.susertoken)
+            if hasattr(self._api, "injectOAuthHeader"):
+                self._api.injectOAuthHeader(self.susertoken, self.userid, actid)
             limits = self._api.get_limits()
             if isinstance(limits, dict) and limits.get("stat") != "Not_Ok":
                 self.logger.info(
@@ -242,12 +247,29 @@ class ShoonyaSessionProvider(ISessionProvider):
             )
 
             if auth_code:
-                result = self._api.getAccessToken(auth_code, self.client_secret, self.client_id, self.userid)
-                if result is not None:
-                    acc_tok, usrid, ref_tok, actid = result
-                    self.susertoken = acc_tok
-                    self.logger.info("Shoonya getAccessToken successful.")
-                    self._api.set_session(self.userid, self.password, self.susertoken, self.susertoken)
+                import hashlib
+                import requests
+                # Exchange auth_code for susertoken via Shoonya OAuth GenAcsTok endpoint
+                checksum = hashlib.sha256(f"{self.client_id}{self.client_secret}{auth_code}".encode("utf-8")).hexdigest()
+                token_url = "https://api.shoonya.com/NorenWClientAPI/GenAcsTok"
+                values = {
+                    "code": auth_code,
+                    "checksum": checksum
+                }
+                payload = "jData=" + json.dumps(values)
+                resp = requests.post(token_url, data=payload, timeout=15)
+                try:
+                    res_data = resp.json()
+                except Exception:
+                    res_data = {}
+                if res_data.get("stat") == "Ok" and res_data.get("susertoken"):
+                    self.susertoken = res_data["susertoken"]
+                    actid = res_data.get("actid", self.userid)
+                    self.logger.info("Shoonya GenAcsTok token exchange successful.")
+                    try:
+                        self._api.set_session(self.userid, self.password, self.susertoken)
+                    except TypeError:
+                        self._api.set_session(self.userid, self.password, self.susertoken, self.susertoken)
                     os.makedirs(os.path.dirname(SESSION_FILE), exist_ok=True)
                     # Atomic write: waiting peers must never observe a partial file.
                     tmp_path = SESSION_FILE + ".tmp"
@@ -264,7 +286,7 @@ class ShoonyaSessionProvider(ISessionProvider):
                     self.logger.info(f"Shoonya OAuth login successful for {self.userid} — shared token published.")
                     return True
                 else:
-                    self.logger.error("Failed to retrieve access token via getAccessToken")
+                    self.logger.error(f"Failed to retrieve access token via GenAcsTok: status={resp.status_code}, resp={resp.text}")
                     return False
             else:
                 self.logger.error("Shoonya OAuth login failed: No auth code returned")
@@ -340,20 +362,21 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
         return resp
 
     def start_live_feed(self, on_tick_callback, on_open_callback=None, on_error_callback=None) -> None:
+        self._ws_started = True
+        self._ws_boot_time = time.time()
         if not hasattr(self, "_last_ws_tick_time"):
             self._last_ws_tick_time = time.time()
             self._last_opt_tick_time = time.time()
-            import threading
-            from datetime import datetime, time as dt_time
             def _ws_watchdog_loop():
                 while True:
                     time.sleep(10)
                     now_time = datetime.now().time()
                     if dt_time(9, 15) <= now_time <= dt_time(15, 30):
                         now_sec = time.time()
+                        startup_grace_passed = (now_sec - getattr(self, "_ws_boot_time", now_sec)) > 90
                         # 1. Global tick freeze (no ticks at all)
-                        if now_sec - self._last_ws_tick_time > 35:
-                            logger.critical("Shoonya WebSocket frozen (0 ticks total for >35s)! Forcing hard restart to recover feed.")
+                        if startup_grace_passed and (now_sec - self._last_ws_tick_time > 45):
+                            logger.critical("Shoonya WebSocket frozen (0 ticks total for >45s)! Forcing hard restart to recover feed.")
                             os._exit(1)
                         # 2. Option stream freeze (Spot is ticking, but option stream silently dropped)
                         opt_tokens = (
@@ -361,9 +384,9 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                             getattr(self, "_option_pe_tokens", set()) |
                             {t for t in getattr(self, "_subscribed_tokens", set()) if t not in ("26000", "1", "68407", "844615", "99926000", "99919000")}
                         )
-                        if len(opt_tokens) >= 5 and (now_sec - getattr(self, "_last_opt_tick_time", now_sec) > 30):
+                        if startup_grace_passed and len(opt_tokens) >= 5 and (now_sec - getattr(self, "_last_opt_tick_time", now_sec) > 45):
                             logger.critical(
-                                f"Shoonya WebSocket OPTION stream frozen for >30s (Spot is ticking, but 0 option ticks across {len(opt_tokens)} contracts)! Forcing hard restart to recover feed."
+                                f"Shoonya WebSocket OPTION stream frozen for >45s (Spot is ticking, but 0 option ticks across {len(opt_tokens)} contracts)! Forcing hard restart to recover feed."
                             )
                             os._exit(1)
             threading.Thread(target=_ws_watchdog_loop, daemon=True).start()
@@ -492,6 +515,9 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                     logger.warning(f"Shoonya WebSocket open listener error: {exc}")
 
         def error_callback(err):
+            # Suppress noisy error storm during off-market hours or when explicitly stopped
+            if not self._ws_connected and not getattr(self, "_ws_started", False):
+                return
             logger.error(f"Shoonya WebSocket error callback: {err}")
             if on_error_callback:
                 on_error_callback(err)
@@ -532,14 +558,20 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
     def stop_websocket(self) -> None:
         """Cleanly close WebSocket and clear listeners to prevent post-market reconnects."""
         try:
+            self._ws_connected = False
+            self._ws_started = False
             self._close_listeners = []
             if hasattr(self, "_close_debounce_timer") and self._close_debounce_timer is not None:
                 self._close_debounce_timer.cancel()
                 self._close_debounce_timer = None
+
+            # Force stop_event in NorenApi to break its internal __ws_run_forever loop
+            api_stop_evt = getattr(self._api, "_NorenApi__stop_event", None)
+            if api_stop_evt is not None:
+                api_stop_evt.set()
+
             if hasattr(self._api, "close_websocket"):
                 self._api.close_websocket()
-            self._ws_connected = False
-            self._ws_started = False
             logger.info("[ShoonyaAdapter] WebSocket disconnected cleanly for post-market sleep.")
         except Exception as e:
             logger.warning(f"[ShoonyaAdapter] Error closing WebSocket: {e}")

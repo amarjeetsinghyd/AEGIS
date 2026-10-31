@@ -51,6 +51,24 @@ class OptionOrderFlowMixin:
         self._cum_ps_pv: float = 0.0
         self._cum_ps_vol: float = 0.0
 
+        # Cached environment parameters for O(1) tick performance
+        self._pz_intraday_bars: int = 0
+        self._pz_last_bar_count: int = -1
+
+    def _update_pz_intraday_bar_count(self) -> None:
+        """Updates cached intraday bar count on 1m bar mutations (close/seed)."""
+        if not hasattr(self, "bars_1m") or not self.bars_1m:
+            self._pz_intraday_bars = 0
+            self._pz_last_bar_count = 0
+            return
+        last_b = self.bars_1m[-1]
+        curr_day = int(last_b.ts_start // 86400) if last_b else 0
+        self._pz_intraday_bars = sum(
+            1 for b in self.bars_1m
+            if (curr_day <= 0 or int(getattr(b, "ts_start", 0) // 86400) == curr_day)
+        )
+        self._pz_last_bar_count = len(self.bars_1m)
+
     def get_in_flight_opt_flow(self) -> Dict[str, float]:
         """Returns the current in-flight 1-minute accumulated option flow."""
         cb = float(self._opt_flow_1m.get("call_buy_vol", 0.0))
@@ -137,7 +155,10 @@ class OptionOrderFlowMixin:
         if now_epoch > 0 and curr_day > 0 and int(now_epoch // 86400) > curr_day:
             intraday_bars = 0
         else:
-            intraday_bars = sum(1 for b in self.bars_1m if (curr_day <= 0 or int(getattr(b, "ts_start", 0) // 86400) == curr_day))
+            total_b = len(self.bars_1m) if hasattr(self, "bars_1m") else 0
+            if total_b != getattr(self, "_pz_last_bar_count", -1):
+                self._update_pz_intraday_bar_count()
+            intraday_bars = getattr(self, "_pz_intraday_bars", 0)
         time_ok = (intraday_bars >= req_bars) if req_bars > 0 else True
 
         def _v(pv: float, v: float) -> float:

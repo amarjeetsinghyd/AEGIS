@@ -159,7 +159,7 @@ def _build_edges_snapshot(aegis_engine, trader):
                 "atm": round(float(state.get("atm_strike", 0.0) or 0.0), 0),
 
                 "ema20": round(float(getattr(eng, "ema_20_1m", 0.0) or 0.0), 1) if eng else 0.0,
-                "ema50": round(float(getattr(eng, "ema_50_1m", 0.0) or getattr(eng, "ema_50_1m_live", 0.0) or 0.0), 1) if eng else 0.0,
+                "ema50": 0.0,
                 "atr": round(float(getattr(eng, "current_atr_1m", 0.0) or 0.0), 2) if eng else 0.0,
                 "vwap": round(float(getattr(getattr(aegis_engine, "price_action_engine", None), "current_vwap", 0.0) or 0.0), 1),
             }
@@ -244,32 +244,15 @@ def build_minute_digest(now, aegis_engine, trader, spot_price):
         seg.append(f"ATM:{state['atm_strike']:.0f}")
 
 
-        # ─── Price Action Engine: 20/50 EMA, Zone Discipline, VWAP & PA Pillars ───
+        # ─── Price Action Engine: 20 EMA, VWAP & PA Pillars ───
         pae = getattr(aegis_engine, 'price_action_engine', None) or getattr(aegis_engine, 'time_bar_engine', None)
         eff_vwap = getattr(aegis_engine, 'current_vwap', 0.0) or (getattr(pae, 'current_vwap', 0.0) if pae else 0.0)
 
         try:
             if pae:
                 live_20, slope_20 = pae.get_live_20_ema_and_slope()
-                live_50, slope_50 = pae.get_live_50_ema_and_slope()
-                if live_20 > 0 and live_50 > 0:
-                    seg.append(f"EMA:20@{live_20:.1f}/50@{live_50:.1f}")
-                    # Strict 20 vs 50 EMA Zone Separation Status
-                    bar = getattr(pae, '_curr_1m_bar', None) or (pae.bars_1m[-1] if getattr(pae, 'bars_1m', None) else None)
-                    if live_20 > live_50:
-                        if bar and bar.low >= live_50:
-                            seg.append("Zone:BULL_CLEAR")
-                        else:
-                            seg.append("Zone:BULL_OVERLAP")
-                    elif live_20 < live_50:
-                        if bar and bar.high <= live_50:
-                            seg.append("Zone:BEAR_CLEAR")
-                        else:
-                            seg.append("Zone:BEAR_OVERLAP")
-                    else:
-                        seg.append("Zone:CHOP_ENTANGLED")
-                elif live_50 > 0:
-                    seg.append(f"50EMA:{live_50:.1f}")
+                if live_20 > 0:
+                    seg.append(f"EMA:20@{live_20:.1f}({slope_20:+.1f}bps)")
 
                 # Institutional VWAP Alignment & Distance
                 if eff_vwap > 0 and disp_spot > 0:
@@ -455,7 +438,7 @@ def main():
         # Keep only the active index's token — do not mix Nifty+Sensex spots
         logger.info(f"[AegisMain] Underlying locked to {inst_name} token {spot_token} only")
 
-        # ─── Pre-Warm 50 EMA with Historical 1-Minute Bars (Zero Cold-Start Lag) ───
+        # ─── Pre-Warm 20 EMA and ATR with Historical 1-Minute Bars (Zero Cold-Start Lag) ───
         try:
             pa_eng = getattr(aegis_engine, "price_action_engine", None) or getattr(aegis_engine, "time_bar_engine", None)
             api = getattr(broker, "_api", None)
@@ -613,11 +596,14 @@ def main():
             aegis_engine=aegis_engine,
             signal_queue=signal_queue,
         )
+        aegis_engine.execution_manager = trader
         
         # ─── Wire Tick Feed → AEGIS ───
         # Exchange-aware: spot on BSE/NSE, futures + options on BFO/NFO.
         # Single-exchange subscribe caused BSE:1 to go as NSE:1 → Spot 0.
         compiler = TickCompiler(broker)
+        if hasattr(compiler, 'reset_session'):
+            compiler.reset_session()
         compiler.set_symbol_map(token_to_symbol)
         compiler.set_engine(aegis_engine)
         _, opt_exch_seg = fetcher.get_active_instrument()
@@ -649,32 +635,23 @@ def main():
         sys.exit(1)
     
     # ─── Start Execution Manager ───
+    # ─── Post-Warmup Low-Latency Garbage Collection Tuning ───
+    # Run full collection to clean up initialization garbage (pandas, json, seeding temp objects),
+    # freeze all long-lived objects so the GC never traverses them again during live trading,
+    # and adjust GC generation thresholds to prevent mid-burst latency spikes.
+    import gc
+    gc.collect()
+    if hasattr(gc, "freeze"):
+        gc.freeze()
+    gc.set_threshold(50000, 20, 20)
+    logger.info("[AegisMain] Post-warmup GC tuned: objects frozen, GC threshold set to (50000, 20, 20)")
+
     trader.start()
     
     # ─── Runtime State ───
     now_dt = datetime.now()
     if is_market_open(now_dt):
-        logger.info("Market is open. Restoring session & subscriptions...")
-        try:
-            if hasattr(broker, "session_provider"):
-                broker.session_provider._restore_or_login()
-            
-            name, exch_seg = fetcher.get_active_instrument()
-            token, _, spot_exch = fetcher.get_cash_index_token()
-            if hasattr(broker, "market_data_provider"):
-                broker.market_data_provider._index_token = str(token)
-                broker.market_data_provider._ensure_ws_started()
-                broker.market_data_provider.subscribe([token], spot_exch, feed_type="t")
-                broker.market_data_provider.subscribe([token], spot_exch, feed_type="d")
-                
-                weekly_opts = fetcher.get_weekly_option_tokens()
-                if not weekly_opts.empty:
-                    opt_tokens = [str(t) for t in weekly_opts['token'].tolist()]
-                    broker.market_data_provider.subscribe(opt_tokens, exch_seg, feed_type="t")
-                    broker.market_data_provider.subscribe(opt_tokens, exch_seg, feed_type="d")
-                    logger.info(f"[{name}] Subscribed to Cash Index + {len(opt_tokens)} Options (t+d)")
-        except Exception as e:
-            logger.error(f"Startup subscription warning: {e}")
+        logger.info("Market is open. Tick feed and subscriptions active via TickCompiler.")
     elif is_pre_market(now_dt):
         perform_premarket_handshake(broker, fetcher)
     

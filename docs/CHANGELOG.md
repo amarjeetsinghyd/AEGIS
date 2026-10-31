@@ -1,6 +1,77 @@
 # Changelog
 
-## [Unreleased] - 2026-10-29 (Option Order Flow Remediation, Stateful TickCompiler Merged Book, Trapped Writer Breakouts & Fail-Closed Quality Shield)
+## [Unreleased] - 2026-11-02 (GEX & Iceberg Shadow Modules, DumpDetector Integration, Double-Lot PnL Guard, SR Breakout Sanitization, Shoonya Off-Market WS Storm Silencing & Trade History Deployment)
+
+### Execution & Microstructure Protection
+- **DumpDetector EV Exit Integration** (`AEGIS/execution/dump_detector.py`, `AEGIS/execution/aegis_execution_manager.py`):
+  - Integrated zero-allocation, O(1) expected-value noise-pullback vs institutional-dump detector evaluating L1-L5 book collapse, sell aggression, and ask stacking on held option contracts.
+  - Armed automatically upon trade entry; triggers prompt exit when dump probability exceeds dynamic theta hurdle ($\theta(P)$).
+  - Proven in live market operations on 2026-11-02: Successfully triggered at 11:58 IST on NIFTY 23600 CE (Trade 1), securing a clean win (+4.6%) before institutional bid retreat.
+- **Double-Lot Quantity & PnL Normalization Guard** (`AEGIS/execution/aegis_execution_manager.py`):
+  - Rectified quantity scaling flaw where broker fills already returning share units (e.g. 65 shares for NIFTY) were multiplied again by `lot_size` (65 * 65 = 4,225 shares), generating an artificial ₹1,478.75 PnL on a ₹7-8 option trade.
+  - Implemented unit safety guard: `leg_units = raw_qty if (raw_qty >= lot_sz and raw_qty % lot_sz == 0) else (raw_qty * lot_sz)`.
+  - Reconciled all Trade 1/2/3 PnL records to mathematically exact share values.
+
+### Price Action & Naming Sanitization
+- **Topological Prominence Naming Purge** (`AEGIS/core/price_action_engine.py`):
+  - Completely purged lingering `"topological_prominence_breakout"` setup metadata strings (L2320, L2363), aligning with canonical `"sr_breakout"` nomenclature.
+  - Updated test assertions in `tests/test_mode_a_b_cushion_audit.py` to seamlessly validate `"sr_breakout"`.
+
+### Shadow Microstructure & Order Flow Analytics
+- **GEX (Gamma Exposure) Engine Ingestion** (`AEGIS/core/gex_engine.py`, `tests/test_gex_shadow_engine.py`):
+  - Ingested standalone `GexShadowEngine` modeling strike-level Dealer Gamma Exposure, Zero Gamma Flip point, Net Market Gamma, Call Resistance Wall, and Put Support Wall across 51 option strikes.
+  - Verified zero-churn memory efficiency and registered in `AEGIS/__init__.py`.
+- **Iceberg Order Detector Ingestion** (`AEGIS/core/iceberg_detector.py`, `tests/test_iceberg_detector.py`):
+  - Ingested O(1) `IcebergShadowDetector` identifying institutional hidden liquidity reloads (visible depth replenishment after aggressive market trade absorption).
+  - Registered in `AEGIS/__init__.py`.
+
+### Broker Seam & Infrastructure Stability
+- **Shoonya WebSocket Off-Market Disconnect Loop Termination** (`common/broker/shoonya_adapter.py`):
+  - Resolved Finvasia NorenApi bug where `close_websocket()` aborted before setting `__stop_event` if `__websocket_connected` was already false, causing the background `__ws_run_forever` thread to spin in an infinite 100ms reconnect loop post-15:30 IST.
+  - Explicitly forced `_NorenApi__stop_event.set()` inside `stop_websocket()` to cleanly shut down the background thread.
+  - Silenced `error_callback` spam in telemetry streams during intentional weekend and off-market deep sleep.
+
+### Telemetry, Journaling & VPS Production Deployment
+- **2026-11-02 Trade Journal & Telemetry Reconciliation** (`docs/AEGIS_TRADE_JOURNAL.csv`, `docs/AEGIS_TRADE_JOURNAL.xlsx`, `trade_history.json`):
+  - Extracted and verified full telemetry for today's 3 completed trades (2 Wins, 1 Loss, Net PnL +₹23.50 on ₹500 account capital).
+  - Synced journal files, trade history, and JSONL telemetry to Oracle Cloud VPS (`137.23.41.38`).
+  - Unified Dashboard (`http://137.23.41.38:5000/research`) actively renders all 3 trades with verified metrics and charts.
+
+## [1.0.2] - 2026-10-31 (Order Lifecycle Hardening, Exit Confirmation Guard, Forming-Bar Day Extreme Trap Removal, Kolkata Timezone)
+
+### Execution & Order Management
+- **Shoonya Order Reconciliation on Cancel** (`common/execution/order_lifecycle.py`):
+  - Implemented post-cancel fill audit: queries `single_order_history` immediately after cancelling unfilled entry orders to detect race-condition broker fills, preventing orphaned positions.
+- **Marketable Exit Rejection Safety & Broker Sync Flag** (`AEGIS/execution/aegis_execution_manager.py`, `common/execution/capital_engine.py`):
+  - Added broker rejection detection on exit orders: if an exit order is unconfirmed or rejected, sets `self.capital_engine._needs_broker_sync = True` to flag an urgent broker audit.
+- **Non-Negative Capital Balance Floor** (`common/execution/capital_engine.py`):
+  - Allowed zero-balance sync (`live_funds >= 0`) from broker portfolio provider.
+- **System Timezone Assurance** (`ecosystem.config.js`):
+  - Explicitly defined `TZ: "Asia/Kolkata"` across PM2 configurations for `aegis-bot` and `unified-dashboard`.
+
+### Macro Shields & Price Action
+- **Forming Bar Day Extreme Trap Removal** (`AEGIS/core/dow_macro_shields.py`):
+  - Fixed false-veto trap in `_check_day_extreme_runway`: excluded the live forming bar (`_curr_1m_bar`) from anchoring day extremes, ensuring in-flight Mode B breakthroughs are not self-vetoed when creating new session highs/lows.
+
+## [1.0.1] - 2026-10-30 (Budget-Anchored 3-Strike Cluster Pipeline, Dow Logic Refinements & Phase 1/2 Reliability Hardening)
+
+### Dynamic Strike Selection & Capital Efficiency
+- **Budget-Anchored Three-Strike Cluster Pipeline** (`AEGIS/AEGIS_V1.0_ARCHITECTURE.md`, `common/execution/strike_selector.py`, `AEGIS/core/aegis_pipeline_orchestrator.py`):
+  - Staged separate CALL and PUT budget targets from subscribed option universe, refreshed every 10 seconds based on live account funds and quotes.
+  - Restricted entry candidate evaluation strictly to staged target, 1-step farther OTM, and 1-step nearer ATM, preventing out-of-budget contract scoring.
+  - Added dedicated test suite `tests/test_budget_strike_cluster.py` and `tests/test_key_levels_and_strike_selector.py`.
+
+### Macro Shields & Structural Obstacles
+- **Dow Theory Pullback Refinements & Structural Obstacle Safeguards** (`AEGIS/core/dow_macro_shields.py`):
+  - Refined horizontal support/resistance wall obstacle vetoes (`trapped_near_support`, `trapped_near_resistance`) using localized volatility (`0.85 * ATR_1m`).
+  - Hardened Day Extreme Runway Shield (`min_runway_pts = max(1.25 * ATR_1m, 0.0008 * Spot)`).
+
+### Core Engine Reliability Hardening (Phase 1 & 2)
+- **L2 Options Archiver & Tick Compiler Hardening** (`AEGIS/core/l2_options_archiver.py`, `common/market/tick_compiler.py`):
+  - Streamlined 15-minute chunk flushing and parquet conversion off hot-path.
+  - Hardened reconnect backfill handling (`tests/test_reconnect_backfill.py`).
+
+## [1.0.0] - 2026-10-29 (Option Order Flow Remediation, Stateful TickCompiler Merged Book, Trapped Writer Breakouts & Fail-Closed Quality Shield)
 
 ### Order Flow & Microstructure Core Remediation (Post-Claude Sonnet 3.5/5.5 Audit)
 - **Universal Fix of PUT Trade Order Book Sign Inversion (`eff_i1` & `eff_deep`)** (`AEGIS/core/option_order_flow.py`):

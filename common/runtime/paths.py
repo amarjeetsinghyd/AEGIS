@@ -28,8 +28,10 @@ def get_runtime_paths(runtime_name: str) -> dict:
     data_dir = root_dir / "data"
     logs_dir = root_dir / "logs"
 
-    for path in (data_dir, logs_dir):
-        path.mkdir(parents=True, exist_ok=True)
+    # Only auto-create directories for active production runtimes
+    if runtime_name in {"aegis", "dashboard"}:
+        for path in (data_dir, logs_dir):
+            path.mkdir(parents=True, exist_ok=True)
 
     return {
         "project_root": str(get_project_root()),

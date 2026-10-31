@@ -21,7 +21,7 @@ logger = get_logger("tick_compiler")
 
 class ParsedTick:
     """Zero-allocation parsed tick for hot path. Reused per symbol."""
-    __slots__ = ('tok', 'lp', 'vol', 'bp', 'bq', 'sp', 'sq', 'ts')
+    __slots__ = ('tok', 'lp', 'vol', 'bp', 'bq', 'sp', 'sq', 'ts', 'oi', '_iceberg_processed')
     def __init__(self):
         self.tok = ""
         self.lp = 0.0
@@ -31,6 +31,8 @@ class ParsedTick:
         self.sp = [0.0]*5
         self.sq = [0]*5
         self.ts = 0.0
+        self.oi = 0.0
+        self._iceberg_processed = False
 
 
 class TickCompiler:
@@ -39,7 +41,6 @@ class TickCompiler:
         self.market_depth = {}
         self.lock = threading.Lock()
         self.bar_book = ThreeMinuteBarBook()
-        self.bar_book_15 = BarBook(15)
         self._keys_logged = False
         self._t2s = {}
         self._tick_pool = {}  # sym -> ParsedTick (reused)
@@ -57,14 +58,6 @@ class TickCompiler:
         self._wired_listeners = False
         self._reconnect_lock = threading.Lock()
         self._reconnecting = False
-        # ─── TIER 2 INTRADAY FILTER (15-min rolling stats) ───
-        self._tier2_symbols = set()  # top 30 from 15-min filter
-        self._engine_symbols = set()  # top 15 for adaptive engine
-        self._stats_15min = defaultdict(lambda: {
-            'ticks': 0, 'volume': 0, 'trade_value': 0.0,
-            'spread_sum': 0.0, 'spread_cnt': 0,
-            'mid_prices': [], 'oib_sum': 0.0, 'oib_cnt': 0,
-        })
         self._stats_window_start = time.time()
 
     def set_symbol_map(self, token_to_symbol: dict):
@@ -117,10 +110,10 @@ class TickCompiler:
                 prev = self.market_depth.get(token, {"v": 0.0, "lp": 0.0, "bp1": 0.0, "sp1": 0.0})
                 old_vol = float(prev.get("v", 0.0))
                 vol_delta = new_vol - old_vol if old_vol > 0 and new_vol >= old_vol else 0.0
-                # Preserve last good values; depth-only msgs may carry zeros. Atomically swap dict.
+                # Preserve last good values; depth-only msgs may carry zeros. Monotonic volume prevents regression.
                 self.market_depth[token] = {
                     "lp": lp if lp > 0 else prev.get("lp", 0.0),
-                    "v": new_vol if new_vol > 0 else prev.get("v", 0.0),
+                    "v": new_vol if new_vol >= old_vol else old_vol,
                     "bp1": bp1 if bp1 > 0 else prev.get("bp1", 0.0),
                     "sp1": sp1 if sp1 > 0 else prev.get("sp1", 0.0),
                     "ts": time.time()
@@ -129,30 +122,6 @@ class TickCompiler:
             key = self._t2s.get(token, token)
             if lp > 0:
                 self.bar_book.on_tick(key, lp, ts, volume_delta=vol_delta)
-                self.bar_book_15.on_tick(key, lp, ts, volume_delta=vol_delta)
-
-            # ── TIER 2 INTRADAY FILTER (15-min rolling stats) ───
-            # Collect per-symbol stats for 15-min filter (only if symbol in tier2 or engine set)
-            # ── 5-MIN INTRADAY MACRO STATS ───
-            # Collect per-symbol stats for 5-min macro bias calculation
-            if bp1 > 0 and sp1 > 0:
-                st = self._stats_15min[key]
-                st['ticks'] += 1
-                if vol_delta > 0:
-                    st['volume'] += vol_delta
-                    st['trade_value'] += vol_delta * lp
-                st['spread_sum'] += (sp1 - bp1)
-                st['spread_cnt'] += 1
-                mid = (bp1 + sp1) * 0.5
-                st['mid_prices'].append(mid)
-                if len(st['mid_prices']) > 500:
-                    st['mid_prices'].pop(0)
-                # OIB at L1
-                bq1 = self._as_float(message, "bq1", default=0.0)
-                sq1 = self._as_float(message, "sq1", default=0.0)
-                if bq1 + sq1 > 0:
-                    st['oib_sum'] += (bq1 - sq1) / (bq1 + sq1)
-                    st['oib_cnt'] += 1
 
             # ── STATEFUL MERGED BOOK UPDATE (ELIMINATES PARTIAL-TICK ZERO-WIPING) ──
             if token not in self._book_state:
@@ -332,25 +301,26 @@ class TickCompiler:
             while True:
                 time.sleep(backoff)
                 try:
-                    from common.market.market_calendar import is_trading_day, is_bot_active_hours
+                    from common.market.market_calendar import is_exchange_trading_day, is_bot_active_hours
                     from datetime import datetime as _dt
                     now_dt = _dt.now()
-                    if not is_trading_day(now_dt.date()) or not is_bot_active_hours(now_dt):
+                    if not is_exchange_trading_day(now_dt.date()) or not is_bot_active_hours(now_dt):
                         logger.info("WS closed outside active market hours (08:55-15:17) — skipping reconnect.")
                         return
                 except Exception:
                     # If the calendar import fails we err on the side of NOT
                     # hammering the broker on a weekend; bail out.
-                    logger.warning("is_trading_day / is_bot_active_hours unavailable — skipping WS reconnect re-issue.")
+                    logger.warning("is_exchange_trading_day / is_bot_active_hours unavailable — skipping WS reconnect re-issue.")
                     return
                 mdp = self._resolve_mdp()
                 if mdp is None:
                     logger.warning("Reconnect cannot re-issue subscribe: no MDP resolved.")
                     return
                 # Group by exchange so BSE spot and BFO options keep their segment.
+                # Snapshot tokens under list() to eliminate RuntimeError on concurrent subscribe()
                 grouped = {}
                 if isinstance(self._subscribed_tokens, dict):
-                    for tok, exch in self._subscribed_tokens.items():
+                    for tok, exch in list(self._subscribed_tokens.items()):
                         grouped.setdefault(str(exch or "NSE").upper(), []).append(tok)
                 else:
                     grouped[str(self._subscribed_exchange or "NSE").upper()] = list(self._subscribed_tokens or [])
@@ -397,58 +367,31 @@ class TickCompiler:
         logger.info(f"[TIER2] Updated Engine symbols: {len(self._engine_symbols)} symbols")
 
     def get_15min_stats(self, sym: str) -> dict | None:
-        """Get 15-min rolling stats for a symbol."""
-        st = self._stats_15min.get(sym)
-        if not st or st['ticks'] == 0:
-            return None
-        elapsed = time.time() - self._stats_window_start
-        if elapsed <= 0:
-            elapsed = 300.0  # 5 min rolling
-        ticks_per_min = st['ticks'] / (elapsed / 60.0)
-        vol_per_min = st['volume'] / (elapsed / 60.0)
-        trade_value_per_min = st['trade_value'] / (elapsed / 60.0)
-        avg_spread_bps = (st['spread_sum'] / max(st['spread_cnt'], 1)) / max(st.get('mid', 1), 1) * 10000 if st['spread_cnt'] > 0 else 0
-        mid_prices = st['mid_prices']
-        microprice_vol = 0.0
-        ret_5m = 0.0
-        last_mid = mid_prices[-1] if mid_prices else 0.0
-        if len(mid_prices) > 5:
-            import numpy as np
-            microprice_vol = float(np.std(mid_prices) / max(np.mean(mid_prices), 1) * 100)
-            if mid_prices[0] > 0:
-                ret_5m = float((mid_prices[-1] - mid_prices[0]) / mid_prices[0] * 100.0)
-        
-        # 5-minute VWAP & Distance from VWAP
-        vwap_5m = st['trade_value'] / max(st['volume'], 1.0) if st['volume'] > 0 else last_mid
-        vwap_dist = float((last_mid - vwap_5m) / vwap_5m * 100.0) if vwap_5m > 0 and last_mid > 0 else 0.0
-        
-        oib = st['oib_sum'] / max(st['oib_cnt'], 1) if st['oib_cnt'] > 0 else 0.0
-        return {
-            'ticks_per_min': ticks_per_min,
-            'vol_per_min': vol_per_min,
-            'avg_spread_bps': avg_spread_bps,
-            'trade_value_per_min': trade_value_per_min,
-            'microprice_vol': microprice_vol,
-            'ret_15m': ret_5m,
-            'ret_5m': ret_5m,
-            'vwap_dist': vwap_dist,
-            'oib': oib,
-        }
+        """Legacy stub for 15-min stats (purged from AEGIS v1.1)."""
+        return None
 
-    def get_5min_stats(self, symbol: str) -> dict:
-        return self.get_15min_stats(symbol)
+    def get_5min_stats(self, symbol: str) -> dict | None:
+        return None
 
     def reset_15min_stats(self):
-        """Reset 5-min stats for new window."""
-        self._stats_15min.clear()
-        self._stats_window_start = time.time()
-        logger.info("[MACRO_5M] Reset 5-min stats for new window")
+        pass
 
     def reset_5min_stats(self):
-        self.reset_15min_stats()
+        pass
+
+    def reset_session(self):
+        """Reset session-level state for market open / day rollover.
+        Clears merged book state and depth to eliminate yesterday's cumulative volume carry-over."""
+        with self.lock:
+            self._book_state.clear()
+            self.market_depth.clear()
+            if hasattr(self.bar_book, "forming"):
+                self.bar_book.forming.clear()
+            self._stats_window_start = time.time()
+        logger.info("[TickCompiler] Session state reset completed (clean slate for day rollover).")
 
     def stop(self) -> None:
         """Detaches engine and clears active subscription tracking for clean shutdown."""
-        self._engine = None
+        self.engine = None
         self._subscribed_tokens = {}
         logger.info("[TickCompiler] Stopped and detached from engine.")

@@ -47,13 +47,23 @@ class DowStructureChain:
 class DowMacroShieldsMixin:
     """Mixin providing Classical Dow Theory HL2/LH2 validation and Macro Runway/Obstacle shields."""
 
+    @staticmethod
+    def _tail_list(dq: Any, n: int) -> List[Any]:
+        """O(n) fast tail slice directly from deque without full list conversion."""
+        L = len(dq) if dq is not None else 0
+        if L == 0:
+            return []
+        if n >= L:
+            return list(dq)
+        return [dq[i] for i in range(-n, 0)]
+
     def get_20_ema_band_arrays(self, n: int) -> Tuple[List[float], List[float], List[float]]:
         """
         Returns aligned lists of (ema_close, ema_high, ema_low) for the last n closed bars.
         Falls back to derived band from ATR if high/low history is warming up.
         """
-        bars = list(self.bars_1m)[-n:]
-        e_close = list(self.ema_20_history)[-n:]
+        bars = self._tail_list(self.bars_1m, n)
+        e_close = self._tail_list(self.ema_20_history, n)
         if len(e_close) < len(bars):
             pad_len = len(bars) - len(e_close)
             e_close = [e_close[0] if e_close else self.ema_20_1m] * pad_len + e_close
@@ -64,8 +74,8 @@ class DowMacroShieldsMixin:
             and len(self.ema_20_low_history) >= len(bars)
         )
         if has_hl_band:
-            e_high = list(self.ema_20_high_history)[-n:]
-            e_low = list(self.ema_20_low_history)[-n:]
+            e_high = self._tail_list(self.ema_20_high_history, n)
+            e_low = self._tail_list(self.ema_20_low_history, n)
         else:
             half_band = max(2.5, 0.35 * (self.current_atr_1m if self.current_atr_1m > 0 else 10.0))
             e_high = [ec + half_band for ec in e_close]
