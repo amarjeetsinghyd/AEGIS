@@ -436,16 +436,6 @@ class DowMacroShieldsMixin:
         curr_day = int(curr_bar.ts_start // 86400) if curr_bar else self._current_vwap_day
         is_inflight = (self._curr_1m_bar is not None and getattr(self._curr_1m_bar, "tick_count", 0) > 0)
         source_bars = list(self.bars_1m) if is_inflight else list(self.bars_1m)[:-1]
-        if is_inflight:
-            forming_bar = self._curr_1m_bar
-            live_extreme_gap = max(0.10 * self.current_atr_1m, 0.0001 * current_price)
-            forming_extreme_is_behind_price = (
-                forming_bar.high - current_price >= live_extreme_gap
-                if direction.upper() in ("UP", "CALL")
-                else current_price - forming_bar.low >= live_extreme_gap
-            )
-            if forming_extreme_is_behind_price:
-                source_bars.append(forming_bar)
         intraday_prior_bars = [
             b for b in source_bars
             if (curr_day <= 0 or int(b.ts_start // 86400) == curr_day)

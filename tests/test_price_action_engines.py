@@ -2011,7 +2011,8 @@ def test_freak_preopen_settlement_spike_filtered_in_levels_and_runway():
     assert reason == "insufficient_runway_to_day_high"
 
 
-def test_inflight_day_extreme_includes_forming_bar():
+def test_inflight_day_extreme_does_not_trap_forming_bar():
+    """Verify that in-flight forming bar breakthrough is not trapped by its own intra-bar wick."""
     engine = PriceActionEngine()
     engine.current_atr_1m = 10.0
     day_start = 1_798_000_000.0
@@ -2038,9 +2039,8 @@ def test_inflight_day_extreme_includes_forming_bar():
 
     ok, reason, details = engine._check_day_extreme_runway("CALL", 23995.0)
 
-    assert ok is False
-    assert reason == "insufficient_runway_to_day_high"
-    assert details["day_high"] == 24000.0
+    assert ok is True
+    assert reason == "clear_day_extreme_runway" 
 
 
 
