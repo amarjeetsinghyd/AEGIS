@@ -11,6 +11,7 @@ module.exports = {
       max_restarts: 20,
       restart_delay: 5000,
       env: {
+        TZ: "Asia/Kolkata",
         PYTHONPATH: "/home/opc/quant-bot",
         BOT_RUNTIME: "aegis",
         MAX_TRADES_PER_DAY: "3",
@@ -33,6 +34,7 @@ module.exports = {
       max_restarts: 10,
       restart_delay: 3000,
       env: {
+        TZ: "Asia/Kolkata",
         PYTHONPATH: "/home/opc/quant-bot"
       }
     }

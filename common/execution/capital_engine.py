@@ -77,7 +77,7 @@ class CapitalEngine:
                 ):
                     live_funds = float(self.portfolio_provider.portfolio_provider.get_available_funds())
 
-                if live_funds is not None and live_funds > 0:
+                if live_funds is not None and live_funds >= 0:
                     self._capital = live_funds
                     self._save_state()
                     logger.info(f"[CapitalEngine] Synced live funds from broker: ₹{self._capital:.2f}")

@@ -2359,8 +2359,17 @@ class AegisExecutionManager:
                                         logger.error(f"[AegisEM Chaser] Step-3 aggressive exit order placement failed: {resp}")
             
             if not filled:
-                # Fallback
-                self.order_lifecycle.execute_exit(leg, reason)
+                # Fallback: marketable exit order
+                exit_ok = self.order_lifecycle.execute_exit(leg, reason)
+                if exit_ok:
+                    filled = True
+                else:
+                    logger.critical(
+                        f"[AegisEM] 🚨 CRITICAL: Exit order unconfirmed/rejected by broker for {leg.symbol}! "
+                        f"Position may remain open at broker. Flagging urgent broker sync!"
+                    )
+                    if hasattr(self, "capital_engine") and self.capital_engine:
+                        self.capital_engine._needs_broker_sync = True
                 fill_price = leg.exit_price if leg.exit_price and leg.exit_price > 0 else leg.current_price
                 fill_ts = time.time()
             

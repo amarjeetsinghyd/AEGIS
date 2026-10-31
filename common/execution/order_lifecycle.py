@@ -288,6 +288,20 @@ class ShoonyaOrderLifecycle(OrderLifecycle):
                                 api.cancel_order(orderno=ordno)
                             except Exception as e_c:
                                 logger.warning(f"[ShoonyaOrderLifecycle] Failed to cancel unfilled order {ordno}: {e_c}")
+                        if hasattr(api, "single_order_history"):
+                            try:
+                                h_check = api.single_order_history(orderno=ordno)
+                                if h_check and isinstance(h_check, list):
+                                    fs = int(h_check[0].get("fillshares", 0) or 0)
+                                    if fs > 0 or h_check[0].get("status") in ["FILLED", "COMPLETE"]:
+                                        avg_prc = float(h_check[0].get("avgprc", limit_price))
+                                        leg.current_price = avg_prc
+                                        leg.entry_price = avg_prc
+                                        logger.warning(f"[ShoonyaOrderLifecycle] Entry fill reconciled during cancel: {fs} shares @ {avg_prc:.2f}")
+                                        leg.status = "OPEN"
+                                        return True
+                            except Exception:
+                                pass
                         return False
                 else:
                     leg.entry_price = limit_price
@@ -330,9 +344,7 @@ class ShoonyaOrderLifecycle(OrderLifecycle):
             else:
                 err_msg = resp.get("emsg", "Unknown Broker Error") if isinstance(resp, dict) else str(resp)
                 logger.error(f"[ShoonyaOrderLifecycle] 🚨 SHOONYA API EXIT REJECTION REASON: {err_msg}")
-                leg.close_leg(exit_price or leg.current_price, f"{reason} (LMT Exit Warning)")
                 return False
         except Exception as e:
             logger.error(f"[ShoonyaOrderLifecycle] Exception in execute_exit: {e}")
-            leg.close_leg(exit_price or leg.current_price, f"{reason} (Local Exit)")
             return False

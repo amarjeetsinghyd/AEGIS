@@ -1007,7 +1007,7 @@ class ShoonyaExecutionProvider(IExecutionProvider):
                 raise ConnectionError("Shoonya API returned None on place_order (Silent Drop)")
             return res
 
-        return call_with_retry(_call, limiter=self._order_limiter)
+        return call_with_retry(_call, limiter=self._order_limiter, max_retries=1)
 
     def modify_order(self, **kwargs):
         return call_with_retry(lambda: self._api.modify_order(**kwargs), limiter=self._order_limiter)
