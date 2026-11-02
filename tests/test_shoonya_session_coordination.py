@@ -164,3 +164,42 @@ def test_login_failure_falls_back_to_old_token(session_env, monkeypatch):
     provider, api = _make_provider(monkeypatch, _bad_login)
     assert provider.susertoken == "tok-rescue"
     assert api.session_set is not None
+
+
+def test_oauth_websocket_monkeypatch():
+    """Verify that _patch_noren_api_for_oauth correctly replaces legacy connect frame with OAuth 't: a'."""
+    class DummyNoren:
+        def __init__(self):
+            self._NorenApi__username = "TEST_USER"
+            self._NorenApi__accountid = "TEST_USER"
+            self._NorenApi__susertoken = "TEST_TOKEN"
+            self._NorenApi__on_open = None
+            self._NorenApi__on_error = None
+            self.sent_payloads = []
+
+        def _NorenApi__on_open_callback(self, ws=None):
+            pass
+
+        def _NorenApi__on_data_callback(self, ws=None, message=None, data_type=None, continue_flag=None):
+            pass
+
+        def _NorenApi__ws_send(self, payload):
+            self.sent_payloads.append(payload)
+
+    sa._patch_noren_api_for_oauth(DummyNoren)
+    assert getattr(DummyNoren, "_oauth_ws_patched", False) is True
+
+    instance = DummyNoren()
+    instance._NorenApi__on_open_callback()
+    assert len(instance.sent_payloads) == 1
+    sent = json.loads(instance.sent_payloads[0])
+    assert sent["t"] == "a"
+    assert sent["uid"] == "TEST_USER"
+    assert sent["accesstoken"] == "TEST_TOKEN"
+    assert sent["source"] == "API"
+
+    opened = []
+    instance._NorenApi__on_open = lambda: opened.append(True)
+    instance._NorenApi__on_data_callback(message=json.dumps({"t": "ak", "s": "OK", "uid": "TEST_USER"}))
+    assert opened == [True]
+

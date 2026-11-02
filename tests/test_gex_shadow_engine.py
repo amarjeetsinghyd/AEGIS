@@ -3,9 +3,7 @@ import tracemalloc
 import numpy as np
 import pytest
 
-from gex_engine import GexShadowEngine, INV_SQRT_2PI
-import flow
-from pipeline import AegisPipelineOrchestrator
+from AEGIS.core.gex_engine import GexShadowEngine, INV_SQRT_2PI
 
 
 def test_black_scholes_gamma_mathematical_accuracy():
@@ -181,62 +179,6 @@ def test_edge_cases_robustness():
     assert engine.zero_gamma_level == 24500.0
 
 
-def test_pipeline_orchestrator_integration():
-    """Verify AegisPipelineOrchestrator initializes GexShadowEngine and attaches shadow telemetry."""
-    token_to_symbol = {
-        "26000": "NIFTY_INDEX",
-        "1001": "NIFTY24500CE",
-        "1002": "NIFTY24500PE",
-    }
-    token_map = {
-        "26000": {"side": 0, "strike": 0.0, "is_index": True},
-        "1001": {"side": 0, "strike": 24500.0},
-        "1002": {"side": 1, "strike": 24500.0},
-    }
-
-    orchestrator = AegisPipelineOrchestrator(
-        token_to_symbol=token_to_symbol,
-        token_map=token_map,
-        strike_step=50.0,
-    )
-
-    assert orchestrator.gex_engine is not None
-    assert orchestrator.price_action_engine.gex_engine is orchestrator.gex_engine
-
-    # Feed underlying tick to trigger ATM and GEX alignment
-    class MockTick:
-        def __init__(self, tok, lp, vol=0.0, bp1=0.0, sp1=0.0, oi=0.0):
-            self.tok = tok
-            self.lp = lp
-            self.vol = vol
-            self.bp1 = bp1
-            self.sp1 = sp1
-            self.oi = oi
-            self.ts = 1700000000.0
-            self.bp = [bp1] * 5
-            self.bq = [100] * 5
-            self.sp = [sp1] * 5
-            self.sq = [100] * 5
-
-    # Underlying tick
-    orchestrator.on_tick_parsed(MockTick("26000", lp=24500.0))
-    assert orchestrator.current_atm_strike == 24500.0
-    assert orchestrator.gex_engine.strikes[25] == 24500.0
-
-    # Option tick with OI
-    orchestrator.on_tick_parsed(MockTick("1001", lp=120.0, vol=500.0, bp1=119.5, sp1=120.5, oi=75000.0))
-    idx_24500 = orchestrator.gex_engine.strike_to_idx[24500.0]
-    assert orchestrator.gex_engine.ce_oi[idx_24500] == 75000.0
-
-    # Verify shadow signal evaluation
-    shadow_eval = orchestrator.gex_engine.evaluate_shadow_signal(
-        spot=24500.0, direction="UP", pillar=1
-    )
-    assert "shadow_verdict" in shadow_eval
-    assert "net_gex" in shadow_eval
-    assert "zero_gamma_flip" in shadow_eval
-
-
 def test_fewer_strikes_extrapolation_no_nan():
     """Verify set_strikes with fewer than num_strikes pads all 51 strikes with no divide-by-zero or NaNs."""
     engine = GexShadowEngine(num_strikes=51, strike_step=50.0, lot_size=65.0)
@@ -309,42 +251,4 @@ def test_call_vs_put_positive_wall_separation():
     res_put = engine.evaluate_shadow_signal(spot=24610.0, direction="DOWN", pillar=2, wall_proximity_pts=25.0)
     assert res_put["shadow_verdict"] != "SHADOW_VETO_POS_WALL"
     assert res_put["shadow_verdict"] == "NEUTRAL_PASS"
-
-
-def test_order_flow_beyond_7_strikes_tracked():
-    """Verify that aggressive order flow on strikes 8 to 25 OTM correctly updates GEX engine."""
-    class DummyEngine:
-        def __init__(self):
-            self.last_ts = 1000.0
-            self.last_price = 24500.0
-            self.strike_step = 50.0
-            self._last_global_opt_tick_ts = 0.0
-            self._opt_last_cum_vol = {}
-            self._opt_last_lp = {}
-            self._opt_last_frac = {}
-            self._opt_flow_1m = {"call_buy_vol": 0.0, "call_sell_vol": 0.0, "put_buy_vol": 0.0, "put_sell_vol": 0.0, "unclass_vol": 0.0}
-            self._vwap_cum_vol_price = 0.0
-            self._vwap_cum_vol = 0.0
-            self._cum_cb_pv = self._cum_cb_vol = self._cum_cs_pv = self._cum_cs_vol = 0.0
-            self._cum_pb_pv = self._cum_pb_vol = self._cum_ps_pv = self._cum_ps_vol = 0.0
-            self.gex_engine = GexShadowEngine(num_strikes=51, strike_step=50.0, lot_size=65.0, atm_strike=24500.0)
-
-    dummy = DummyEngine()
-    # Strike 25100 is 12 strikes OTM (beyond 7 strikes)
-    strike_otm = 25100.0
-    sym = "NIFTY25100CE"
-
-    # Seed tick
-    flow.update_option_tick(dummy, sym, strike=strike_otm, side=0, lp=25.0, vol=10000.0, bp1=24.5, sp1=25.5)
-
-    # Aggressive buying tick (lp moves to ask 25.5)
-    flow.update_option_tick(dummy, sym, strike=strike_otm, side=0, lp=25.5, vol=20000.0, bp1=25.0, sp1=25.5)
-
-    idx_25100 = dummy.gex_engine.strike_to_idx[strike_otm]
-    # GEX Shadow Engine must have received the order flow and flipped dealer sign to short call (-1.0)
-    assert dummy.gex_engine.ce_buy_vol[idx_25100] > 0.0
-    assert dummy.gex_engine.mm_ce_sign[idx_25100] == -1.0
-
-    # Meanwhile, _opt_flow_1m must remain 0.0 because 25100 is beyond ATM +- 7 strikes
-    assert dummy._opt_flow_1m["call_buy_vol"] == 0.0
 

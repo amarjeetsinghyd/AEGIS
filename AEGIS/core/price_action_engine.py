@@ -29,6 +29,22 @@ _IST = timezone(timedelta(hours=5, minutes=30))
 from AEGIS.core.structural_registry import StructuralLevel, StructuralRegistryMixin
 from AEGIS.core.dow_macro_shields import DowStructureChain, DowMacroShieldsMixin
 from AEGIS.core.option_order_flow import OptionOrderFlowMixin
+try:
+    from AEGIS.core.sweep_stop_run_detector import (
+        SweepStopRunDetector,
+        SWEEP_NONE,
+        SWEEP_CONFIRMED_STOP_HUNT,
+        SWEEP_VETO_DRY_NO_STOPS,
+        SWEEP_VETO_UNABSORBED_PANIC,
+    )
+except ImportError:
+    from core.sweep_stop_run_detector import (
+        SweepStopRunDetector,
+        SWEEP_NONE,
+        SWEEP_CONFIRMED_STOP_HUNT,
+        SWEEP_VETO_DRY_NO_STOPS,
+        SWEEP_VETO_UNABSORBED_PANIC,
+    )
 
 
 try:
@@ -161,6 +177,10 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         self._cached_sr_candidates: Dict[str, Tuple[int, int, float, List[StructuralLevel]]] = {}
         self._lunch_veto_enabled: bool = (os.getenv("AEGIS_LUNCH_SWEEP_VETO_ENABLED", "1") != "0")
 
+        # ─── O(1) Stop-Run & Liquidity Sweep Order-Flow Validator (Shadow Mode First) ───
+        self.sweep_detector = SweepStopRunDetector(num_levels=32)
+        self.enforce_live_sweep_gate: bool = os.getenv("AEGIS_ENFORCE_LIVE_SWEEP_GATE", "0").strip().lower() in ("1", "true")
+
     @property
     def current_bar(self) -> Optional[OHLCBar]:
         """Returns the in-flight 1-minute OHLC bar if building."""
@@ -177,6 +197,8 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         self._apply_pending_historical_backfills()
         self.last_price = price
         self.last_ts = ts_sec
+        if hasattr(self, "sweep_detector") and self.sweep_detector is not None:
+            self.sweep_detector.on_spot_tick(price, ts_sec)
 
         # 1. Intraday VWAP & Option Flow Day Reset
         day_bucket = int(ts_sec // 86400)
@@ -1327,6 +1349,30 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                     "buffer_pts": round(buffer_pts, 2),
                 }
                 details.update(det_wflow)
+
+                # ─── O(1) Stop-Run & Liquidity Sweep Order-Flow Validator ───
+                if hasattr(self, "sweep_detector") and self.sweep_detector is not None:
+                    verdict, reason, metrics = self.sweep_detector.evaluate_sweep(
+                        swept_level=sw_low,
+                        direction="CALL",
+                        current_time=current_time if current_time > 0 else getattr(self, "last_ts", 0.0),
+                    )
+                    details["sweep_shadow"] = {
+                        "verdict": verdict,
+                        "reason": reason,
+                        "metrics": metrics,
+                    }
+                    logger.info(
+                        f"[SWEEP SHADOW] Mode A P2 CALL | {reason.upper()} | lvl={sw_low:.2f} | "
+                        f"burst_ratio={metrics.get('burst_ratio', 0.0):.2f} | "
+                        f"peak_rate={metrics.get('peak_rate', 0.0):.1f}/s | "
+                        f"baseline={metrics.get('baseline_rate', 0.0):.1f}/s | "
+                        f"reclaim_flow={metrics.get('reclaim_flow', 0.0):+.1f} | "
+                        f"enforce_live={getattr(self, 'enforce_live_sweep_gate', False)}"
+                    )
+                    if getattr(self, "enforce_live_sweep_gate", False) and verdict in (SWEEP_VETO_DRY_NO_STOPS, SWEEP_VETO_UNABSORBED_PANIC):
+                        return False, f"sweep_gate_{reason}", details
+
                 return True, "micro_sweep_call_reclaim", details
             return False, "sweep_structure_not_met", {}
 
@@ -1398,6 +1444,30 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                     "buffer_pts": round(buffer_pts, 2),
                 }
                 details.update(det_wflow)
+
+                # ─── O(1) Stop-Run & Liquidity Sweep Order-Flow Validator ───
+                if hasattr(self, "sweep_detector") and self.sweep_detector is not None:
+                    verdict, reason, metrics = self.sweep_detector.evaluate_sweep(
+                        swept_level=sw_high,
+                        direction="PUT",
+                        current_time=current_time if current_time > 0 else getattr(self, "last_ts", 0.0),
+                    )
+                    details["sweep_shadow"] = {
+                        "verdict": verdict,
+                        "reason": reason,
+                        "metrics": metrics,
+                    }
+                    logger.info(
+                        f"[SWEEP SHADOW] Mode A P2 PUT | {reason.upper()} | lvl={sw_high:.2f} | "
+                        f"burst_ratio={metrics.get('burst_ratio', 0.0):.2f} | "
+                        f"peak_rate={metrics.get('peak_rate', 0.0):.1f}/s | "
+                        f"baseline={metrics.get('baseline_rate', 0.0):.1f}/s | "
+                        f"reclaim_flow={metrics.get('reclaim_flow', 0.0):+.1f} | "
+                        f"enforce_live={getattr(self, 'enforce_live_sweep_gate', False)}"
+                    )
+                    if getattr(self, "enforce_live_sweep_gate", False) and verdict in (SWEEP_VETO_DRY_NO_STOPS, SWEEP_VETO_UNABSORBED_PANIC):
+                        return False, f"sweep_gate_{reason}", details
+
                 return True, "micro_sweep_put_reclaim", details
             return False, "sweep_structure_not_met", {}
 
@@ -2508,6 +2578,30 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                             sweep_src = "SR_REGISTRY"
                             ok_struct, _, _ = self._check_structural_obstacle("CALL", spot)
                             if ok_struct and self._delta_harmony_ok("UP"):
+                                # ─── O(1) Stop-Run & Liquidity Sweep Order-Flow Validator ───
+                                sweep_shadow_info = None
+                                if hasattr(self, "sweep_detector") and self.sweep_detector is not None:
+                                    verdict, reason, metrics = self.sweep_detector.evaluate_sweep(
+                                        swept_level=swept_low,
+                                        direction="UP",
+                                        current_time=now_sec,
+                                    )
+                                    sweep_shadow_info = {
+                                        "verdict": verdict,
+                                        "reason": reason,
+                                        "metrics": metrics,
+                                    }
+                                    logger.info(
+                                        f"[SWEEP SHADOW] Mode B P2 CALL | {reason.upper()} | lvl={swept_low:.2f} | "
+                                        f"burst_ratio={metrics.get('burst_ratio', 0.0):.2f} | "
+                                        f"peak_rate={metrics.get('peak_rate', 0.0):.1f}/s | "
+                                        f"baseline={metrics.get('baseline_rate', 0.0):.1f}/s | "
+                                        f"reclaim_flow={metrics.get('reclaim_flow', 0.0):+.1f} | "
+                                        f"enforce_live={getattr(self, 'enforce_live_sweep_gate', False)}"
+                                    )
+                                    if getattr(self, "enforce_live_sweep_gate", False) and verdict in (SWEEP_VETO_DRY_NO_STOPS, SWEEP_VETO_UNABSORBED_PANIC):
+                                        return False, f"mode_b_sweep_gate_{reason}", {}
+
                                 pending = [{"type": "mode_b_lockout", "key": "P2_SWEEP_UP", "bar_idx": bar_idx}]
                                 n1_fp = self.compute_n1_footprint(prior_bar, atr)
                                 if commit:
@@ -2533,6 +2627,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                     "bar_close": round(spot, 2),
                                     "entry_bar_bucket": int(now_sec // 60),
                                     "n1_footprint": n1_fp,
+                                    "sweep_shadow": sweep_shadow_info,
                                     "_pending_actions": pending,
                                     **_get_flow_dict(),
                                 }
@@ -2543,6 +2638,30 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                             sweep_src = "SR_REGISTRY"
                             ok_struct, _, _ = self._check_structural_obstacle("PUT", spot)
                             if ok_struct and self._delta_harmony_ok("DOWN"):
+                                # ─── O(1) Stop-Run & Liquidity Sweep Order-Flow Validator ───
+                                sweep_shadow_info = None
+                                if hasattr(self, "sweep_detector") and self.sweep_detector is not None:
+                                    verdict, reason, metrics = self.sweep_detector.evaluate_sweep(
+                                        swept_level=swept_high,
+                                        direction="DOWN",
+                                        current_time=now_sec,
+                                    )
+                                    sweep_shadow_info = {
+                                        "verdict": verdict,
+                                        "reason": reason,
+                                        "metrics": metrics,
+                                    }
+                                    logger.info(
+                                        f"[SWEEP SHADOW] Mode B P2 PUT | {reason.upper()} | lvl={swept_high:.2f} | "
+                                        f"burst_ratio={metrics.get('burst_ratio', 0.0):.2f} | "
+                                        f"peak_rate={metrics.get('peak_rate', 0.0):.1f}/s | "
+                                        f"baseline={metrics.get('baseline_rate', 0.0):.1f}/s | "
+                                        f"reclaim_flow={metrics.get('reclaim_flow', 0.0):+.1f} | "
+                                        f"enforce_live={getattr(self, 'enforce_live_sweep_gate', False)}"
+                                    )
+                                    if getattr(self, "enforce_live_sweep_gate", False) and verdict in (SWEEP_VETO_DRY_NO_STOPS, SWEEP_VETO_UNABSORBED_PANIC):
+                                        return False, f"mode_b_sweep_gate_{reason}", {}
+
                                 pending = [{"type": "mode_b_lockout", "key": "P2_SWEEP_DOWN", "bar_idx": bar_idx}]
                                 n1_fp = self.compute_n1_footprint(prior_bar, atr)
                                 if commit:
@@ -2568,6 +2687,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                     "bar_close": round(spot, 2),
                                     "entry_bar_bucket": int(now_sec // 60),
                                     "n1_footprint": n1_fp,
+                                    "sweep_shadow": sweep_shadow_info,
                                     "_pending_actions": pending,
                                     **_get_flow_dict(),
                                 }

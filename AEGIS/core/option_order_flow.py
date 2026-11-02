@@ -328,6 +328,19 @@ class OptionOrderFlowMixin:
         buy_vol = delta_vol * buy_frac
         sell_vol = delta_vol - buy_vol
 
+        # Forward aggressive volume to SweepStopRunDetector if active
+        if hasattr(self, "sweep_detector") and self.sweep_detector is not None:
+            self.sweep_detector.on_option_tick(
+                sym=sym,
+                strike=strike,
+                side=side,
+                buy_vol=buy_vol,
+                sell_vol=sell_vol,
+                ts=now_ts,
+                atm_strike=ref_atm,
+                strike_step=getattr(self, "strike_step", 50.0),
+            )
+
         if side == 0:  # CALL
             self._opt_flow_1m["call_buy_vol"] += buy_vol
             self._opt_flow_1m["call_sell_vol"] += sell_vol

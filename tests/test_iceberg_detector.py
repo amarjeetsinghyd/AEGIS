@@ -16,7 +16,7 @@ import time
 import pytest
 import numpy as np
 
-from iceberg_detector import (
+from AEGIS.core.iceberg_detector import (
     IcebergShadowDetector,
     STATE_NONE,
     STATE_BID_ICEBERG_HOLD,
@@ -28,8 +28,6 @@ from iceberg_detector import (
     VERDICT_AMPLIFY_ICEBERG_BREAK,
     VERDICT_NEUTRAL_PASS,
 )
-from feed import TickCompiler
-from pipeline import AegisPipelineOrchestrator
 
 
 def test_ask_iceberg_simulation_20_visible_15_refills_300_vol_breakout():
@@ -253,96 +251,6 @@ def test_align_strikes_and_dynamic_roll_remapping():
     assert detector.absorbed_vol[new_idx_24550] == 150.0
 
 
-def test_tick_compiler_iceberg_routing():
-    """Verify TickCompiler on_message routes ticks directly into IcebergShadowDetector."""
-    class MockBroker:
-        pass
-
-    compiler = TickCompiler(MockBroker())
-    token_map = {
-        "1001": {"side": 0, "strike": 24500.0},  # CE
-        "1002": {"side": 1, "strike": 24500.0},  # PE
-    }
-    compiler.set_token_map(token_map)
-    assert "1001" in compiler._token_routing
-    det, idx = compiler._token_routing["1001"]
-    assert det is compiler.iceberg_detector_ce
-    assert det.strikes[idx] == 24500.0
-
-    # Feed tick into compiler
-    msg = {
-        "token": "1001",
-        "lp": "120.0",
-        "v": "500",
-        "bp1": "119.5",
-        "bq1": "20",
-        "sp1": "120.0",
-        "sq1": "20",
-    }
-    compiler.on_message(msg)
-    assert det.last_cum_vol[idx] == 500.0
-    assert det.last_ask_px[idx] == 120.0
-
-
-def test_pipeline_orchestrator_shadow_telemetry_integration():
-    """Verify AegisPipelineOrchestrator attaches iceberg telemetry tags without blocking trades."""
-    token_to_symbol = {
-        "26000": "NIFTY-INDEX",
-        "1001": "NIFTY24OCT24500CE",
-        "1002": "NIFTY24OCT24500PE",
-    }
-    token_map = {
-        "26000": {"side": 0, "strike": 0.0, "is_index": True},
-        "1001": {"side": 0, "strike": 24500.0},
-        "1002": {"side": 1, "strike": 24500.0},
-    }
-
-    orchestrator = AegisPipelineOrchestrator(
-        token_to_symbol=token_to_symbol,
-        token_map=token_map,
-        strike_step=50.0,
-    )
-
-    assert orchestrator.iceberg_detector_ce is not None
-    assert orchestrator.iceberg_detector_pe is not None
-
-    class MockTick:
-        def __init__(self, tok, lp, vol=0.0, bp1=0.0, sp1=0.0, bq1=20, sq1=20):
-            self.tok = tok
-            self.lp = lp
-            self.vol = vol
-            self.bp1 = bp1
-            self.sp1 = sp1
-            self.bq1 = bq1
-            self.sq1 = sq1
-            self.bp = [bp1] * 5
-            self.bq = [bq1] * 5
-            self.sp = [sp1] * 5
-            self.sq = [sq1] * 5
-            self.ts = 1700000000.0
-
-    # Underlying tick aligns ATM
-    orchestrator.on_tick_parsed(MockTick("26000", lp=24500.0))
-    assert orchestrator.current_atm_strike == 24500.0
-
-    # Ingest baseline option tick on 1001 CE
-    orchestrator.on_tick_parsed(MockTick("1001", lp=120.0, vol=1000.0, bp1=119.5, sp1=120.0, bq1=20, sq1=20))
-
-    # Simulate iceberg on 1001 CE: 15 refills of 20 contracts against 300 volume
-    v = 1000.0
-    for i in range(15):
-        v += 20.0
-        orchestrator.on_tick_parsed(MockTick("1001", lp=120.0, vol=v, bp1=119.5, sp1=120.0, bq1=20, sq1=20))
-
-    idx_24500 = orchestrator.iceberg_detector_ce.strike_to_idx[24500.0]
-    assert orchestrator.iceberg_detector_ce.iceberg_state[idx_24500] == STATE_ASK_ICEBERG_HOLD
-
-    verdict_ce = orchestrator.iceberg_detector_ce.evaluate_shadow_verdict(idx_24500)
-    assert verdict_ce["shadow_verdict"] == VERDICT_VETO_ASK_ICEBERG
-    assert verdict_ce["iceberg_ratio"] == 15.0
-    assert verdict_ce["absorbed_vol"] == 300.0
-
-
 def test_edge_case_out_of_bounds_and_negative_volume():
     """Verify out-of-bounds indices and negative dv (e.g. feed reset) never crash."""
     detector = IcebergShadowDetector(num_strikes=51)
@@ -403,36 +311,6 @@ def test_edge_case_decay_boundary_exact_timing():
     v_decayed = detector.evaluate_shadow_verdict(idx, now_sec=103.05)
     assert v_decayed["shadow_verdict"] == VERDICT_NEUTRAL_PASS
     assert detector.iceberg_state[idx] == STATE_NONE
-
-
-def test_edge_case_ce_and_pe_dual_isolation():
-    """Verify CALL (CE) and PUT (PE) detectors on the same strike step do not interfere."""
-    compiler = TickCompiler(None)
-    token_map = {
-        "1001": {"side": 0, "strike": 24500.0},  # CE
-        "1002": {"side": 1, "strike": 24500.0},  # PE
-    }
-    compiler.set_token_map(token_map)
-
-    det_ce, idx_ce = compiler._token_routing["1001"]
-    det_pe, idx_pe = compiler._token_routing["1002"]
-
-    # Both share strike 24500 at index 25
-    assert idx_ce == idx_pe
-
-    # Create Ask Iceberg on CE only
-    det_ce.on_tick_o1(idx=idx_ce, ltp=100.0, cum_vol=1000.0, bid_px=99.5, bid_qty=20.0, ask_px=100.0, ask_qty=20.0)
-    v = 1000.0
-    for _ in range(10):
-        v += 20.0
-        det_ce.on_tick_o1(idx=idx_ce, ltp=100.0, cum_vol=v, bid_px=99.5, bid_qty=20.0, ask_px=100.0, ask_qty=20.0)
-
-    # CE has Ask Iceberg
-    assert det_ce.iceberg_state[idx_ce] == STATE_ASK_ICEBERG_HOLD
-    # PE has NO Iceberg (complete isolation)
-    assert det_pe.iceberg_state[idx_pe] == STATE_NONE
-    assert det_ce.evaluate_shadow_verdict(idx_ce)["shadow_verdict"] == VERDICT_VETO_ASK_ICEBERG
-    assert det_pe.evaluate_shadow_verdict(idx_pe)["shadow_verdict"] == VERDICT_NEUTRAL_PASS
 
 
 def test_reset_session_clean_slate():

@@ -2,6 +2,38 @@ from typing import List, Dict, Any
 from datetime import datetime
 import uuid
 
+
+def resolve_leg_net_qty(leg_or_qty, lot_size: int) -> int:
+    """👑 Single source of truth for the open-position share-units (net_qty).
+
+    ABSOLUTE UNIT INVARIANT (Exit-Quantity Double-Multiplication Shield):
+    leg.quantity is canonically stored in LOTS (fixed 1-lot discipline => value 1).
+    Every order-egress point (entry, exit, TP, chase, PnL) MUST resolve exact
+    share-units through this helper. Never multiply leg.quantity by lot_size twice!
+
+    Defensive path: legacy persisted trade contexts (pre-invariant snapshots) may
+    hold share-valued quantity (e.g. 20 for a 1-lot SENSEX after a fillshares
+    overwrite). If the value already encodes an exact whole-lot share count
+    (>= lot_size and cleanly divisible), it is treated as shares — never
+    re-multiplied. This keeps NFO (Nifty=65) and BFO (Sensex=20) contract
+    specifications scale-safe alike.
+    """
+    raw = getattr(leg_or_qty, "quantity", leg_or_qty)
+    try:
+        raw = int(raw)
+    except (TypeError, ValueError):
+        raw = 0
+    lot = max(int(lot_size or 0), 1)
+    if raw <= 0:
+        # Degenerate state (None/0): assume the canonical default = 1 lot.
+        return lot
+    if raw >= lot and raw % lot == 0:
+        # Already share-denominated (e.g. broker fillshares reconciliation).
+        return raw
+    # Canonical LOTS -> exact share-units.
+    return raw * lot
+
+
 class TradeLeg:
     def __init__(self, token: str, symbol: str, strike: float, option_type: str, quantity: int, entry_price: float, broker_order_id: str = None, paper_order_id: str = None):
         self.leg_id = str(uuid.uuid4())
@@ -9,7 +41,8 @@ class TradeLeg:
         self.symbol = symbol
         self.strike = strike
         self.option_type = option_type
-        self.quantity = quantity
+        self.quantity = quantity          # Canonical: LOTS (fixed 1-lot discipline)
+        self.filled_units = 0             # Broker-verified fillshares (units), re-confirmed at fill time
         self.entry_price = entry_price
         self.current_price = entry_price
         self.broker_order_id = broker_order_id

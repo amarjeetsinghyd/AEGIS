@@ -144,6 +144,11 @@ class AegisPipelineOrchestrator:
         self.strike_step = strike_step
         self.underlying_tokens = underlying_tokens or {"26000", "1", "99919000", "99926000"}
         self.signal_queue = signal_queue
+        # Signal churn debounce (Pillar-level spam guard). Mode-B evaluates
+        # every tick by design; a 15s per-direction cooldown on EMISSION stops
+        # candidate-signal spam from hammering the veto stack / EM queue.
+        self._signal_emit_cooldown_sec = float(os.getenv("AEGIS_SIGNAL_EMIT_COOLDOWN_SEC", "15.0"))
+        self._last_emit_by_direction: Dict[str, float] = {}
 
         # Build fast (side, strike) -> symbol lookup for cross-strike coherence
         self.strike_to_symbol: Dict[Tuple[int, float], str] = {}
@@ -1837,6 +1842,20 @@ class AegisPipelineOrchestrator:
         if not self.signal_queue:
             logger.warning("[AEGIS] Signal queue is not connected — signal dropped")
             return False
+
+        # ─── Signal Churn Debounce (upstream pillar guard) ───
+        direction_key = str(direction).upper()
+        if self._signal_emit_cooldown_sec > 0.0:
+            now_ts = time.time()
+            last_emit = self._last_emit_by_direction.get(direction_key, 0.0)
+            if last_emit and (now_ts - last_emit) < self._signal_emit_cooldown_sec:
+                logger.debug(
+                    f"[AEGIS] Signal debounce: {direction_key} blocked for "
+                    f"{self._signal_emit_cooldown_sec - (now_ts - last_emit):.1f}s more (trigger churn"
+                    f" guard, last emit {now_ts - last_emit:.1f}s ago)"
+                )
+                return False
+
         payload = {
             "type": "GAMMA_BURST_ENTRY",
             "sym": sym,
@@ -1855,6 +1874,7 @@ class AegisPipelineOrchestrator:
             logger.warning(f"[AEGIS] Signal queue full ({self.signal_queue.qsize()}/{self.signal_queue.maxsize}) — dropping {sym} {direction} {conviction:.1f}")
             return False
         logger.info(f"[AEGIS SIGNAL EMITTED] {direction} {sym} @ {lp:.2f} (Score={conviction:.1f})")
+        self._last_emit_by_direction[direction_key] = time.time()
         return True
 
     # ═══════════════════════════════════════════════════════════

@@ -293,9 +293,11 @@ def test_strike_selector_budget_adaptation_2000():
     
     assert len(alloc) == 1
     chosen_row, qty, ltp = alloc[0]
-    # Must select 77800 CE (₹190, Cost ₹1900 <= ₹2000) as the highest affordable premium!
-    assert chosen_row["symbol"] == "SENSEX2682077800CE"
-    assert ltp == 190.0
+    # 10% charge-reserve policy: effective budget = 2000 * 0.90 = Rs 1800, so
+    # 77800 CE (Rs 190, cost Rs 1900) no longer spends every rupee; the highest
+    # affordable premium under the reserve is 77900 CE @ Rs 140 (cost Rs 1400)!
+    assert chosen_row["symbol"] == "SENSEX2682077900CE"
+    assert ltp == 140.0
     assert qty == 1
 
 

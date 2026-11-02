@@ -580,6 +580,14 @@ class StructuralRegistryMixin:
                         lvl.is_tradeable_breakout = (lvl.prominence >= 1.25)
                         lvl.breakout_tier = "A_STANDARD" if lvl.prominence >= 1.25 else "C_UNQUALIFIED"
 
+        # Sync active S/R levels into SweepStopRunDetector if present
+        if hasattr(self, "sweep_detector") and self.sweep_detector is not None:
+            self.sweep_detector.sync_levels(
+                self.session_levels,
+                pdh=getattr(self, "pdh", 0.0),
+                pdl=getattr(self, "pdl", 0.0),
+            )
+
     def seed_previous_day_5m_bars(self, candles: Any) -> Dict[str, Any]:
         """
         Seeds previous trading day's 5-minute and 15-minute structural swing levels
@@ -858,9 +866,11 @@ class StructuralRegistryMixin:
         from self.session_levels or Day Extremes (PDH/PDL).
         
         Strict Institutional Qualification:
-          - CALL (Spring): Must be OUTERMOST_FLOOR, PDL, or high-prominence MAJOR_SWING (>= 1.25 prom).
-          - PUT (Upthrust): Must be OUTERMOST_ROOF, PDH, or high-prominence MAJOR_SWING (>= 1.25 prom).
-          - INTERIOR_CLUSTER and C_UNQUALIFIED are STRICTLY VETOED.
+          - CALL (Spring): Must be OUTERMOST_FLOOR, PDL, high-prominence MAJOR_SWING (>= 1.25 prom),
+            or registered INTERIOR_CLUSTER (B_SWEEP_ONLY).
+          - PUT (Upthrust): Must be OUTERMOST_ROOF, PDH, high-prominence MAJOR_SWING (>= 1.25 prom),
+            or registered INTERIOR_CLUSTER (B_SWEEP_ONLY).
+          - C_UNQUALIFIED is STRICTLY VETOED.
         """
         is_up = direction.upper() in ("UP", "CALL")
         target_type = "SUPPORT" if is_up else "RESISTANCE"
@@ -870,9 +880,9 @@ class StructuralRegistryMixin:
             if lvl.level_type != target_type or lvl.is_broken:
                 continue
             role = getattr(lvl, "level_role", "NORMAL")
-            if role in ("INTERIOR_CLUSTER", "C_UNQUALIFIED"):
+            if role == "C_UNQUALIFIED" or getattr(lvl, "breakout_tier", "") == "C_UNQUALIFIED":
                 continue
-            if role == "MAJOR_SWING" and (lvl.prominence < 1.25 or getattr(lvl, "breakout_tier", "") == "C_UNQUALIFIED"):
+            if role == "MAJOR_SWING" and lvl.prominence < 1.25:
                 continue
             if (self._total_bars_seen - lvl.seq_idx) < 2 and (getattr(bar, "ts_start", 0) - lvl.ts_created) < 120.0:
                 continue
@@ -922,8 +932,8 @@ class StructuralRegistryMixin:
     ) -> Optional[StructuralLevel]:
         """
         Maps an in-flight forming candle to an active registered Structural Level for Mode B Reversal Breakout.
-        Strictly requires registered OUTERMOST_FLOOR, OUTERMOST_ROOF, PDL, PDH, or high-prominence MAJOR_SWING.
-        Zero tolerance for arbitrary 5-bar local swings.
+        Allows registered OUTERMOST_FLOOR, OUTERMOST_ROOF, PDL, PDH, high-prominence MAJOR_SWING,
+        and INTERIOR_CLUSTER (B_SWEEP_ONLY) levels.
         """
         is_up = direction.upper() in ("UP", "CALL")
         target_type = "SUPPORT" if is_up else "RESISTANCE"
@@ -933,9 +943,9 @@ class StructuralRegistryMixin:
             if lvl.level_type != target_type or lvl.is_broken:
                 continue
             role = getattr(lvl, "level_role", "NORMAL")
-            if role in ("INTERIOR_CLUSTER", "C_UNQUALIFIED"):
+            if role == "C_UNQUALIFIED" or getattr(lvl, "breakout_tier", "") == "C_UNQUALIFIED":
                 continue
-            if role == "MAJOR_SWING" and (lvl.prominence < 1.25 or getattr(lvl, "breakout_tier", "") == "C_UNQUALIFIED"):
+            if role == "MAJOR_SWING" and lvl.prominence < 1.25:
                 continue
             if (self._total_bars_seen - lvl.seq_idx) < 2 and (getattr(curr_bar, "ts_start", 0) - lvl.ts_created) < 120.0:
                 continue

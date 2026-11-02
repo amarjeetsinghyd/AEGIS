@@ -42,6 +42,72 @@ except Exception as e:
         def get_trade_book(self, *args, **kwargs): return []
     NorenApiPy = _MockNorenApi
 
+
+def _patch_noren_api_for_oauth(api_cls) -> None:
+    """
+    Patches NorenApi WebSocket handshake to comply with Shoonya's OAuth protocol.
+    Upstream NorenApi v0.0.22 sends legacy connect frame {'t': 'c', 'susertoken': ...}
+    which Shoonya's modern OAuth endpoint rejects with {'t': 'ck', 's': 'NOT_OK'} and close code 1008.
+    OAuth requires connect frame {'t': 'a', 'accesstoken': ...} and acknowledges with {'t': 'ak', 's': 'OK'}.
+    """
+    if getattr(api_cls, "_oauth_ws_patched", False):
+        return
+
+    orig_open_cb = getattr(api_cls, "_NorenApi__on_open_callback", None)
+    orig_data_cb = getattr(api_cls, "_NorenApi__on_data_callback", None)
+
+    if not orig_open_cb or not orig_data_cb:
+        return
+
+    def _patched_on_open_callback(self, ws=None):
+        self._NorenApi__websocket_connected = True
+        uid = getattr(self, "_NorenApi__username", "")
+        actid = getattr(self, "_NorenApi__accountid", uid) or uid
+        token = getattr(self, "_NorenApi__susertoken", "")
+        # Modern Shoonya OAuth connect frame (t: 'a')
+        values = {
+            "t": "a",
+            "uid": uid,
+            "actid": actid,
+            "source": "API",
+            "accesstoken": token,
+        }
+        payload = json.dumps(values)
+        self._NorenApi__ws_send(payload)
+
+    def _patched_on_data_callback(self, ws=None, message=None, data_type=None, continue_flag=None):
+        try:
+            res = json.loads(message)
+        except Exception:
+            if orig_data_cb:
+                orig_data_cb(self, ws=ws, message=message, data_type=data_type, continue_flag=continue_flag)
+            return
+
+        # Handle OAuth connect acknowledgment ('ak')
+        if isinstance(res, dict) and res.get("t") == "ak":
+            if res.get("s") == "OK":
+                on_open = getattr(self, "_NorenApi__on_open", None)
+                if on_open:
+                    on_open()
+                    return
+            else:
+                on_error = getattr(self, "_NorenApi__on_error", None)
+                if on_error:
+                    on_error(res)
+                    return
+
+        if orig_data_cb:
+            orig_data_cb(self, ws=ws, message=message, data_type=data_type, continue_flag=continue_flag)
+
+    api_cls._NorenApi__on_open_callback = _patched_on_open_callback
+    api_cls._NorenApi__on_data_callback = _patched_on_data_callback
+    api_cls._oauth_ws_patched = True
+    logger.info("Patched NorenApi WebSocket handshake for modern Shoonya OAuth protocol ('t': 'a').")
+
+
+_patch_noren_api_for_oauth(NorenApiPy)
+
+
 from common.runtime.paths import get_project_root
 
 _PROJECT_ROOT = str(get_project_root())

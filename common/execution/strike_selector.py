@@ -4,6 +4,23 @@ import pandas as pd
 from typing import List, Dict, Tuple
 
 logger = logging.getLogger("strike_selector")
+# Silent-error killer: without an explicit handler this logger's INFO lines
+# (DEAD-ZONE clamp, drop-reason diag, selection result) fall below the root
+# WARNING level and vanish. Attach a plain stderr handler so every diagnostic
+# reaches the logs; propagate off prevents double emission.
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(
+        logging.Formatter("%(asctime)s - strike_selector - %(levelname)s - %(message)s")
+    )
+    logger.addHandler(_handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+# Selection-change guards: log the DEAD-ZONE clamp once per process and the
+# chosen strike only when it actually changes (10s refresh loop otherwise).
+_DEADZONE_ALREADY_LOGGED = False
+_LAST_SELECTION_KEY = None
 
 # Testing-phase budget band: with tiny funds (e.g. Rs 973, 1 lot x 65 => max
 # Rs 14.97), prioritize strikes whose LTP sits inside this band so paper/test
@@ -15,19 +32,37 @@ TESTING_DEEP_DEPTH = int(os.getenv("AEGIS_TESTING_DEEP_DEPTH", "32"))
 # Dead-zone safety buffer: effective floor stops this far below the per-lot
 # budget ceiling so floor can never exceed what the account can afford.
 PREMIUM_SAFETY_BUFFER = float(os.getenv("AEGIS_PREMIUM_SAFETY_BUFFER", "0.50"))
+# 10% funds reserve (charges/STT/slippage): affordability is judged against
+# effective_budget = funds * (1 - reserve), so a filled lot always leaves
+# ~10% of cash untouched for exchange charges.
+FUNDS_RESERVE_PCT = float(os.getenv("AEGIS_FUNDS_RESERVE_PCT", "0.10"))
+
+
+def effective_budget(available_funds: float) -> float:
+    """Funds after the charges reserve (10% by default).
+
+    Rs 520.53 * (1 - 0.10) = Rs 468.48 -> with lot 65 the affordable premium
+    ceiling is Rs 7.20 per unit.
+    """
+    funds = float(available_funds or 0)
+    if funds <= 0:
+        return 0.0
+    reserve = max(0.0, min(0.9, FUNDS_RESERVE_PCT))
+    return funds * (1.0 - reserve)
 
 
 def effective_premium_floor(configured_min: float, available_funds: float, lot_size: int) -> float:
     """Dynamic floor override for Tiny Funds / Testing Mode.
 
-    Formula: Effective Floor = min(env_premium_min, budget_ceiling - safety_buffer),
-    where budget_ceiling = available_funds / lot_size.
+    Formula: Effective Floor = min(env_premium_min, effective_ceiling - safety_buffer),
+    where effective_ceiling = effective_budget(available_funds) / lot_size and
+    effective_budget = available_funds * (1 - FUNDS_RESERVE_PCT) reserves 10%
+    of cash for charges/STT.
 
     Applied ONLY when funds are tiny (< TESTING_TINY_FUNDS) and the configured
     floor (e.g. execution manager NIFTY_PREMIUM_MIN = 15) would otherwise sit
-    above the budget ceiling (e.g. Rs 14.97) — a mathematical dead zone in
-    which no strike can ever be selected. Production accounts keep the
-    configured floor untouched.
+    above the budget ceiling — a mathematical dead zone in which no strike can
+    ever be selected. Production accounts keep the configured floor untouched.
     """
     try:
         cfg = float(configured_min)
@@ -41,8 +76,8 @@ def effective_premium_floor(configured_min: float, available_funds: float, lot_s
         if funds >= TESTING_TINY_FUNDS:
             return cfg
         env_floor = float(os.getenv("AEGIS_MIN_PREMIUM", "4.0"))
-        ceiling = funds / lot
-        dyn = min(env_floor, ceiling - PREMIUM_SAFETY_BUFFER)
+        effective_ceiling = effective_budget(funds) / lot
+        dyn = min(env_floor, effective_ceiling - PREMIUM_SAFETY_BUFFER)
         if dyn < cfg:
             return max(0.0, dyn)
         return cfg
@@ -142,18 +177,33 @@ class StrikeSelector:
         otm_strikes = StrikeSelector.get_otm_strikes(atm_strike, signal_type, index_name, max_depth=_depth)
         _configured_min = float(kwargs.get("premium_min") or float(os.getenv("AEGIS_MIN_PREMIUM", "4.0")))
         premium_max = float(kwargs.get("premium_max") or 0.0)
+        # 10% charges reserve: affordability is judged against the effective
+        # budget (funds * 0.90), not raw funds — a filled lot must always leave
+        # room for STT/exchange charges instead of draining every rupee.
+        _effective_budget = effective_budget(available_funds)
         # Dead-zone fix: clamp the hardcoded production floor (15) down to the
         # budget-aware effective floor when tiny funds would otherwise make
         # selection mathematically impossible.
         _prem_min = effective_premium_floor(_configured_min, available_funds, lot_size)
         if _prem_min < _configured_min:
-            logger.info(
-                f"[StrikeSelector][DEAD-ZONE FIX] Clamped premium floor Rs {_configured_min:.2f} -> Rs {_prem_min:.2f} "
-                f"(funds Rs {float(available_funds):.2f} / lot {lot_size} = ceiling Rs {float(available_funds) / int(lot_size):.2f})"
-            )
+            global _DEADZONE_ALREADY_LOGGED
+            if not _DEADZONE_ALREADY_LOGGED:
+                _DEADZONE_ALREADY_LOGGED = True
+                logger.info(
+                    f"[StrikeSelector][DEAD-ZONE FIX] Clamped premium floor Rs {_configured_min:.2f} -> Rs {_prem_min:.2f} "
+                    f"(funds Rs {float(available_funds):.2f} - Rs {float(available_funds) - _effective_budget:.2f} charge-reserve "
+                    f"= budget Rs {_effective_budget:.2f} / lot {lot_size} = ceiling Rs {_effective_budget / int(lot_size):.2f})"
+                )
         
         market_data_provider = kwargs.get("market_data_provider")
-        
+
+        # Drop-reason telemetry: pinpoints WHY a refresh found no affordable
+        # strike (missing LTP vs floor/ceiling/budget vs chain gaps) instead of
+        # a single opaque 'funds too low' warning. Silent-error killer.
+        drops = {"no_chain_match": 0, "no_ltp": 0, "below_floor": 0,
+                 "above_ceiling": 0, "above_budget": 0}
+        priced = 0
+
         valid_opts = []
         for target_strike in otm_strikes:
             strike_angel = int(target_strike * 100)
@@ -162,6 +212,7 @@ class StrikeSelector:
             match = opts[(opts_strike_int == strike_angel) | (opts_strike_int == strike_shoonya)]
             
             if match.empty:
+                drops["no_chain_match"] += 1
                 continue
                 
             opt_row = match.iloc[0]
@@ -190,30 +241,52 @@ class StrikeSelector:
             # Zero-REST Discipline: If token has no tick streaming in memory, it is illiquid.
             # Skip instantly in 0.001ms — NEVER block hot-path with synchronous HTTP REST calls!
             if ltp is None or ltp <= 0:
+                drops["no_ltp"] += 1
                 continue
+
+            priced += 1
             
             if ltp is not None and ltp > 0:
                 if ltp < _prem_min:
+                    drops["below_floor"] += 1
                     continue
                 if premium_max > 0.0 and ltp > premium_max:
+                    drops["above_ceiling"] += 1
                     continue
                 cost_for_one_lot = ltp * lot_size
-                if cost_for_one_lot <= available_funds:
+                if cost_for_one_lot <= _effective_budget:
                     valid_opts.append((opt_row, ltp, cost_for_one_lot))
+                else:
+                    drops["above_budget"] += 1
 
         if not valid_opts:
             dte_msg = " [0DTE Max 5-OTM Guard Active]" if is_zero_dte and float(available_funds or 0) >= TESTING_TINY_FUNDS else ""
-            logger.warning(
-                f"[StrikeSelector] Funds (₹{available_funds}) too low for 1 lot of size {lot_size} "
-                f"among top-{len(otm_strikes)} OTM + ATM{dte_msg}."
+            _diag_msg = (
+                f" diag[scanned={priced}, no_chain_match={drops['no_chain_match']}, "
+                f"no_ltp={drops['no_ltp']}, below_floor={drops['below_floor']}, "
+                f"above_ceiling={drops['above_ceiling']}, above_budget={drops['above_budget']}]"
             )
+            if kwargs.get("suppress_funds_warning"):
+                logger.debug(
+                    f"[StrikeSelector] No affordable strike for funds Rs {available_funds} "
+                    f"(lot {lot_size}){dte_msg}{_diag_msg}"
+                )
+            else:
+                logger.warning(
+                    f"[StrikeSelector] Funds (₹{available_funds}) too low for 1 lot of size {lot_size} "
+                    f"among top-{len(otm_strikes)} OTM + ATM{dte_msg}{_diag_msg}."
+                )
             return []
 
         # Sort by highest affordable premium (closest to ATM for highest delta)
         valid_opts.sort(key=lambda x: x[1], reverse=True)
         chosen_row, chosen_ltp, chosen_cost = valid_opts[0]
-        logger.info(
-            f"[StrikeSelector] Selected optimal affordable strike: {chosen_row['symbol']} @ LTP ₹{chosen_ltp:.2f} "
-            f"(Cost: ₹{chosen_cost:.2f} <= Funds: ₹{available_funds:.2f})"
-        )
+        global _LAST_SELECTION_KEY
+        _sel_key = str(chosen_row.get("symbol", ""))
+        if _sel_key != _LAST_SELECTION_KEY:
+            _LAST_SELECTION_KEY = _sel_key
+            logger.info(
+                f"[StrikeSelector] Selected optimal affordable strike: {chosen_row['symbol']} @ LTP ₹{chosen_ltp:.2f} "
+                f"(Cost: ₹{chosen_cost:.2f} <= Budget: ₹{_effective_budget:.2f} after charge-reserve, Funds: ₹{available_funds:.2f})"
+            )
         return [(chosen_row, 1, chosen_ltp)]

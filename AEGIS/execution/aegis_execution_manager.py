@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
+import sys
 import threading
 import time
 from collections import deque
@@ -35,7 +37,7 @@ from common.execution.order_lifecycle import (
     get_smart_maker_tp_price,
 )
 from common.execution.strike_selector import StrikeSelector, effective_premium_floor
-from common.execution.trade_context import TradeContext, TradeLeg
+from common.execution.trade_context import TradeContext, TradeLeg, resolve_leg_net_qty
 from common.execution.realistic_paper_broker import calculate_nse_option_charges, OptionCharges
 from common.market.market_calendar import is_trading_day
 from common.ipc.premarket_bridge import read_premarket_state
@@ -358,6 +360,10 @@ class AegisExecutionManager:
         self.daily_net_pnl = 0.0
         self.daily_charges = 0.0
         
+        # Order-Reject Fail-Safe state (verified net-position reconciliation)
+        self._emerg_recon_state = {}          # per-leg reconcile attempt bookkeeping
+        self._has_unreconciled_position = False  # True while broker holds a not-verified-flat position
+        
         # Persistence
         trades_dir = os.path.join(self.data_dir, "trades")
         os.makedirs(trades_dir, exist_ok=True)
@@ -373,6 +379,10 @@ class AegisExecutionManager:
         self._running = False
         self._main_thread: Optional[threading.Thread] = None
         self._last_budget_target_refresh = 0.0
+        # Spam guard: budget-target 'No affordable' state logs at most once per
+        # 5 min (or when funds move) instead of every 10s refresh cycle.
+        self._no_target_last_log = 0.0
+        self._no_target_last_funds = -1.0
         market_data = getattr(self.broker, "market_data_provider", None)
         if market_data is not None and hasattr(market_data, "add_order_listener"):
             market_data.add_order_listener(self.on_order_update)
@@ -710,12 +720,18 @@ class AegisExecutionManager:
                 lot_size=int(params["lot_size"]),
                 premium_min=float(params["premium_min"]),
                 premium_max=float(params["premium_max"]),
+                suppress_funds_warning=True,
             )
             if not allocation:
-                logger.info(
-                    f"[AegisEM] No affordable {signal_type} target in the subscribed universe "
-                    f"(funds={funds:.2f})"
-                )
+                if (now_mono - self._no_target_last_log >= 300.0) or (
+                    abs(funds - self._no_target_last_funds) > 0.5
+                ):
+                    logger.info(
+                        f"[AegisEM] No affordable {signal_type} target in the subscribed universe "
+                        f"(funds={funds:.2f})"
+                    )
+                    self._no_target_last_log = now_mono
+                    self._no_target_last_funds = funds
                 continue
 
             row, _quantity, ltp = allocation[0]
@@ -736,6 +752,18 @@ class AegisExecutionManager:
             }
 
         engine.set_budget_strike_targets(targets)
+        # Change-gated staging telemetry: only when the staged set actually
+        # differs from the last refresh (10s loop otherwise spams).
+        _sig = str(sorted(
+            (d, t.get("symbol"), round(float(t.get("ltp", 0.0)), 2))
+            for d, t in targets.items()
+        ))
+        if _sig != getattr(self, "_last_targets_sig", None):
+            self._last_targets_sig = _sig
+            logger.info(
+                "[AegisEM] Budget strike targets staged: "
+                + ("; ".join(f"{d}={t.get('symbol')}@₹{float(t.get('ltp', 0.0)):.2f}" for d, t in sorted(targets.items())) or "NONE")
+            )
 
     # ─── Main Loop ───
     def start(self):
@@ -1024,21 +1052,59 @@ class AegisExecutionManager:
             contract_side = contract_info.get("side")
             contract_strike = float(contract_info.get("strike", 0.0) or 0.0)
 
-            if (
-                not contract_token
-                or not contract_symbol
-                or not contract_info
-                or not mapped_symbol
-                or not contract_symbol.upper().endswith(expected_suffix)
-                or strike <= 0.0
-                or signal_side not in (expected_suffix, "CALL" if signal_type == "CALL" else "PUT")
-                or (mapped_symbol and str(mapped_symbol) != contract_symbol)
-                or (contract_side is not None and int(contract_side) != expected_side)
-                or (contract_strike > 0.0 and abs(contract_strike - strike) > 1e-6)
-            ):
+            # ─── Metadata gate: per-clause diagnosis (silent-error killer) ───
+            _gate_fail: List[str] = []
+            if not contract_token:
+                _gate_fail.append("empty_token")
+            if not contract_symbol:
+                _gate_fail.append("empty_symbol")
+            if not contract_info:
+                _gate_fail.append("contract_not_in_token_map")
+            if not mapped_symbol:
+                _gate_fail.append("mapped_symbol_missing")
+            # Suffix validation (ROOT CAUSE FIX 2026-11-03 13:16:32): NFO/BFO
+            # weekly symbols end with side-letter + strike, e.g.
+            # NIFTY03NOV26C23850 / NIFTY03NOV26P23600 — 'CE'/'PE' never appears
+            # as a literal suffix. The old endswith('CE') clause could NEVER
+            # pass any strike-suffixed symbol and silently blocked every live
+            # signal all morning (per-clause diagnosis proved: everything else
+            # consistent, only this clause failed). STRICT check: the side
+            # letter immediately before the trailing strike digits must equal
+            # C for CALL / P for PUT. Still Fail-Closed — anything else vetoed.
+            _side_letter = "C" if signal_type == "CALL" else "P"
+            _sym_upper = contract_symbol.upper()
+            # Strict side-letter check for the '...C23850' weekly format...
+            _sym_match = re.match(r"^[A-Z0-9]+([CP])\d{1,9}$", _sym_upper)
+            # ...OR the literal '...CE'/'...PE' suffix format (e.g.
+            # SENSEX73400CE). Both are real broker symbol layouts; anything
+            # else is vetoed — Fail-Closed unchanged.
+            if _sym_match:
+                _suffix_ok = _sym_match.group(1) == _side_letter
+            else:
+                _suffix_ok = _sym_upper.endswith(expected_suffix)
+            if not _suffix_ok:
+                _gate_fail.append("suffix_mismatch")
+            if strike <= 0.0:
+                _gate_fail.append("non_positive_strike")
+            if signal_side not in (expected_suffix, "CALL" if signal_type == "CALL" else "PUT"):
+                _gate_fail.append("side_label_mismatch")
+            if mapped_symbol and str(mapped_symbol) != contract_symbol:
+                _gate_fail.append("symbol_map_conflict")
+            if contract_side is not None and int(contract_side) != expected_side:
+                _gate_fail.append("side_value_conflict")
+            if contract_strike > 0.0 and abs(contract_strike - strike) > 1e-6:
+                _gate_fail.append("strike_conflict")
+
+            # STRICTLY Fail-Closed by design — never weaken or salvage here.
+            # The fix belongs UPSTREAM in the signal emitter (pipeline / budget
+            # cluster), which must inject complete contract metadata. This gate
+            # only adds telemetry so the exact failing clause is visible.
+            if _gate_fail:
                 logger.warning(
                     f"[AegisEM] Entry blocked — signal contract metadata is missing or inconsistent "
-                    f"(symbol={contract_symbol!r}, token={contract_token!r}, side={signal_side!r}, strike={strike:.2f})"
+                    f"(symbol={contract_symbol!r}, token={contract_token!r}, side={signal_side!r}, "
+                    f"strike={strike:.2f}, failed={','.join(_gate_fail)}, "
+                    f"in_token_map={bool(contract_info)}, mapped_symbol={str(mapped_symbol)!r})"
                 )
                 self._rollback_slot()
                 self._drain_signal_queue(reason="invalid_signal_contract")
@@ -1473,7 +1539,8 @@ class AegisExecutionManager:
 
         try:
             exch = params["exchange"]
-            qty = str(leg.quantity * params["lot_size"])
+            # 👑 UNIT INVARIANT: exit order quantity = actual open share-units (net_qty), single-sourced
+            qty = str(resolve_leg_net_qty(leg, int(params["lot_size"])))
             if hasattr(self.order_lifecycle, "_build_kwargs"):
                 kwargs = self.order_lifecycle._build_kwargs("S", exch, leg.symbol, qty, f"{tp_price:.2f}")
                 api = self.broker if hasattr(self.broker, "place_order") else getattr(self.broker, "_api", None)
@@ -2187,12 +2254,15 @@ class AegisExecutionManager:
             logger.critical(f"[AegisEM] Exit chaser thread crashed: {e_chase}", exc_info=True)
             with self.trade_lock:
                 if self.trade_context and self.has_open_trade():
-                    # Attempt emergency fallback market close to prevent position from being orphaned
-                    logger.warning(f"[AegisEM] Triggering emergency fallback market exit for unclosed trade...")
+                    # Attempt emergency fallback: verify live net position at broker and
+                    # dispatch exact-qty emergency flatten so the position is never orphaned.
+                    logger.warning(f"[AegisEM] Triggering emergency reconcile-flatten fallback for unclosed trade...")
                     try:
-                        self.order_lifecycle.close_all_market(reason=f"chase_crash_fallback_{reason}")
+                        flat_all = self._emergency_reconcile_flatten(reason=f"chase_crash_fallback_{reason}")
                     except Exception as e_em:
-                        logger.critical(f"[AegisEM] Emergency market fallback also failed: {e_em}", exc_info=True)
+                        flat_all = False
+                        logger.critical(f"[AegisEM] Emergency reconcile-flatten fallback also failed: {e_em}", exc_info=True)
+                    if not flat_all:
                         # Revert status to OPEN so subsequent ticks and 15:08 CAS flatten can retry!
                         self.trade_context.status = "OPEN"
         finally:
@@ -2228,10 +2298,23 @@ class AegisExecutionManager:
             except Exception:
                 pass
 
-            qty = str(leg.quantity * params["lot_size"])
+            # 👑 UNIT INVARIANT: exit order quantity = actual open share-units (net_qty), single-sourced
+            # (SENSEX 1 lot => 20, NIFTY 1 lot => 65).
+            qty = str(resolve_leg_net_qty(leg, int(params["lot_size"])))
             fill_price = 0.0
             fill_ts = time.time()
             filled = False
+
+            # 🛡️ Broker-verified-flat shortcut: previous reconciliation proved this
+            # position is already closed at the broker — bookkeeping-only close,
+            # NEVER dispatch another SELL (prevents naked-short double exit).
+            if getattr(leg, "broker_verified_flat", False):
+                filled = True
+                fill_price = float(getattr(leg, "exit_price", 0.0) or leg.current_price or leg.entry_price)
+                logger.info(
+                    f"[AegisEM] {leg.symbol}: broker net position verified FLAT earlier — "
+                    f"bookkeeping-only close @ {fill_price:.2f} (exit order suppressed)"
+                )
 
             # Case A: Passive Take-Profit Maker Fill (Preserve 100% of profit without discount!)
             # NOTE: tp_order_id may already be None here (cleared in Section 0B / _cancel_tp)
@@ -2453,11 +2536,21 @@ class AegisExecutionManager:
                     )
                     if hasattr(self, "capital_engine") and self.capital_engine:
                         self.capital_engine._needs_broker_sync = True
-                fill_price = leg.exit_price if leg.exit_price and leg.exit_price > 0 else leg.current_price
-                fill_ts = time.time()
+                    # 🛡️ ORDER-REJECT FAIL-SAFE: verify the LIVE net position at the broker
+                    # (never trust local state after a rejection) and dispatch an
+                    # EXACT-verified-net-qty emergency flatten. A REJECTED exit must never
+                    # orphan an unhedged position (incident 2026-11: SENSEX 578800CE).
+                    recon_flat, recon_px = self._reconcile_leg_position(leg, reason=reason)
+                    if recon_flat:
+                        filled = True
+                        fill_price = recon_px if recon_px > 0 else leg.current_price
+                        fill_ts = time.time()
+                if not filled:
+                    fill_price = leg.exit_price if leg.exit_price and leg.exit_price > 0 else leg.current_price
+                    fill_ts = time.time()
             
-            # ─── CRITICAL: Feed fill back to AEGIS for latency decay ───
-            if self.aegis_engine:
+            # ─── CRITICAL: Feed fill back to AEGIS for latency decay (real fills only) ───
+            if self.aegis_engine and filled:
                 signal_price = leg.entry_price
                 dp = getattr(context, "decision_payload", None) or {}
                 signal_ts = float(dp.get("signal_ts") or 0.0)
@@ -2476,15 +2569,28 @@ class AegisExecutionManager:
                     # Feedback must never break trade bookkeeping below
                     logger.error(f"[AegisEM] on_fill feedback failed (non-fatal): {e}")
             
+            if not filled:
+                # 🛡️ ORDER-REJECT FAIL-SAFE: position NOT confirmed closed — DO NOT mark
+                # flat, DO NOT record fake PnL, DO NOT stop tracking. Keep leg OPEN so
+                # per-tick exit triggers and the 15:08 CAS flatten keep retrying.
+                with self.trade_lock:
+                    logger.critical(
+                        f"[AegisEM] 🚨 UNRECONCILED POSITION {leg.symbol}: broker still holds it — "
+                        f"leg kept OPEN for continuous retry (no flat/PnL mark)."
+                    )
+                    context.status = "OPEN"
+                    self._has_unreconciled_position = True
+                    self._save_active_context()
+                continue
+            
             # Record PnL
             with self.trade_lock:
                 leg.status = "CLOSED"
                 leg.exit_time = datetime.now()
                 leg.exit_price = fill_price
                 lot_sz = int(params.get("lot_size", 20 if "SENSEX" in leg.symbol else 65))
-                raw_qty = int(leg.quantity if leg.quantity else 1)
-                # Unit safety: if raw_qty is already in shares (>= lot_sz), do not multiply by lot_sz again
-                leg_units = raw_qty if (raw_qty >= lot_sz and raw_qty % lot_sz == 0) else (raw_qty * lot_sz)
+                # 👑 UNIT INVARIANT: exact open share-units, single-sourced via resolve_leg_net_qty()
+                leg_units = resolve_leg_net_qty(leg, lot_sz)
                 leg.pnl = (fill_price - leg.entry_price) * leg_units
                 total_pnl += leg.pnl
                 self.capital_engine.add_funds(fill_price * leg_units)
@@ -2508,8 +2614,24 @@ class AegisExecutionManager:
                     f"Total Charges: ₹{leg_total_charges:.2f} | Net PnL: ₹{leg_net_pnl:+.2f} | {reason}"
                 )
 
+        any_open_left = any(getattr(_l, "status", "") == "OPEN" for _l in legs)
         with self.trade_lock:
+            if any_open_left:
+                # 🛡️ ORDER-REJECT FAIL-SAFE: tracking must NEVER stop while the broker
+                # still holds units. Keep context OPEN (triggers + CAS flatten stay armed),
+                # record no PnL/history, keep trade_context alive.
+                context.status = "OPEN"
+                self._has_unreconciled_position = True
+                logger.critical(
+                    f"[AegisEM] 🚨 OPEN POSITION PERSISTS after exit attempt (reason: {reason}) — "
+                    f"tracking preserved; emergency reconcile + 15:08 CAS flatten remain armed."
+                )
+                self._sound_critical_alarm()
+                self._save_active_context()
+                return
             context.status = "CLOSED"
+            self._has_unreconciled_position = False
+            self._emerg_recon_state = {}
             context.exit_time = datetime.now()
             self._append_history(reason, total_pnl)
             if self.aegis_engine and getattr(self.aegis_engine, "chop_gate", None):
@@ -2522,6 +2644,177 @@ class AegisExecutionManager:
             self.tp_order_id = None
             self.last_tp_order_id = None
             self._save_active_context()
+
+    # ─── 🛡️ Order-Reject Fail-Safe: Verified Net-Position Reconciliation ───
+    def _get_verified_broker_net_units(self, leg: TradeLeg) -> Optional[int]:
+        """Exact live net position (share units) for this contract straight from the broker.
+        Returns None when the broker positions feed is unavailable (cannot verify)."""
+        try:
+            get_pos = getattr(self.broker, "get_positions", None)
+            if not callable(get_pos):
+                return None
+            positions = get_pos() or []
+        except Exception as exc:
+            logger.warning(f"[AegisEM] Reconcile get_positions query failed: {exc}")
+            return None
+        for pos in positions:
+            try:
+                if not isinstance(pos, dict):
+                    continue
+                tsym = str(pos.get("tsym") or pos.get("tradingsymbol") or "")
+                tok = str(pos.get("tok") or pos.get("token") or "")
+                if tsym != leg.symbol and tok != str(leg.token):
+                    continue
+                return abs(int(round(float(pos.get("netqty") or 0))))
+            except Exception:
+                continue
+        return None
+
+    def _log_last_rejection_reason(self, leg: TradeLeg) -> None:
+        """Emit a CRITICAL alert quoting the broker's EXACT rejection reason for exit orders."""
+        candidate_ids = [
+            str(getattr(self, "last_tp_order_id", None) or ""),
+            str(getattr(leg, "sl_orderno", None) or ""),
+            str(getattr(leg, "broker_order_id", None) or ""),
+        ]
+        for oid in candidate_ids:
+            if not oid or oid.startswith("PAPER_"):
+                continue
+            with self._order_update_lock:
+                upd = self._order_updates.get(oid)
+            if not isinstance(upd, dict):
+                continue
+            status = str(upd.get("status", "")).upper()
+            emsg = str(
+                upd.get("emsg")
+                or upd.get("rejreason")
+                or upd.get("remark")
+                or upd.get("message")
+                or ""
+            ).strip()
+            if status in ("REJECTED", "REJ") or "REJECT" in status:
+                logger.critical(
+                    f"[AegisEM] 🚨🚨 BROKER ORDER REJECTED (order {oid}, {leg.symbol}): "
+                    f"status={status} | broker rejection reason: '{emsg or 'NOT PROVIDED'}'"
+                )
+
+    def _sound_critical_alarm(self) -> None:
+        """Emergency audible/terminal notification. Best-effort, never fatal."""
+        if os.environ.get("AEGIS_SILENCE_ALARM", "").strip().lower() in ("1", "true", "yes"):
+            return
+        try:
+            sys.stdout.write("\a")  # terminal bell
+            sys.stdout.flush()
+        except Exception:
+            pass
+        try:
+            import winsound  # local terminal beep (Windows)
+            winsound.Beep(880, 350)
+            winsound.Beep(660, 450)
+        except Exception:
+            pass
+
+    def _reconcile_leg_position(self, leg: TradeLeg, reason: str = "REORDER") -> Tuple[bool, float]:
+        """🛡️ Fail-safe: verify the LIVE net position at the broker and dispatch an
+        EXACT-verified-net-qty emergency flatten.
+        Returns (flat: bool, verified_fill_price: float)."""
+        now_mono = time.monotonic()
+        state = getattr(self, "_emerg_recon_state", None)
+        if not isinstance(state, dict):
+            state = {}
+            self._emerg_recon_state = state
+        leg_state = state.setdefault(leg.leg_id, {"last_attempt_ts": 0.0, "attempts": 0})
+        if now_mono - leg_state["last_attempt_ts"] < 10.0:
+            remaining = 10.0 - (now_mono - leg_state["last_attempt_ts"])
+            logger.warning(
+                f"[AegisEM] 🛡️ Reconcile anti-spam guard active for {leg.symbol} "
+                f"({remaining:.1f}s cooldown) — duplicate emergency dispatch suppressed."
+            )
+            return False, 0.0
+        leg_state["last_attempt_ts"] = now_mono
+        leg_state["attempts"] = int(leg_state.get("attempts", 0)) + 1
+
+        # (a) CRITICAL alert with the broker's exact rejection reason.
+        self._log_last_rejection_reason(leg)
+        verified = self._get_verified_broker_net_units(leg)
+        if verified == 0:
+            logger.info(
+                f"[AegisEM] Reconcile: {leg.symbol} verified FLAT at broker (netqty=0) — "
+                f"position already closed."
+            )
+            leg.broker_verified_flat = True
+            return True, float(getattr(leg, "exit_price", 0.0) or leg.current_price or leg.entry_price)
+
+        lot_size = int(self.get_instrument_params()["lot_size"])
+        # (c) NEVER trust the ambiguous local qty — use the broker-verified net position;
+        # fall back to the unit-invariant resolver only when the broker feed is unavailable.
+        net_units = verified if verified is not None else resolve_leg_net_qty(leg, lot_size)
+        if net_units <= 0:
+            logger.info(f"[AegisEM] Reconcile: {leg.symbol} has no open units to flatten.")
+            return True, float(getattr(leg, "exit_price", 0.0) or leg.current_price or leg.entry_price)
+        logger.critical(
+            f"[AegisEM] 🚨🚨 EMERGENCY RECONCILE #{leg_state['attempts']} (audio/terminal alert fired): "
+            f"{leg.symbol} still OPEN with {net_units} share-units (broker-verified: {verified is not None}) "
+            f"— dispatching exact-qty emergency flatten (reason: {reason})."
+        )
+        self._sound_critical_alarm()
+
+        api = getattr(self.broker, "_api", None)
+        if not api or not hasattr(api, "place_order"):
+            logger.critical(f"[AegisEM] 🚨 EMERGENCY flatten abort: broker place_order unavailable!")
+            return False, 0.0
+        exch = self.get_instrument_params()["exchange"]
+        try:
+            qrow = self.broker.market_data_provider.get_quote(exch, leg.token)
+            bid = float(qrow.get("bp1") or 0) if isinstance(qrow, dict) else 0.0
+        except Exception:
+            bid = 0.0
+        ref = bid if bid > 0 else (leg.current_price or leg.entry_price)
+        limit_price = get_marketable_exit_limit_price(ref * 0.98, exit_reason="EMERGENCY", entry_price=leg.entry_price)
+        if limit_price <= 0:
+            limit_price = max(OPTION_TICK_SIZE, ref * 0.90)
+        if hasattr(self.order_lifecycle, "_build_kwargs"):
+            kwargs = self.order_lifecycle._build_kwargs("S", exch, leg.symbol, str(int(net_units)), f"{limit_price:.2f}")
+        else:
+            kwargs = {
+                "buy_or_sell": "S", "product_type": "M", "exchange": exch,
+                "tradingsymbol": leg.symbol, "quantity": str(int(net_units)),
+                "price_type": "LMT", "price": f"{limit_price:.2f}",
+            }
+        ordno = None
+        try:
+            resp = api.place_order(**kwargs)
+            if isinstance(resp, dict) and resp.get("stat") == "Ok":
+                ordno = resp.get("norenordno")
+            else:
+                emsg = resp.get("emsg", str(resp)) if isinstance(resp, dict) else str(resp)
+                logger.critical(f"[AegisEM] 🚨 EMERGENCY flatten order REJECTED for {leg.symbol}: {emsg}")
+        except Exception as exc:
+            logger.critical(f"[AegisEM] 🚨 EMERGENCY flatten dispatch failed for {leg.symbol}: {exc}")
+        if ordno:
+            time.sleep(0.8)
+            h_filled, h_px = self._order_fill(str(ordno), allow_rest=True)
+            if h_filled:
+                leg.broker_verified_flat = True
+                leg.exit_price = h_px if h_px and h_px > 0 else limit_price
+                logger.critical(
+                    f"[AegisEM] ✅ EMERGENCY flatten FILLED for {leg.symbol}: {net_units} units "
+                    f"@ {leg.exit_price:.2f} — position secured."
+                )
+                return True, float(leg.exit_price)
+        return False, 0.0
+
+    def _emergency_reconcile_flatten(self, reason: str = "RECONCILE") -> bool:
+        """Full-context emergency reconcile — True only when every open leg is verified flat."""
+        with self.trade_lock:
+            open_legs = [l for l in (self.trade_context.legs if self.trade_context else []) if l.status == "OPEN"]
+        if not open_legs:
+            return True
+        flat_all = True
+        for leg in open_legs:
+            flat, _px = self._reconcile_leg_position(leg, reason=reason)
+            flat_all = flat_all and flat
+        return flat_all
 
     def _append_history(self, reason: str, total_pnl: float):
         hist = []
@@ -2559,8 +2852,8 @@ class AegisExecutionManager:
         except Exception:
             params = {}
         lot_sz = int(params.get("lot_size", 20 if "SENSEX" in sym_str else 65))
-        raw_q0 = int(leg0.quantity if (leg0 and leg0.quantity) else 1)
-        tot_units = raw_q0 if (raw_q0 >= lot_sz and raw_q0 % lot_sz == 0) else (raw_q0 * lot_sz)
+        # 👑 UNIT INVARIANT: exact open share-units, single-sourced via resolve_leg_net_qty()
+        tot_units = resolve_leg_net_qty(leg0, lot_sz)
         buy_turnover = (entry_px * tot_units) if entry_px > 0 else 0.0
         sell_turnover = (exit_px * tot_units) if exit_px > 0 else 0.0
         charges_obj = calculate_nse_option_charges(buy_turnover, sell_turnover, brokerage_per_order=5.0)

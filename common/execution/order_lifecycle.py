@@ -4,7 +4,7 @@ import uuid
 from typing import Optional
 
 from common.logger import get_logger
-from common.execution.trade_context import TradeLeg
+from common.execution.trade_context import TradeLeg, resolve_leg_net_qty
 from common.config import EXIT_LIMIT_GRACE_PERIOD_SEC, DEFAULT_PRODUCT_TYPE, NIFTY_LOT_SIZE, SENSEX_LOT_SIZE
 
 logger = get_logger("order_lifecycle")
@@ -28,7 +28,7 @@ class PaperOrderLifecycle(OrderLifecycle):
                 from common.execution.realistic_paper_broker import simulate_book_sweep
                 from common.config import NIFTY_LOT_SIZE, SENSEX_LOT_SIZE
                 lot = SENSEX_LOT_SIZE if "SENSEX" in leg.symbol else NIFTY_LOT_SIZE
-                order_qty = int(leg.quantity * lot)
+                order_qty = resolve_leg_net_qty(leg, lot)
                 vwap, filled, _ = simulate_book_sweep("BUY", order_qty, list(ask_prices), list(ask_quantities))
                 if filled > 0:
                     leg.entry_price = vwap
@@ -80,7 +80,7 @@ class PaperOrderLifecycle(OrderLifecycle):
                 from common.execution.realistic_paper_broker import simulate_book_sweep
                 from common.config import NIFTY_LOT_SIZE, SENSEX_LOT_SIZE
                 lot = SENSEX_LOT_SIZE if "SENSEX" in leg.symbol else NIFTY_LOT_SIZE
-                order_qty = int(leg.quantity * lot)
+                order_qty = resolve_leg_net_qty(leg, lot)
                 vwap, filled, _ = simulate_book_sweep("SELL", order_qty, list(bid_prices), list(bid_quantities))
                 if filled > 0:
                     leg.close_leg(vwap, reason)
@@ -235,7 +235,7 @@ class ShoonyaOrderLifecycle(OrderLifecycle):
     def execute_entry(self, leg: TradeLeg, live_ask: float = None) -> bool:
         try:
             exch_seg = getattr(leg, 'exchange', 'BFO' if 'SENSEX' in leg.symbol else 'NFO')
-            qty = leg.quantity * (SENSEX_LOT_SIZE if "SENSEX" in leg.symbol else NIFTY_LOT_SIZE)
+            qty = resolve_leg_net_qty(leg, SENSEX_LOT_SIZE if "SENSEX" in leg.symbol else NIFTY_LOT_SIZE)
             
             base_price = live_ask if (live_ask and live_ask > 0) else leg.current_price
             limit_price = get_marketable_entry_limit_price(base_price)
@@ -270,7 +270,11 @@ class ShoonyaOrderLifecycle(OrderLifecycle):
                                 avg_prc = float(history[0].get("avgprc", limit_price))
                                 fs = int(history[0].get("fillshares", 0) or 0)
                                 if fs > 0:
-                                    leg.quantity = fs
+                                    # 🚨 UNIT INVARIANT SHIELD (incident 2026-11 SAC: SENSEX exit SELL 400):
+                                    # NEVER overwrite leg.quantity (canonical LOTS) with share-valued
+                                    # fillshares — that unit flip is exactly what made every exit
+                                    # path re-multiply by lot_size and send SELL 400 instead of 20!
+                                    leg.filled_units = fs
                                 break
                             elif status in ["REJECTED", "CANCELLED", "CANCELED"]:
                                 logger.warning(f"[ShoonyaOrderLifecycle] Entry order {ordno} {status} by broker. Immediate abort (no chase).")
@@ -279,7 +283,10 @@ class ShoonyaOrderLifecycle(OrderLifecycle):
                     if fill_confirmed:
                         leg.current_price = avg_prc
                         leg.entry_price = avg_prc
-                        logger.info(f"[ShoonyaOrderLifecycle] ✅ Entry FILLED ({leg.quantity} shares) @ Avg Price: {avg_prc:.2f} (Order: {ordno})")
+                        logger.info(
+                            f"[ShoonyaOrderLifecycle] ✅ Entry FILLED ({leg.quantity} lot(s) / "
+                            f"{getattr(leg, 'filled_units', qty)} shares) @ Avg Price: {avg_prc:.2f} (Order: {ordno})"
+                        )
                     else:
                         # One-Shot Clean Entry Rule: Zero chasing. Cancel immediately on 0.75s timeout!
                         logger.warning(
@@ -301,7 +308,7 @@ class ShoonyaOrderLifecycle(OrderLifecycle):
                                         leg.current_price = avg_prc
                                         leg.entry_price = avg_prc
                                         if fs > 0:
-                                            leg.quantity = fs
+                                            leg.filled_units = fs  # UNIT INVARIANT SHIELD: leg.quantity stays canonical LOTS
                                         logger.warning(f"[ShoonyaOrderLifecycle] Entry fill reconciled during cancel: {fs} shares @ {avg_prc:.2f}")
                                         leg.status = "OPEN"
                                         return True
@@ -328,7 +335,7 @@ class ShoonyaOrderLifecycle(OrderLifecycle):
             return False
 
         exch_seg = getattr(leg, 'exchange', 'BFO' if 'SENSEX' in leg.symbol else 'NFO')
-        qty = leg.quantity * (SENSEX_LOT_SIZE if "SENSEX" in leg.symbol else NIFTY_LOT_SIZE)
+        qty = resolve_leg_net_qty(leg, SENSEX_LOT_SIZE if "SENSEX" in leg.symbol else NIFTY_LOT_SIZE)
         token = str(leg.token)
         
         base_price = live_bid if (live_bid and live_bid > 0) else leg.current_price
