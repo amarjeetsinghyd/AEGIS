@@ -53,7 +53,27 @@
 - **Forming Bar Day Extreme Trap Removal** (`AEGIS/core/dow_macro_shields.py`):
   - Fixed false-veto trap in `_check_day_extreme_runway`: excluded the live forming bar (`_curr_1m_bar`) from anchoring day extremes, ensuring in-flight Mode B breakthroughs are not self-vetoed when creating new session highs/lows.
 
-## [1.0.1] - 2026-10-30 (Budget-Anchored 3-Strike Cluster Pipeline, Dow Logic Refinements & Phase 1/2 Reliability Hardening)
+## [1.0.1] - 2026-10-30 (Budget-Anchored 3-Strike Cluster Pipeline, Dow Logic Refinements, Hot-Path O(1) Hardening & Phase 1/2 Reliability)
+
+### Hot-Path O(1) Latency Remediation & Microsecond Execution (Post-Claude Audit)
+- **O(1) Cached Budget Strike Cluster Lookup (`_get_budget_strike_cluster_cached`)** (`AEGIS/core/aegis_pipeline_orchestrator.py`):
+  - Eliminated per-tick iterative scanning of full `token_map` and transient dict/set allocation.
+  - Implemented `(side_key, atm, self._targets_version, self._map_version)` cache key, returning pre-built cluster and `frozenset` of symbols for O(1) instant tick membership testing.
+- **Bar-Close Cached Pain Zone Bar Counts** (`AEGIS/core/option_order_flow.py`):
+  - Excised `sum(1 for b in bars_1m)` per-tick loop in `get_pain_zone_vwaps`.
+  - Updated `_update_pz_intraday_bar_count()` to run strictly on candle count changes at 1m bar close, providing instantaneous O(1) tick evaluation.
+- **Fast Epoch IST Minute Calculation & Lunch Veto Hoisting** (`AEGIS/core/price_action_engine.py`):
+  - Replaced heavy per-tick `datetime.fromtimestamp()` timezone conversions with pure integer epoch math: `time_mins = ((int(eval_ts) + 19800) // 60) % 1440` (UTC+5:30 = +19800s, no DST).
+  - Hoisted `os.getenv("AEGIS_LUNCH_SWEEP_VETO_ENABLED")` into `__init__` as `_lunch_veto_enabled`, eliminating per-tick environment queries.
+- **O(n) Deque Tail Slicing (`_tail_list`)** (`AEGIS/core/dow_macro_shields.py`):
+  - Replaced full 400-element `list(self.bars_1m)` deque copying with targeted `_tail_list` indexing (`[dq[i] for i in range(-n, 0)]`), retrieving the last $n$ items in O(n) without copying the full deque.
+- **Lazy Callable String Formatting in Log Throttling** (`AEGIS/core/aegis_pipeline_orchestrator.py`):
+  - Enhanced `_throttled_veto_log` to accept callables (`lambda: f"..."`), ensuring f-string interpolations only execute when the throttle window admits the log, eliminating thousands of wasted string allocations per second.
+- **O(1) Reverse Drift & Metric Scanning** (`AEGIS/core/aegis_pipeline_orchestrator.py`, `AEGIS/core/option_order_flow.py`):
+  - Converted forward `spot_history` scans in `get_spot_drift` and `get_spot_drift_bps` to `reversed(self.spot_history)` with immediate break upon reaching `target_ts`.
+  - Converted `extract_micro_metrics` depth discovery to `reversed(sl)` with early break on the first valid quote row.
+- **Permanent Purge of Dead Legacy KDO Execution Code** (`common/execution/execution_manager.py`):
+  - Completely purged obsolete `execution_manager.py` implementing non-canonical KDO exit rules (-25% stop, 120s cap) to maintain strict architectural single-source-of-truth in `AEGIS/execution/aegis_execution_manager.py`.
 
 ### Dynamic Strike Selection & Capital Efficiency
 - **Budget-Anchored Three-Strike Cluster Pipeline** (`AEGIS/AEGIS_V1.0_ARCHITECTURE.md`, `common/execution/strike_selector.py`, `AEGIS/core/aegis_pipeline_orchestrator.py`):
