@@ -8,6 +8,8 @@ from queue import Queue
 
 from AEGIS.core.price_action_engine import PriceActionEngine, OHLCBar
 
+from AEGIS.core.sweep_stop_run_detector import SWEEP_CONFIRMED_STOP_HUNT
+
 from AEGIS.aegis_execution_manager import AegisExecutionManager, TradeContext, TradeLeg
 
 
@@ -1348,7 +1350,7 @@ def test_mode_b_p2_micro_sweep_inflight_reversal_breakout():
         ts_end=now + 12 * 60,
         open=22451.5,
         high=22456.0,
-        low=22449.0,
+        low=22448.0,
         close=22455.5,
         volume=20000.0,
         tick_count=20,
@@ -1356,6 +1358,22 @@ def test_mode_b_p2_micro_sweep_inflight_reversal_breakout():
     pa._curr_1m_bar = forming_bar
     pa.last_price = 22455.5
     pa.last_ts = now + 11 * 60 + 20
+
+    # User-locked (2026-11-05) Mode B P2 gates: seed the sweep detector with a legit
+    # same-candle sweep excursion (breach T+5s of forming candle, burst confirmed, reclaim T+18s)
+    det = pa.sweep_detector
+    det._price_to_slot = {22450.0: 0}
+    det._active_slot_count = 1
+    det.sr_levels[0] = 22450.0
+    det.level_types[0] = 1
+    det.in_breach[0] = 0
+    det.breach_start_ts[0] = now + 11 * 60 + 5
+    det.breach_panic_vol[0] = 150000.0
+    det.breach_peak_rate[0] = 44000.0
+    det.last_verdict[0] = SWEEP_CONFIRMED_STOP_HUNT
+    det.last_reclaim_ts[0] = now + 11 * 60 + 18
+    det.last_burst_ratio[0] = 3.5
+    det.last_reclaim_flow[0] = 96800.0
 
     ok, reason, details = pa.check_mode_b_breakthrough("UP", current_time=pa.last_ts)
     assert ok is True

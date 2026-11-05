@@ -475,3 +475,16 @@ class SweepStopRunDetector:
             "status": "RECLAIMED",
         }
         return verdict, reason, metrics
+
+    def get_breach_start_ts(self, swept_level: float) -> float:
+        """
+        Read-only accessor: breach excursion start timestamp of a tracked level (0.0 when untracked).
+        Mirrors evaluate_sweep's 1.0-point tolerance lookup. Zero new state — reads the existing
+        breach_start_ts slot array. Used by the Mode B P2 same-candle sweep-confirmation gate
+        (2026-11-05 forensics mandate).
+        """
+        swept_price = round(float(swept_level), 2)
+        for price_val, slot in self._price_to_slot.items():
+            if abs(price_val - swept_price) <= 1.0:
+                return float(self.breach_start_ts[slot])
+        return 0.0

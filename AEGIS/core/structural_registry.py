@@ -57,6 +57,26 @@ class StructuralLevel:
 class StructuralRegistryMixin:
     """Mixin providing Dynamic S/R Level Registry discovery, seeding, clustering, and proximity tracking."""
 
+    def _log_sr_level_birth(self, lvl: StructuralLevel, source: str) -> None:
+        """
+        [SR BIRTH] Permanent audit stamp for every S/R level creation / registration / restore.
+        Answers 'yeh level kab aur kis din bana tha?' without log archaeology (2026-11-05 forensics mandate:
+        level 78740.88 had no verifiable birth record during the 09:17:33 trade postmortem).
+        """
+        try:
+            born_txt = "no-ts(0.0)"
+            if lvl.ts_created > 0:
+                born_txt = datetime.fromtimestamp(
+                    lvl.ts_created, timezone(timedelta(hours=5, minutes=30))
+                ).strftime("%d-%b %H:%M:%S")
+            logger.info(
+                f"[SR BIRTH] {source} | {lvl.level_type} @ {lvl.price:.2f} | born={born_txt} | tf={lvl.timeframe} | "
+                f"prom={lvl.prominence:.2f} | seq={lvl.seq_idx} | bar={lvl.bar_idx} | touches={lvl.touch_count} | "
+                f"vol={lvl.volume:.1f} | delta={lvl.opt_delta_flow:+.1f}"
+            )
+        except Exception:
+            pass
+
     def _update_structural_levels(self, bar: OHLCBar, new_5m_bar: bool = False, new_15m_bar: bool = False) -> None:
         """
         Dynamically discovers, registers, and tracks intraday Support & Resistance levels.
@@ -68,39 +88,40 @@ class StructuralRegistryMixin:
             self._levels_day = curr_day
             # Re-seed daily macro anchors (PDH / PDL) for the new session
             if self.pdh > 0:
-                self.session_levels.append(
-                    StructuralLevel(
-                        level_type="RESISTANCE",
-                        price=round(self.pdh, 2),
-                        ts_created=bar.ts_start,
-                        prominence=2.5,
-                        bar_idx=0,
-                        seq_idx=0,
-                        touch_count=2,
-                        timeframe="DAILY",
-                        is_previous_day=True,
-                    )
+                _seed_pdh_lvl = StructuralLevel(
+                    level_type="RESISTANCE",
+                    price=round(self.pdh, 2),
+                    ts_created=bar.ts_start,
+                    prominence=2.5,
+                    bar_idx=0,
+                    seq_idx=0,
+                    touch_count=2,
+                    timeframe="DAILY",
+                    is_previous_day=True,
                 )
+                self.session_levels.append(_seed_pdh_lvl)
+                self._log_sr_level_birth(_seed_pdh_lvl, "SESSION_OPEN_DAILY_SEED")
             if self.pdl > 0:
-                self.session_levels.append(
-                    StructuralLevel(
-                        level_type="SUPPORT",
-                        price=round(self.pdl, 2),
-                        ts_created=bar.ts_start,
-                        prominence=2.5,
-                        bar_idx=0,
-                        seq_idx=0,
-                        touch_count=2,
-                        timeframe="DAILY",
-                        is_previous_day=True,
-                    )
+                _seed_pdl_lvl = StructuralLevel(
+                    level_type="SUPPORT",
+                    price=round(self.pdl, 2),
+                    ts_created=bar.ts_start,
+                    prominence=2.5,
+                    bar_idx=0,
+                    seq_idx=0,
+                    touch_count=2,
+                    timeframe="DAILY",
+                    is_previous_day=True,
                 )
+                self.session_levels.append(_seed_pdl_lvl)
+                self._log_sr_level_birth(_seed_pdl_lvl, "SESSION_OPEN_DAILY_SEED")
             # Restore unbroken previous-day 5m/15m structural levels
             if hasattr(self, "_previous_day_levels"):
                 for p_lvl in self._previous_day_levels:
                     if not p_lvl.is_broken:
                         if not any(l.level_type == p_lvl.level_type and abs(l.price - p_lvl.price) < 2.0 for l in self.session_levels):
                             self.session_levels.append(p_lvl)
+                            self._log_sr_level_birth(p_lvl, "SESSION_OPEN_PREV_DAY_RESTORE")
 
         atr = self.current_atr_1m if self.current_atr_1m > 0 else (bar.close * 0.001)
 
@@ -232,29 +253,29 @@ class StructuralRegistryMixin:
                         matched = True
                         break
                 if not matched:
-                    self.session_levels.append(
-                        StructuralLevel(
-                            level_type="RESISTANCE",
-                            price=round(cand.high, 2),
-                            ts_created=cand.ts_start,
-                            prominence=total_prom,
-                            bar_idx=len(self.bars_1m) - 2,
-                            seq_idx=max(0, self._total_bars_seen - 2),
-                            timeframe=tf_name,
-                            volume=cand_vol,
-                            call_buy_vol=cand_cb,
-                            call_sell_vol=cand_cs,
-                            put_buy_vol=cand_pb,
-                            put_sell_vol=cand_ps,
-                            opt_delta_flow=cand_delta,
-                            opt_total_vol=cand_opt_vol,
-                            opt_pcr=round(cand_pcr, 2),
-                            vr_anchor=round(vr, 2),
-                            net_delta_flow=cand_delta,
-                            pcr_at_level=round(cand_pcr, 2),
-                            vol_ratio_at_level=round(vr, 2),
-                        )
+                    _swing_res_lvl = StructuralLevel(
+                        level_type="RESISTANCE",
+                        price=round(cand.high, 2),
+                        ts_created=cand.ts_start,
+                        prominence=total_prom,
+                        bar_idx=len(self.bars_1m) - 2,
+                        seq_idx=max(0, self._total_bars_seen - 2),
+                        timeframe=tf_name,
+                        volume=cand_vol,
+                        call_buy_vol=cand_cb,
+                        call_sell_vol=cand_cs,
+                        put_buy_vol=cand_pb,
+                        put_sell_vol=cand_ps,
+                        opt_delta_flow=cand_delta,
+                        opt_total_vol=cand_opt_vol,
+                        opt_pcr=round(cand_pcr, 2),
+                        vr_anchor=round(vr, 2),
+                        net_delta_flow=cand_delta,
+                        pcr_at_level=round(cand_pcr, 2),
+                        vol_ratio_at_level=round(vr, 2),
                     )
+                    self.session_levels.append(_swing_res_lvl)
+                    self._log_sr_level_birth(_swing_res_lvl, f"{tf_name}_SWING_HIGH")
 
         # 4. Swing Low / Support Trough Detection
         if is_swing_low:
@@ -292,29 +313,29 @@ class StructuralRegistryMixin:
                         matched = True
                         break
                 if not matched:
-                    self.session_levels.append(
-                        StructuralLevel(
-                            level_type="SUPPORT",
-                            price=round(cand.low, 2),
-                            ts_created=cand.ts_start,
-                            prominence=total_prom,
-                            bar_idx=len(self.bars_1m) - 2,
-                            seq_idx=max(0, self._total_bars_seen - 2),
-                            timeframe=tf_name,
-                            volume=cand_vol,
-                            call_buy_vol=cand_cb,
-                            call_sell_vol=cand_cs,
-                            put_buy_vol=cand_pb,
-                            put_sell_vol=cand_ps,
-                            opt_delta_flow=cand_delta,
-                            opt_total_vol=cand_opt_vol,
-                            opt_pcr=round(cand_pcr, 2),
-                            vr_anchor=round(vr, 2),
-                            net_delta_flow=cand_delta,
-                            pcr_at_level=round(cand_pcr, 2),
-                            vol_ratio_at_level=round(vr, 2),
-                        )
+                    _swing_sup_lvl = StructuralLevel(
+                        level_type="SUPPORT",
+                        price=round(cand.low, 2),
+                        ts_created=cand.ts_start,
+                        prominence=total_prom,
+                        bar_idx=len(self.bars_1m) - 2,
+                        seq_idx=max(0, self._total_bars_seen - 2),
+                        timeframe=tf_name,
+                        volume=cand_vol,
+                        call_buy_vol=cand_cb,
+                        call_sell_vol=cand_cs,
+                        put_buy_vol=cand_pb,
+                        put_sell_vol=cand_ps,
+                        opt_delta_flow=cand_delta,
+                        opt_total_vol=cand_opt_vol,
+                        opt_pcr=round(cand_pcr, 2),
+                        vr_anchor=round(vr, 2),
+                        net_delta_flow=cand_delta,
+                        pcr_at_level=round(cand_pcr, 2),
+                        vol_ratio_at_level=round(vr, 2),
                     )
+                    self.session_levels.append(_swing_sup_lvl)
+                    self._log_sr_level_birth(_swing_sup_lvl, f"{tf_name}_SWING_LOW")
 
         # Re-classify level roles and breakout eligibility
         self._classify_level_roles()
@@ -391,36 +412,36 @@ class StructuralRegistryMixin:
             self.pdh = float(pdh)
             # Register PDH as macro RESISTANCE anchor in S/R registry
             if not any(l.level_type == "RESISTANCE" and abs(l.price - self.pdh) < 2.0 for l in self.session_levels):
-                self.session_levels.append(
-                    StructuralLevel(
-                        level_type="RESISTANCE",
-                        price=round(self.pdh, 2),
-                        ts_created=0.0,
-                        prominence=2.5,
-                        bar_idx=0,
-                        seq_idx=0,
-                        touch_count=2,
-                        timeframe="DAILY",
-                        is_previous_day=True,
-                    )
+                _seed_res_lvl = StructuralLevel(
+                    level_type="RESISTANCE",
+                    price=round(self.pdh, 2),
+                    ts_created=0.0,
+                    prominence=2.5,
+                    bar_idx=0,
+                    seq_idx=0,
+                    touch_count=2,
+                    timeframe="DAILY",
+                    is_previous_day=True,
                 )
+                self.session_levels.append(_seed_res_lvl)
+                self._log_sr_level_birth(_seed_res_lvl, "SEED_DAILY_PDH")
         if pdl > 0:
             self.pdl = float(pdl)
             # Register PDL as macro SUPPORT anchor in S/R registry
             if not any(l.level_type == "SUPPORT" and abs(l.price - self.pdl) < 2.0 for l in self.session_levels):
-                self.session_levels.append(
-                    StructuralLevel(
-                        level_type="SUPPORT",
-                        price=round(self.pdl, 2),
-                        ts_created=0.0,
-                        prominence=2.5,
-                        bar_idx=0,
-                        seq_idx=0,
-                        touch_count=2,
-                        timeframe="DAILY",
-                        is_previous_day=True,
-                    )
+                _seed_sup_lvl = StructuralLevel(
+                    level_type="SUPPORT",
+                    price=round(self.pdl, 2),
+                    ts_created=0.0,
+                    prominence=2.5,
+                    bar_idx=0,
+                    seq_idx=0,
+                    touch_count=2,
+                    timeframe="DAILY",
+                    is_previous_day=True,
                 )
+                self.session_levels.append(_seed_sup_lvl)
+                self._log_sr_level_birth(_seed_sup_lvl, "SEED_DAILY_PDL")
         if pdc > 0:
             self.pdc = float(pdc)
         self._classify_level_roles()
@@ -774,6 +795,7 @@ class StructuralRegistryMixin:
         for lvl in filtered_levels:
             if not any(l.level_type == lvl.level_type and abs(l.price - lvl.price) < 2.0 for l in self.session_levels):
                 self.session_levels.append(lvl)
+                self._log_sr_level_birth(lvl, "SEED_PREV_DAY_5M15M")
 
         # Store all previous day levels (macro PDH/PDL anchors + intermediate 5m/15m swings)
         self._previous_day_levels = [l for l in self.session_levels if getattr(l, "is_previous_day", False)]

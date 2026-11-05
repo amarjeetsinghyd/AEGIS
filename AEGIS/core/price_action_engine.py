@@ -26,6 +26,11 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
 
 _IST = timezone(timedelta(hours=5, minutes=30))
+
+# ─── User-Locked Mode B P2 Entry Anatomy Gates (2026-11-05 forensics mandate) ───
+MODE_B_P2_WICK_MIN_PCT: float = 0.40         # ≥40% wick must exist on the FORMING candle before entry counts
+MODE_B_P2_WICK_MIN_RANGE_ATR: float = 0.30   # scale-invariant measurability floor: range < 0.30×ATR1m ⇒ wick not yet formed
+
 from AEGIS.core.structural_registry import StructuralLevel, StructuralRegistryMixin
 from AEGIS.core.dow_macro_shields import DowStructureChain, DowMacroShieldsMixin
 from AEGIS.core.option_order_flow import OptionOrderFlowMixin
@@ -52,6 +57,70 @@ try:
     logger = get_logger("aegis_price_action")
 except Exception:
     logger = logging.getLogger("aegis_price_action")
+
+
+def _p2_mode_b_live_wick_verdict(
+    direction: str,
+    bar_open: float,
+    bar_high: float,
+    bar_low: float,
+    live_close: float,
+    atr: float,
+) -> Tuple[bool, Dict[str, Any]]:
+    """
+    User-locked (2026-11-05) Mode B P2 live wick anatomy gate on the FORMING 1m candle.
+
+    The forming bar IS the aggregate over its own time range [minute start -> now]:
+      - bar_open   = first tick of the minute
+      - bar_high/low = extremes accumulated so far (tick-compiled, O(1), no tick re-scan)
+      - live_close = current spot LTP (live close proxy)
+
+    Mandate:
+      CALL: lower wick = min(open, live_close) - low    AND  live_close > open (green forming candle)
+      PUT:  upper wick = high - max(open, live_close)   AND  live_close < open (red forming candle)
+      The wick counts only when the candle range is measurable: range >= 0.30 x ATR_1m (scale-invariant).
+
+    Returns (ok, diagnostics). Degenerate inputs (open<=0, range<=0) never crash; they block.
+    """
+    rng = bar_high - bar_low
+    diag: Dict[str, Any] = {
+        "bar_open": round(bar_open, 2),
+        "bar_high": round(bar_high, 2),
+        "bar_low": round(bar_low, 2),
+        "live_close": round(live_close, 2),
+        "range_pts": round(rng, 2),
+        "wick_pts": 0.0,
+        "wick_pct": 0.0,
+        "reason": "pass",
+    }
+    if bar_open <= 0.0:
+        diag["reason"] = "bar_open_unseeded"
+        return False, diag
+    if rng <= 0.0:
+        diag["reason"] = "degenerate_range_no_wick"
+        return False, diag
+    min_range = MODE_B_P2_WICK_MIN_RANGE_ATR * max(float(atr), 0.0)
+    if min_range > 0.0 and rng < min_range:
+        diag["reason"] = "range_below_measurability_floor"
+        diag["min_range_pts"] = round(min_range, 2)
+        return False, diag
+    is_call = direction == "UP"
+    if is_call:
+        wick = min(bar_open, live_close) - bar_low
+        close_ok = live_close > bar_open
+    else:
+        wick = bar_high - max(bar_open, live_close)
+        close_ok = live_close < bar_open
+    wick_pct = wick / rng
+    diag["wick_pts"] = round(wick, 2)
+    diag["wick_pct"] = round(wick_pct, 2)
+    if wick_pct < MODE_B_P2_WICK_MIN_PCT:
+        diag["reason"] = "wick_below_40pct"
+        return False, diag
+    if not close_ok:
+        diag["reason"] = "close_vs_open_fail"
+        return False, diag
+    return True, diag
 
 
 @dataclass
@@ -2239,6 +2308,16 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         self._cached_sr_candidates[direction] = (self._session_levels_version, self._total_bars_seen, next_flip_ts, candidates)
         return candidates
 
+    def _log_p2_gate_once(self, tag: str, bar_idx: int, msg: str) -> None:
+        """Rate-limited P2 Mode B gate logging: exactly one line per direction per forming bar (zero tick spam)."""
+        seen = getattr(self, "_p2_gate_log_bar", None)
+        if seen is None:
+            seen = {}
+            self._p2_gate_log_bar = seen
+        if seen.get(tag) != bar_idx:
+            seen[tag] = bar_idx
+            logger.info(msg)
+
     def check_mode_b_breakthrough(
         self,
         direction: str,
@@ -2602,6 +2681,31 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                     if getattr(self, "enforce_live_sweep_gate", False) and verdict in (SWEEP_VETO_DRY_NO_STOPS, SWEEP_VETO_UNABSORBED_PANIC):
                                         return False, f"mode_b_sweep_gate_{reason}", {}
 
+                                # ─── User-Locked Entry Gates (2026-11-05): Same-Candle Sweep-Flow Confirm + ≥40% Live Wick ───
+                                _bar_c_start = curr_bar.ts_start if curr_bar.ts_start > 0 else (now_sec - float(sec_in_min))
+                                _det_g = getattr(self, "sweep_detector", None)
+                                if sweep_shadow_info is not None and _det_g is not None:
+                                    _breach_ts = float(_det_g.get_breach_start_ts(swept_low))
+                                    _same_candle = bool(_breach_ts > 0.0 and _breach_ts >= _bar_c_start)
+                                    sweep_shadow_info["same_candle_sweep"] = _same_candle
+                                    sweep_shadow_info["breach_start_ts"] = round(_breach_ts, 2)
+                                    _verdict_ok = int(sweep_shadow_info.get("verdict", 0)) == SWEEP_CONFIRMED_STOP_HUNT
+                                    if not (_verdict_ok and _same_candle):
+                                        self._log_p2_gate_once("CALL", bar_idx, (
+                                            f"[P2 GATE] Mode B CALL blocked | same-candle sweep-order-flow confirmation missing | "
+                                            f"verdict={int(sweep_shadow_info.get('verdict', 0))} | breach_ts={_breach_ts:.2f} | "
+                                            f"candle_start={_bar_c_start:.2f} | lvl={swept_low:.2f}"
+                                        ))
+                                        return False, "mode_b_p2_sweep_same_candle_gate", {}
+                                _wick_ok, _wick_m = _p2_mode_b_live_wick_verdict("UP", curr_bar.open, curr_bar.high, curr_bar.low, spot, atr)
+                                if not _wick_ok:
+                                    self._log_p2_gate_once("CALL", bar_idx, (
+                                        f"[P2 GATE] Mode B CALL blocked | wick gate: {_wick_m.get('reason')} | "
+                                        f"wick={_wick_m.get('wick_pts', 0.0):.2f}pts ({_wick_m.get('wick_pct', 0.0) * 100.0:.1f}%) | "
+                                        f"rng={_wick_m.get('range_pts', 0.0):.2f}pts | O={curr_bar.open:.2f} H={curr_bar.high:.2f} L={curr_bar.low:.2f} close={spot:.2f}"
+                                    ))
+                                    return False, "mode_b_p2_wick_gate", {}
+
                                 pending = [{"type": "mode_b_lockout", "key": "P2_SWEEP_UP", "bar_idx": bar_idx}]
                                 n1_fp = self.compute_n1_footprint(prior_bar, atr)
                                 if commit:
@@ -2661,6 +2765,31 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                     )
                                     if getattr(self, "enforce_live_sweep_gate", False) and verdict in (SWEEP_VETO_DRY_NO_STOPS, SWEEP_VETO_UNABSORBED_PANIC):
                                         return False, f"mode_b_sweep_gate_{reason}", {}
+
+                                # ─── User-Locked Entry Gates (2026-11-05): Same-Candle Sweep-Flow Confirm + ≥40% Live Wick ───
+                                _bar_p_start = curr_bar.ts_start if curr_bar.ts_start > 0 else (now_sec - float(sec_in_min))
+                                _det_g = getattr(self, "sweep_detector", None)
+                                if sweep_shadow_info is not None and _det_g is not None:
+                                    _breach_ts = float(_det_g.get_breach_start_ts(swept_high))
+                                    _same_candle = bool(_breach_ts > 0.0 and _breach_ts >= _bar_p_start)
+                                    sweep_shadow_info["same_candle_sweep"] = _same_candle
+                                    sweep_shadow_info["breach_start_ts"] = round(_breach_ts, 2)
+                                    _verdict_ok = int(sweep_shadow_info.get("verdict", 0)) == SWEEP_CONFIRMED_STOP_HUNT
+                                    if not (_verdict_ok and _same_candle):
+                                        self._log_p2_gate_once("PUT", bar_idx, (
+                                            f"[P2 GATE] Mode B PUT blocked | same-candle sweep-order-flow confirmation missing | "
+                                            f"verdict={int(sweep_shadow_info.get('verdict', 0))} | breach_ts={_breach_ts:.2f} | "
+                                            f"candle_start={_bar_p_start:.2f} | lvl={swept_high:.2f}"
+                                        ))
+                                        return False, "mode_b_p2_sweep_same_candle_gate", {}
+                                _wick_ok, _wick_m = _p2_mode_b_live_wick_verdict("DOWN", curr_bar.open, curr_bar.high, curr_bar.low, spot, atr)
+                                if not _wick_ok:
+                                    self._log_p2_gate_once("PUT", bar_idx, (
+                                        f"[P2 GATE] Mode B PUT blocked | wick gate: {_wick_m.get('reason')} | "
+                                        f"wick={_wick_m.get('wick_pts', 0.0):.2f}pts ({_wick_m.get('wick_pct', 0.0) * 100.0:.1f}%) | "
+                                        f"rng={_wick_m.get('range_pts', 0.0):.2f}pts | O={curr_bar.open:.2f} H={curr_bar.high:.2f} L={curr_bar.low:.2f} close={spot:.2f}"
+                                    ))
+                                    return False, "mode_b_p2_wick_gate", {}
 
                                 pending = [{"type": "mode_b_lockout", "key": "P2_SWEEP_DOWN", "bar_idx": bar_idx}]
                                 n1_fp = self.compute_n1_footprint(prior_bar, atr)
