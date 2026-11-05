@@ -342,7 +342,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 69.02,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER CALL on NIFTY22SEP26C23650 (268s) | PnL: \u20b9+9.75 (+2.0%) | Exit: TIME_HARVEST_LOCKED_GAIN (+2.0% after 267s @ 7.50) | MFE: +2.7% (+\u20b90.20 @ 145.0s), MAE: -9.5% | Spot \u0394: +4.5pts (+1.9bps), Fut \u0394: +4.0pts (Basis: +10.4pts | CONFIRMED_DIRECTION) | Lat: 2640ms, VolBurstAge: 0.07s, EQS: 85.0"
+      "diagnostic_summary": "WINNER CALL on NIFTY22SEP26C23650 (268s) | PnL: ₹+9.75 (+2.0%) | Exit: TIME_HARVEST_LOCKED_GAIN (+2.0% after 267s @ 7.50) | MFE: +2.7% (+₹0.20 @ 145.0s), MAE: -9.5% | Spot Δ: +4.5pts (+1.9bps), Fut Δ: +4.0pts (Basis: +10.4pts | CONFIRMED_DIRECTION) | Lat: 2640ms, VolBurstAge: 0.07s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 86.3,
@@ -857,7 +857,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 69.03,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER CALL on NIFTY22SEP26C23650 (40s) | PnL: \u20b9+19.50 (+4.2%) | Exit: Take-Profit Hit (+4.2% @ 7.45) | MFE: +2.8% (+\u20b90.20 @ 37.8s), MAE: -2.8% | Spot \u0394: +3.6pts (+1.6bps), Fut \u0394: +3.5pts (Basis: +10.8pts | CONFIRMED_DIRECTION) | Lat: 9495ms, VolBurstAge: 366.27s, EQS: 85.0"
+      "diagnostic_summary": "WINNER CALL on NIFTY22SEP26C23650 (40s) | PnL: ₹+19.50 (+4.2%) | Exit: Take-Profit Hit (+4.2% @ 7.45) | MFE: +2.8% (+₹0.20 @ 37.8s), MAE: -2.8% | Spot Δ: +3.6pts (+1.6bps), Fut Δ: +3.5pts (Basis: +10.8pts | CONFIRMED_DIRECTION) | Lat: 9495ms, VolBurstAge: 366.27s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 75.0,
@@ -1372,7 +1372,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 65.25,
       "persistence_score": 1.0,
-      "diagnostic_summary": "LOSER CALL on NIFTY22SEP26C23650 (159s) | PnL: \u20b9-35.75 (-8.2%) | Exit: Trend Reversal Exit (1m Market Structure OPPOSED (Lower Highs/Lows) | -7.4% @ 6.25) | MFE: +0.7% (+\u20b90.05 @ 2.7s), MAE: -8.9% | Spot \u0394: -8.0pts (-3.4bps), Fut \u0394: -7.5pts (Basis: +13.5pts | OPPOSED) | Lat: 2429ms, VolBurstAge: 910.36s, EQS: 85.0"
+      "diagnostic_summary": "LOSER CALL on NIFTY22SEP26C23650 (159s) | PnL: ₹-35.75 (-8.2%) | Exit: Trend Reversal Exit (1m Market Structure OPPOSED (Lower Highs/Lows) | -7.4% @ 6.25) | MFE: +0.7% (+₹0.05 @ 2.7s), MAE: -8.9% | Spot Δ: -8.0pts (-3.4bps), Fut Δ: -7.5pts (Basis: +13.5pts | OPPOSED) | Lat: 2429ms, VolBurstAge: 910.36s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 75.3,
@@ -1913,7 +1913,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 62.19,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER CALL on SENSEX26SEP75600CE (12s) | PnL: \u20b9+22.00 (+4.0%) | Exit: Take-Profit Hit (+4.0% @ 28.75) | MFE: +2.7% (+\u20b90.75 @ 9.4s), MAE: -0.9% | Spot \u0394: +2.2pts (+0.3bps), Fut \u0394: +0.0pts (Basis: -39.8pts | SPOT_DRIVEN_FUTURES_DIVERGENCE) | Lat: 5850ms, VolBurstAge: 362.32s, EQS: 85.0"
+      "diagnostic_summary": "WINNER CALL on SENSEX26SEP75600CE (12s) | PnL: ₹+22.00 (+4.0%) | Exit: Take-Profit Hit (+4.0% @ 28.75) | MFE: +2.7% (+₹0.75 @ 9.4s), MAE: -0.9% | Spot Δ: +2.2pts (+0.3bps), Fut Δ: +0.0pts (Basis: -39.8pts | SPOT_DRIVEN_FUTURES_DIVERGENCE) | Lat: 5850ms, VolBurstAge: 362.32s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 82.3,
@@ -2480,7 +2480,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 57.58,
       "persistence_score": 1.0,
-      "diagnostic_summary": "LOSER CALL on SENSEX26SEP75600CE (28s) | PnL: \u20b9-17.00 (-3.4%) | Exit: Premium Hard SL (-3.5% floor: -3.6% @ 24.30) | MFE: +0.0% (+\u20b90.00 @ 0.0s), MAE: -3.6% | Spot \u0394: -1.9pts (-0.2bps), Fut \u0394: +0.0pts (Basis: +40.3pts | OPPOSED) | Lat: 2341ms, VolBurstAge: 0.33s, EQS: 85.0"
+      "diagnostic_summary": "LOSER CALL on SENSEX26SEP75600CE (28s) | PnL: ₹-17.00 (-3.4%) | Exit: Premium Hard SL (-3.5% floor: -3.6% @ 24.30) | MFE: +0.0% (+₹0.00 @ 0.0s), MAE: -3.6% | Spot Δ: -1.9pts (-0.2bps), Fut Δ: +0.0pts (Basis: +40.3pts | OPPOSED) | Lat: 2341ms, VolBurstAge: 0.33s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 87.3,
@@ -2750,8 +2750,8 @@
     "pnl": 12.999999999999972,
     "net_pl": 12.999999999999972,
     "daily_total_pnl": 12.999999999999972,
-    "exit_reason": "Breakeven Guard (+2.0% @ 25.50, gain \u20b90.50)",
-    "reason": "Breakeven Guard (+2.0% @ 25.50, gain \u20b90.50)",
+    "exit_reason": "Breakeven Guard (+2.0% @ 25.50, gain ₹0.50)",
+    "reason": "Breakeven Guard (+2.0% @ 25.50, gain ₹0.50)",
     "feature_vector": {
       "conviction": 81.5,
       "sizing_tier": "STANDARD_SIZE",
@@ -3031,7 +3031,7 @@
       "pnl_rs": 13.0,
       "pnl_pct": 2.6,
       "trade_duration_sec": 25,
-      "exit_reason": "Breakeven Guard (+2.0% @ 25.50, gain \u20b90.50)",
+      "exit_reason": "Breakeven Guard (+2.0% @ 25.50, gain ₹0.50)",
       "peak_mfe_pct": 3.6,
       "peak_mfe_rs": 0.9,
       "time_to_peak_mfe_sec": 20.7,
@@ -3049,7 +3049,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 69.46,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER PUT on SENSEX26SEP73600PE (25s) | PnL: \u20b9+13.00 (+2.6%) | Exit: Breakeven Guard (+2.0% @ 25.50, gain \u20b90.50) | MFE: +3.6% (+\u20b90.90 @ 20.7s), MAE: -1.0% | Spot \u0394: +1.0pts (+0.1bps), Fut \u0394: +0.0pts (Basis: +17.9pts | OPPOSED) | Lat: 4398ms, VolBurstAge: 0.34s, EQS: 85.0"
+      "diagnostic_summary": "WINNER PUT on SENSEX26SEP73600PE (25s) | PnL: ₹+13.00 (+2.6%) | Exit: Breakeven Guard (+2.0% @ 25.50, gain ₹0.50) | MFE: +3.6% (+₹0.90 @ 20.7s), MAE: -1.0% | Spot Δ: +1.0pts (+0.1bps), Fut Δ: +0.0pts (Basis: +17.9pts | OPPOSED) | Lat: 4398ms, VolBurstAge: 0.34s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 81.5,
@@ -3321,8 +3321,8 @@
     "pnl": 7.999999999999972,
     "net_pl": 7.999999999999972,
     "daily_total_pnl": 20.999999999999943,
-    "exit_reason": "Breakeven Guard (+1.8% @ 28.80, gain \u20b90.50)",
-    "reason": "Breakeven Guard (+1.8% @ 28.80, gain \u20b90.50)",
+    "exit_reason": "Breakeven Guard (+1.8% @ 28.80, gain ₹0.50)",
+    "reason": "Breakeven Guard (+1.8% @ 28.80, gain ₹0.50)",
     "feature_vector": {
       "conviction": 80.8,
       "sizing_tier": "STANDARD_SIZE",
@@ -3580,7 +3580,7 @@
       "pnl_rs": 8.0,
       "pnl_pct": 1.41,
       "trade_duration_sec": 26,
-      "exit_reason": "Breakeven Guard (+1.8% @ 28.80, gain \u20b90.50)",
+      "exit_reason": "Breakeven Guard (+1.8% @ 28.80, gain ₹0.50)",
       "peak_mfe_pct": 2.12,
       "peak_mfe_rs": 0.6,
       "time_to_peak_mfe_sec": 24.3,
@@ -3598,7 +3598,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 80.8,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER CALL on SENSEX26SEP74600CE (26s) | PnL: \u20b9+8.00 (+1.4%) | Exit: Breakeven Guard (+1.8% @ 28.80, gain \u20b90.50) | MFE: +2.1% (+\u20b90.60 @ 24.3s), MAE: -0.7% | Spot \u0394: -0.3pts (-0.0bps), Fut \u0394: +0.0pts (Basis: +25.4pts | OPPOSED) | Lat: 5928ms, VolBurstAge: 0.08s, EQS: 85.0"
+      "diagnostic_summary": "WINNER CALL on SENSEX26SEP74600CE (26s) | PnL: ₹+8.00 (+1.4%) | Exit: Breakeven Guard (+1.8% @ 28.80, gain ₹0.50) | MFE: +2.1% (+₹0.60 @ 24.3s), MAE: -0.7% | Spot Δ: -0.3pts (-0.0bps), Fut Δ: +0.0pts (Basis: +25.4pts | OPPOSED) | Lat: 5928ms, VolBurstAge: 0.08s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 80.8,
@@ -3848,8 +3848,8 @@
     "pnl": 8.999999999999986,
     "net_pl": 8.999999999999986,
     "daily_total_pnl": 29.99999999999993,
-    "exit_reason": "Breakeven Guard (+2.0% @ 25.00, gain \u20b90.50)",
-    "reason": "Breakeven Guard (+2.0% @ 25.00, gain \u20b90.50)",
+    "exit_reason": "Breakeven Guard (+2.0% @ 25.00, gain ₹0.50)",
+    "reason": "Breakeven Guard (+2.0% @ 25.00, gain ₹0.50)",
     "feature_vector": {
       "conviction": 79.2,
       "sizing_tier": "STANDARD_SIZE",
@@ -4129,7 +4129,7 @@
       "pnl_rs": 9.0,
       "pnl_pct": 1.84,
       "trade_duration_sec": 8,
-      "exit_reason": "Breakeven Guard (+2.0% @ 25.00, gain \u20b90.50)",
+      "exit_reason": "Breakeven Guard (+2.0% @ 25.00, gain ₹0.50)",
       "peak_mfe_pct": 2.04,
       "peak_mfe_rs": 0.5,
       "time_to_peak_mfe_sec": 6.9,
@@ -4147,7 +4147,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 61.15,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER CALL on SENSEX26SEP74600CE (8s) | PnL: \u20b9+9.00 (+1.8%) | Exit: Breakeven Guard (+2.0% @ 25.00, gain \u20b90.50) | MFE: +2.0% (+\u20b90.50 @ 6.9s), MAE: -0.6% | Spot \u0394: +4.8pts (+0.6bps), Fut \u0394: +0.0pts (Basis: +64.8pts | SPOT_DRIVEN_FUTURES_DIVERGENCE) | Lat: 3001ms, VolBurstAge: 0.33s, EQS: 85.0"
+      "diagnostic_summary": "WINNER CALL on SENSEX26SEP74600CE (8s) | PnL: ₹+9.00 (+1.8%) | Exit: Breakeven Guard (+2.0% @ 25.00, gain ₹0.50) | MFE: +2.0% (+₹0.50 @ 6.9s), MAE: -0.6% | Spot Δ: +4.8pts (+0.6bps), Fut Δ: +0.0pts (Basis: +64.8pts | SPOT_DRIVEN_FUTURES_DIVERGENCE) | Lat: 3001ms, VolBurstAge: 0.33s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 79.2,
@@ -4738,7 +4738,7 @@
       "eqs_score": 82.0,
       "microstructure_score": 74.73,
       "persistence_score": 0.023,
-      "diagnostic_summary": "WINNER PUT on NIFTY29SEP26P22550 (45s) | PnL: \u20b9+19.50 (+3.8%) | Exit: Take-Profit Hit (+3.8% @ 8.15) | MFE: +0.0% (+\u20b90.00 @ 0.0s), MAE: -1.3% | Spot \u0394: -2.6pts (-1.1bps), Fut \u0394: -5.0pts (Basis: +43.5pts | CONFIRMED_DIRECTION) | Lat: 3269ms, VolBurstAge: 0.05s, EQS: 82.0"
+      "diagnostic_summary": "WINNER PUT on NIFTY29SEP26P22550 (45s) | PnL: ₹+19.50 (+3.8%) | Exit: Take-Profit Hit (+3.8% @ 8.15) | MFE: +0.0% (+₹0.00 @ 0.0s), MAE: -1.3% | Spot Δ: -2.6pts (-1.1bps), Fut Δ: -5.0pts (Basis: +43.5pts | CONFIRMED_DIRECTION) | Lat: 3269ms, VolBurstAge: 0.05s, EQS: 82.0"
     },
     "decision_payload": {
       "conviction": 82.7,
@@ -5329,7 +5329,7 @@
       "eqs_score": 83.0,
       "microstructure_score": 83.0,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER CALL on NIFTY29SEP26C22950 (38s) | PnL: \u20b9+19.50 (+3.9%) | Exit: Take-Profit Hit (+3.9% @ 7.95) | MFE: +2.6% (+\u20b90.20 @ 38.3s), MAE: -3.9% | Spot \u0394: +0.8pts (+0.3bps), Fut \u0394: +0.0pts (Basis: +12.7pts | SPOT_DRIVEN_FUTURES_DIVERGENCE) | Lat: 2747ms, VolBurstAge: 0.17s, EQS: 83.0"
+      "diagnostic_summary": "WINNER CALL on NIFTY29SEP26C22950 (38s) | PnL: ₹+19.50 (+3.9%) | Exit: Take-Profit Hit (+3.9% @ 7.95) | MFE: +2.6% (+₹0.20 @ 38.3s), MAE: -3.9% | Spot Δ: +0.8pts (+0.3bps), Fut Δ: +0.0pts (Basis: +12.7pts | SPOT_DRIVEN_FUTURES_DIVERGENCE) | Lat: 2747ms, VolBurstAge: 0.17s, EQS: 83.0"
     },
     "decision_payload": {
       "conviction": 83.0,
@@ -5917,7 +5917,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 85.0,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER CALL on SENSEX26O0173900CE (20s) | PnL: \u20b9+16.00 (+2.9%) | Exit: Near-Target Profit Lock (+3.3% @ 28.15 | Peak was +3.9%) | MFE: +3.9% (+\u20b91.05 @ 18.9s), MAE: -0.9% | Spot \u0394: +43.3pts (+5.9bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 5070ms, VolBurstAge: 0.1s, EQS: 85.0"
+      "diagnostic_summary": "WINNER CALL on SENSEX26O0173900CE (20s) | PnL: ₹+16.00 (+2.9%) | Exit: Near-Target Profit Lock (+3.3% @ 28.15 | Peak was +3.9%) | MFE: +3.9% (+₹1.05 @ 18.9s), MAE: -0.9% | Spot Δ: +43.3pts (+5.9bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 5070ms, VolBurstAge: 0.1s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 85.0,
@@ -6522,7 +6522,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 86.0,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER PUT on SENSEX26O0171800PE (37s) | PnL: \u20b9+22.00 (+4.1%) | Exit: Take-Profit Hit (+4.1% @ 28.15) | MFE: +3.5% (+\u20b90.95 @ 36.7s), MAE: -0.7% | Spot \u0394: -0.1pts (-0.0bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 8270ms, VolBurstAge: 231.31s, EQS: 85.0"
+      "diagnostic_summary": "WINNER PUT on SENSEX26O0171800PE (37s) | PnL: ₹+22.00 (+4.1%) | Exit: Take-Profit Hit (+4.1% @ 28.15) | MFE: +3.5% (+₹0.95 @ 36.7s), MAE: -0.7% | Spot Δ: -0.1pts (-0.0bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 8270ms, VolBurstAge: 231.31s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 86.0,
@@ -7127,7 +7127,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 88.0,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER PUT on SENSEX26O0171800PE (123s) | PnL: \u20b9+22.00 (+4.0%) | Exit: Take-Profit Hit (+4.0% @ 28.65) | MFE: +3.5% (+\u20b90.95 @ 122.8s), MAE: -4.2% | Spot \u0394: -5.0pts (-0.7bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 5076ms, VolBurstAge: 0.96s, EQS: 85.0"
+      "diagnostic_summary": "WINNER PUT on SENSEX26O0171800PE (123s) | PnL: ₹+22.00 (+4.0%) | Exit: Take-Profit Hit (+4.0% @ 28.65) | MFE: +3.5% (+₹0.95 @ 122.8s), MAE: -4.2% | Spot Δ: -5.0pts (-0.7bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 5076ms, VolBurstAge: 0.96s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 88.0,
@@ -7732,7 +7732,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 88.0,
       "persistence_score": 1.0,
-      "diagnostic_summary": "LOSER CALL on SENSEX26O0173200CE (23s) | PnL: \u20b9-15.00 (-3.4%) | Exit: Stepped Safety Net SL (-4.3% @ 21.30 | Peak was +2.0%) | MFE: +2.0% (+\u20b90.45 @ 1.6s), MAE: -4.3% | Spot \u0394: +19.4pts (+2.7bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 7295ms, VolBurstAge: 0.05s, EQS: 85.0"
+      "diagnostic_summary": "LOSER CALL on SENSEX26O0173200CE (23s) | PnL: ₹-15.00 (-3.4%) | Exit: Stepped Safety Net SL (-4.3% @ 21.30 | Peak was +2.0%) | MFE: +2.0% (+₹0.45 @ 1.6s), MAE: -4.3% | Spot Δ: +19.4pts (+2.7bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 7295ms, VolBurstAge: 0.05s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 88.0,
@@ -8326,7 +8326,7 @@
       "eqs_score": 83.0,
       "microstructure_score": 83.0,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER PUT on SENSEX26O0171500PE (36s) | PnL: \u20b9+19.00 (+4.1%) | Exit: Take-Profit Hit (+4.1% @ 24.10) | MFE: +0.2% (+\u20b90.05 @ 1.2s), MAE: -9.9% | Spot \u0394: -8.4pts (-1.2bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 6956ms, VolBurstAge: 0.0s, EQS: 83.0"
+      "diagnostic_summary": "WINNER PUT on SENSEX26O0171500PE (36s) | PnL: ₹+19.00 (+4.1%) | Exit: Take-Profit Hit (+4.1% @ 24.10) | MFE: +0.2% (+₹0.05 @ 1.2s), MAE: -9.9% | Spot Δ: -8.4pts (-1.2bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 6956ms, VolBurstAge: 0.0s, EQS: 83.0"
     },
     "decision_payload": {
       "conviction": 83.0,
@@ -8908,7 +8908,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 90.0,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER PUT on SENSEX26O0171100PE (5s) | PnL: \u20b9+18.00 (+4.1%) | Exit: Take-Profit Hit (+4.1% @ 23.00) | MFE: +2.0% (+\u20b90.45 @ 2.2s), MAE: -2.5% | Spot \u0394: +10.4pts (+1.4bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 6631ms, VolBurstAge: 0.15s, EQS: 85.0"
+      "diagnostic_summary": "WINNER PUT on SENSEX26O0171100PE (5s) | PnL: ₹+18.00 (+4.1%) | Exit: Take-Profit Hit (+4.1% @ 23.00) | MFE: +2.0% (+₹0.45 @ 2.2s), MAE: -2.5% | Spot Δ: +10.4pts (+1.4bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 6631ms, VolBurstAge: 0.15s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 90.0,
@@ -9489,7 +9489,7 @@
       "eqs_score": 82.0,
       "microstructure_score": 85.2,
       "persistence_score": 0.8,
-      "diagnostic_summary": "WINNER CALL on NIFTY06OCT26C22950 (11s) | PnL: \u20b9+19.50 (+3.7%) | Exit: Take-Profit Hit (+3.7% @ 8.40) | MFE: +3.1% (+\u20b90.25 @ 10.0s), MAE: -0.6% | Spot \u0394: +3.2pts (+1.4bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 2456ms, VolBurstAge: 0.27s, EQS: 82.0"
+      "diagnostic_summary": "WINNER CALL on NIFTY06OCT26C22950 (11s) | PnL: ₹+19.50 (+3.7%) | Exit: Take-Profit Hit (+3.7% @ 8.40) | MFE: +3.1% (+₹0.25 @ 10.0s), MAE: -0.6% | Spot Δ: +3.2pts (+1.4bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 2456ms, VolBurstAge: 0.27s, EQS: 82.0"
     },
     "decision_payload": {
       "conviction": 85.2,
@@ -10082,7 +10082,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 84.0,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER PUT on NIFTY06OCT26P22100 (132s) | PnL: \u20b9+22.75 (+4.3%) | Exit: Take-Profit Hit (+4.3% @ 8.50) | MFE: +3.1% (+\u20b90.25 @ 130.4s), MAE: -8.0% | Spot \u0394: -4.2pts (-1.9bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 5600ms, VolBurstAge: 0.05s, EQS: 85.0"
+      "diagnostic_summary": "WINNER PUT on NIFTY06OCT26P22100 (132s) | PnL: ₹+22.75 (+4.3%) | Exit: Take-Profit Hit (+4.3% @ 8.50) | MFE: +3.1% (+₹0.25 @ 130.4s), MAE: -8.0% | Spot Δ: -4.2pts (-1.9bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 5600ms, VolBurstAge: 0.05s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 84.0,
@@ -10663,7 +10663,7 @@
       "eqs_score": 83.0,
       "microstructure_score": 81.0,
       "persistence_score": 1.0,
-      "diagnostic_summary": "SCRATCH CALL on SENSEX26O0873800CE (15s) | Gross: \u20b9+0.00 | Charges: \u20b912.87 (Brokerage: \u20b910.00, Taxes: \u20b92.87) | Net: \u20b9-12.87 (+0.0%) | Exit: Trend Reversal Exit (Spot 1m Bar Closed Below 9-EMA (72880.6 < 72907.9) | -0.7% @ 28.65) | MFE: +0.7% (+\u20b90.20 @ 5.4s), MAE: -0.7% | Spot \u0394: +6.9pts (+0.9bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 1489ms, VolBurstAge: 0.01s, EQS: 83.0",
+      "diagnostic_summary": "SCRATCH CALL on SENSEX26O0873800CE (15s) | Gross: ₹+0.00 | Charges: ₹12.87 (Brokerage: ₹10.00, Taxes: ₹2.87) | Net: ₹-12.87 (+0.0%) | Exit: Trend Reversal Exit (Spot 1m Bar Closed Below 9-EMA (72880.6 < 72907.9) | -0.7% @ 28.65) | MFE: +0.7% (+₹0.20 @ 5.4s), MAE: -0.7% | Spot Δ: +6.9pts (+0.9bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 1489ms, VolBurstAge: 0.01s, EQS: 83.0",
       "gross_pnl_rs": 0.0,
       "brokerage_rs": 10.0,
       "taxes_rs": 2.87,
@@ -11277,7 +11277,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 67.92,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER PUT on SENSEX26O0871300PE (38s) | Gross: \u20b9+19.00 | Charges: \u20b912.73 (Brokerage: \u20b910.00, Taxes: \u20b92.73) | Net: \u20b9+6.27 (+3.9%) | Exit: Take-Profit Hit (+3.9% @ 25.25) | MFE: +3.5% (+\u20b90.85 @ 37.5s), MAE: -2.5% | Spot \u0394: +0.7pts (+0.1bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 4296ms, VolBurstAge: 0.08s, EQS: 85.0",
+      "diagnostic_summary": "WINNER PUT on SENSEX26O0871300PE (38s) | Gross: ₹+19.00 | Charges: ₹12.73 (Brokerage: ₹10.00, Taxes: ₹2.73) | Net: ₹+6.27 (+3.9%) | Exit: Take-Profit Hit (+3.9% @ 25.25) | MFE: +3.5% (+₹0.85 @ 37.5s), MAE: -2.5% | Spot Δ: +0.7pts (+0.1bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 4296ms, VolBurstAge: 0.08s, EQS: 85.0",
       "gross_pnl_rs": 19.0,
       "brokerage_rs": 10.0,
       "taxes_rs": 2.73,
@@ -11916,7 +11916,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 82.0,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER PUT on SENSEX26O0871400PE (17s) | Gross: \u20b9+20.00 | Charges: \u20b912.76 (Brokerage: \u20b910.00, Taxes: \u20b92.76) | Net: \u20b9+7.24 (+4.0%) | Exit: Take-Profit Hit (+4.0% @ 26.05) | MFE: +3.8% (+\u20b90.95 @ 15.2s), MAE: -1.2% | Spot \u0394: -23.1pts (-3.2bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 7431ms, VolBurstAge: 0.02s, EQS: 85.0",
+      "diagnostic_summary": "WINNER PUT on SENSEX26O0871400PE (17s) | Gross: ₹+20.00 | Charges: ₹12.76 (Brokerage: ₹10.00, Taxes: ₹2.76) | Net: ₹+7.24 (+4.0%) | Exit: Take-Profit Hit (+4.0% @ 26.05) | MFE: +3.8% (+₹0.95 @ 15.2s), MAE: -1.2% | Spot Δ: -23.1pts (-3.2bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 7431ms, VolBurstAge: 0.02s, EQS: 85.0",
       "gross_pnl_rs": 20.0,
       "brokerage_rs": 10.0,
       "taxes_rs": 2.76,
@@ -12549,7 +12549,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 85.0,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER PUT on SENSEX26O0871300PE (8s) | Gross: \u20b9+18.00 (+4.0%) | Brokerage: \u20b910.00 | Taxes: \u20b92.66 | Total Charges: \u20b912.66 | Net: \u20b9+5.34 | Exit: Take-Profit Hit (+4.0% @ 23.65) | MFE: +0.0% (+\u20b90.00 @ 0.0s), MAE: -7.0% | Spot \u0394: -56.5pts (-7.9bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 8003ms, VolBurstAge: 0.0s, EQS: 85.0"
+      "diagnostic_summary": "WINNER PUT on SENSEX26O0871300PE (8s) | Gross: ₹+18.00 (+4.0%) | Brokerage: ₹10.00 | Taxes: ₹2.66 | Total Charges: ₹12.66 | Net: ₹+5.34 | Exit: Take-Profit Hit (+4.0% @ 23.65) | MFE: +0.0% (+₹0.00 @ 0.0s), MAE: -7.0% | Spot Δ: -56.5pts (-7.9bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 8003ms, VolBurstAge: 0.0s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 85.0,
@@ -13182,7 +13182,7 @@
       "eqs_score": 83.0,
       "microstructure_score": 73.05,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER CALL on NIFTY13OCT26C23000 (140s) | Gross: \u20b9+19.50 (+4.2%) | Brokerage: \u20b910.00 | Taxes: \u20b92.69 | Total Charges: \u20b912.69 | Net: \u20b9+6.81 | Exit: Take-Profit Hit (+4.2% @ 7.50) | MFE: +3.5% (+\u20b90.25 @ 131.7s), MAE: -2.8% | Spot \u0394: +22.8pts (+10.1bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 18106ms, VolBurstAge: 0.29s, EQS: 83.0"
+      "diagnostic_summary": "WINNER CALL on NIFTY13OCT26C23000 (140s) | Gross: ₹+19.50 (+4.2%) | Brokerage: ₹10.00 | Taxes: ₹2.69 | Total Charges: ₹12.69 | Net: ₹+6.81 | Exit: Take-Profit Hit (+4.2% @ 7.50) | MFE: +3.5% (+₹0.25 @ 131.7s), MAE: -2.8% | Spot Δ: +22.8pts (+10.1bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 18106ms, VolBurstAge: 0.29s, EQS: 83.0"
     },
     "decision_payload": {
       "conviction": 81.0,
@@ -13826,7 +13826,7 @@
       "eqs_score": 83.0,
       "microstructure_score": 89.18,
       "persistence_score": 1.0,
-      "diagnostic_summary": "LOSER CALL on NIFTY13OCT26C23000 (44s) | Gross: \u20b9-22.75 (-4.6%) | Brokerage: \u20b910.00 | Taxes: \u20b92.68 | Total Charges: \u20b912.68 | Net: \u20b9-35.43 | Exit: Pillar 2 Entry Candle Low Broken SL (Spot 22512.8 <= Candle Low 22513.0) | MFE: +0.7% (+\u20b90.05 @ 7.6s), MAE: -4.0% | Spot \u0394: -9.1pts (-4.0bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 7124ms, VolBurstAge: 0.49s, EQS: 83.0"
+      "diagnostic_summary": "LOSER CALL on NIFTY13OCT26C23000 (44s) | Gross: ₹-22.75 (-4.6%) | Brokerage: ₹10.00 | Taxes: ₹2.68 | Total Charges: ₹12.68 | Net: ₹-35.43 | Exit: Pillar 2 Entry Candle Low Broken SL (Spot 22512.8 <= Candle Low 22513.0) | MFE: +0.7% (+₹0.05 @ 7.6s), MAE: -4.0% | Spot Δ: -9.1pts (-4.0bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 7124ms, VolBurstAge: 0.49s, EQS: 83.0"
     },
     "decision_payload": {
       "conviction": 81.0,
@@ -14480,7 +14480,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 66.71,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER CALL on NIFTY13OCT26C22950 (240s) | Gross: \u20b9+6.50 (+1.2%) | Brokerage: \u20b910.00 | Taxes: \u20b92.86 | Total Charges: \u20b912.86 | Net: \u20b9-6.36 | Exit: TIME_HARVEST_LOCKED_GAIN (+1.7% after 238s @ 8.80) | MFE: +2.9% (+\u20b90.25 @ 85.7s), MAE: -2.9% | Spot \u0394: +5.6pts (+2.5bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 9399ms, VolBurstAge: 0.01s, EQS: 85.0"
+      "diagnostic_summary": "WINNER CALL on NIFTY13OCT26C22950 (240s) | Gross: ₹+6.50 (+1.2%) | Brokerage: ₹10.00 | Taxes: ₹2.86 | Total Charges: ₹12.86 | Net: ₹-6.36 | Exit: TIME_HARVEST_LOCKED_GAIN (+1.7% after 238s @ 8.80) | MFE: +2.9% (+₹0.25 @ 85.7s), MAE: -2.9% | Spot Δ: +5.6pts (+2.5bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 9399ms, VolBurstAge: 0.01s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 82.3,
@@ -15134,7 +15134,7 @@
       "eqs_score": 83.0,
       "microstructure_score": 73.0,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER PUT on NIFTY13OCT26P22050 (46s) | Gross: \u20b9+13.00 (+2.4%) | Brokerage: \u20b910.00 | Taxes: \u20b92.85 | Total Charges: \u20b912.85 | Net: \u20b9+0.15 | Exit: Near-Target Profit Lock (+2.4% @ 8.70 | Peak was +3.5%) | MFE: +3.5% (+\u20b90.30 @ 44.5s), MAE: -1.2% | Spot \u0394: -5.0pts (-2.2bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 9006ms, VolBurstAge: 0.1s, EQS: 83.0"
+      "diagnostic_summary": "WINNER PUT on NIFTY13OCT26P22050 (46s) | Gross: ₹+13.00 (+2.4%) | Brokerage: ₹10.00 | Taxes: ₹2.85 | Total Charges: ₹12.85 | Net: ₹+0.15 | Exit: Near-Target Profit Lock (+2.4% @ 8.70 | Peak was +3.5%) | MFE: +3.5% (+₹0.30 @ 44.5s), MAE: -1.2% | Spot Δ: -5.0pts (-2.2bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 9006ms, VolBurstAge: 0.1s, EQS: 83.0"
     },
     "decision_payload": {
       "conviction": 81.0,
@@ -15778,7 +15778,7 @@
       "eqs_score": 83.0,
       "microstructure_score": 72.39,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER PUT on NIFTY13OCT26P22000 (42s) | Gross: \u20b9+19.50 (+4.1%) | Brokerage: \u20b910.00 | Taxes: \u20b92.70 | Total Charges: \u20b912.70 | Net: \u20b9+6.80 | Exit: Take-Profit Hit (+4.1% @ 7.60) | MFE: +0.0% (+\u20b90.00 @ 0.0s), MAE: -2.0% | Spot \u0394: -4.0pts (-1.8bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 8773ms, VolBurstAge: 0.01s, EQS: 83.0"
+      "diagnostic_summary": "WINNER PUT on NIFTY13OCT26P22000 (42s) | Gross: ₹+19.50 (+4.1%) | Brokerage: ₹10.00 | Taxes: ₹2.70 | Total Charges: ₹12.70 | Net: ₹+6.80 | Exit: Take-Profit Hit (+4.1% @ 7.60) | MFE: +0.0% (+₹0.00 @ 0.0s), MAE: -2.0% | Spot Δ: -4.0pts (-1.8bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 8773ms, VolBurstAge: 0.01s, EQS: 83.0"
     },
     "decision_payload": {
       "conviction": 81.0,
@@ -16422,7 +16422,7 @@
       "eqs_score": 83.0,
       "microstructure_score": 66.38,
       "persistence_score": 1.0,
-      "diagnostic_summary": "LOSER PUT on NIFTY13OCT26P21950 (301s) | Gross: \u20b9-19.50 (-3.7%) | Brokerage: \u20b910.00 | Taxes: \u20b92.74 | Total Charges: \u20b912.74 | Net: \u20b9-32.24 | Exit: 5-Min Hard Time Stop (300s) | MFE: +2.5% (+\u20b90.20 @ 196.2s), MAE: -3.7% | Spot \u0394: +4.0pts (+1.8bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 10199ms, VolBurstAge: 0.3s, EQS: 83.0"
+      "diagnostic_summary": "LOSER PUT on NIFTY13OCT26P21950 (301s) | Gross: ₹-19.50 (-3.7%) | Brokerage: ₹10.00 | Taxes: ₹2.74 | Total Charges: ₹12.74 | Net: ₹-32.24 | Exit: 5-Min Hard Time Stop (300s) | MFE: +2.5% (+₹0.20 @ 196.2s), MAE: -3.7% | Spot Δ: +4.0pts (+1.8bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 10199ms, VolBurstAge: 0.3s, EQS: 83.0"
     },
     "decision_payload": {
       "conviction": 83.0,
@@ -17076,7 +17076,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 72.82,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER CALL on NIFTY13OCT26C22650 (20s) | Gross: \u20b9+19.50 (+4.2%) | Brokerage: \u20b910.00 | Taxes: \u20b92.68 | Total Charges: \u20b912.68 | Net: \u20b9+6.82 | Exit: Take-Profit Hit (+4.2% @ 7.40) | MFE: +0.7% (+\u20b90.05 @ 8.0s), MAE: -1.4% | Spot \u0394: -0.1pts (-0.0bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 8398ms, VolBurstAge: 0.01s, EQS: 85.0"
+      "diagnostic_summary": "WINNER CALL on NIFTY13OCT26C22650 (20s) | Gross: ₹+19.50 (+4.2%) | Brokerage: ₹10.00 | Taxes: ₹2.68 | Total Charges: ₹12.68 | Net: ₹+6.82 | Exit: Take-Profit Hit (+4.2% @ 7.40) | MFE: +0.7% (+₹0.05 @ 8.0s), MAE: -1.4% | Spot Δ: -0.1pts (-0.0bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 8398ms, VolBurstAge: 0.01s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 82.3,
@@ -17707,7 +17707,7 @@
       "eqs_score": 82.0,
       "microstructure_score": 84.7,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER CALL on SENSEX26O1574200CE (4s) | Gross: \u20b9+2.00 (+0.3%) | Brokerage: \u20b910.00 | Taxes: \u20b93.18 | Total Charges: \u20b913.18 | Net: \u20b9-11.18 | Exit: Near-Target Profit Lock (+1.7% @ 37.95 | Peak was +3.9%) | MFE: +3.9% (+\u20b91.45 @ 1.5s), MAE: 0.0% | Spot \u0394: -2.8pts (-0.4bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 8852ms, VolBurstAge: 0.14s, EQS: 82.0"
+      "diagnostic_summary": "WINNER CALL on SENSEX26O1574200CE (4s) | Gross: ₹+2.00 (+0.3%) | Brokerage: ₹10.00 | Taxes: ₹3.18 | Total Charges: ₹13.18 | Net: ₹-11.18 | Exit: Near-Target Profit Lock (+1.7% @ 37.95 | Peak was +3.9%) | MFE: +3.9% (+₹1.45 @ 1.5s), MAE: 0.0% | Spot Δ: -2.8pts (-0.4bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 8852ms, VolBurstAge: 0.14s, EQS: 82.0"
     },
     "decision_payload": {
       "conviction": 84.7,
@@ -18298,7 +18298,7 @@
       "eqs_score": 82.0,
       "microstructure_score": 78.55,
       "persistence_score": 0.818,
-      "diagnostic_summary": "WINNER CALL on SENSEX26O1574000CE (13s) | Gross: \u20b9+24.00 (+3.9%) | Brokerage: \u20b910.00 | Taxes: \u20b92.96 | Total Charges: \u20b912.96 | Net: \u20b9+11.04 | Exit: Take-Profit Hit (+3.9% @ 31.65) | MFE: +0.5% (+\u20b90.15 @ 12.2s), MAE: -4.4% | Spot \u0394: +17.0pts (+2.3bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 7828ms, VolBurstAge: 0.0s, EQS: 82.0"
+      "diagnostic_summary": "WINNER CALL on SENSEX26O1574000CE (13s) | Gross: ₹+24.00 (+3.9%) | Brokerage: ₹10.00 | Taxes: ₹2.96 | Total Charges: ₹12.96 | Net: ₹+11.04 | Exit: Take-Profit Hit (+3.9% @ 31.65) | MFE: +0.5% (+₹0.15 @ 12.2s), MAE: -4.4% | Spot Δ: +17.0pts (+2.3bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 7828ms, VolBurstAge: 0.0s, EQS: 82.0"
     },
     "decision_payload": {
       "conviction": 98.0,
@@ -18882,7 +18882,7 @@
       "eqs_score": 82.0,
       "microstructure_score": 81.3,
       "persistence_score": 0.7,
-      "diagnostic_summary": "WINNER CALL on SENSEX26O1574200CE (3s) | Gross: \u20b9+27.00 (+3.9%) | Brokerage: \u20b910.00 | Taxes: \u20b93.12 | Total Charges: \u20b913.12 | Net: \u20b9+13.88 | Exit: Take-Profit Hit (+3.9% @ 35.95) | MFE: +0.0% (+\u20b90.00 @ 0.0s), MAE: -0.4% | Spot \u0394: +2.2pts (+0.3bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 10937ms, VolBurstAge: 3.2s, EQS: 82.0"
+      "diagnostic_summary": "WINNER CALL on SENSEX26O1574200CE (3s) | Gross: ₹+27.00 (+3.9%) | Brokerage: ₹10.00 | Taxes: ₹3.12 | Total Charges: ₹13.12 | Net: ₹+13.88 | Exit: Take-Profit Hit (+3.9% @ 35.95) | MFE: +0.0% (+₹0.00 @ 0.0s), MAE: -0.4% | Spot Δ: +2.2pts (+0.3bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 10937ms, VolBurstAge: 3.2s, EQS: 82.0"
     },
     "decision_payload": {
       "conviction": 98.0,
@@ -19479,7 +19479,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 69.66,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER CALL on SENSEX26O1574300CE (32s) | Gross: \u20b9+27.00 (+4.0%) | Brokerage: \u20b910.00 | Taxes: \u20b93.09 | Total Charges: \u20b913.09 | Net: \u20b9+13.91 | Exit: Take-Profit Hit (+4.0% @ 35.20) | MFE: +1.5% (+\u20b90.50 @ 0.4s), MAE: -4.7% | Spot \u0394: +3.5pts (+0.5bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 5004ms, VolBurstAge: 0.31s, EQS: 85.0"
+      "diagnostic_summary": "WINNER CALL on SENSEX26O1574300CE (32s) | Gross: ₹+27.00 (+4.0%) | Brokerage: ₹10.00 | Taxes: ₹3.09 | Total Charges: ₹13.09 | Net: ₹+13.91 | Exit: Take-Profit Hit (+4.0% @ 35.20) | MFE: +1.5% (+₹0.50 @ 0.4s), MAE: -4.7% | Spot Δ: +3.5pts (+0.5bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 5004ms, VolBurstAge: 0.31s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 97.0,
@@ -20079,7 +20079,7 @@
       "eqs_score": 82.0,
       "microstructure_score": 76.8,
       "persistence_score": 0.818,
-      "diagnostic_summary": "WINNER PUT on NIFTY19OCT26P22400 (80s) | Gross: \u20b9+32.50 (+4.1%) | Brokerage: \u20b910.00 | Taxes: \u20b93.32 | Total Charges: \u20b913.32 | Net: \u20b9+19.18 | Exit: Take-Profit Hit (+4.1% @ 12.75) | MFE: +4.1% (+\u20b90.50 @ 72.2s), MAE: -4.5% | Spot \u0394: -7.7pts (-3.3bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 4800ms, VolBurstAge: 0.01s, EQS: 82.0"
+      "diagnostic_summary": "WINNER PUT on NIFTY19OCT26P22400 (80s) | Gross: ₹+32.50 (+4.1%) | Brokerage: ₹10.00 | Taxes: ₹3.32 | Total Charges: ₹13.32 | Net: ₹+19.18 | Exit: Take-Profit Hit (+4.1% @ 12.75) | MFE: +4.1% (+₹0.50 @ 72.2s), MAE: -4.5% | Spot Δ: -7.7pts (-3.3bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 4800ms, VolBurstAge: 0.01s, EQS: 82.0"
     },
     "decision_payload": {
       "conviction": 97.0,
@@ -20682,7 +20682,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 71.0,
       "persistence_score": 1.0,
-      "diagnostic_summary": "LOSER CALL on NIFTY19OCT26C23450 (301s) | Gross: \u20b9-65.00 (-8.4%) | Brokerage: \u20b910.00 | Taxes: \u20b93.14 | Total Charges: \u20b913.14 | Net: \u20b9-78.14 | Exit: 5-Min Hard Time Stop (300s) | MFE: +2.9% (+\u20b90.35 @ 64.2s), MAE: -10.1% | Spot \u0394: -3.5pts (-1.5bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 4228ms, VolBurstAge: 0.08s, EQS: 85.0"
+      "diagnostic_summary": "LOSER CALL on NIFTY19OCT26C23450 (301s) | Gross: ₹-65.00 (-8.4%) | Brokerage: ₹10.00 | Taxes: ₹3.14 | Total Charges: ₹13.14 | Net: ₹-78.14 | Exit: 5-Min Hard Time Stop (300s) | MFE: +2.9% (+₹0.35 @ 64.2s), MAE: -10.1% | Spot Δ: -3.5pts (-1.5bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 4228ms, VolBurstAge: 0.08s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 96.2,
@@ -21301,7 +21301,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 92.0,
       "persistence_score": 1.0,
-      "diagnostic_summary": "LOSER PUT on NIFTY19OCT26P22800 (14s) | Gross: \u20b9-100.75 (-14.3%) | Brokerage: \u20b910.00 | Taxes: \u20b92.96 | Total Charges: \u20b912.96 | Net: \u20b9-113.71 | Exit: Premium Hard SL (-12.0% disaster floor: -12.9% @ 9.45) | Opt MFE: +1.4% (+\u20b90.15 @ 0.3s), Opt MAE: -14.3% | Spot MFE: +4.0pts (+1.8bps @ 3.489s), Spot MAE: -9.2pts (-4.0bps) | Spot \u0394: +9.8pts (+4.3bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 3258ms, VolBurstAge: 0.02s, EQS: 85.0"
+      "diagnostic_summary": "LOSER PUT on NIFTY19OCT26P22800 (14s) | Gross: ₹-100.75 (-14.3%) | Brokerage: ₹10.00 | Taxes: ₹2.96 | Total Charges: ₹12.96 | Net: ₹-113.71 | Exit: Premium Hard SL (-12.0% disaster floor: -12.9% @ 9.45) | Opt MFE: +1.4% (+₹0.15 @ 0.3s), Opt MAE: -14.3% | Spot MFE: +4.0pts (+1.8bps @ 3.489s), Spot MAE: -9.2pts (-4.0bps) | Spot Δ: +9.8pts (+4.3bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 3258ms, VolBurstAge: 0.02s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 92.0,
@@ -21921,7 +21921,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 55.22,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER PUT on NIFTY19OCT26P22800 (6s) | Gross: \u20b9+22.75 (+4.1%) | Brokerage: \u20b910.00 | Taxes: \u20b92.86 | Total Charges: \u20b912.86 | Net: \u20b9+9.89 | Exit: Take-Profit Hit (+4.1% @ 8.85) | Opt MFE: +4.1% (+\u20b90.35 @ 5.9s), Opt MAE: 0.0% | Spot MFE: +6.5pts (+2.8bps @ 1.948s), Spot MAE: +0.0pts (+0.0bps) | Spot \u0394: -5.3pts (-2.3bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 7192ms, VolBurstAge: 0.0s, EQS: 85.0"
+      "diagnostic_summary": "WINNER PUT on NIFTY19OCT26P22800 (6s) | Gross: ₹+22.75 (+4.1%) | Brokerage: ₹10.00 | Taxes: ₹2.86 | Total Charges: ₹12.86 | Net: ₹+9.89 | Exit: Take-Profit Hit (+4.1% @ 8.85) | Opt MFE: +4.1% (+₹0.35 @ 5.9s), Opt MAE: 0.0% | Spot MFE: +6.5pts (+2.8bps @ 1.948s), Spot MAE: +0.0pts (+0.0bps) | Spot Δ: -5.3pts (-2.3bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 7192ms, VolBurstAge: 0.0s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 96.2,
@@ -22550,7 +22550,7 @@
       "eqs_score": 83.0,
       "microstructure_score": 71.86,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER PUT on NIFTY19OCT26P22800 (2s) | Gross: \u20b9+26.00 (+4.3%) | Brokerage: \u20b910.00 | Taxes: \u20b92.96 | Total Charges: \u20b912.96 | Net: \u20b9+13.04 | Exit: Take-Profit Hit (+4.3% @ 9.70) | Opt MFE: +4.3% (+\u20b90.40 @ 0.4s), Opt MAE: 0.0% | Spot MFE: +0.3pts (+0.1bps @ 2.028s), Spot MAE: -3.0pts (-1.3bps) | Spot \u0394: -0.1pts (-0.1bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 4412ms, VolBurstAge: 0.02s, EQS: 83.0"
+      "diagnostic_summary": "WINNER PUT on NIFTY19OCT26P22800 (2s) | Gross: ₹+26.00 (+4.3%) | Brokerage: ₹10.00 | Taxes: ₹2.96 | Total Charges: ₹12.96 | Net: ₹+13.04 | Exit: Take-Profit Hit (+4.3% @ 9.70) | Opt MFE: +4.3% (+₹0.40 @ 0.4s), Opt MAE: 0.0% | Spot MFE: +0.3pts (+0.1bps @ 2.028s), Spot MAE: -3.0pts (-1.3bps) | Spot Δ: -0.1pts (-0.1bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 4412ms, VolBurstAge: 0.02s, EQS: 83.0"
     },
     "decision_payload": {
       "conviction": 98.0,
@@ -23165,7 +23165,7 @@
       "eqs_score": 82.0,
       "microstructure_score": 57.76,
       "persistence_score": 0.75,
-      "diagnostic_summary": "WINNER CALL on SENSEX26O2275800CE (20s) | Gross: \u20b9+27.00 (+3.9%) | Brokerage: \u20b910.00 | Taxes: \u20b93.11 | Total Charges: \u20b913.11 | Net: \u20b9+13.89 | Exit: Take-Profit Hit (+3.9% @ 35.65) | Opt MFE: +3.9% (+\u20b91.35 @ 19.3s), Opt MAE: -3.8% | Spot MFE: +43.7pts (+5.9bps @ 18.815s), Spot MAE: +0.0pts (+0.0bps) | Spot \u0394: +42.2pts (+5.7bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 5597ms, VolBurstAge: 0.02s, EQS: 82.0"
+      "diagnostic_summary": "WINNER CALL on SENSEX26O2275800CE (20s) | Gross: ₹+27.00 (+3.9%) | Brokerage: ₹10.00 | Taxes: ₹3.11 | Total Charges: ₹13.11 | Net: ₹+13.89 | Exit: Take-Profit Hit (+3.9% @ 35.65) | Opt MFE: +3.9% (+₹1.35 @ 19.3s), Opt MAE: -3.8% | Spot MFE: +43.7pts (+5.9bps @ 18.815s), Spot MAE: +0.0pts (+0.0bps) | Spot Δ: +42.2pts (+5.7bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 5597ms, VolBurstAge: 0.02s, EQS: 82.0"
     },
     "decision_payload": {
       "conviction": 96.8,
@@ -23781,7 +23781,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 79.26,
       "persistence_score": 0.833,
-      "diagnostic_summary": "LOSER PUT on SENSEX26O2273000PE (44s) | Gross: \u20b9-67.00 (-11.3%) | Brokerage: \u20b910.00 | Taxes: \u20b92.81 | Total Charges: \u20b912.81 | Net: \u20b9-79.81 | Exit: Premium Hard SL (-12.0% disaster floor: -12.2% @ 26.00) | Opt MFE: +0.3% (+\u20b90.10 @ 0.4s), Opt MAE: -12.2% | Spot MFE: +4.6pts (+0.6bps @ 2.824s), Spot MAE: -41.6pts (-5.6bps) | Spot \u0394: +41.6pts (+5.6bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 6431ms, VolBurstAge: 0.03s, EQS: 85.0"
+      "diagnostic_summary": "LOSER PUT on SENSEX26O2273000PE (44s) | Gross: ₹-67.00 (-11.3%) | Brokerage: ₹10.00 | Taxes: ₹2.81 | Total Charges: ₹12.81 | Net: ₹-79.81 | Exit: Premium Hard SL (-12.0% disaster floor: -12.2% @ 26.00) | Opt MFE: +0.3% (+₹0.10 @ 0.4s), Opt MAE: -12.2% | Spot MFE: +4.6pts (+0.6bps @ 2.824s), Spot MAE: -41.6pts (-5.6bps) | Spot Δ: +41.6pts (+5.6bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 6431ms, VolBurstAge: 0.03s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 96.0,
@@ -24372,7 +24372,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 94.0,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER PUT on SENSEX26O2272100PE (56s) | Gross: \u20b9+22.00 (+3.9%) | Brokerage: \u20b910.00 | Taxes: \u20b92.88 | Total Charges: \u20b912.88 | Net: \u20b9+9.12 | Exit: Take-Profit Hit (+3.9% @ 29.45) | Opt MFE: +3.9% (+\u20b91.10 @ 55.2s), Opt MAE: -3.7% | Spot MFE: +14.3pts (+2.0bps @ 55.457s), Spot MAE: -4.1pts (-0.6bps) | Spot \u0394: -24.5pts (-3.3bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 326ms, VolBurstAge: 0.45s, EQS: 85.0"
+      "diagnostic_summary": "WINNER PUT on SENSEX26O2272100PE (56s) | Gross: ₹+22.00 (+3.9%) | Brokerage: ₹10.00 | Taxes: ₹2.88 | Total Charges: ₹12.88 | Net: ₹+9.12 | Exit: Take-Profit Hit (+3.9% @ 29.45) | Opt MFE: +3.9% (+₹1.10 @ 55.2s), Opt MAE: -3.7% | Spot MFE: +14.3pts (+2.0bps @ 55.457s), Spot MAE: -4.1pts (-0.6bps) | Spot Δ: -24.5pts (-3.3bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 326ms, VolBurstAge: 0.45s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 94.0,
@@ -24979,7 +24979,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 80.83,
       "persistence_score": 0.909,
-      "diagnostic_summary": "WINNER PUT on SENSEX26O2272000PE (4s) | Gross: \u20b9+23.00 (+3.9%) | Brokerage: \u20b910.00 | Taxes: \u20b92.93 | Total Charges: \u20b912.93 | Net: \u20b9+10.07 | Exit: Take-Profit Hit (+3.9% @ 30.40) | Opt MFE: +3.9% (+\u20b91.15 @ 2.7s), Opt MAE: -1.9% | Spot MFE: +0.0pts (+0.0bps @ 0.0s), Spot MAE: -11.5pts (-1.6bps) | Spot \u0394: +8.6pts (+1.2bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 7732ms, VolBurstAge: 0.51s, EQS: 85.0"
+      "diagnostic_summary": "WINNER PUT on SENSEX26O2272000PE (4s) | Gross: ₹+23.00 (+3.9%) | Brokerage: ₹10.00 | Taxes: ₹2.93 | Total Charges: ₹12.93 | Net: ₹+10.07 | Exit: Take-Profit Hit (+3.9% @ 30.40) | Opt MFE: +3.9% (+₹1.15 @ 2.7s), Opt MAE: -1.9% | Spot MFE: +0.0pts (+0.0bps @ 0.0s), Spot MAE: -11.5pts (-1.6bps) | Spot Δ: +8.6pts (+1.2bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 7732ms, VolBurstAge: 0.51s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 97.0,
@@ -25629,7 +25629,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 70.46,
       "persistence_score": 0.7,
-      "diagnostic_summary": "LOSER CALL on SENSEX26O2274600CE (41s) | Gross: \u20b9-52.00 (-9.4%) | Brokerage: \u20b910.00 | Taxes: \u20b92.76 | Total Charges: \u20b912.76 | Net: \u20b9-64.76 | Exit: Spot Adverse Breakdown SL (73336.4 vs entry 73403.5, -66.5pts [9.1bps]) | Opt MFE: +1.1% (+\u20b90.30 @ 9.2s), Opt MAE: -9.4% | Spot MFE: +4.3pts (+0.6bps @ 0.584s), Spot MAE: -67.1pts (-9.1bps) | Spot \u0394: -72.7pts (-9.9bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 3202ms, VolBurstAge: 0.23s, EQS: 85.0"
+      "diagnostic_summary": "LOSER CALL on SENSEX26O2274600CE (41s) | Gross: ₹-52.00 (-9.4%) | Brokerage: ₹10.00 | Taxes: ₹2.76 | Total Charges: ₹12.76 | Net: ₹-64.76 | Exit: Spot Adverse Breakdown SL (73336.4 vs entry 73403.5, -66.5pts [9.1bps]) | Opt MFE: +1.1% (+₹0.30 @ 9.2s), Opt MAE: -9.4% | Spot MFE: +4.3pts (+0.6bps @ 0.584s), Spot MAE: -67.1pts (-9.1bps) | Spot Δ: -72.7pts (-9.9bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 3202ms, VolBurstAge: 0.23s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 96.0,
@@ -26288,7 +26288,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 78.82,
       "persistence_score": 1.0,
-      "diagnostic_summary": "WINNER CALL on SENSEX26O2274400CE (3s) | Gross: \u20b9+22.00 (+3.9%) | Brokerage: \u20b910.00 | Taxes: \u20b92.87 | Total Charges: \u20b912.87 | Net: \u20b9+9.13 | Exit: Take-Profit Hit (+3.9% @ 29.00) | Opt MFE: +4.3% (+\u20b91.20 @ 2.2s), Opt MAE: -1.8% | Spot MFE: +7.2pts (+1.0bps @ 2.187s), Spot MAE: +0.0pts (+0.0bps) | Spot \u0394: +13.1pts (+1.8bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 16284ms, VolBurstAge: 0.19s, EQS: 85.0"
+      "diagnostic_summary": "WINNER CALL on SENSEX26O2274400CE (3s) | Gross: ₹+22.00 (+3.9%) | Brokerage: ₹10.00 | Taxes: ₹2.87 | Total Charges: ₹12.87 | Net: ₹+9.13 | Exit: Take-Profit Hit (+3.9% @ 29.00) | Opt MFE: +4.3% (+₹1.20 @ 2.2s), Opt MAE: -1.8% | Spot MFE: +7.2pts (+1.0bps @ 2.187s), Spot MAE: +0.0pts (+0.0bps) | Spot Δ: +13.1pts (+1.8bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 16284ms, VolBurstAge: 0.19s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 97.2,
@@ -26873,7 +26873,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 69.37,
       "persistence_score": 1.0,
-      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23300 (27s) | Gross: \u20b9-9.75 (-1.8%) | Brokerage: \u20b910.00 | Taxes: \u20b92.78 | Total Charges: \u20b912.78 | Net: \u20b9-22.53 | Exit: Pillar 1 Entry Candle Low Broken SL (Spot 22460.8 <= Candle Low 22460.8 [Trailed with cushion 1.6pts from 22460.8]) | Opt MFE: +0.6% (+\u20b90.05 @ 3.6s), Opt MAE: -1.8% | Spot MFE: +0.9pts (+0.4bps @ 16.172s), Spot MAE: -5.8pts (-2.6bps) | Spot \u0394: -4.0pts (-1.8bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 589ms, VolBurstAge: 0.0s, EQS: 85.0"
+      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23300 (27s) | Gross: ₹-9.75 (-1.8%) | Brokerage: ₹10.00 | Taxes: ₹2.78 | Total Charges: ₹12.78 | Net: ₹-22.53 | Exit: Pillar 1 Entry Candle Low Broken SL (Spot 22460.8 <= Candle Low 22460.8 [Trailed with cushion 1.6pts from 22460.8]) | Opt MFE: +0.6% (+₹0.05 @ 3.6s), Opt MAE: -1.8% | Spot MFE: +0.9pts (+0.4bps @ 16.172s), Spot MAE: -5.8pts (-2.6bps) | Spot Δ: -4.0pts (-1.8bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 589ms, VolBurstAge: 0.0s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 85.0,
@@ -27429,7 +27429,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 98.0,
       "persistence_score": 1.0,
-      "diagnostic_summary": "LOSER PUT on NIFTY27OCT26P21700 (207s) | Gross: \u20b9-29.25 (-5.5%) | Brokerage: \u20b910.00 | Taxes: \u20b92.74 | Total Charges: \u20b912.74 | Net: \u20b9-41.99 | Exit: Pillar 4 Entry Candle High Broken SL (Spot 22474.3 >= Candle High 22474.1 [Trailed with cushion 1.3pts from 22486.2]) | Opt MFE: +1.8% (+\u20b90.15 @ 78.3s), Opt MAE: -5.5% | Spot MFE: +14.1pts (+6.3bps @ 125.85s), Spot MAE: -3.6pts (-1.6bps) | Spot \u0394: +2.0pts (+0.9bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 408ms, VolBurstAge: 0.0s, EQS: 85.0"
+      "diagnostic_summary": "LOSER PUT on NIFTY27OCT26P21700 (207s) | Gross: ₹-29.25 (-5.5%) | Brokerage: ₹10.00 | Taxes: ₹2.74 | Total Charges: ₹12.74 | Net: ₹-41.99 | Exit: Pillar 4 Entry Candle High Broken SL (Spot 22474.3 >= Candle High 22474.1 [Trailed with cushion 1.3pts from 22486.2]) | Opt MFE: +1.8% (+₹0.15 @ 78.3s), Opt MAE: -5.5% | Spot MFE: +14.1pts (+6.3bps @ 125.85s), Spot MAE: -3.6pts (-1.6bps) | Spot Δ: +2.0pts (+0.9bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 408ms, VolBurstAge: 0.0s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 98.0,
@@ -28027,7 +28027,7 @@
       "eqs_score": 85.0,
       "microstructure_score": 95.0,
       "persistence_score": 1.0,
-      "diagnostic_summary": "LOSER PUT on NIFTY27OCT26P21700 (42s) | Gross: \u20b9-9.75 (-2.0%) | Brokerage: \u20b910.00 | Taxes: \u20b92.66 | Total Charges: \u20b912.66 | Net: \u20b9-22.41 | Exit: Stepped Safety Net SL (-2.7% @ 7.10 | Peak was +2.1%) | Opt MFE: +2.0% (+\u20b90.15 @ 21.6s), Opt MAE: -2.7% | Spot MFE: +8.6pts (+3.8bps @ 25.187s), Spot MAE: +0.0pts (+0.0bps) | Spot \u0394: +0.0pts (+0.0bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 695ms, VolBurstAge: 0.3s, EQS: 85.0"
+      "diagnostic_summary": "LOSER PUT on NIFTY27OCT26P21700 (42s) | Gross: ₹-9.75 (-2.0%) | Brokerage: ₹10.00 | Taxes: ₹2.66 | Total Charges: ₹12.66 | Net: ₹-22.41 | Exit: Stepped Safety Net SL (-2.7% @ 7.10 | Peak was +2.1%) | Opt MFE: +2.0% (+₹0.15 @ 21.6s), Opt MAE: -2.7% | Spot MFE: +8.6pts (+3.8bps @ 25.187s), Spot MAE: +0.0pts (+0.0bps) | Spot Δ: +0.0pts (+0.0bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 695ms, VolBurstAge: 0.3s, EQS: 85.0"
     },
     "decision_payload": {
       "conviction": 95.0,
@@ -28642,7 +28642,7 @@
       "eqs_score": 83.0,
       "microstructure_score": 71.3,
       "persistence_score": 1.0,
-      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23250 (65s) | Gross: \u20b9-16.25 (-3.3%) | Brokerage: \u20b910.00 | Taxes: \u20b92.68 | Total Charges: \u20b912.68 | Net: \u20b9-28.93 | Exit: Pillar 2 Entry Candle Low Broken SL (Spot 22668.3 <= Candle Low 22668.8 [Trailed with cushion 3.1pts from 22652.8]) | Opt MFE: +2.7% (+\u20b90.20 @ 49.4s), Opt MAE: -4.0% | Spot MFE: +3.0pts (+1.3bps @ 7.145s), Spot MAE: -8.3pts (-3.7bps) | Spot \u0394: -6.8pts (-3.0bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 591ms, VolBurstAge: 0.05s, EQS: 83.0"
+      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23250 (65s) | Gross: ₹-16.25 (-3.3%) | Brokerage: ₹10.00 | Taxes: ₹2.68 | Total Charges: ₹12.68 | Net: ₹-28.93 | Exit: Pillar 2 Entry Candle Low Broken SL (Spot 22668.3 <= Candle Low 22668.8 [Trailed with cushion 3.1pts from 22652.8]) | Opt MFE: +2.7% (+₹0.20 @ 49.4s), Opt MAE: -4.0% | Spot MFE: +3.0pts (+1.3bps @ 7.145s), Spot MAE: -8.3pts (-3.7bps) | Spot Δ: -6.8pts (-3.0bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 591ms, VolBurstAge: 0.05s, EQS: 83.0"
     },
     "decision_payload": {
       "conviction": 97.0,
@@ -29015,7 +29015,7 @@
       "eqs_score": 0.0,
       "microstructure_score": 0.0,
       "persistence_score": 0.0,
-      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23300 (0s) | Gross: \u20b9-30208.75 (-87.7%) | Brokerage: \u20b910.00 | Taxes: \u20b923.06 | Total Charges: \u20b933.06 | Net: \u20b9-30241.81 | Exit: Premium Hard SL (-12.0% disaster floor: -87.7% @ 1.00) | Opt MFE: +0.0% (+\u20b90.00 @ 0.0s), Opt MAE: -87.7% | Spot MFE: +0.0pts (+0.0bps @ 0.0s), Spot MAE: -6.7pts (-3.0bps) | Spot \u0394: -6.7pts (-3.0bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 0ms, VolBurstAge: 0.0s, EQS: 0.0"
+      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23300 (0s) | Gross: ₹-30208.75 (-87.7%) | Brokerage: ₹10.00 | Taxes: ₹23.06 | Total Charges: ₹33.06 | Net: ₹-30241.81 | Exit: Premium Hard SL (-12.0% disaster floor: -87.7% @ 1.00) | Opt MFE: +0.0% (+₹0.00 @ 0.0s), Opt MAE: -87.7% | Spot MFE: +0.0pts (+0.0bps @ 0.0s), Spot MAE: -6.7pts (-3.0bps) | Spot Δ: -6.7pts (-3.0bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 0ms, VolBurstAge: 0.0s, EQS: 0.0"
     },
     "decision_payload": {}
   },
@@ -29117,7 +29117,7 @@
       "eqs_score": 0.0,
       "microstructure_score": 0.0,
       "persistence_score": 0.0,
-      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23300 (0s) | Gross: \u20b9-30208.75 (-87.7%) | Brokerage: \u20b910.00 | Taxes: \u20b923.06 | Total Charges: \u20b933.06 | Net: \u20b9-30241.81 | Exit: Premium Hard SL (-12.0% disaster floor: -87.7% @ 1.00) | Opt MFE: +0.0% (+\u20b90.00 @ 0.0s), Opt MAE: -87.7% | Spot MFE: +0.0pts (+0.0bps @ 0.0s), Spot MAE: -6.7pts (-3.0bps) | Spot \u0394: -6.7pts (-3.0bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 0ms, VolBurstAge: 0.0s, EQS: 0.0"
+      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23300 (0s) | Gross: ₹-30208.75 (-87.7%) | Brokerage: ₹10.00 | Taxes: ₹23.06 | Total Charges: ₹33.06 | Net: ₹-30241.81 | Exit: Premium Hard SL (-12.0% disaster floor: -87.7% @ 1.00) | Opt MFE: +0.0% (+₹0.00 @ 0.0s), Opt MAE: -87.7% | Spot MFE: +0.0pts (+0.0bps @ 0.0s), Spot MAE: -6.7pts (-3.0bps) | Spot Δ: -6.7pts (-3.0bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 0ms, VolBurstAge: 0.0s, EQS: 0.0"
     },
     "decision_payload": {}
   },
@@ -29219,7 +29219,7 @@
       "eqs_score": 0.0,
       "microstructure_score": 0.0,
       "persistence_score": 0.0,
-      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23300 (0s) | Gross: \u20b9-30208.75 (-87.7%) | Brokerage: \u20b910.00 | Taxes: \u20b923.06 | Total Charges: \u20b933.06 | Net: \u20b9-30241.81 | Exit: Premium Hard SL (-12.0% disaster floor: -87.7% @ 1.00) | Opt MFE: +0.0% (+\u20b90.00 @ 0.0s), Opt MAE: -87.7% | Spot MFE: +0.0pts (+0.0bps @ 0.0s), Spot MAE: -6.7pts (-3.0bps) | Spot \u0394: -6.7pts (-3.0bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 0ms, VolBurstAge: 0.0s, EQS: 0.0"
+      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23300 (0s) | Gross: ₹-30208.75 (-87.7%) | Brokerage: ₹10.00 | Taxes: ₹23.06 | Total Charges: ₹33.06 | Net: ₹-30241.81 | Exit: Premium Hard SL (-12.0% disaster floor: -87.7% @ 1.00) | Opt MFE: +0.0% (+₹0.00 @ 0.0s), Opt MAE: -87.7% | Spot MFE: +0.0pts (+0.0bps @ 0.0s), Spot MAE: -6.7pts (-3.0bps) | Spot Δ: -6.7pts (-3.0bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 0ms, VolBurstAge: 0.0s, EQS: 0.0"
     },
     "decision_payload": {}
   },
@@ -29321,7 +29321,7 @@
       "eqs_score": 0.0,
       "microstructure_score": 0.0,
       "persistence_score": 0.0,
-      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23300 (0s) | Gross: \u20b9-30208.75 (-87.7%) | Brokerage: \u20b910.00 | Taxes: \u20b923.06 | Total Charges: \u20b933.06 | Net: \u20b9-30241.81 | Exit: Premium Hard SL (-12.0% disaster floor: -87.7% @ 1.00) | Opt MFE: +0.0% (+\u20b90.00 @ 0.0s), Opt MAE: -87.7% | Spot MFE: +0.0pts (+0.0bps @ 0.0s), Spot MAE: -6.7pts (-3.0bps) | Spot \u0394: -6.7pts (-3.0bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 0ms, VolBurstAge: 0.0s, EQS: 0.0"
+      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23300 (0s) | Gross: ₹-30208.75 (-87.7%) | Brokerage: ₹10.00 | Taxes: ₹23.06 | Total Charges: ₹33.06 | Net: ₹-30241.81 | Exit: Premium Hard SL (-12.0% disaster floor: -87.7% @ 1.00) | Opt MFE: +0.0% (+₹0.00 @ 0.0s), Opt MAE: -87.7% | Spot MFE: +0.0pts (+0.0bps @ 0.0s), Spot MAE: -6.7pts (-3.0bps) | Spot Δ: -6.7pts (-3.0bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 0ms, VolBurstAge: 0.0s, EQS: 0.0"
     },
     "decision_payload": {}
   },
@@ -29423,7 +29423,7 @@
       "eqs_score": 0.0,
       "microstructure_score": 0.0,
       "persistence_score": 0.0,
-      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23300 (0s) | Gross: \u20b9-30208.75 (-87.7%) | Brokerage: \u20b910.00 | Taxes: \u20b923.06 | Total Charges: \u20b933.06 | Net: \u20b9-30241.81 | Exit: Premium Hard SL (-12.0% disaster floor: -87.7% @ 1.00) | Opt MFE: +0.0% (+\u20b90.00 @ 0.0s), Opt MAE: -87.7% | Spot MFE: +0.0pts (+0.0bps @ 0.0s), Spot MAE: -6.7pts (-3.0bps) | Spot \u0394: -6.7pts (-3.0bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 0ms, VolBurstAge: 0.0s, EQS: 0.0"
+      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23300 (0s) | Gross: ₹-30208.75 (-87.7%) | Brokerage: ₹10.00 | Taxes: ₹23.06 | Total Charges: ₹33.06 | Net: ₹-30241.81 | Exit: Premium Hard SL (-12.0% disaster floor: -87.7% @ 1.00) | Opt MFE: +0.0% (+₹0.00 @ 0.0s), Opt MAE: -87.7% | Spot MFE: +0.0pts (+0.0bps @ 0.0s), Spot MAE: -6.7pts (-3.0bps) | Spot Δ: -6.7pts (-3.0bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 0ms, VolBurstAge: 0.0s, EQS: 0.0"
     },
     "decision_payload": {}
   },
@@ -29525,7 +29525,7 @@
       "eqs_score": 0.0,
       "microstructure_score": 0.0,
       "persistence_score": 0.0,
-      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23300 (0s) | Gross: \u20b9-30208.75 (-87.7%) | Brokerage: \u20b910.00 | Taxes: \u20b923.06 | Total Charges: \u20b933.06 | Net: \u20b9-30241.81 | Exit: Premium Hard SL (-12.0% disaster floor: -87.7% @ 1.00) | Opt MFE: +0.0% (+\u20b90.00 @ 0.0s), Opt MAE: -87.7% | Spot MFE: +0.0pts (+0.0bps @ 0.0s), Spot MAE: -6.7pts (-3.0bps) | Spot \u0394: -6.7pts (-3.0bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 0ms, VolBurstAge: 0.0s, EQS: 0.0"
+      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23300 (0s) | Gross: ₹-30208.75 (-87.7%) | Brokerage: ₹10.00 | Taxes: ₹23.06 | Total Charges: ₹33.06 | Net: ₹-30241.81 | Exit: Premium Hard SL (-12.0% disaster floor: -87.7% @ 1.00) | Opt MFE: +0.0% (+₹0.00 @ 0.0s), Opt MAE: -87.7% | Spot MFE: +0.0pts (+0.0bps @ 0.0s), Spot MAE: -6.7pts (-3.0bps) | Spot Δ: -6.7pts (-3.0bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 0ms, VolBurstAge: 0.0s, EQS: 0.0"
     },
     "decision_payload": {}
   },
@@ -29627,7 +29627,7 @@
       "eqs_score": 0.0,
       "microstructure_score": 0.0,
       "persistence_score": 0.0,
-      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23300 (0s) | Gross: \u20b9-30208.75 (-87.7%) | Brokerage: \u20b910.00 | Taxes: \u20b923.06 | Total Charges: \u20b933.06 | Net: \u20b9-30241.81 | Exit: Premium Hard SL (-12.0% disaster floor: -87.7% @ 1.00) | Opt MFE: +0.0% (+\u20b90.00 @ 0.0s), Opt MAE: -87.7% | Spot MFE: +0.0pts (+0.0bps @ 0.0s), Spot MAE: -6.7pts (-3.0bps) | Spot \u0394: -6.7pts (-3.0bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 0ms, VolBurstAge: 0.0s, EQS: 0.0"
+      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23300 (0s) | Gross: ₹-30208.75 (-87.7%) | Brokerage: ₹10.00 | Taxes: ₹23.06 | Total Charges: ₹33.06 | Net: ₹-30241.81 | Exit: Premium Hard SL (-12.0% disaster floor: -87.7% @ 1.00) | Opt MFE: +0.0% (+₹0.00 @ 0.0s), Opt MAE: -87.7% | Spot MFE: +0.0pts (+0.0bps @ 0.0s), Spot MAE: -6.7pts (-3.0bps) | Spot Δ: -6.7pts (-3.0bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 0ms, VolBurstAge: 0.0s, EQS: 0.0"
     },
     "decision_payload": {}
   },
@@ -29729,7 +29729,7 @@
       "eqs_score": 0.0,
       "microstructure_score": 0.0,
       "persistence_score": 0.0,
-      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23300 (0s) | Gross: \u20b9-30208.75 (-87.7%) | Brokerage: \u20b910.00 | Taxes: \u20b923.06 | Total Charges: \u20b933.06 | Net: \u20b9-30241.81 | Exit: Premium Hard SL (-12.0% disaster floor: -87.7% @ 1.00) | Opt MFE: +0.0% (+\u20b90.00 @ 0.0s), Opt MAE: -87.7% | Spot MFE: +0.0pts (+0.0bps @ 0.0s), Spot MAE: -6.7pts (-3.0bps) | Spot \u0394: -6.7pts (-3.0bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 0ms, VolBurstAge: 0.0s, EQS: 0.0"
+      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23300 (0s) | Gross: ₹-30208.75 (-87.7%) | Brokerage: ₹10.00 | Taxes: ₹23.06 | Total Charges: ₹33.06 | Net: ₹-30241.81 | Exit: Premium Hard SL (-12.0% disaster floor: -87.7% @ 1.00) | Opt MFE: +0.0% (+₹0.00 @ 0.0s), Opt MAE: -87.7% | Spot MFE: +0.0pts (+0.0bps @ 0.0s), Spot MAE: -6.7pts (-3.0bps) | Spot Δ: -6.7pts (-3.0bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 0ms, VolBurstAge: 0.0s, EQS: 0.0"
     },
     "decision_payload": {}
   },
@@ -29831,7 +29831,7 @@
       "eqs_score": 0.0,
       "microstructure_score": 0.0,
       "persistence_score": 0.0,
-      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23300 (0s) | Gross: \u20b9-30208.75 (-87.7%) | Brokerage: \u20b910.00 | Taxes: \u20b923.06 | Total Charges: \u20b933.06 | Net: \u20b9-30241.81 | Exit: Premium Hard SL (-12.0% disaster floor: -87.7% @ 1.00) | Opt MFE: +0.0% (+\u20b90.00 @ 0.0s), Opt MAE: -87.7% | Spot MFE: +0.0pts (+0.0bps @ 0.0s), Spot MAE: -6.7pts (-3.0bps) | Spot \u0394: -6.7pts (-3.0bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 0ms, VolBurstAge: 0.0s, EQS: 0.0"
+      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23300 (0s) | Gross: ₹-30208.75 (-87.7%) | Brokerage: ₹10.00 | Taxes: ₹23.06 | Total Charges: ₹33.06 | Net: ₹-30241.81 | Exit: Premium Hard SL (-12.0% disaster floor: -87.7% @ 1.00) | Opt MFE: +0.0% (+₹0.00 @ 0.0s), Opt MAE: -87.7% | Spot MFE: +0.0pts (+0.0bps @ 0.0s), Spot MAE: -6.7pts (-3.0bps) | Spot Δ: -6.7pts (-3.0bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 0ms, VolBurstAge: 0.0s, EQS: 0.0"
     },
     "decision_payload": {}
   },
@@ -29933,7 +29933,7 @@
       "eqs_score": 0.0,
       "microstructure_score": 0.0,
       "persistence_score": 0.0,
-      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23300 (0s) | Gross: \u20b9-464.75 (-87.7%) | Brokerage: \u20b910.00 | Taxes: \u20b92.14 | Total Charges: \u20b912.14 | Net: \u20b9-476.89 | Exit: Force Flatten (>= 15:08) | Opt MFE: +0.0% (+\u20b90.00 @ 0.0s), Opt MAE: -87.7% | Spot MFE: +0.0pts (+0.0bps @ 0.0s), Spot MAE: +0.0pts (+0.0bps) | Spot \u0394: -6.7pts (-3.0bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 0ms, VolBurstAge: 0.0s, EQS: 0.0"
+      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23300 (0s) | Gross: ₹-464.75 (-87.7%) | Brokerage: ₹10.00 | Taxes: ₹2.14 | Total Charges: ₹12.14 | Net: ₹-476.89 | Exit: Force Flatten (>= 15:08) | Opt MFE: +0.0% (+₹0.00 @ 0.0s), Opt MAE: -87.7% | Spot MFE: +0.0pts (+0.0bps @ 0.0s), Spot MAE: +0.0pts (+0.0bps) | Spot Δ: -6.7pts (-3.0bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 0ms, VolBurstAge: 0.0s, EQS: 0.0"
     },
     "decision_payload": {}
   },
@@ -30035,8 +30035,61 @@
       "eqs_score": 0.0,
       "microstructure_score": 0.0,
       "persistence_score": 0.0,
-      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23300 (0s) | Gross: \u20b9-464.75 (-87.7%) | Brokerage: \u20b910.00 | Taxes: \u20b92.14 | Total Charges: \u20b912.14 | Net: \u20b9-476.89 | Exit: Force Flatten (>= 15:08) | Opt MFE: +0.0% (+\u20b90.00 @ 0.0s), Opt MAE: -87.7% | Spot MFE: +0.0pts (+0.0bps @ 0.0s), Spot MAE: +0.0pts (+0.0bps) | Spot \u0394: -6.7pts (-3.0bps), Fut \u0394: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 0ms, VolBurstAge: 0.0s, EQS: 0.0"
+      "diagnostic_summary": "LOSER CALL on NIFTY27OCT26C23300 (0s) | Gross: ₹-464.75 (-87.7%) | Brokerage: ₹10.00 | Taxes: ₹2.14 | Total Charges: ₹12.14 | Net: ₹-476.89 | Exit: Force Flatten (>= 15:08) | Opt MFE: +0.0% (+₹0.00 @ 0.0s), Opt MAE: -87.7% | Spot MFE: +0.0pts (+0.0bps @ 0.0s), Spot MAE: +0.0pts (+0.0bps) | Spot Δ: -6.7pts (-3.0bps), Fut Δ: +0.0pts (Basis: +0.0pts | NEUTRAL) | Lat: 0ms, VolBurstAge: 0.0s, EQS: 0.0"
     },
     "decision_payload": {}
+  },
+  {
+    "date": "04 Nov 2026",
+    "entry_time": "04 Nov 2026 09:16:32",
+    "exit_time": "04 Nov 2026 09:55:56",
+    "strategy": "AEGIS_GAMMA_BURST",
+    "signal": "CALL",
+    "signal_type": "CALL",
+    "symbol": "SENSEX26N0578800CE",
+    "quantity": 20,
+    "lot_size": 20,
+    "entry_price": 24.7,
+    "exit_price": 36.0,
+    "pnl": 226.0,
+    "gross_pnl": 226.0,
+    "brokerage": 5.0,
+    "taxes": 1.07,
+    "charges": 6.07,
+    "total_charges": 6.07,
+    "net_pl": 219.93,
+    "net_pnl": 219.93,
+    "spot_peak_mfe_pts": 0.0,
+    "spot_peak_mae_pts": 0.0,
+    "spot_time_to_mfe_sec": 0.0,
+    "spot_time_to_mfe_ms": 0,
+    "daily_total_pnl": 219.93,
+    "daily_gross_pnl": 226.0,
+    "daily_charges": 6.07,
+    "daily_net_pnl": 219.93,
+    "exit_reason": "MANUAL_EXIT (Operator Intervention @ 09:55:56 IST)",
+    "reason": "MANUAL_EXIT (Operator Intervention @ 09:55:56 IST)",
+    "feature_vector": {
+      "conviction": null,
+      "sizing_tier": null,
+      "conviction_score": null,
+      "direction": "UP",
+      "metrics": {},
+      "iv": 0.15
+    },
+    "telemetry": {
+      "impulse_time": "04 Nov 2026 09:16:32",
+      "fill_time": "04 Nov 2026 09:16:38",
+      "entry_latency_ms": null,
+      "trade_duration_sec": 2376
+    },
+    "post_trade_attribution": {
+      "outcome": "MANUAL_EXIT",
+      "pnl_rs": 219.93,
+      "pnl_pct": 45.74898785425102,
+      "trade_duration_sec": 2376,
+      "exit_reason": "MANUAL_EXIT (Operator Intervention @ 09:55:56 IST)"
+    },
+    "decision_payload": null
   }
 ]

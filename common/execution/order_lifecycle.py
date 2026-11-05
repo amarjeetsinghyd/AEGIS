@@ -351,6 +351,10 @@ class ShoonyaOrderLifecycle(OrderLifecycle):
             if resp and resp.get("stat") == "Ok" and resp.get("norenordno"):
                 ordno = resp["norenordno"]
                 logger.info(f"[ShoonyaOrderLifecycle] ✅ Marketable LMT Exit Order Placed! Order ID: {ordno}")
+                # 🛡️ REAL-FILL TELEMETRY: stash the exit order id so the execution
+                # manager can later resolve the ACTUAL broker fill price (a placed
+                # LMT is not a filled exit — booking px=0.00 books a fake -100% loss).
+                self._last_exit_order_id = ordno
                 leg.close_leg(exit_price or limit_price, reason)
                 return True
             else:

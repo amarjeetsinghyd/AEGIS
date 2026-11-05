@@ -2529,6 +2529,35 @@ class AegisExecutionManager:
                 exit_ok = self.order_lifecycle.execute_exit(leg, reason)
                 if exit_ok:
                     filled = True
+                    # 🛡️ REAL-FILL RESOLUTION: a placed LMT is NOT a filled exit.
+                    # Resolve the actual broker fill price before PnL bookkeeping —
+                    # booking px=0.00 records a fake -100% loss and corrupts capital
+                    # (incident 2026-11-05: SENSEX 58000CE booked -₹572 vs real -₹77,
+                    # freezing internal funds ~₹170 vs broker ₹647 and making the
+                    # next trade select a 10x cheaper ₹6.75 strike).
+                    _exit_ordno = getattr(self.order_lifecycle, "_last_exit_order_id", None)
+                    if _exit_ordno:
+                        try:
+                            _rf_ok, _rf_px = self._order_fill(_exit_ordno, allow_rest=True)
+                            if _rf_ok and _rf_px > 0:
+                                fill_price = _rf_px
+                                fill_ts = time.time()
+                                logger.info(
+                                    f"[AegisEM] Fallback exit order {_exit_ordno} confirmed FILLED @ ₹{fill_price:.2f}"
+                                )
+                            elif leg.exit_price and leg.exit_price > 0:
+                                fill_price = float(leg.exit_price)
+                                fill_ts = time.time()
+                                logger.warning(
+                                    f"[AegisEM] Fallback exit order {_exit_ordno} fill unconfirmed at broker; "
+                                    f"provisional price ₹{fill_price:.2f} used — deferred capital re-sync will reconcile."
+                                )
+                        except Exception as e_rf:
+                            logger.error(f"[AegisEM] Fallback fill resolution failed (non-fatal): {e_rf}")
+                    # Never trust the PnL below if no positive price exists anywhere:
+                    # the deferred broker re-sync is mandatory to reconcile real funds.
+                    if hasattr(self, "capital_engine") and self.capital_engine and fill_price <= 0:
+                        self.capital_engine._needs_broker_sync = True
                 else:
                     logger.critical(
                         f"[AegisEM] 🚨 CRITICAL: Exit order unconfirmed/rejected by broker for {leg.symbol}! "
@@ -2634,6 +2663,9 @@ class AegisExecutionManager:
             self._emerg_recon_state = {}
             context.exit_time = datetime.now()
             self._append_history(reason, total_pnl)
+            # 🛡️ CAPITAL SELF-HEAL: reconcile funds with the broker AFTER the exit
+            # SELL actually settles there (see _schedule_post_close_capital_resync).
+            self._schedule_post_close_capital_resync()
             if self.aegis_engine and getattr(self.aegis_engine, "chop_gate", None):
                 try:
                     self.aegis_engine.chop_gate.register_trade_close(time.time())
@@ -2644,6 +2676,45 @@ class AegisExecutionManager:
             self.tp_order_id = None
             self.last_tp_order_id = None
             self._save_active_context()
+
+    # ─── 🛡️ Capital Self-Heal: Deferred Post-Close Broker Re-Sync ───
+    def _schedule_post_close_capital_resync(self, delay_sec: float = 30.0, verify_sec: float = 90.0):
+        """Reconcile internal funds with the broker AFTER the exit SELL settles there.
+
+        Incident 2026-11-05: the synchronous post-exit sync ran while the marketable
+        LMT exit was still resting at the broker (actual fill came +25s later), so the
+        engine froze margin-blocked stale funds (~₹170 internal vs ₹647 broker), the
+        budget-cluster ceiling collapsed from ₹29 to ₹7 per unit, and the next entry
+        picked a 10x cheaper ₹6.75 strike. This deferred pass runs twice (t+30s fill
+        margin-release, t+90s daily-limits settle) so the next budget selection always
+        sees the broker's real freed cash."""
+        def _resync_pass(tag: str):
+            try:
+                ce = self.capital_engine
+                if not ce:
+                    return
+                pre = float(ce.get_available_funds())
+                live = ce.sync_funds_from_broker()
+                if live != pre:
+                    logger.warning(
+                        f"[AegisEM] Post-close capital re-sync ({tag}): internal ₹{pre:.2f} -> broker ₹{live:.2f} "
+                        f"(Δ ₹{live - pre:+.2f}) — stale internal funds corrected"
+                    )
+                else:
+                    logger.info(f"[AegisEM] Post-close capital re-sync ({tag}): broker agrees ₹{live:.2f}")
+            except Exception as e_cap:
+                logger.error(f"[AegisEM] Post-close capital re-sync ({tag}) failed (non-fatal): {e_cap}")
+
+        def _worker():
+            time.sleep(delay_sec)
+            _resync_pass("t+30s")
+            time.sleep(max(0.0, verify_sec - delay_sec))
+            _resync_pass("t+90s")
+
+        try:
+            threading.Thread(target=_worker, daemon=True, name="aegis-em-capital-resync").start()
+        except Exception as e_thr:
+            logger.error(f"[AegisEM] Deferred capital re-sync spawn failed (non-fatal): {e_thr}")
 
     # ─── 🛡️ Order-Reject Fail-Safe: Verified Net-Position Reconciliation ───
     def _get_verified_broker_net_units(self, leg: TradeLeg) -> Optional[int]:

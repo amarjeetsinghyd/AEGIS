@@ -8,6 +8,20 @@ from common.config import get_data_dir, INITIAL_PAPER_CAPITAL
 
 logger = logging.getLogger("capital_engine")
 
+# Silent-error killer: without an explicit handler this logger's INFO/WARNING
+# lines (broker sync results, deduction warnings) vanish — incident 2026-11-05:
+# a post-exit stale-funds freeze stayed invisible across aegis.log AND pm2 logs.
+# Attach a plain stderr handler so every capital decision reaches the logs;
+# propagate off prevents double emission.
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(
+        logging.Formatter("%(asctime)s - capital_engine - %(levelname)s - %(message)s")
+    )
+    logger.addHandler(_handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
 
 class CapitalEngine:
     """
