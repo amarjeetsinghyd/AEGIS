@@ -657,6 +657,15 @@ def get_journal_data(force_reload: bool = False) -> Dict[str, Any]:
             trade_charges = chg_obj.total_charges
             trade_taxes = round(trade_charges - trade_brokerage, 2)
             trade_net = round(trade_gross - trade_charges, 2)
+            # Authoritative-Net override (2026-11-05 forensics): the journal CSV carries the
+            # broker-verified net for forensically reconciled trades (e.g. 09:17:33 SENSEX
+            # 80000CE real L2 fill: gross -77.00, REAL charges 12.06 → net -89.06). The
+            # estimator may deviate from the actual contract-note charges — the CSV value
+            # wins when it disagrees. No-op for rows where both already agree.
+            if pnl != 0.0 and abs(pnl - trade_net) > 0.001:
+                trade_net = pnl
+                trade_charges = round(trade_gross - trade_net, 2)
+                trade_taxes = round(trade_charges - trade_brokerage, 2)
         else:
             trade_gross = pnl
             trade_brokerage = 0.0
