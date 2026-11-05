@@ -47,6 +47,20 @@ def _parse_opt_pct(pct_str: Any) -> float:
         return 0.0
 
 
+def _nan_safe_float(value: Any, default: float = 0.0) -> float:
+    """NaN-safe numeric parse: empty/NaN CSV cells (pandas NaN) collapse to `default`.
+
+    Root-cause guard for the Research console outage (2026-11-05): a single pandas NaN escaping
+    into get_journal_data() makes Flask emit a literal `NaN`, which browser JSON.parse rejects —
+    /research rendered blank even though curl probes returned HTTP 200.
+    """
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return default
+    return default if f != f else f  # f != f ⇔ NaN
+
+
 def _identify_pillar(setup_str: str, reason_str: str) -> str:
     text = (str(setup_str) + " " + str(reason_str)).lower()
     if "pillar 4" in text or "sr_breakout" in text or "s/r" in text or "topological" in text or "hvg" in text or "break of structure" in text or "bos" in text:
@@ -623,15 +637,15 @@ def get_journal_data(force_reload: bool = False) -> Dict[str, Any]:
         expiry = str(row.get("Expiry", "")).strip()
         dte = row.get("DTE", 0)
 
-        entry_prc = float(row.get("Entry ₹", 0.0))
-        exit_prc = float(row.get("Exit ₹", 0.0))
-        opt_delta = float(row.get("Opt Δ₹", 0.0))
+        entry_prc = _nan_safe_float(row.get("Entry ₹", 0.0))
+        exit_prc = _nan_safe_float(row.get("Exit ₹", 0.0))
+        opt_delta = _nan_safe_float(row.get("Opt Δ₹", 0.0))
         opt_pct = _parse_opt_pct(row.get("Opt %", 0.0))
 
-        idx_entry = float(row.get("Index Entry", 0.0))
-        idx_exit = float(row.get("Index Exit", 0.0))
-        idx_pts = float(row.get("Index Pts", 0.0))
-        pnl = float(row.get("Net P&L ₹", 0.0))
+        idx_entry = _nan_safe_float(row.get("Index Entry", 0.0))
+        idx_exit = _nan_safe_float(row.get("Index Exit", 0.0))
+        idx_pts = _nan_safe_float(row.get("Index Pts", 0.0))
+        pnl = _nan_safe_float(row.get("Net P&L ₹", 0.0))
         res_str = str(row.get("Result", "WIN")).strip()
 
         # In testing mode and algorithmic evaluation, determine outcome by Gross PnL (points/premium edge)

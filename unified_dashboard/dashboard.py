@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import os
 import re
 import subprocess
@@ -14,6 +15,7 @@ import sys
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from typing import Any
 
 from flask import Flask, jsonify, request, send_file
 from dotenv import load_dotenv
@@ -276,12 +278,30 @@ def live_state():
     })
 
 
+def _nan_to_none(obj: Any) -> Any:
+    """Recursively replace NaN/±Infinity floats with None → strict-JSON-safe payload.
+
+    Belt-and-braces for the Research console (2026-11-05): Flask's jsonify emits literal `NaN`
+    for NaN floats, which browsers reject inside JSON.parse — the /research console rendered
+    blank (silent catch) while curl probes returned HTTP 200. Root cause is NaN-guarded at the
+    source in telemetry_loader; this defends the whole API surface (incl. trade_detail's
+    telemetry JSONL records, which can also carry NaN).
+    """
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _nan_to_none(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_nan_to_none(v) for v in obj]
+    return obj
+
+
 # ─── RESEARCH & FORENSICS API ROUTES ───
 @app.route("/api/research_data")
 def api_research_data():
     """Returns aggregated KPIs, equity timeline, pillar stats, and enriched trades."""
     data = get_journal_data()
-    return jsonify(data)
+    return jsonify(_nan_to_none(data))
 
 
 @app.route("/api/trade_detail/<int:trade_id>")
@@ -290,7 +310,7 @@ def api_trade_detail(trade_id: int):
     detail = get_trade_detail(trade_id)
     if not detail:
         return jsonify({"error": "Trade not found"}), 404
-    return jsonify(detail)
+    return jsonify(_nan_to_none(detail))
 
 
 @app.route("/download/excel")
