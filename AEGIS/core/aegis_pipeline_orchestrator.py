@@ -12,7 +12,7 @@ import math
 import time
 from collections import deque
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any, FrozenSet
 
 import numpy as np
 
@@ -39,19 +39,16 @@ try:
     from AEGIS.core.option_order_flow import (
         MicrostructureScorer,
         CompositeConvictionEngine,
-        ConvictionResult,
     )
 except ImportError:
     try:
         from core.option_order_flow import (
             MicrostructureScorer,
             CompositeConvictionEngine,
-            ConvictionResult,
         )
     except ImportError:
         MicrostructureScorer = None
         CompositeConvictionEngine = None
-        ConvictionResult = None
 
 try:
     from AEGIS.core.option_quality import OptionQualityEngine
@@ -739,7 +736,7 @@ class AegisPipelineOrchestrator:
                             # are verified directly by PriceActionEngine. Legacy 60s tick-counting spot persistence
                             # veto is permanently decommissioned (Zero-Entropy Logic De-bloat).
                             is_mode_b = is_mode_b_setup
-                            is_preclose = is_preclose_setup
+                            is_preclose = False
                             pers_score = float(pa_details.get("dp_micro", 1.0))
                             pers_confirmed = True
 

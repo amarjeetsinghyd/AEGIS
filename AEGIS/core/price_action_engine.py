@@ -898,7 +898,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
             return False, "insufficient_bars", {}
 
         bar = self.bars_1m[-1]
-        e_close_arr, e_high_arr, e_low_arr = self.get_20_ema_band_arrays(2)
+        _, e_high_arr, e_low_arr = self.get_20_ema_band_arrays(2)
         band_high = e_high_arr[-1]
         band_low = e_low_arr[-1]
 
@@ -1639,11 +1639,11 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         """DECOMMISSIONED: Purged for Zero-Entropy. Priority Mode B is the sole execution engine."""
         pass
 
-    def check_mode_a_pierce(self, *args, **kwargs) -> Tuple[bool, str, Dict[str, Any]]:
+    def check_mode_a_pierce(self, *_args, **_kwargs) -> Tuple[bool, str, Dict[str, Any]]:
         """DECOMMISSIONED: Purged for Zero-Entropy. Priority Mode B is the sole execution engine."""
         return False, "mode_a_decommissioned_zero_entropy", {}
 
-    def check_mode_a_pre_close(self, *args, **kwargs) -> Tuple[bool, str, Dict[str, Any]]:
+    def check_mode_a_pre_close(self, *_args, **_kwargs) -> Tuple[bool, str, Dict[str, Any]]:
         """DECOMMISSIONED: Purged for Zero-Entropy. Priority Mode B is the sole execution engine."""
         return False, "mode_a_decommissioned_zero_entropy", {}
 
@@ -1780,7 +1780,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                 if flip_at < next_flip_ts:
                     next_flip_ts = flip_at
 
-        candidates.sort(key=lambda l: (l.touch_count * 0.5 + l.prominence), reverse=True)
+        candidates.sort(key=lambda lvl: (lvl.touch_count * 0.5 + lvl.prominence), reverse=True)
         self._cached_sr_candidates[direction] = (self._session_levels_version, self._total_bars_seen, next_flip_ts, candidates)
         return candidates
 
@@ -2076,7 +2076,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         prior_bar = self.bars_1m[-1] if self.bars_1m else None
 
         # ─── 0. PILLAR 5: Trapped Option Writer Short-Squeeze (Mode B) ───
-        ok_p5, r_p5, det_p5 = self.check_pillar_5_gamma_trap(
+        ok_p5, _, det_p5 = self.check_pillar_5_gamma_trap(
             direction=direction,
             spot=spot,
             atr=atr,
@@ -2266,7 +2266,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
             prior_bar = self.bars_1m[-1]
             live_ema_20, live_slope_20_bps = self.get_live_20_ema_and_slope()
             if live_ema_20 > 0:
-                e_close_arr, e_high_arr, e_low_arr = self.get_20_ema_band_arrays(2)
+                _, e_high_arr, e_low_arr = self.get_20_ema_band_arrays(2)
                 band_high = e_high_arr[-1]
                 band_low = e_low_arr[-1]
                 tol_pts = max(1.5, live_ema_20 * (1.5 / 10000.0), 0.12 * atr)
@@ -2633,12 +2633,12 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         # Mode A pierce and pre-close removed (Priority Mode B Sole Engine)
 
         # Pillar 1: 20 EMA Pullback Rejection (Double-Touch)
-        ok_20, reason_20, details_20 = self.check_20_ema_rejection(direction, current_vwap=eff_vwap, current_time=current_time)
+        ok_20, _, details_20 = self.check_20_ema_rejection(direction, current_vwap=eff_vwap, current_time=current_time)
         if ok_20:
             return True, "20_ema_rejection", self._enrich_details(details_20)
 
         # Pillar 2: Micro-Sweep & Reclaim
-        ok_sw, reason_sw, details_sw = self.check_micro_sweep_reclaim(direction, eff_vwap, current_time=current_time)
+        ok_sw, _, details_sw = self.check_micro_sweep_reclaim(direction, eff_vwap, current_time=current_time)
         if ok_sw:
             return True, "micro_sweep_reclaim", self._enrich_details(details_sw)
 

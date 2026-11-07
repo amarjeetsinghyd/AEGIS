@@ -1168,7 +1168,7 @@ class AegisExecutionManager:
 
             sizing_tier = str(metrics.get("sizing_tier") or signal.get("sizing_tier") or "STANDARD_SIZE").upper()
             if sizing_tier == "BLOCKED":
-                logger.warning(f"[AegisEM] Entry blocked: signal sizing_tier is BLOCKED (conviction < 75.0)")
+                logger.warning("[AegisEM] Entry blocked: signal sizing_tier is BLOCKED (conviction < 75.0)")
                 self._rollback_slot()
                 return
 
@@ -1473,7 +1473,7 @@ class AegisExecutionManager:
                         self._drain_signal_queue(reason="entry_crash")
                         return
                     else:
-                        logger.warning(f"[AegisEM] Order already filled at broker — preserving trade_context despite metadata exception.")
+                        logger.warning("[AegisEM] Order already filled at broker — preserving trade_context despite metadata exception.")
                         if leg not in self.trade_context.legs:
                             self.trade_context.add_leg(leg)
 
@@ -1600,7 +1600,7 @@ class AegisExecutionManager:
         spread = max(live_ask - live_bid, 0.15) if (live_ask > 0 and live_bid > 0 and live_ask >= live_bid) else 0.15
         
         # Realized micro-volatility over last 30-45s
-        recent_prices = [p for (ts, s, p, b, a) in self._trade_quote_history if (now_ts - ts) <= 45.0 and p > 0]
+        recent_prices = [p for (ts, _, p, _, _) in self._trade_quote_history if (now_ts - ts) <= 45.0 and p > 0]
         if len(recent_prices) >= 4:
             stdev_prem = float(np.std(recent_prices))
         else:
@@ -1710,7 +1710,7 @@ class AegisExecutionManager:
             if leg.status != "OPEN":
                 continue
             # L1 Book Snapshot: Query true top-of-book bid & ask from live tick stream
-            b_ts, b_lp, b_bid, b_ask = self._latest_option_book(leg.symbol)
+            _, b_lp, b_bid, b_ask = self._latest_option_book(leg.symbol)
             opt_cache = getattr(self, "_option_cache", None)
             if b_bid > 0 and b_ask > 0:
                 leg.current_price = b_lp if b_lp > 0 else b_bid
@@ -2252,7 +2252,7 @@ class AegisExecutionManager:
                 if self.trade_context and self.has_open_trade():
                     # Attempt emergency fallback: verify live net position at broker and
                     # dispatch exact-qty emergency flatten so the position is never orphaned.
-                    logger.warning(f"[AegisEM] Triggering emergency reconcile-flatten fallback for unclosed trade...")
+                    logger.warning("[AegisEM] Triggering emergency reconcile-flatten fallback for unclosed trade...")
                     try:
                         flat_all = self._emergency_reconcile_flatten(reason=f"chase_crash_fallback_{reason}")
                     except Exception as e_em:
@@ -2828,7 +2828,7 @@ class AegisExecutionManager:
 
         api = getattr(self.broker, "_api", None)
         if not api or not hasattr(api, "place_order"):
-            logger.critical(f"[AegisEM] 🚨 EMERGENCY flatten abort: broker place_order unavailable!")
+            logger.critical("[AegisEM] 🚨 EMERGENCY flatten abort: broker place_order unavailable!")
             return False, 0.0
         exch = self.get_instrument_params()["exchange"]
         try:
@@ -2874,7 +2874,7 @@ class AegisExecutionManager:
     def _emergency_reconcile_flatten(self, reason: str = "RECONCILE") -> bool:
         """Full-context emergency reconcile — True only when every open leg is verified flat."""
         with self.trade_lock:
-            open_legs = [l for l in (self.trade_context.legs if self.trade_context else []) if l.status == "OPEN"]
+            open_legs = [leg_item for leg_item in (self.trade_context.legs if self.trade_context else []) if leg_item.status == "OPEN"]
         if not open_legs:
             return True
         flat_all = True
