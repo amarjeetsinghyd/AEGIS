@@ -15,7 +15,7 @@ import json
 from collections import deque
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Sequence
+from typing import Any, Dict, Optional, Tuple, Sequence
 
 try:
     from common.logger import get_logger
@@ -197,11 +197,11 @@ class OptionOrderFlowMixin:
         return float(pz.get("zone_top", 0.0) or 0.0), float(pz.get("zone_bottom", 0.0) or 0.0)
 
     def band_veto_blocks(self, direction: str, spot: Optional[float] = None) -> Tuple[bool, float, float, float]:
-        """Apply the strict Absolute Pain Zone directional boundary.
+        """Apply Master Session VWAP directional boundary.
 
-        Returns (blocked, zone_top, zone_bottom, 0.0). Warmup (missing lines)
-        or missing spot never blocks. UP requires spot strictly above zone_top;
-        DOWN requires spot strictly below zone_bottom. The band edges are neutral.
+        Returns (blocked, master_vwap, master_vwap, 0.0). Warmup (missing lines)
+        or missing spot never blocks. UP requires spot strictly above master_vwap;
+        DOWN requires spot strictly below master_vwap.
         """
         curr_spot = float(spot or self.last_price or 0.0)
         try:
@@ -210,61 +210,39 @@ class OptionOrderFlowMixin:
             return True, 0.0, 0.0, 0.0
         top = float(pz.get("zone_top", 0.0) or 0.0)
         bottom = float(pz.get("zone_bottom", 0.0) or 0.0)
-        if top <= 0 or bottom <= 0 or curr_spot <= 0:
-            return False, top, bottom, 0.0
-        if bottom > top:
-            return True, top, bottom, 0.0
+        mid = float(pz.get("zone_mid", 0.0) or getattr(self, "current_vwap", 0.0) or 0.0)
+        master_vwap = mid if mid > 0 else (top if top > 0 else bottom)
+
+        if master_vwap <= 0 or curr_spot <= 0:
+            return False, master_vwap, master_vwap, 0.0
+
         is_up = str(direction).upper() in ("UP", "CALL", "CE", "C")
         if is_up:
-            return curr_spot <= top, top, bottom, 0.0
-        return curr_spot >= bottom, top, bottom, 0.0
+            return curr_spot <= master_vwap, master_vwap, master_vwap, 0.0
+        return curr_spot >= master_vwap, master_vwap, master_vwap, 0.0
 
     def _pain_zone_vwap_aligned(self, direction: str, price: float, eff_vwap: float = 0.0) -> bool:
         """
-        True Pain Zone 4-Line Envelope Alignment (Outside-Band Rule).
-        The 4 trapped-party option-flow VWAP lines (vwap_call_buy, vwap_call_sell,
-        vwap_put_buy, vwap_put_sell) form a natural cluster band:
-            band_upper = max(active_vwaps)
-            band_lower = min(active_vwaps)
-
-        Outside-Band Rule (आर-पार का नियम):
-          CALL: Spot must be strictly ABOVE the highest active VWAP line (spot > band_upper).
-          PUT:  Spot must be strictly BELOW the lowest active VWAP line (spot < band_lower).
-          Inside Band (band_lower <= spot <= band_upper): Neutral / No-Trade Zone (vetoed for both).
-
-        No separate 5th composite VWAP is needed when active envelope lines exist.
-        Warmup / missing lines pass (fail-open), matching band_veto_blocks semantics.
-        If no option-flow lines are active yet but a synthetic/external vwap is provided,
-        falls back to single-line alignment (spot > vwap for CALL, spot < vwap for PUT).
+        Master Composite Session VWAP Directional Alignment.
+        CALL: Spot must be strictly above Master Session VWAP (price > master_vwap).
+        PUT:  Spot must be strictly below Master Session VWAP (price < master_vwap).
+        Eliminates the artificial 76-190 pt chop band while preserving clean directional filter.
         """
         try:
             if price <= 0:
                 return True
             is_call = str(direction).upper() in ("UP", "CALL", "CE", "C")
-            pz = self.get_pain_zone_vwaps()
-            cb = float(pz.get("vwap_call_buy", 0.0) or 0.0)
-            cs = float(pz.get("vwap_call_sell", 0.0) or 0.0)
-            pb = float(pz.get("vwap_put_buy", 0.0) or 0.0)
-            ps = float(pz.get("vwap_put_sell", 0.0) or 0.0)
-            active_vwaps = [x for x in (cb, cs, pb, ps) if x > 0]
+            master_vwap = float(eff_vwap) if eff_vwap > 0 else float(getattr(self, "current_vwap", 0.0) or 0.0)
+            if master_vwap <= 0:
+                pz = self.get_pain_zone_vwaps()
+                master_vwap = float(pz.get("zone_mid", 0.0) or pz.get("zone_top", 0.0) or pz.get("zone_bottom", 0.0) or 0.0)
 
-            if active_vwaps:
-                band_upper = max(active_vwaps)
-                band_lower = min(active_vwaps)
-                if is_call:
-                    return price > band_upper
-                else:
-                    return price < band_lower
+            if master_vwap <= 0:
+                return True
 
-            # Fallback when no option-flow VWAP lines active yet (warmup / synthetic test mocks)
-            fallback_vwap = float(eff_vwap) if eff_vwap > 0 else float(getattr(self, "current_vwap", 0.0) or 0.0)
-            if fallback_vwap > 0:
-                if is_call:
-                    return price > fallback_vwap
-                else:
-                    return price < fallback_vwap
-
-            return True
+            if is_call:
+                return price > master_vwap
+            return price < master_vwap
         except Exception:
             return True
 
@@ -314,9 +292,9 @@ class OptionOrderFlowMixin:
             return
         self._opt_last_cum_vol[sym] = vol
 
-        # 2. Window Filter: ATM ± 7 strikes
+        # 2. Window Filter: ATM ± 3 strikes (Tight institutional corridor)
         ref_atm = atm_strike or (round(self.last_price / self.strike_step) * self.strike_step)
-        if ref_atm > 0 and abs(strike - ref_atm) > (7.0 * self.strike_step):
+        if ref_atm > 0 and abs(strike - ref_atm) > (3.0 * self.strike_step):
             return
 
         # 3. Hybrid Classification: Touch-first, Tick-Rule fallback
@@ -856,7 +834,25 @@ class CompositeConvictionEngine:
         mid_0 = (bp0 + sp0) / 2.0 if (bp0 > 0 and sp0 > 0) else p0
 
         micro_ret = (mid_px - mid_0) / mid_0 if mid_0 > 0 else ((p1 - p0) / p0 if p0 > 0 else 0.0)
-        touch_i1 = (b1 - a1) / (b1 + a1 + 1e-4)
+
+        # 5-Tick Temporal Smoothing on Touch Imbalance (I1)
+        # Prevents a single MM quote sweep/wobble from collapsing conviction on a viable contract
+        recent_i1s = []
+        for r in reversed(sl):
+            r_b1 = float(r[4]) if len(r) > 4 else 0.0
+            r_a1 = float(r[5]) if len(r) > 5 else 0.0
+            if (r_b1 + r_a1) > 0:
+                recent_i1s.append((r_b1 - r_a1) / (r_b1 + r_a1 + 1e-4))
+                if len(recent_i1s) >= 5:
+                    break
+
+        if recent_i1s:
+            sorted_i1s = sorted(recent_i1s)
+            n_i1 = len(sorted_i1s)
+            mid_idx = n_i1 // 2
+            touch_i1 = sorted_i1s[mid_idx] if (n_i1 % 2 == 1) else (sorted_i1s[mid_idx - 1] + sorted_i1s[mid_idx]) / 2.0
+        else:
+            touch_i1 = (b1 - a1) / (b1 + a1 + 1e-4)
 
         i3 = (b3 - a3) / (b3 + a3 + 1e-4)
         i4 = (b4 - a4) / (b4 + a4 + 1e-4)
@@ -1036,9 +1032,9 @@ class CompositeConvictionEngine:
             elif tick_rate >= 0.8:
                 tick_pts = 28.0  # Steady active flow
             elif tick_rate >= 0.4:
-                tick_pts = 22.0  # Normal liquidity
+                tick_pts = 26.0 if wyckoff_conf else 22.0  # Normal liquidity
             else:
-                tick_pts = 12.0  # Thin / sluggish arrival
+                tick_pts = 16.0 if wyckoff_conf else 12.0  # Thin / sluggish arrival
         else:
             # Clean baseline for tests or synthetic ticks
             tick_pts = 30.0 if wyckoff_conf else 26.0
@@ -1204,22 +1200,9 @@ class CompositeConvictionEngine:
         self,
         direction: str,
         setup_name: str,
-        spot_price: float = 0.0,
-        prior_bars: Optional[List[Any]] = None,
         current_bar: Optional[Any] = None,
-        atr: float = 10.0,
-        ema_20: float = 0.0,
-        ema_50: float = 0.0,
-        vwap: float = 0.0,
-        pdh: float = 0.0,
-        pdl: float = 0.0,
-        vol_sma10: float = 0.0,
-        persistence_dp: float = 0.70,
         touch_i1: float = 0.0,
-        delta_fut_60s_bps: float = 0.0,
-        delta_basis_60s_bps: float = 0.0,
         option_delta: Optional[float] = None,
-        option_strike: float = 0.0,
         spread_pct: float = 0.25,
         pa_details: Optional[Dict[str, Any]] = None,
         wyckoff_details: Optional[Dict[str, Any]] = None,

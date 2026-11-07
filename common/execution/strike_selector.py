@@ -135,7 +135,9 @@ class StrikeSelector:
         pattern = r'CE|C\d+$' if signal_type == "CALL" else r'PE|P\d+$'
         opts = weekly_opts[weekly_opts['symbol'].str.contains(pattern, regex=True)]
 
-        atm_strike = StrikeSelector.calculate_atm_strike(index_price, index_name)
+        # Optional caller-supplied ATM (single source of truth). Falls back to plain rounding,
+        # so other bots/brokers that do not pass it behave exactly as before.
+        atm_strike = float(kwargs.get("atm_strike") or 0.0) or StrikeSelector.calculate_atm_strike(index_price, index_name)
 
         # Detect 0DTE (Expiry Day)
         is_zero_dte = False

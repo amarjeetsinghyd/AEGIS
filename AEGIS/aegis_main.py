@@ -27,6 +27,10 @@ from AEGIS.execution.data_fetcher import DataFetcher, is_call_symbol, split_opti
 from AEGIS.aegis_execution_manager import AegisExecutionManager
 from AEGIS.aegis_pipeline_orchestrator import create_aegis_engine
 from AEGIS.l2_options_archiver import attach_aegis_archiver
+try:
+    from AEGIS.core.atm_sync import BandSubscriptionManager
+except ImportError:
+    from AEGIS.atm_sync import BandSubscriptionManager
 from common.market.tick_compiler import TickCompiler
 
 logger = get_logger("aegis_main")
@@ -665,6 +669,16 @@ def main():
     name, _ = fetcher.get_active_instrument()
     if "NIFTY" in name and "SENSEX" not in name:
         step = 50.0
+
+    # Wide-band policy: the option universe is subscribed once and only recentered when ATM
+    # drifts >= recenter_at strikes (or the corridor would leave the band). Subscriptions never
+    # chase every 50-pt ATM roll any more.
+    band_mgr = BandSubscriptionManager(
+        step=step, corridor=7, recenter_at=int(os.getenv("AEGIS_BAND_RECENTER_STRIKES", "8"))
+    )
+    if aegis_engine is not None:
+        aegis_engine.atm_sync.subscribe("band", band_mgr.on_atm, lane="slow")
+        aegis_engine.attach_atm_consumers(execution_manager=trader)
     
     # Main Loop
     while True:
@@ -696,6 +710,10 @@ def main():
                 time.sleep(1)
                 continue
             
+            # Emergency path: corridor left the subscribed band -> run the boundary block now.
+            if band_mgr.refresh_pending():
+                last_minute = -1
+            
             # ─── 1-Minute Boundary Processing ───
             if now.minute != last_minute:
                 last_minute = now.minute
@@ -712,20 +730,24 @@ def main():
                     step = new_step
                     logger.info(f"[AegisMain] Strike step updated to {step}")
                 
-                # Update ATM strike in AEGIS
-                atm_strike = round(spot_price / step) * step
-                if last_atm_strike <= 0:
-                    last_atm_strike = atm_strike
+                # ATM is owned by aegis_engine.atm_sync (hysteresis + event bus). Main never recomputes it:
+                # a second plain-rounding ATM here was the source of the 55 s split-brain.
+                atm_strike = aegis_engine.atm_sync.atm if aegis_engine is not None else 0.0
+                if atm_strike <= 0:
+                    atm_strike = round(spot_price / step) * step
+                    if aegis_engine is not None:
+                        aegis_engine.atm_sync.force(atm_strike, spot=spot_price, reason="seed")
                     logger.info(f"[AegisMain] ATM seeded: {atm_strike:.0f} from spot {spot_price:.0f}")
-                elif atm_strike != last_atm_strike:
-                    shift_steps = int((atm_strike - last_atm_strike) / step)
-                    aegis_engine.shift_atm(shift_steps, atm_strike)
-                    logger.info(f"[AegisMain] ATM shifted: {last_atm_strike} → {atm_strike} (steps: {shift_steps})")
-                    last_atm_strike = atm_strike
+                last_atm_strike = atm_strike
                 
                 # Ensure token map is current (expiry changes, etc.)
-                weekly_opts = fetcher.get_weekly_option_tokens()
-                if not weekly_opts.empty:
+                _need_universe = (
+                    not last_subscribed_opts
+                    or band_mgr.should_refresh(atm_strike)
+                    or now.minute % 15 == 0          # safety reconcile (universe repair / expiry change)
+                )
+                weekly_opts = fetcher.get_weekly_option_tokens() if _need_universe else None
+                if weekly_opts is not None and not weekly_opts.empty:
                     # Robust side split (single-letter C/P and CE/PE formats).
                     # NEVER adopt a single-sided universe: a partial fetch would
                     # blind half the flow (CallBuy=0 / PutBuy=0). Keep last good.
@@ -802,6 +824,9 @@ def main():
                             oi_universe["rows"] = _build_oi_universe_rows(refreshed_tmap, refreshed_t2s)
                         except Exception:
                             pass
+
+                    if universe_has_both_sides(weekly_opts):
+                        band_mgr.mark_refreshed(atm_strike, weekly_opts)
 
                 # OI poller spot refresh (every minute, off hot path).
                 try:

@@ -59,6 +59,11 @@ except ImportError:
         OptionQualityEngine = None
 
 try:
+    from AEGIS.core.atm_sync import AtmSync, cold_corridor_symbols, make_alignment_listeners
+except ImportError:
+    from core.atm_sync import AtmSync, cold_corridor_symbols, make_alignment_listeners
+
+try:
     from AEGIS.core.outcome_telemetry import OutcomeTelemetryEngine, PostTradeMilestoneTracker
 except ImportError:
     try:
@@ -181,7 +186,13 @@ class AegisPipelineOrchestrator:
         self.session_low = float("inf")
         self.spot_ema_fast = 0.0
         self.spot_ema_slow = 0.0
-        self.current_atm_strike = 0.0
+        # Single source of truth for ATM: hysteresis tracker + versioned event bus.
+        # `current_atm_strike` remains a property so existing readers/writers keep working.
+        self.atm_sync = AtmSync(
+            step=self.strike_step,
+            deadband_frac=float(os.getenv("AEGIS_ATM_DEADBAND_FRAC", "0.20")),
+            min_dwell_sec=float(os.getenv("AEGIS_ATM_MIN_DWELL_SEC", "1.0")),
+        )
         self.budget_strike_targets: Dict[str, Dict[str, Any]] = {}
         self.last_atm_iv = 0.15
         self.cooldowns: Dict[str, float] = {}  # sym -> last_signal_ts
@@ -284,6 +295,12 @@ class AegisPipelineOrchestrator:
         if self.shadow_boundary_observer is not None:
             self.shadow_boundary_observer.strike_to_symbol = self.strike_to_symbol
             self.shadow_boundary_observer.option_cache = self.option_cache
+
+        # ─── ATM event bus wiring (fast = inline O(strikes); slow = worker thread) ───
+        self.atm_sync.subscribe("orchestrator", self._on_atm_roll)
+        self.atm_sync.subscribe("cold_corridor", self._log_cold_corridor, lane="slow")
+        for _name, _fn in make_alignment_listeners(shadow_boundary_observer=self.shadow_boundary_observer):
+            self.atm_sync.subscribe(_name, _fn)
 
 
         # ─── AEGIS V4.0 Futures RingBuffer (Passive Telemetry) ───
@@ -433,15 +450,7 @@ class AegisPipelineOrchestrator:
             tick_sp = getattr(tick, "sp", None)
             if tick_bp is not None and tick_sp is not None and len(tick_bp) >= 5 and len(tick_sp) >= 5:
                 bp1 = float(tick.bp[0])
-                float(tick.bp[1])
-                float(tick.bp[2])
-                float(tick.bp[3])
-                float(tick.bp[4])
                 sp1 = float(tick.sp[0])
-                float(tick.sp[1])
-                float(tick.sp[2])
-                float(tick.sp[3])
-                float(tick.sp[4])
                 b1 = float(tick.bq[0])
                 a1 = float(tick.sq[0])
                 b2 = float(tick.bq[1])
@@ -454,15 +463,7 @@ class AegisPipelineOrchestrator:
                 a5 = float(tick.sq[4])
             else:
                 bp1 = float(getattr(tick, "bp1", 0.0) or 0.0)
-                float(getattr(tick, "bp2", 0.0) or (bp1 - 0.05 if bp1 > 0 else 0.0))
-                float(getattr(tick, "bp3", 0.0) or (bp1 - 0.10 if bp1 > 0 else 0.0))
-                float(getattr(tick, "bp4", 0.0) or (bp1 - 0.15 if bp1 > 0 else 0.0))
-                float(getattr(tick, "bp5", 0.0) or (bp1 - 0.20 if bp1 > 0 else 0.0))
                 sp1 = float(getattr(tick, "sp1", 0.0) or 0.0)
-                float(getattr(tick, "sp2", 0.0) or (sp1 + 0.05 if sp1 > 0 else 0.0))
-                float(getattr(tick, "sp3", 0.0) or (sp1 + 0.10 if sp1 > 0 else 0.0))
-                float(getattr(tick, "sp4", 0.0) or (sp1 + 0.15 if sp1 > 0 else 0.0))
-                float(getattr(tick, "sp5", 0.0) or (sp1 + 0.20 if sp1 > 0 else 0.0))
                 b1 = float(getattr(tick, "bq1", 0.0) or 0.0)
                 a1 = float(getattr(tick, "sq1", 0.0) or 0.0)
                 b2 = float(getattr(tick, "bq2", 0.0) or 0.0)
@@ -603,8 +604,6 @@ class AegisPipelineOrchestrator:
                     current_vwap = getattr(self.price_action_engine, "current_vwap", 0.0)
                     is_pa_setup, pa_setup_name, pa_details = self.price_action_engine.peek_setup(direction, current_vwap, current_time=now_sec)
 
-                # Legacy alias (V4.0 retired albrooks from the ladder: always False).
-                is_50ema_pullback = False
 
                 # PA-only mode: hidden microstructure route removed.
                 # System fires ONLY on the 4 pillars; microstructure stays as validator.
@@ -847,7 +846,7 @@ class AegisPipelineOrchestrator:
                             if is_pa_setup:
                                 # Per-pillar EQS: P1 top performer, P2 trap needs confirmation,
                                 # P3 blast is fast but thin, P4 clean structural breakout — all above dispatch 70.
-                                _pillar_eqs = {1: 85.0, 2: 83.0, 3: 82.0, 4: 85.0}.get(pillar, 85.0)
+                                _pillar_eqs = {1: 85.0, 2: 83.0, 3: 82.0, 4: 85.0, 5: 85.0}.get(pillar, 85.0)
                                 eqs = _pillar_eqs
                                 is_eqs_qual = True
                                 eqs_breakdown = {
@@ -899,10 +898,41 @@ class AegisPipelineOrchestrator:
                                     rejection_reasons = []
                                     eligible_candidates = []
 
+                                    # Phase A: Gather cluster microstructure & compute Cluster Median Ensemble I1
+                                    cluster_micro_map = {}
+                                    for c_entry in cluster:
+                                        c_sym = c_entry["symbol"]
+                                        c_hist = self.scorer.history.get(c_sym)
+                                        if c_hist and len(c_hist) >= 2:
+                                            c_latest = c_hist[-1]
+                                            c_age = now_sec - float(c_latest[0])
+                                            if 0.0 <= c_age <= 1.5:
+                                                c_m = self.conviction_engine.extract_micro_metrics(
+                                                    tick_buffer=c_hist,
+                                                    anchor_T=micro_anchor,
+                                                    lookback_sec=micro_lookback,
+                                                )
+                                                if c_m.get("is_valid", False):
+                                                    cluster_micro_map[c_sym] = c_m
+
+                                    # Cluster Median Ensemble I1: spatial consensus across the corridor
+                                    valid_i1s = [
+                                        float(m["touch_i1"])
+                                        for m in cluster_micro_map.values()
+                                        if "touch_i1" in m
+                                    ]
+                                    if len(valid_i1s) >= 2:
+                                        sorted_i1s = sorted(valid_i1s)
+                                        n_ens = len(sorted_i1s)
+                                        ens_mid = n_ens // 2
+                                        ensemble_median_i1 = sorted_i1s[ens_mid] if (n_ens % 2 == 1) else (sorted_i1s[ens_mid - 1] + sorted_i1s[ens_mid]) / 2.0
+                                    elif len(valid_i1s) == 1:
+                                        ensemble_median_i1 = valid_i1s[0]
+                                    else:
+                                        ensemble_median_i1 = None
+
                                     for candidate in cluster:
                                         candidate_sym = candidate["symbol"]
-                                        candidate["token"]
-                                        candidate_strike = float(candidate["strike"])
                                         candidate_history = self.scorer.history.get(candidate_sym)
                                         if not candidate_history or len(candidate_history) < 2:
                                             rejection_reasons.append(f"{candidate['priority']}:insufficient_ticks")
@@ -914,11 +944,13 @@ class AegisPipelineOrchestrator:
                                             rejection_reasons.append(f"{candidate['priority']}:stale_quote")
                                             continue
 
-                                        candidate_micro = self.conviction_engine.extract_micro_metrics(
-                                            tick_buffer=candidate_history,
-                                            anchor_T=micro_anchor,
-                                            lookback_sec=micro_lookback,
-                                        )
+                                        candidate_micro = cluster_micro_map.get(candidate_sym)
+                                        if candidate_micro is None:
+                                            candidate_micro = self.conviction_engine.extract_micro_metrics(
+                                                tick_buffer=candidate_history,
+                                                anchor_T=micro_anchor,
+                                                lookback_sec=micro_lookback,
+                                            )
                                         if not candidate_micro.get("is_valid", False):
                                             rejection_reasons.append(
                                                 f"{candidate['priority']}:{candidate_micro.get('reason', 'invalid_microstructure')}"
@@ -958,25 +990,16 @@ class AegisPipelineOrchestrator:
                                                 rejection_reasons.append(f"{candidate['priority']}:{quality_reason}")
                                                 continue
 
+                                        # Directional touch I1: blend temporal smoothing with cluster spatial consensus
+                                        cand_i1 = float(candidate_micro.get("touch_i1", 0.0))
+                                        eval_i1 = max(cand_i1, ensemble_median_i1) if ensemble_median_i1 is not None else cand_i1
+
                                         candidate_conviction = self.conviction_engine.compute_conviction_score(
                                             direction=direction,
                                             setup_name=pa_setup_name,
-                                            spot_price=self.last_spot,
-                                            prior_bars=self.price_action_engine.bars_1m,
                                             current_bar=current_bar,
-                                            atr=atr_1m_val,
-                                            ema_20=getattr(self.price_action_engine, "ema_20_1m", 0.0),
-                                            ema_50=getattr(self.price_action_engine, "ema_50_1m", 0.0),
-                                            vwap=vwap_val,
-                                            pdh=getattr(self.price_action_engine, "pdh", 0.0),
-                                            pdl=getattr(self.price_action_engine, "pdl", 0.0),
-                                            vol_sma10=self.price_action_engine.get_volume_sma(10),
-                                            persistence_dp=pers_score,
-                                            touch_i1=float(candidate_micro.get("touch_i1", 0.0)),
-                                            delta_fut_60s_bps=float(fut_basis_m.get("delta_fut_60s_bps", 0.0)),
-                                            delta_basis_60s_bps=float(fut_basis_m.get("basis_change_60s_bps", 0.0)),
+                                            touch_i1=eval_i1,
                                             option_delta=None,
-                                            option_strike=candidate_strike,
                                             spread_pct=float(candidate_micro.get("spread_pct", 99.0)),
                                             pa_details=pa_details,
                                             wyckoff_details=wyckoff_context,
@@ -1113,7 +1136,6 @@ class AegisPipelineOrchestrator:
                                     "basis_pts": round(self.last_basis_pts, 2),
                                     "basis_bps": round(self.last_basis_bps, 2),
                                     "futures_volume": self.futures_volume,
-                                    "is_50ema_pullback": is_50ema_pullback,
                                     "is_price_action_setup": is_pa_setup,
                                     "pa_setup_name": pa_setup_name,
                                     "conviction_score": conviction_score_val,
@@ -1437,6 +1459,15 @@ class AegisPipelineOrchestrator:
             return True
         return abs(lp - ref_lp) / ref_lp <= MAX_SINGLE_TICK_JUMP_FRAC
 
+    @property
+    def current_atm_strike(self) -> float:
+        return self.atm_sync.atm
+
+    @current_atm_strike.setter
+    def current_atm_strike(self, value: float) -> None:
+        # Explicit assignment bypasses hysteresis (pre-market pre-align, tests). <=0 is ignored.
+        self.atm_sync.force(float(value or 0.0), reason="assign")
+
     def _on_underlying_tick(self, sym: str, lp: float, now_sec: float):
         """Processes underlying Spot price ticks and manages dynamic ATM strike alignment."""
         if lp <= 0:
@@ -1490,14 +1521,9 @@ class AegisPipelineOrchestrator:
             self.spot_ema_fast = 0.05 * lp + 0.95 * self.spot_ema_fast
             self.spot_ema_slow = 0.01 * lp + 0.99 * self.spot_ema_slow
 
-        new_atm = round(lp / self.strike_step) * self.strike_step
-        if self.current_atm_strike == 0.0:
-            self.current_atm_strike = new_atm
-        elif new_atm != self.current_atm_strike:
-            shift = int(round((new_atm - self.current_atm_strike) / self.strike_step))
-            if shift != 0:
-                self.current_atm_strike = new_atm
-                logger.info(f"[AEGIS] Dynamic ATM roll: shift={shift:+d} | New ATM={self.current_atm_strike:.0f}")
+        # Hysteresis-protected ATM: returns immediately (one compare) unless ATM really rolls,
+        # in which case the versioned snapshot is published to every registered consumer.
+        self.atm_sync.on_spot(lp, now_sec)
 
     # ─── V3.0 Event-Bound Helpers (T Anchoring) ───
     def _get_last_closed_bar_T(self) -> float:
@@ -1669,20 +1695,26 @@ class AegisPipelineOrchestrator:
         }
 
     def _rebuild_strike_to_symbol(self):
-        """Rebuild (side,strike)→symbol after token-map refresh (fixes P1.4 universe drift)."""
-        self.strike_to_symbol.clear()
-        self._contracts_by_side_strike.clear()
+        """Rebuild (side,strike)→symbol after token-map refresh (fixes P1.4 universe drift).
+
+        Copy-on-write: build both maps locally, then swap the references. The tick thread
+        (_build_budget_strike_cluster) must never observe a cleared / half-filled map.
+        """
+        strike_to_symbol: Dict[Tuple[int, float], str] = {}
+        contracts: Dict[Tuple[int, float], Tuple[str, str]] = {}
         for tok, info in self.token_map.items():
             sym_name = self.t2s.get(str(tok))
             if sym_name and "side" in info and "strike" in info:
                 try:
                     side_int = int(info["side"])
                     strike_flt = float(info["strike"])
-                    self.strike_to_symbol[(side_int, strike_flt)] = sym_name
+                    strike_to_symbol[(side_int, strike_flt)] = sym_name
                     # setdefault ensures the first token in iteration order wins (bit-identical parity)
-                    self._contracts_by_side_strike.setdefault((side_int, strike_flt), (str(tok), sym_name))
+                    contracts.setdefault((side_int, strike_flt), (str(tok), sym_name))
                 except Exception:
                     continue
+        self.strike_to_symbol = strike_to_symbol
+        self._contracts_by_side_strike = contracts
         if getattr(self, "shadow_boundary_observer", None) is not None:
             self.shadow_boundary_observer.strike_to_symbol = self.strike_to_symbol
 
@@ -1690,9 +1722,9 @@ class AegisPipelineOrchestrator:
         """Hot-refresh after expiry roll / ATM rebuild (called by aegis_main on 1-min boundary)."""
         self.t2s = {str(k): str(v) for k, v in token_to_symbol.items()}
         self.token_map = {str(k): v for k, v in token_map.items()}
-        self._map_version += 1
+        self._rebuild_strike_to_symbol()          # swap first ...
+        self._map_version += 1                    # ... then invalidate, so no cluster is cached off a half-built map
         self._budget_cluster_cache.clear()
-        self._rebuild_strike_to_symbol()
         # Warm tick_ring & history_30s for any new symbols without disturbing existing deques
         for sym in self.t2s.values():
             if sym not in self.tick_ring:
@@ -1702,10 +1734,29 @@ class AegisPipelineOrchestrator:
         logger.info(f"[AEGIS] Token maps refreshed — {len(self.token_map)} tokens, {len(self.strike_to_symbol)} strikes")
 
     def shift_atm(self, shift: int, new_atm: float = 0.0):
-        """External shift method."""
+        """External force-set (pre-market bridge). Bypasses hysteresis on purpose.
+        `shift` is kept for signature compatibility; ATM mid-session is owned by atm_sync."""
         if new_atm > 0:
-            self.current_atm_strike = new_atm
-            self._budget_cluster_cache.clear()
+            self.atm_sync.force(new_atm, reason="external")
+
+    def _on_atm_roll(self, snap) -> None:
+        """Fast-lane listener: O(1)."""
+        self._budget_cluster_cache.clear()
+
+    def _log_cold_corridor(self, snap) -> None:
+        """Slow-lane, log-only: which strikes inside ATM±3 have < 3 ticks in the 30 s ring."""
+        cold = cold_corridor_symbols(self.strike_to_symbol, self.tick_ring, snap.atm, self.strike_step, depth=3)
+        if cold:
+            logger.info(f"[AEGIS] ATM v{snap.version} {snap.atm:.0f}: {len(cold)} cold corridor strikes: {cold[:6]}")
+
+    def attach_atm_consumers(self, gex_engine=None, iceberg_detector=None, execution_manager=None) -> None:
+        """Call once from the code that constructs these objects (not in the 4 files reviewed)."""
+        for name, fn in make_alignment_listeners(
+            gex_engine=gex_engine, iceberg_detector=iceberg_detector, execution_manager=execution_manager
+        ):
+            self.atm_sync.subscribe(name, fn)
+            if self.atm_sync.atm > 0:
+                fn(self.atm_sync.snapshot)          # align once to the current ATM
 
     def set_budget_strike_targets(self, targets: Dict[str, Dict[str, Any]]) -> None:
         """Atomically replace the independently staged CALL and PUT budget anchors."""
@@ -1880,6 +1931,7 @@ class AegisPipelineOrchestrator:
         self._pending_edge_measures.append({
             "fill_ts": fill_ts,
             "fill_price": fill_price,
+            "signal_price": signal_price,
             "measure_at": fill_ts + 30.0,
             "buf_idx": idx,
             "sym": sym,

@@ -57,7 +57,7 @@ class PaperOrderLifecycle(OrderLifecycle):
             return False
 
         # Calculate Marketable Limit Price with 0.25% buffer (minimum 1 tick / 0.05 pts)
-        tick_size = OPTION_TICK_SIZE if 'OPTION_TICK_SIZE' in globals() else 0.05
+        tick_size = globals().get('OPTION_TICK_SIZE', 0.05)
         buffer_amount = max(tick_size, ask * buffer_pct)
         limit_price = round(round((ask + buffer_amount) / tick_size) * tick_size, 2)
         leg.limit_price = limit_price

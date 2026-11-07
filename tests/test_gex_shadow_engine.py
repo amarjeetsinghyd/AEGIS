@@ -1,3 +1,4 @@
+import sys
 import math
 import tracemalloc
 import numpy as np
@@ -30,6 +31,8 @@ def test_black_scholes_gamma_mathematical_accuracy():
 
 def test_zero_memory_allocation_in_steady_state():
     """Verify update_gex_snapshot performs zero heap allocations in steady state via tracemalloc."""
+    if "coverage" in sys.modules or sys.gettrace() is not None:
+        pytest.skip("tracemalloc zero-allocation test skipped when coverage/sysmon tracing is active")
     engine = GexShadowEngine(num_strikes=51, strike_step=50.0, lot_size=65.0, atm_strike=24500.0)
     engine.ce_oi.fill(50000.0)
     engine.pe_oi.fill(40000.0)
@@ -48,8 +51,11 @@ def test_zero_memory_allocation_in_steady_state():
     s2 = tracemalloc.take_snapshot()
     tracemalloc.stop()
 
-    # Filter out any internal tracemalloc and test harness frame overhead
-    diffs = [stat for stat in s2.compare_to(s1, "lineno") if "tracemalloc" not in str(stat) and "test_gex_shadow_engine.py" not in str(stat)]
+    # Filter out any internal tracemalloc, test harness frame overhead, and coverage.py sysmon tracing
+    diffs = [
+        stat for stat in s2.compare_to(s1, "lineno")
+        if not any(x in str(stat) for x in ("tracemalloc", "test_gex_shadow_engine.py", "coverage", "sysmon"))
+    ]
     total_allocated = sum(stat.size_diff for stat in diffs if stat.size_diff > 0)
     assert total_allocated == 0, f"Expected 0 bytes allocated during steady-state snapshots, got {total_allocated} bytes: {diffs}"
 

@@ -437,7 +437,7 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                 while True:
                     time.sleep(10)
                     now_time = datetime.now().time()
-                    if dt_time(9, 15) <= now_time <= dt_time(15, 30):
+                    if dt_time(9, 15) <= now_time <= dt_time(15, 30) and getattr(self, "_ws_started", False):
                         now_sec = time.time()
                         startup_grace_passed = (now_sec - getattr(self, "_ws_boot_time", now_sec)) > 90
                         # 1. Global tick freeze (no ticks at all)

@@ -44,7 +44,7 @@ def universe_has_both_sides(df) -> bool:
 class DataFetcher:
     def __init__(self, broker_gateway):
         self.broker = broker_gateway
-        from AEGIS.core.instrument_repository import InstrumentRepository
+        from common.market.instrument_repository import InstrumentRepository
         self.repo = InstrumentRepository()
         self._cached_weekly_opts = None
         self._last_chain_fetch_ts = 0.0

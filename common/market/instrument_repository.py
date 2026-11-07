@@ -216,7 +216,7 @@ class InstrumentRepository:
                     pass
             
             now = datetime.now()
-            valid_options = [o for o in option_contracts if o[0] >= now]
+            valid_options = [o for o in option_contracts if o[0].date() >= now.date()]
             if not valid_options:
                 return []
                 

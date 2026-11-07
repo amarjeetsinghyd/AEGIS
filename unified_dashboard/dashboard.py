@@ -80,6 +80,12 @@ def _active_trade_aegis(data_dir: str):
 
 ANSI_REGEX = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
 
+# ─── P2 IN-MEMORY TTL CACHE CONTAINERS (SUB-MILLISECOND UI SERVING) ───
+_LOGS_CACHE: dict[str, Any] = {"ts": 0.0, "lines": [], "escaped": [], "n": 200}
+_TRADE_HIST_CACHE: dict[str, Any] = {"ts": 0.0, "data": [], "limit": 10}
+_CAPITAL_CACHE: dict[str, Any] = {"ts": 0.0, "val": 588.36}
+_ACTIVE_TRADE_CACHE: dict[str, Any] = {"ts": 0.0, "data": None}
+
 
 def _clean_log_line(line: str) -> str:
     """Strips raw ANSI color escape codes and returns clean text."""
@@ -91,10 +97,13 @@ def _clean_log_line(line: str) -> str:
 def _get_aegis_logs(n: int = 200) -> list[str]:
     """
     Returns the latest enriched, de-noised operational telemetry log lines.
-    Reads chunked binary from tail for sub-millisecond performance, strips raw
-    ANSI codes, and filters out spam so high-conviction signals and executions
-    are always crystal clear.
+    Uses 1.0s in-memory TTL caching to eliminate repetitive 384KB disk reads
+    and 3,000+ regex sweeps on rapid dashboard polls.
     """
+    now = time.time()
+    if now - _LOGS_CACHE["ts"] < 1.0 and _LOGS_CACHE["n"] == n and _LOGS_CACHE["lines"]:
+        return _LOGS_CACHE["lines"]
+
     candidate_paths = [
         "/home/opc/.pm2/logs/aegis-bot-out.log",
         os.path.join(AEGIS_LOGS, "aegis_bot.log"),
@@ -124,13 +133,23 @@ def _get_aegis_logs(n: int = 200) -> list[str]:
                     cleaned.append(c)
 
                 if cleaned:
-                    return cleaned[-n:]
+                    result = cleaned[-n:]
+                    _LOGS_CACHE["ts"] = now
+                    _LOGS_CACHE["n"] = n
+                    _LOGS_CACHE["lines"] = result
+                    # Pre-escape HTML once so live_state doesn't loop 200 items on every poll
+                    _LOGS_CACHE["escaped"] = [html.escape(line) for line in result]
+                    return result
             except Exception:
                 pass
     return []
 
 
 def _trade_history_aegis(limit: int = 20) -> list[dict]:
+    now = time.time()
+    if now - _TRADE_HIST_CACHE["ts"] < 2.0 and _TRADE_HIST_CACHE["limit"] == limit and _TRADE_HIST_CACHE["data"]:
+        return _TRADE_HIST_CACHE["data"]
+
     try:
         jdata = get_journal_data()
         trades = jdata.get("trades", [])
@@ -174,6 +193,9 @@ def _trade_history_aegis(limit: int = 20) -> list[dict]:
                 "result": res_val,
                 "pillar": t.get("pillar"),
             })
+        _TRADE_HIST_CACHE["ts"] = now
+        _TRADE_HIST_CACHE["limit"] = limit
+        _TRADE_HIST_CACHE["data"] = res
         return res
     except Exception:
         return []
@@ -264,7 +286,7 @@ def live_state():
         "tick_age_sec": _tick_age_seconds(),
         "initial_paper_capital": INITIAL_PAPER_CAPITAL,
         "aegis": aegis,
-        "aegis_logs": [html.escape(line) for line in aegis_logs],
+        "aegis_logs": _LOGS_CACHE.get("escaped", [html.escape(line) for line in aegis_logs]),
         "aegis_trade_history": aegis_hist,
         "today_stats": today_stats,
         # Backward compatibility stubs for legacy components

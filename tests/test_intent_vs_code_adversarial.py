@@ -156,17 +156,11 @@ class TestPainZoneVwapAlignment:
             pa.bars_1m.append(OHLCBar(i * 60.0, (i + 1) * 60.0, 22460.0, 22465.0, 22455.0, 22458.0, volume=1000.0))
         return pa
 
-    def test_call_blocked_below_trapped_call_buyer_line(self):
+    def test_call_aligned_above_master_vwap(self):
         pa = self._seeded()
-        pa._cum_cb_pv = 22464.0 * 20000.0
-        pa._cum_cb_vol = 20000.0
-        pa.current_vwap = 22450.0  # composite favorable
-        # Spot below the Trapped Call-Buyer line (22464): trapped call buyers
-        # sit overhead at breakeven — CALL must be blocked.
-        assert pa._pain_zone_vwap_aligned("CALL", 22462.5) is False
-        # Line below spot -> aligned
-        pa._cum_cb_pv = 22460.0 * 20000.0
+        pa.current_vwap = 22460.0
         assert pa._pain_zone_vwap_aligned("CALL", 22462.5) is True
+        assert pa._pain_zone_vwap_aligned("CALL", 22458.0) is False
 
     def test_call_blocked_below_composite_line(self):
         pa = self._seeded()
@@ -174,38 +168,25 @@ class TestPainZoneVwapAlignment:
         assert pa._pain_zone_vwap_aligned("CALL", 22462.5) is False
         assert pa._pain_zone_vwap_aligned("CALL", 22464.0) is True
 
-    def test_put_blocked_above_trapped_put_buyer_line(self):
+    def test_put_aligned_below_master_vwap(self):
         pa = self._seeded()
-        pa._cum_pb_pv = 22460.0 * 20000.0
-        pa._cum_pb_vol = 20000.0
-        pa.current_vwap = 22465.0  # composite favorable for PUT
-        # Spot above the Trapped Put-Buyer line (22460): trapped put buyers
-        # bid dips back up — PUT must be blocked.
-        assert pa._pain_zone_vwap_aligned("PUT", 22462.5) is False
-        pa._cum_pb_pv = 22464.0 * 20000.0  # line above spot
+        pa.current_vwap = 22465.0
         assert pa._pain_zone_vwap_aligned("PUT", 22462.5) is True
+        assert pa._pain_zone_vwap_aligned("PUT", 22466.0) is False
 
     def test_warmup_bypass_when_no_lines_available(self):
         pa = PriceActionEngine()  # cold boot: no bars, no cum volumes, no composite
         assert pa._pain_zone_vwap_aligned("CALL", 22460.0) is True
         assert pa._pain_zone_vwap_aligned("PUT", 22460.0) is True
 
-    def test_true_pain_zone_4_line_envelope_min_max(self):
+    def test_master_composite_vwap_clean_directional_alignment(self):
         """
-        True Pain Zone Band Geometry (Amarjeet Bhai Mandate):
-          band_upper = max(all 4 active VWAPs)
-          band_lower = min(all 4 active VWAPs)
-        Spot must be strictly outside the envelope (आर-पार का नियम):
-          - CALL allowed ONLY when Spot > band_upper
-          - PUT allowed ONLY when Spot < band_lower
-          - Inside Band: Neutral / No-Trade zone (both vetoed)
+        Master Composite VWAP Alignment (Amarjeet Bhai Mandate):
+          Spot > Master VWAP -> CALL allowed, PUT blocked.
+          Spot < Master VWAP -> PUT allowed, CALL blocked.
+          Eliminates the artificial 76-pt chop band!
         """
         pa = self._seeded()
-        # Set 4 active option-flow VWAP lines:
-        # Call Buy:  22460.0
-        # Call Sell: 22464.0  <- Highest active (band_upper)
-        # Put Buy:   22458.0
-        # Put Sell:  22455.0  <- Lowest active (band_lower)
         pa._cum_cb_pv = 22460.0 * 20000.0
         pa._cum_cb_vol = 20000.0
         pa._cum_cs_pv = 22464.0 * 20000.0
@@ -218,19 +199,15 @@ class TestPainZoneVwapAlignment:
         band_upper, band_lower = pa.get_pain_zone_band()
         assert band_upper == 22464.0
         assert band_lower == 22455.0
+        pz = pa.get_pain_zone_vwaps()
+        mid = pz["zone_mid"]
 
-        # Case 1: Spot inside the cluster (22462.0)
-        # Above call_buy (22460.0), but below call_sell (22464.0).
-        # Must be BLOCKED for both CALL and PUT (Neutral Zone)!
-        assert pa._pain_zone_vwap_aligned("CALL", 22462.0) is False
+        # Case 1: Spot above Master VWAP (e.g. 22462.0 > mid)
+        # CALL allowed, PUT blocked
+        assert pa._pain_zone_vwap_aligned("CALL", 22462.0) is True
         assert pa._pain_zone_vwap_aligned("PUT", 22462.0) is False
 
-        # Case 2: Spot strictly above Upper Band (22465.0)
-        # CALL allowed, PUT blocked
-        assert pa._pain_zone_vwap_aligned("CALL", 22465.0) is True
-        assert pa._pain_zone_vwap_aligned("PUT", 22465.0) is False
-
-        # Case 3: Spot strictly below Lower Band (22454.0)
+        # Case 2: Spot below Master VWAP (e.g. 22454.0 < mid)
         # PUT allowed, CALL blocked
         assert pa._pain_zone_vwap_aligned("PUT", 22454.0) is True
         assert pa._pain_zone_vwap_aligned("CALL", 22454.0) is False

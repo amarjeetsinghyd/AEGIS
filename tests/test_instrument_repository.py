@@ -1,8 +1,8 @@
 from contextlib import contextmanager
 from datetime import datetime
 
-from AEGIS.core import instrument_repository
-from AEGIS.core.instrument_repository import InstrumentRepository
+from common.market import instrument_repository
+from common.market.instrument_repository import InstrumentRepository
 
 
 def test_weekly_option_tokens_include_expiry_date_for_the_full_day(monkeypatch):

@@ -8,7 +8,10 @@ day extreme runway enforcement, and horizontal support/resistance wall obstacle 
 from __future__ import annotations
 import logging
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from AEGIS.core.price_action_engine import OHLCBar
 
 try:
     from common.logger import get_logger

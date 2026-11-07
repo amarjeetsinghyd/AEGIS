@@ -141,12 +141,36 @@ class WyckoffVolumeEngine:
                 base_metrics["absorption_score"] = round(absorption, 1)
                 base_metrics["n1_footprint"] = n1_fp
 
+            if bars and len(bars) >= 4:
+                n1_bar = bars[-1]
+                vol_n1 = float(getattr(n1_bar, "volume", 0.0) or 0.0)
+                v_base = self._compute_baseline_volume(bars, exclude_last=1)
+                vdr_n1 = vol_n1 / v_base if v_base > 0 else 1.0
+                is_n1_directional = (n1_bar.close > n1_bar.open) if is_up else (n1_bar.close < n1_bar.open)
+                n1_demand_ignition = bool(vdr_n1 >= 1.10 and is_n1_directional)
+                base_metrics["n1_ver"] = round(vdr_n1, 2)
+                base_metrics["n1_demand_ignition"] = n1_demand_ignition
+                if n1_demand_ignition:
+                    base_metrics["wyckoff_confirmed"] = True
+
             if is_opposing:
                 return False, "wyckoff_intrabar_opposing_flow_veto", {
                     **base_metrics,
                     "wyckoff_confirmed": False,
                     "flow_state": "opposing",
                 }
+
+            # ─── P0 FIX: In-Flight Mode B Breakthrough Terminal Verdict ───
+            # The breakthrough candle is the ACTIVE FORMING candle, NOT closed bar N-1!
+            # Do NOT fall through to closed-bar breakout checks where bars[-1] (bar N-1
+            # inside the squeeze box) is erroneously evaluated as the breakout bar
+            # (which causes false phantom drift vetoes on valid squeeze breakouts).
+            verdict_reason = (
+                "wyckoff_intrabar_inflight_confirmed"
+                if base_metrics.get("wyckoff_confirmed")
+                else "wyckoff_intrabar_neutral_flow"
+            )
+            return True, verdict_reason, base_metrics
 
         if not bars or len(bars) < 4:
             # Insufficient bars at market open -> fail open

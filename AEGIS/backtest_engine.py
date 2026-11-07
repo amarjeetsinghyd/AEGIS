@@ -322,11 +322,11 @@ class SimulatedPositionManager:
         if trade.peak_pnl_pct >= 3.0 or getattr(trade, "breakeven_locked", False):
             trade.breakeven_locked = True
             if pnl_pct <= 0.0:
-                self._close_position(lp, pnl_pct, f"COST_SHIELD_SCRATCH (0.0%)", current_ts_sec)
+                self._close_position(lp, pnl_pct, "COST_SHIELD_SCRATCH (0.0%)", current_ts_sec)
                 return
         elif trade.peak_pnl_pct >= 2.0:
             if pnl_pct <= -3.0:
-                self._close_position(lp, pnl_pct, f"STEPPED_SAFETY_SL (-3.0%)", current_ts_sec)
+                self._close_position(lp, pnl_pct, "STEPPED_SAFETY_SL (-3.0%)", current_ts_sec)
                 return
 
         # 4. Spot-Driven Invalidation Stop-Loss (Normalized 6.5 bps of spot entry)

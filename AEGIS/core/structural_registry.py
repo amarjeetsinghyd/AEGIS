@@ -10,7 +10,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from AEGIS.core.price_action_engine import OHLCBar
 
 _IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -77,7 +80,7 @@ class StructuralRegistryMixin:
         except Exception:
             pass
 
-    def _update_structural_levels(self, bar: OHLCBar, new_5m_bar: bool = False, new_15m_bar: bool = False) -> None:
+    def _update_structural_levels(self, bar: OHLCBar, new_5m_bar: bool = False, **_kwargs: Any) -> None:
         """
         Dynamically discovers, registers, and tracks intraday Support & Resistance levels.
         Maintains an active session diary of structural peaks and troughs.
@@ -198,14 +201,9 @@ class StructuralRegistryMixin:
         if cand_pcr <= 0 and total_calls > 0:
             cand_pcr = total_puts / total_calls
 
-        # 60m Median Volume for Scale-Invariant Volume Ratio (VR)
-        vols_60 = [float(getattr(b, "volume", 0.0) or 0.0) for b in list(self.bars_1m)[-60:]]
-        if vols_60:
-            s_v = sorted(vols_60)
-            med_vol = float(s_v[len(s_v)//2])
-        else:
-            med_vol = 1.0
-        vr = cand_vol / max(med_vol, 1.0) if med_vol > 0 else 1.0
+        # 60m Median Volume for Scale-Invariant Volume Ratio (VR) - O(1) Cached Read
+        med_vol = getattr(self, "_cached_median_vol_60", 1.0)
+        vr = cand_vol / max(med_vol, 1.0) if med_vol > 0.0 else 1.0
         vol_ratio_boost = 0.30 * min(2.5, max(0.0, vr - 1.0))
 
         # Check if prev bar was a freak 09:15 opening settlement spike

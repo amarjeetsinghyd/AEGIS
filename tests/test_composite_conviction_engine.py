@@ -524,3 +524,24 @@ class TestCompositeConvictionEngine:
         assert res.sub_scores["impulse"] >= 20.0
         assert res.total_score >= 85.0
 
+    def test_extract_micro_metrics_temporal_smoothing_filters_single_tick_flicker(self):
+        """
+        Verify that 5-tick temporal smoothing on touch_i1 filters out a single-tick MM quote flicker.
+        """
+        # Buffer format: (ts, ltp, bp1, sp1, b1, a1, b2, a2, ...)
+        # 4 ticks with strong bid support (b1=500, a1=100 -> I1=+0.67), 1 flicker tick (b1=50, a1=500 -> I1=-0.82)
+        tick_buffer = [
+            (100.0, 10.0, 9.95, 10.05, 500, 100, 200, 200, 200, 200, 200, 200, 200, 200),
+            (100.1, 10.0, 9.95, 10.05, 500, 100, 200, 200, 200, 200, 200, 200, 200, 200),
+            (100.2, 10.0, 9.95, 10.05, 500, 100, 200, 200, 200, 200, 200, 200, 200, 200),
+            (100.3, 10.0, 9.95, 10.05, 500, 100, 200, 200, 200, 200, 200, 200, 200, 200),
+            (100.4, 10.0, 9.90, 10.10, 50, 500, 200, 200, 200, 200, 200, 200, 200, 200),  # flicker tick
+        ]
+
+        metrics = CompositeConvictionEngine.extract_micro_metrics(tick_buffer, lookback_sec=10.0)
+        assert metrics["is_valid"] is True
+        # Without temporal smoothing, touch_i1 would be -0.82.
+        # With 5-tick temporal median, touch_i1 must be >= 0.60!
+        assert metrics["touch_i1"] > 0.50
+
+

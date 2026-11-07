@@ -655,6 +655,11 @@ class AegisExecutionManager:
         except Exception as e_dump:
             logger.debug(f"[AegisEM] Dump detector tick evaluation exception: {e_dump}")
 
+    def on_atm_roll(self, snap) -> None:
+        """ATM-bus listener: re-stage budget anchors on the next loop pass instead of waiting
+        out the 10 s throttle (float write; safe across threads)."""
+        self._last_budget_target_refresh = 0.0
+
     def _refresh_budget_strike_targets(self) -> None:
         """Pre-stage independently affordable CALL and PUT anchors every 10 seconds."""
         now_mono = time.monotonic()
@@ -717,6 +722,7 @@ class AegisExecutionManager:
                 premium_min=float(params["premium_min"]),
                 premium_max=float(params["premium_max"]),
                 suppress_funds_warning=True,
+                atm_strike=float(getattr(engine, "current_atm_strike", 0.0) or 0.0),
             )
             if not allocation:
                 if (now_mono - self._no_target_last_log >= 300.0) or (
@@ -1847,16 +1853,19 @@ class AegisExecutionManager:
                 if cur_gain_pct < 0.005:  # Gain < +0.5%
                     tb_engine = getattr(self.aegis_engine, "time_bar_engine", None)
                     market_struct = tb_engine.get_market_structure(context.signal_type) if (tb_engine and hasattr(tb_engine, "get_market_structure")) else "NEUTRAL"
-                    live_50, _ = getattr(tb_engine, "get_live_50_ema_and_slope", lambda: (0.0, 0.0))() if tb_engine else (0.0, 0.0)
+                    # Live 20-EMA band alignment (with legacy mock fallback for 50-EMA test harnesses)
+                    live_ema, _ = getattr(tb_engine, "get_live_20_ema_and_slope", lambda: (0.0, 0.0))() if tb_engine else (0.0, 0.0)
+                    if live_ema <= 0 and tb_engine and hasattr(tb_engine, "get_live_50_ema_and_slope"):
+                        live_ema, _ = tb_engine.get_live_50_ema_and_slope()
                     is_opposed = (market_struct == "OPPOSED")
-                    if live_50 > 0 and curr_spot > 0:
-                        if context.signal_type == "CALL" and curr_spot < live_50:
+                    if live_ema > 0 and curr_spot > 0:
+                        if context.signal_type == "CALL" and curr_spot < live_ema:
                             is_opposed = True
-                        elif context.signal_type == "PUT" and curr_spot > live_50:
+                        elif context.signal_type == "PUT" and curr_spot > live_ema:
                             is_opposed = True
                     if is_opposed:
                         self._close_all_legs(
-                            f"0DTE_STAGNATION_TRAP_EXIT ({int(hold_sec)}s, gain {cur_gain_pct*100:+.1f}%, 50-EMA opposed)"
+                            f"0DTE_STAGNATION_TRAP_EXIT ({int(hold_sec)}s, gain {cur_gain_pct*100:+.1f}%, EMA opposed)"
                         )
                         return
 
@@ -1900,7 +1909,7 @@ class AegisExecutionManager:
             exec_mode.startswith("MODE_B")
             or "mode_b" in pa_name_lower
             or "breakthrough" in pa_name_lower
-            or getattr(context, "pillar", 0) in (3, 4)
+            or getattr(context, "pillar", 0) in (3, 4, 5)
         )
         if is_mode_b:
             b_level = float(getattr(context, "boundary_level", 0.0) or 0.0)
@@ -1954,13 +1963,14 @@ class AegisExecutionManager:
         pillar_num = int(getattr(context, "pillar", 0) or 0)
         is_pa = bool(getattr(context, "is_price_action_setup", False)) or bool(getattr(context, "is_50ema_pullback", False))
 
-        # Detect pillar identity across P1, P2, P3, P4
+        # Detect pillar identity across P1, P2, P3, P4, P5
         is_p1 = (pillar_num == 1 or "20_ema" in pa_name.lower() or "pullback" in pa_name.lower() or "rejection" in pa_name.lower())
         is_p2 = (pillar_num == 2 or "sweep" in pa_name.lower())
         is_p3 = (pillar_num == 3 or "squeeze" in pa_name.lower())
         is_p4 = (pillar_num == 4 or "prominence" in pa_name.lower() or "phase_shift" in pa_name.lower() or "hvg" in pa_name.lower())
+        is_p5 = (pillar_num == 5 or "gamma_trap" in pa_name.lower() or "writer_trap" in pa_name.lower())
 
-        is_pillar_trade = is_p1 or is_p2 or is_p3 or is_p4 or is_pa or bool(pa_name) or (pillar_num > 0)
+        is_pillar_trade = is_p1 or is_p2 or is_p3 or is_p4 or is_p5 or is_pa or bool(pa_name) or (pillar_num > 0)
 
         if is_p1:
             pillar_label = "Pillar 1"
@@ -1970,6 +1980,8 @@ class AegisExecutionManager:
             pillar_label = "Pillar 3"
         elif is_p4:
             pillar_label = "Pillar 4"
+        elif is_p5:
+            pillar_label = "Pillar 5"
         elif pa_name:
             pillar_label = pa_name
         else:
@@ -2014,12 +2026,22 @@ class AegisExecutionManager:
             or (entry_time.timestamp() if entry_time else 0.0)
         )
 
+        # ─── P3 OPTIMIZATION: ZERO-COPY REVERSE SCAN FOR CLOSED BARS POST-ENTRY ───
         if is_pillar_trade and tb_engine and getattr(tb_engine, "bars_1m", None) and entry_ts > 0:
-            closed_bars = tb_engine.bars_1m.copy()
-            for b in closed_bars:
+            # 400 बार्स की कॉपी (copy()) हटाकर केवल एंट्री के बाद क्लोज हुए 1-2 बार्स को O(1) में स्कैन करें
+            recent_bars = []
+            for b in reversed(tb_engine.bars_1m):
                 b_end = getattr(b, "ts_end", getattr(b, "timestamp", 0.0))
-                b_start = getattr(b, "ts_start", b_end - 60.0)
-                if b_end > entry_ts:
+                if b_end <= entry_ts:
+                    break
+                recent_bars.append(b)
+
+            if recent_bars:
+                recent_bars.reverse()  # क्रोनोलॉजिकल ऑर्डर में प्रोसेस करें
+                for b in recent_bars:
+                    b_end = getattr(b, "ts_end", getattr(b, "timestamp", 0.0))
+                    b_start = getattr(b, "ts_start", b_end - 60.0)
+
                     # 1. Option A: Check Minimum Structural Range Hurdle (Thin Candle / Doji filter)
                     bar_range = float(b.high - b.low)
                     if bar_range < min_bar_range_pts:
@@ -2130,10 +2152,12 @@ class AegisExecutionManager:
             init_tp = float(getattr(leg, "initial_tp_pct", RESTING_TP_LIMIT_PCT) or RESTING_TP_LIMIT_PCT)
             is_reduced_tp = init_tp <= 0.032  # Friday 4 DTE (3.0% TP) or lowered target mode
 
-            near_target_trigger = 0.025 if is_reduced_tp else NEAR_TARGET_TRIGGER_PCT
-            near_target_tolerance = 0.005 if is_reduced_tp else NEAR_TARGET_PULLBACK_TOLERANCE
-            step2_trigger = 0.022 if is_reduced_tp else STEP2_TRIGGER_PCT
-            step1_trigger = 0.020 if is_reduced_tp else STEP1_TRIGGER_PCT
+            # Stepped Protection Smoothing:
+            step1_trigger = 0.018 if is_reduced_tp else 0.025   # Armed at +2.5% gain
+            step1_sl_pct  = -0.015 if is_reduced_tp else -0.020  # Tighten SL to -2.0% (cut disaster floor in half)
+            step2_trigger = 0.022 if is_reduced_tp else float(os.environ.get("AEGIS_STEP2_TRIGGER_PCT", "0.035"))   # Armed at +3.5% gain -> Lock 0.0% Breakeven
+            near_target_trigger = 0.025 if is_reduced_tp else float(os.environ.get("AEGIS_NEAR_TARGET_TRIGGER_PCT", "0.035"))
+            near_target_tolerance = 0.005 if is_reduced_tp else float(os.environ.get("AEGIS_NEAR_TARGET_TOLERANCE", "0.006"))
 
             peak_bid = getattr(leg, "highest_bid", effective_bid)
             peak_bid_gain = max(peak_gain_rs, peak_bid - leg.entry_price)
@@ -2169,15 +2193,15 @@ class AegisExecutionManager:
                     f"Peak was +{peak_pnl_pct:.1f}% | Loss Prevented!)"
                 )
             elif peak_pnl_frac >= step1_trigger or getattr(leg, "step1_sl_armed", False):
-                # Step 1: Peak reached >= step1_trigger (+3.0% normal, +2.0% Friday) -> Stepped Safety Net Active (SL tightened from -12% to -3.0%)
+                # Step 1: Peak reached >= step1_trigger (+2.5% normal, +1.8% Friday) -> Stepped Safety Net Active (SL tightened to -2.0% normal, -1.5% Friday)
                 if not getattr(leg, "step1_sl_armed", False):
                     leg.step1_sl_armed = True
                     self._save_active_context()
                     logger.info(
                         f"🛡️ [AegisEM] Stepped Safety Net Armed: {leg.symbol} peak +{peak_pnl_pct:.1f}% -> "
-                        f"SL tightened to -3.0% (₹{_round_tick(leg.entry_price * (1.0 + STEP1_SL_PCT)):.2f}, wide breathing room)"
+                        f"SL tightened to {step1_sl_pct*100:.1f}% (₹{_round_tick(leg.entry_price * (1.0 + step1_sl_pct)):.2f}, wide breathing room)"
                     )
-                dynamic_sl_price = _round_tick(leg.entry_price * (1.0 + STEP1_SL_PCT))  # -3.0%
+                dynamic_sl_price = _round_tick(leg.entry_price * (1.0 + step1_sl_pct))
                 dynamic_sl_reason = (
                     f"Stepped Safety Net SL ({cur_pnl_pct:+.1f}% @ {effective_bid:.2f} | "
                     f"Peak was +{peak_pnl_pct:.1f}%)"

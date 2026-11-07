@@ -14,6 +14,25 @@
 >    - Response ko padhne mein ultra-smooth aur easy banayein: short crisp paragraphs, clear bullet points, intuitive visual badges (🟢, 🔴, ⚡, 🛡️, 🚀), clear bold highlights. Complex dense wall-of-text bilkul nahi banana hai.
 > 3. **Generative UI Policy (User-Requested Only)**:
 >    - Generative UI / HTML widgets proactively bina maange nahi banane hain. Inline cards ya UI artifacts tabhi banayein jab Amarjeet bhai explicitly unki demand karein.
+> 4. **Tables Over Flowcharts Mandate (टेबल्स को हमेशा सर्वोच्च प्राथमिकता — Primary Preference)**:
+>    - **Amarjeet bhai ko structured Markdown Tables sabse zyada pasand hain.** Jab bhi kisi logic, comparison, parameters, decision gates, trade setups, ya data states ko samjhana ho, to **hamesha pehle clean, well-formatted Markdown Table** ka hi upyog karein.
+>    - Table mein clear column headers, visual emoji badges (🟢, 🔴, ⚡, 🛡️, 🚀, 🎯, 📊), aur crisp bullet descriptions hone chahiye.
+> 5. **Flowcharts As Secondary Fallback (फ़्लोचार्ट्स केवल सेकेंडरी विकल्प — Strictly Secondary)**:
+>    - **फ़्लोचार्ट्स को हमेशा सेकेंडरी रखें**: Har response mein baar-baar Mermaid flowchart bilkul nahi banana hai. Pehle baat table aur bullet points mein samjhayein.
+>    - Mermaid Flowchart ka upyog **sirf tabhi karein** jab user explicitly flowchart maange ya koi aisi complex multi-branch network graph ho jise table mein vyakt karna asambhav ho.
+>    - **Agar flowchart use karna hi pade, to in rules ka palan karein**:
+>      * **बड़ा और सुस्पष्ट टेक्स्ट (Large & Bold Font)**: फ़्लोचार्ट्स का टेक्स्ट हमेशा बड़ा और बोल्ड होना चाहिए ताकि दूर से आसानी से पढ़ा जा सके (हर `classDef` में `font-size:20px,font-weight:bold` अनिवार्य रूप से जोड़ें)।
+>      * **विविध और आकर्षक आकृतियाँ (Diverse & Catchy Shapes — केवल सादे चौकोर बॉक्स नहीं)**:
+>        - डेटाबेस/डेटा फीड/वेबसॉकेट: सिलिंडर `id[("...")]`
+>        - एक्शन/एक्जीक्यूशन/फ्लो: स्टेडियम / पिल शेप `id(["..."])`
+>        - कोर सबसिस्टम/इंजन मॉड्यूल: डबल-बॉर्डर सब-रूटीन `id[["..."]]`
+>        - डिसीजन/कंडीशन/गेट: हेक्सागोन `id{{"..."}}` या डायमंड `id{"..."}`
+>        - ट्रिगर/सिग्नल इवेंट: फ्लैग / टैग `id>"..."]` या पैरेललोग्राम `id[/"..."/]`
+>        - अंतिम आउटकम/टारगेट: बड़ा सर्कल `id(("..."))` या डबल सर्कल `id((("...")))`
+>      * **वाइब्रेंट कलर्स & विजुअल बैजेस**:
+>        - कभी भी फीका, डल या सादा ग्रे बैकग्राउंड वाला फ़्लोचार्ट नहीं बनाना है।
+>        - कलर्स: सक्सेस/बाय `fill:#064e3b,stroke:#10b981,stroke-width:3px,color:#fff,font-size:20px,font-weight:bold`, रिजेक्शन/ड्रॉप `fill:#7f1d1d,stroke:#f87171,stroke-width:3px,color:#fff,font-size:20px,font-weight:bold`, डिसीजन `fill:#1e3a8a,stroke:#60a5fa,stroke-width:3px,color:#fff,font-size:20px,font-weight:bold`, डेटा/फीड `fill:#3b0764,stroke:#c084fc,stroke-width:3px,color:#fff,font-size:20px,font-weight:bold`, वॉच/चेक `fill:#78350f,stroke:#fbbf24,stroke-width:3px,color:#fff,font-size:20px,font-weight:bold`।
+>        - हर नोड में विजुअल बैजेस (🟢, 🔴, ⚡, 🛡️, 🚀, 🎯, 📊, 📡) का उपयोग करें।
 
 ---
 
@@ -160,7 +179,6 @@ Before writing or modifying ANY strategy, gatekeeper, or execution code, every A
 - **SSH key location (local):** repo-root `Oracle SSH keys/ssh-key-2026-07-11.key`. It is the ONLY copy — never replicate it into an engine subfolder.
 - **SSH command:** `ssh -i "Oracle SSH keys/ssh-key-2026-07-11.key" opc@137.23.41.38`
 - **Process manager:** PM2, config `ecosystem.config.js` — active apps: `aegis-bot`, `unified-dashboard`.
-- **Deploy rule:** Deploy only after 15:30 IST or before 09:15 IST.
 
 ---
 
