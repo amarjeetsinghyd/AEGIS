@@ -360,7 +360,7 @@ class ShadowBoundaryObserver:
         if atr <= 0:
             atr = 10.0
 
-        curr_rng = curr_bar.high - curr_bar.low
+        curr_bar.high - curr_bar.low
         # Zero-latency: activity floor and min_clearance removed per Mode B parity
 
         # 2. In-Flight Option Flow & Spot Tick Arrival Rate

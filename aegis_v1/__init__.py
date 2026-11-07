@@ -11,7 +11,7 @@ import importlib.util
 import sys
 import types
 
-_MAP = {'pillars': ['price_action_engine'], 'structure': ['structural_registry', 'dow_macro_shields'], 'flow': ['option_order_flow', 'wyckoff_volume_engine'], 'pipeline': ['aegis_pipeline_orchestrator'], 'execution': ['aegis_execution_manager', 'dump_detector'], 'infra': ['option_quality', 'instrument_repository', 'instrument_registry', 'shadow_boundary_observer', 'l2_options_archiver', 'hot_structures', 'l2_guard'], 'feed': ['tick_compiler', 'bar_book', 'data_fetcher']}
+_MAP = {'pillars': ['price_action_engine'], 'structure': ['structural_registry', 'dow_macro_shields'], 'flow': ['option_order_flow', 'wyckoff_volume_engine'], 'pipeline': ['aegis_pipeline_orchestrator'], 'execution': ['aegis_execution_manager', 'dump_detector'], 'infra': ['option_quality', 'instrument_repository', 'instrument_registry', 'shadow_boundary_observer', 'l2_options_archiver', 'hot_structures'], 'feed': ['tick_compiler', 'bar_book', 'data_fetcher']}
 _PREFIXES = ("AEGIS.core", "AEGIS.execution", "AEGIS", "core", "execution", "common.market")
 
 

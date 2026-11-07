@@ -20,7 +20,7 @@ Microstructure Principles:
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Sequence, Tuple
 
 import numpy as np
 

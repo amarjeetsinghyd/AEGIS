@@ -130,7 +130,7 @@ def test_price_action_engine_integration_shadow_vs_live():
     """
     engine = PriceActionEngine(strike_step=50.0)
     assert hasattr(engine, "sweep_detector")
-    assert engine.enforce_live_sweep_gate is False  # Safe default
+    assert engine.enforce_live_sweep_gate is True  # Active in v1.0.3 production
 
     # Register an S/R level
     engine.seed_daily_levels(pdh=24300.0, pdl=24000.0)

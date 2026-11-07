@@ -1,9 +1,8 @@
 import os
 import sqlite3
-import json
 from datetime import datetime
 import contextlib
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any
 from AEGIS.config.settings import DATA_DIR
 from common.logger import get_logger
 

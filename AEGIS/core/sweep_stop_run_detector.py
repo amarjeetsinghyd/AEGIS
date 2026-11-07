@@ -23,7 +23,7 @@ Strict Invariants:
 
 import os
 import logging
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Dict, Any, List, Tuple
 import numpy as np
 
 logger = logging.getLogger("aegis.sweep_stop_run")
@@ -404,7 +404,7 @@ class SweepStopRunDetector:
         # 1. Check if level is currently STILL in breach (reclaim not yet achieved on spot ticks)
         if self.in_breach[target_slot] == 1:
             # Mode B may trigger on spot crossing back inside before next discrete tick
-            elapsed = max(now_sec - self.breach_start_ts[target_slot], MIN_BREACH_WINDOW_SEC)
+            max(now_sec - self.breach_start_ts[target_slot], MIN_BREACH_WINDOW_SEC)
             peak_rate = self.breach_peak_rate[target_slot]
             baseline = max(self.get_rolling_60s_baseline_rate(now_sec), 1.0)
             ratio = peak_rate / baseline

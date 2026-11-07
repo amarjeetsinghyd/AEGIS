@@ -10,8 +10,7 @@ Architecture:
 """
 
 from __future__ import annotations
-from typing import Dict, List, Optional, Tuple, Any
-from dataclasses import dataclass
+from typing import Dict, Tuple, Any
 
 
 class OptionQualityEngine:

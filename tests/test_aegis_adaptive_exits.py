@@ -17,14 +17,7 @@ from common.execution.trade_context import TradeContext, TradeLeg
 from AEGIS.aegis_execution_manager import (
     AegisExecutionManager,
     DEFAULT_MIN_NOISE_FLOOR_RS,
-    NOISE_FLOOR_SPREAD_MULT,
-    NOISE_FLOOR_SIGMA_MULT,
-    RESTING_TP_LIMIT_PCT,
-    FRIDAY_TP_LIMIT_PCT,
     get_adaptive_target_profit_pct,
-    DEFAULT_SPOT_SL_BPS,
-    BREAKEVEN_SPOT_CONFIRM_BPS,
-    DELTA_MIN_SPOT_BPS,
 )
 
 
@@ -1850,7 +1843,7 @@ def test_friday_4dte_low_capital_guard():
     from unittest.mock import MagicMock, patch
     import os
     import queue
-    from AEGIS.aegis_execution_manager import FRIDAY_MIN_CAPITAL_RS, AegisExecutionManager
+    from AEGIS.aegis_execution_manager import AegisExecutionManager
 
     em, ctx, leg = create_test_manager(entry_price=8.15, spot_entry=22472.0, signal_type="PUT")
     em.trade_context = None

@@ -10,7 +10,6 @@ import sys
 import json
 import math
 import time
-import logging
 from collections import deque
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional, Any
@@ -437,15 +436,15 @@ class AegisPipelineOrchestrator:
             tick_sp = getattr(tick, "sp", None)
             if tick_bp is not None and tick_sp is not None and len(tick_bp) >= 5 and len(tick_sp) >= 5:
                 bp1 = float(tick.bp[0])
-                bp2 = float(tick.bp[1])
-                bp3 = float(tick.bp[2])
-                bp4 = float(tick.bp[3])
-                bp5 = float(tick.bp[4])
+                float(tick.bp[1])
+                float(tick.bp[2])
+                float(tick.bp[3])
+                float(tick.bp[4])
                 sp1 = float(tick.sp[0])
-                sp2 = float(tick.sp[1])
-                sp3 = float(tick.sp[2])
-                sp4 = float(tick.sp[3])
-                sp5 = float(tick.sp[4])
+                float(tick.sp[1])
+                float(tick.sp[2])
+                float(tick.sp[3])
+                float(tick.sp[4])
                 b1 = float(tick.bq[0])
                 a1 = float(tick.sq[0])
                 b2 = float(tick.bq[1])
@@ -458,15 +457,15 @@ class AegisPipelineOrchestrator:
                 a5 = float(tick.sq[4])
             else:
                 bp1 = float(getattr(tick, "bp1", 0.0) or 0.0)
-                bp2 = float(getattr(tick, "bp2", 0.0) or (bp1 - 0.05 if bp1 > 0 else 0.0))
-                bp3 = float(getattr(tick, "bp3", 0.0) or (bp1 - 0.10 if bp1 > 0 else 0.0))
-                bp4 = float(getattr(tick, "bp4", 0.0) or (bp1 - 0.15 if bp1 > 0 else 0.0))
-                bp5 = float(getattr(tick, "bp5", 0.0) or (bp1 - 0.20 if bp1 > 0 else 0.0))
+                float(getattr(tick, "bp2", 0.0) or (bp1 - 0.05 if bp1 > 0 else 0.0))
+                float(getattr(tick, "bp3", 0.0) or (bp1 - 0.10 if bp1 > 0 else 0.0))
+                float(getattr(tick, "bp4", 0.0) or (bp1 - 0.15 if bp1 > 0 else 0.0))
+                float(getattr(tick, "bp5", 0.0) or (bp1 - 0.20 if bp1 > 0 else 0.0))
                 sp1 = float(getattr(tick, "sp1", 0.0) or 0.0)
-                sp2 = float(getattr(tick, "sp2", 0.0) or (sp1 + 0.05 if sp1 > 0 else 0.0))
-                sp3 = float(getattr(tick, "sp3", 0.0) or (sp1 + 0.10 if sp1 > 0 else 0.0))
-                sp4 = float(getattr(tick, "sp4", 0.0) or (sp1 + 0.15 if sp1 > 0 else 0.0))
-                sp5 = float(getattr(tick, "sp5", 0.0) or (sp1 + 0.20 if sp1 > 0 else 0.0))
+                float(getattr(tick, "sp2", 0.0) or (sp1 + 0.05 if sp1 > 0 else 0.0))
+                float(getattr(tick, "sp3", 0.0) or (sp1 + 0.10 if sp1 > 0 else 0.0))
+                float(getattr(tick, "sp4", 0.0) or (sp1 + 0.15 if sp1 > 0 else 0.0))
+                float(getattr(tick, "sp5", 0.0) or (sp1 + 0.20 if sp1 > 0 else 0.0))
                 b1 = float(getattr(tick, "bq1", 0.0) or 0.0)
                 a1 = float(getattr(tick, "sq1", 0.0) or 0.0)
                 b2 = float(getattr(tick, "bq2", 0.0) or 0.0)
@@ -693,11 +692,9 @@ class AegisPipelineOrchestrator:
 
                         # Price action setup has verified trend alignment and rejection geometry
                         has_permission = True
-                        perm_reason = f"price_action_{pa_setup_name}"
                         perm_metrics = {}
                         pers_confirmed = True
                         pers_score = 1.0
-                        pers_metrics = {}
 
                         # Domain 3 & 4: Option Tradability & Quality
                         opt_qualified = True
@@ -723,9 +720,7 @@ class AegisPipelineOrchestrator:
                         # (OI tracking maintained passively for live state telemetry / dashboard walls only; it never blocks scalper entries).
 
                         # Centralized Signal FSM Lifecycle Evaluation
-                        fsm_state = None
                         should_fire = False
-                        fsm_reason = "direct"
                         if is_pa_setup:
                             # ─── V3.0 EVENT-BOUND MICROSTRUCTURE VALIDATOR (T-anchored) ───
                             # 60s persistence (T-60 to T): Dp >= 0.70, opposite <= 2.
@@ -755,7 +750,7 @@ class AegisPipelineOrchestrator:
                             # (spread blowout > 2.5%, ghost book < 200, severe flush < -1.5%) veto early.
                             energy_score = 100.0
                             micro_m = {}
-                            time_since_close = (now_sec - anchor_T) if (anchor_T and anchor_T > 0) else 0.0
+                            (now_sec - anchor_T) if (anchor_T and anchor_T > 0) else 0.0
                             if (is_mode_b or is_preclose) and not cluster_scoring:
                                 # Mode B In-Flight: extract live micro metrics from immediate rolling 10s buffer
                                 # to ensure touch_i1, real spread_pct and depth are verified upfront
@@ -846,7 +841,6 @@ class AegisPipelineOrchestrator:
                                     return None
 
                             should_fire = True
-                            fsm_reason = f"price_action_{pa_setup_name}"
                         if should_fire:
                             trigger_age = 0.5
                             
@@ -910,7 +904,7 @@ class AegisPipelineOrchestrator:
 
                                     for candidate in cluster:
                                         candidate_sym = candidate["symbol"]
-                                        candidate_token = candidate["token"]
+                                        candidate["token"]
                                         candidate_strike = float(candidate["strike"])
                                         candidate_history = self.scorer.history.get(candidate_sym)
                                         if not candidate_history or len(candidate_history) < 2:

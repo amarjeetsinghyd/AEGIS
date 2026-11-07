@@ -38,7 +38,7 @@ from common.execution.order_lifecycle import (
 )
 from common.execution.strike_selector import StrikeSelector, effective_premium_floor
 from common.execution.trade_context import TradeContext, TradeLeg, resolve_leg_net_qty
-from common.execution.realistic_paper_broker import calculate_nse_option_charges, OptionCharges
+from common.execution.realistic_paper_broker import calculate_nse_option_charges
 from common.market.market_calendar import is_trading_day
 from common.ipc.premarket_bridge import read_premarket_state
 try:
@@ -245,8 +245,6 @@ def get_adaptive_target_profit_pct(now: Optional[datetime] = None) -> float:
 # ─── Scale-Invariant Normalized Metrics (Basis Points & ATR Multiples) ───
 DEFAULT_SPOT_SL_BPS = 6.5               # 6.5 bps of spot (0.065% ~15.5 pts NIFTY, ~52 pts SENSEX)
 SPOT_SL_ATR_MULT = 1.0                  # 1.0x 1-minute ATR (dynamic regime expansion)
-BREAKEVEN_SPOT_CONFIRM_BPS = 3.5        # 3.5 bps of spot (~8.3 pts NIFTY, ~28 pts SENSEX)
-BREAKEVEN_SPOT_ATR_MULT = 0.5           # 0.5x 1-minute ATR
 DELTA_MIN_SPOT_BPS = 1.25               # 1.25 bps minimum spot move for empirical delta (~3 pts NIFTY, ~10 pts SENSEX)
 
 # ─── Universal Price Action Structural Invalidation Constants (Scale-Invariant) ───
@@ -256,7 +254,6 @@ STRUCTURAL_SL_BUFFER_BPS = float(os.environ.get("AEGIS_STRUCTURAL_SL_BUFFER_BPS"
 STRUCTURAL_SL_BUFFER_ATR_MULT = float(os.environ.get("AEGIS_STRUCTURAL_SL_BUFFER_ATR_MULT", "0.10"))                                                           # 0.10x 1m ATR regime cushion
 
 # Legacy fallbacks maintained for external callers/tests
-TARGET_PROFIT_PCT = RESTING_TP_LIMIT_PCT
 EMERGENCY_MAX_SL_PCT = 0.35
 
 # ─── AEGIS V4.1 Stepped Risk Compression + Cost-Shield + Near-Target Engine ───
@@ -264,7 +261,6 @@ EMERGENCY_MAX_SL_PCT = 0.35
 DEFAULT_PREMIUM_HARD_SL_PCT = 0.080  # Calibrated from 0.120 -> 0.080 (-8.0% disaster floor)
 PREMIUM_HARD_SL_PCT = float(os.environ.get("AEGIS_PREMIUM_HARD_SL_PCT", str(DEFAULT_PREMIUM_HARD_SL_PCT)))
 FRIDAY_HARD_SL_PCT = float(os.environ.get("AEGIS_FRIDAY_HARD_SL_PCT", "0.065"))     # Friday 4-DTE calibrated disaster floor (-6.5%)
-V4_SINGLE_TARGET_MODE = True  # Runner trailing disabled; 100% qty TP/SL/time exits
 STEP1_TRIGGER_PCT = float(os.environ.get("AEGIS_STEP1_TRIGGER_PCT", "0.030"))         # +3.0% peak gain arms stepped safety net (wide breathing room; +2% choke removed)
 STEP1_SL_PCT = float(os.environ.get("AEGIS_STEP1_SL_PCT", "-0.030"))                  # Tightens disaster floor from -12% to -3.0%
 STEP2_TRIGGER_PCT = float(os.environ.get("AEGIS_STEP2_TRIGGER_PCT", "0.035"))         # +3.5% peak gain arms cost-shield scratch
@@ -1005,7 +1001,7 @@ class AegisExecutionManager:
 
             direction = signal.get("signal")  # "UP" or "DOWN"
             conviction = signal.get("conviction", 0.0)
-            opt_lp = signal.get("lp", 0.0)
+            signal.get("lp", 0.0)
             sym = signal.get("sym", "")
             metrics = signal.get("metrics", {})
 
@@ -2281,7 +2277,7 @@ class AegisExecutionManager:
         
         api = getattr(self.broker, "_api", None)
         total_pnl = 0.0
-        now = datetime.now()
+        datetime.now()
         
         for leg in legs:
             if leg.status != "OPEN":
@@ -3023,7 +3019,7 @@ class AegisExecutionManager:
         exit_fut_px = float(getattr(self.aegis_engine, "last_futures_price", 0.0) if self.aegis_engine else 0.0)
         fut_delta_pts = round(exit_fut_px - entry_fut_px, 2) if (entry_fut_px > 0 and exit_fut_px > 0) else 0.0
         basis_pts_entry = float(dp.get("basis_pts", 0.0) or 0.0)
-        basis_bps_entry = float(dp.get("basis_bps", 0.0) or 0.0)
+        float(dp.get("basis_bps", 0.0) or 0.0)
 
         entry_latency_ms = float(dp.get("entry_latency_ms", 0.0) or 0.0)
         vol_burst_age_sec = float(dp.get("volatility_burst_age_sec", 0.0) or 0.0)

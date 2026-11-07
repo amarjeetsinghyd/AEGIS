@@ -9,7 +9,7 @@ import queue
 import contextlib
 import logging
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 if BASE_DIR not in sys.path:
@@ -22,10 +22,10 @@ import AEGIS.config.settings  # noqa: F401
 from common.logger import get_logger
 from common.broker import ShoonyaAdapter
 from common.config import get_data_dir
-from common.ipc import update_aegis_live_state, SHARED_TICK_FILE
+from common.ipc import update_aegis_live_state
 from AEGIS.execution.data_fetcher import DataFetcher, is_call_symbol, split_option_sides, universe_has_both_sides
 from AEGIS.aegis_execution_manager import AegisExecutionManager
-from AEGIS.aegis_pipeline_orchestrator import AegisPipelineOrchestrator, create_aegis_engine
+from AEGIS.aegis_pipeline_orchestrator import create_aegis_engine
 from AEGIS.l2_options_archiver import attach_aegis_archiver
 from common.market.tick_compiler import TickCompiler
 

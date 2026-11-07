@@ -24,8 +24,6 @@ Hot-Path Safe: Pure Python, zero pandas/scipy on tick path, sub-5-microsecond ex
 """
 
 from __future__ import annotations
-import os
-import math
 import logging
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -222,7 +220,6 @@ class WyckoffVolumeEngine:
         has_dow_swings = False
         imp_avg_vol = 0.0
         pb_avg_vol = 0.0
-        entry_vol = 0.0
         swing_vdr = 1.0
         imp_directional_flow = 0.0
         pb_counter_flow = 0.0
@@ -230,7 +227,7 @@ class WyckoffVolumeEngine:
         if pa_details:
             imp_avg_vol = float(pa_details.get("imp_avg_vol", 0.0) or 0.0)
             pb_avg_vol = float(pa_details.get("pb_avg_vol", 0.0) or 0.0)
-            entry_vol = float(pa_details.get("entry_vol", 0.0) or 0.0)
+            float(pa_details.get("entry_vol", 0.0) or 0.0)
             swing_vdr = float(pa_details.get("swing_vdr", 0.0) or 0.0)
             imp_directional_flow = float(pa_details.get("imp_directional_flow", 0.0) or 0.0)
             pb_counter_flow = float(pa_details.get("pb_counter_flow", 0.0) or 0.0)

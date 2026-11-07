@@ -20,7 +20,7 @@ import math
 import os
 import queue
 import time
-from datetime import datetime, time as dt_time, timezone, timedelta
+from datetime import datetime, timezone, timedelta
 from collections import deque
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
@@ -32,12 +32,11 @@ MODE_B_P2_WICK_MIN_PCT: float = 0.40         # ≥40% wick must exist on the FOR
 MODE_B_P2_WICK_MIN_RANGE_ATR: float = 0.30   # scale-invariant measurability floor: range < 0.30×ATR1m ⇒ wick not yet formed
 
 from AEGIS.core.structural_registry import StructuralLevel, StructuralRegistryMixin
-from AEGIS.core.dow_macro_shields import DowStructureChain, DowMacroShieldsMixin
+from AEGIS.core.dow_macro_shields import DowMacroShieldsMixin
 from AEGIS.core.option_order_flow import OptionOrderFlowMixin
 try:
     from AEGIS.core.sweep_stop_run_detector import (
         SweepStopRunDetector,
-        SWEEP_NONE,
         SWEEP_CONFIRMED_STOP_HUNT,
         SWEEP_VETO_DRY_NO_STOPS,
         SWEEP_VETO_UNABSORBED_PANIC,
@@ -45,7 +44,6 @@ try:
 except ImportError:
     from core.sweep_stop_run_detector import (
         SweepStopRunDetector,
-        SWEEP_NONE,
         SWEEP_CONFIRMED_STOP_HUNT,
         SWEEP_VETO_DRY_NO_STOPS,
         SWEEP_VETO_UNABSORBED_PANIC,
@@ -1829,8 +1827,8 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
 
             h_n2 = float(getattr(bar_n2, "high", 0.0) or 0.0)
             l_n2 = float(getattr(bar_n2, "low", 0.0) or 0.0)
-            c_n2 = float(getattr(bar_n2, "close", 0.0) or 0.0)
-            o_n2 = float(getattr(bar_n2, "open", 0.0) or 0.0)
+            float(getattr(bar_n2, "close", 0.0) or 0.0)
+            float(getattr(bar_n2, "open", 0.0) or 0.0)
         except (TypeError, ValueError):
             return True
 
@@ -2389,7 +2387,6 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                         sr_lvl_up = self._find_inflight_swept_sr_level("CALL", prior_bar, curr_bar, spot, min_sweep_depth, atr)
                         if sr_lvl_up is not None:
                             swept_low = sr_lvl_up.price
-                            sweep_src = "SR_REGISTRY"
                             ok_struct, _, _ = self._check_structural_obstacle("CALL", spot)
                             if ok_struct and self._delta_harmony_ok("UP"):
                                 # ─── O(1) Stop-Run & Liquidity Sweep Order-Flow Validator ───
@@ -2474,7 +2471,6 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                         sr_lvl_dn = self._find_inflight_swept_sr_level("PUT", prior_bar, curr_bar, spot, min_sweep_depth, atr)
                         if sr_lvl_dn is not None:
                             swept_high = sr_lvl_dn.price
-                            sweep_src = "SR_REGISTRY"
                             ok_struct, _, _ = self._check_structural_obstacle("PUT", spot)
                             if ok_struct and self._delta_harmony_ok("DOWN"):
                                 # ─── O(1) Stop-Run & Liquidity Sweep Order-Flow Validator ───
