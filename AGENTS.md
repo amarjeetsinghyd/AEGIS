@@ -309,6 +309,86 @@ Rules every AI agent and contributor must uphold:
 
 ---
 
+## 🛠️ QUANT-BOT DEVELOPER & DIAGNOSTIC TOOLBOX (PROFILING, DE-BLOATING & ASYNC AUDITING)
+
+> **Mandatory Tool Usage for AI Agents and Contributors**:
+> Do NOT guess, read thousands of lines manually, or speculate when debugging or de-bloating. Always use these 5 specialized tools to inspect live processes, eliminate dead code, trace async tick latency, and profile performance.
+
+### 1. `py-spy` — Zero-Overhead Live Process Profiler & Stuck-Process Inspector
+* **Location on VPS**: `/home/opc/.local/bin/py-spy` (Installed & Verified v0.4.3).
+* **When to use**: Inspecting the live running `aegis-bot` on VPS without stopping, restarting, or slowing down the process.
+* **Key Commands**:
+  - **Thread Stack Dump** (Instant snapshot of all active threads and exact line numbers):
+    ```bash
+    sudo /home/opc/.local/bin/py-spy dump --pid $(pgrep -f aegis_main.py | head -n 1)
+    ```
+  - **Live Function-Wise CPU Monitor** (htop-style real-time profile of hot functions):
+    ```bash
+    sudo /home/opc/.local/bin/py-spy top --pid <PID>
+    ```
+  - **Flame Graph Recording** (Generates interactive SVG flamegraph over N seconds):
+    ```bash
+    sudo /home/opc/.local/bin/py-spy record -o /home/opc/aegis_flame.svg --pid <PID> --duration 30
+    ```
+
+### 2. `vulture` — Dead & Obsolete Code Hunter (Static De-bloating Weapon)
+* **Status**: Installed locally and on VPS (`vulture 2.16`).
+* **When to use**: Scanning the codebase for dead functions, unused methods, orphaned classes, and dead variables to keep the project ultra-lean and zero-entropy.
+* **Key Commands**:
+  - **Core Engine High-Confidence Dead Code Scan**:
+    ```powershell
+    python -m vulture AEGIS/core/ --min-confidence 80
+    ```
+  - **Shared Library Dead Code Scan**:
+    ```powershell
+    python -m vulture common/ --min-confidence 90
+    ```
+  - **Full AEGIS Package Audit**:
+    ```powershell
+    python -m vulture AEGIS/ --min-confidence 85
+    ```
+
+### 3. `ruff` — Ultra-Fast AST Linter & Dead Import / Variable Eliminator
+* **Status**: Installed locally (`ruff 0.15.20`).
+* **When to use**: Instant automated detection and cleanup of unused imports (`F401`) and unused variables (`F841`) across hot-path modules in milliseconds.
+* **Key Commands**:
+  - **Detect Unused Imports and Dead Variables**:
+    ```powershell
+    python -m ruff check AEGIS/core/ --select F401,F841
+    ```
+  - **Safe Auto-Fix (Remove unused imports automatically)**:
+    ```powershell
+    python -m ruff check AEGIS/core/ --select F401 --fix
+    ```
+
+### 4. Asyncio Event Loop Latency & Blocking Detector (Built-in + `PYTHONASYNCIODEBUG=1`)
+* **When to use**: Catching synchronous functions, heavy math, or disk operations that block the asyncio event loop for $> 20\text{ms}$ (preventing tick drops and delayed fills).
+* **Key Usage**:
+  - **In Code (Event Loop Debug Config)**:
+    ```python
+    loop.set_debug(True)
+    loop.slow_callback_duration = 0.020  # Log warning on any callback taking > 20ms
+    ```
+  - **Environment Variable Flag**:
+    ```powershell
+    $env:PYTHONASYNCIODEBUG="1"; python AEGIS/aegis_main.py
+    ```
+
+### 5. `viztracer` — Microsecond Timeline & Async Call Graph Visualizer
+* **Status**: Installed locally (`viztracer 1.1.1`).
+* **When to use**: Recording microsecond-precision timelines of synthetic simulations or tick replays, viewing async task lifecycles in Google Chrome Perfetto (`ui.perfetto.dev`).
+* **Key Commands**:
+  - **Record Async Simulation Trace**:
+    ```powershell
+    python -m viztracer --log_async -o trace.json scratch/simulate_p1_pipeline.py
+    ```
+  - **Open Visual Timeline in Browser**:
+    ```powershell
+    vizviewer trace.json
+    ```
+
+---
+
 ## WHEN IN DOUBT
 - Trust the harness doc (v3.5) over older docs; older docs can be deleted when stale.
 - Kronos is dead. If a change re-introduces Kronos, it is wrong by definition.
