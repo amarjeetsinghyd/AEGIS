@@ -591,3 +591,44 @@ class DowMacroShieldsMixin:
                 return False, r_de, det_de
 
         return True, "clear_of_structural_obstacles", {}
+
+    def _check_dow_thrust_progression(self, direction: str, curr_bar: Any, spot: float, atr: float) -> bool:
+        """
+        Dow Theory 3-Candle Directional Thrust Validator for Trapped Writer / Boundary Breakouts:
+        Filters out false/whipsaw breakouts when price coils / ranges around VWAP.
+
+        Requires a clean 3-candle ascending (CALL) or descending (PUT) ladder:
+          - CALL (HH/HL Thrust from below):
+              1. Bar N-1 High > Bar N-2 High and Bar N-1 Low > Bar N-2 Low
+              2. Forming Bar N Low >= (Bar N-1 Low - 0.05 * atr)
+              3. Live Spot > Bar N-1 High (or Forming Bar N High > Bar N-1 High)
+          - PUT (LH/LL Thrust from above):
+              1. Bar N-1 Low < Bar N-2 Low and Bar N-1 High < Bar N-2 High
+              2. Forming Bar N High <= (Bar N-1 High + 0.05 * atr)
+              3. Live Spot < Bar N-1 Low (or Forming Bar N Low < Bar N-1 Low)
+        """
+        bars = getattr(self, "bars_1m", None)
+        if not bars or len(bars) < 2:
+            return False
+
+        bar_n1 = bars[-1]
+        bar_n2 = bars[-2]
+
+        h_n1, l_n1 = float(getattr(bar_n1, "high", 0.0)), float(getattr(bar_n1, "low", 0.0))
+        h_n2, l_n2 = float(getattr(bar_n2, "high", 0.0)), float(getattr(bar_n2, "low", 0.0))
+        curr_h = float(getattr(curr_bar, "high", 0.0))
+        curr_l = float(getattr(curr_bar, "low", 0.0))
+
+        tol = 0.05 * max(float(atr or 10.0), 1.0)
+
+        if str(direction).upper() in ("UP", "CALL", "CE", "C"):
+            n1_ascending = (h_n1 > h_n2) and (l_n1 > l_n2)
+            curr_hl = curr_l >= (l_n1 - tol)
+            curr_hh = (spot > h_n1) or (curr_h > h_n1)
+            return bool(n1_ascending and curr_hl and curr_hh)
+        else:
+            n1_descending = (l_n1 < l_n2) and (h_n1 < h_n2)
+            curr_lh = curr_h <= (h_n1 + tol)
+            curr_ll = (spot < l_n1) or (curr_l < l_n1)
+            return bool(n1_descending and curr_lh and curr_ll)
+

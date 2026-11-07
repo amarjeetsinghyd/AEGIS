@@ -246,9 +246,9 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         self._cached_sr_candidates: Dict[str, Tuple[int, int, float, List[StructuralLevel]]] = {}
         self._lunch_veto_enabled: bool = (os.getenv("AEGIS_LUNCH_SWEEP_VETO_ENABLED", "1") != "0")
 
-        # ─── O(1) Stop-Run & Liquidity Sweep Order-Flow Validator (Shadow Mode First) ───
+        # ─── O(1) Stop-Run & Liquidity Sweep Order-Flow Validator (Live Gate Enforced) ───
         self.sweep_detector = SweepStopRunDetector(num_levels=32)
-        self.enforce_live_sweep_gate: bool = os.getenv("AEGIS_ENFORCE_LIVE_SWEEP_GATE", "0").strip().lower() in ("1", "true")
+        self.enforce_live_sweep_gate: bool = os.getenv("AEGIS_ENFORCE_LIVE_SWEEP_GATE", "1").strip().lower() in ("1", "true")
 
     @property
     def current_bar(self) -> Optional[OHLCBar]:
@@ -2318,6 +2318,133 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
             seen[tag] = bar_idx
             logger.info(msg)
 
+    def check_pillar_5_gamma_trap(
+        self,
+        direction: str,
+        spot: float,
+        atr: float,
+        now_sec: float,
+        sec_in_min: int,
+        curr_bar: Any,
+        prior_bar: Optional[Any],
+        bar_idx: int,
+        bull_flow: float,
+        bear_flow: float,
+        commit: bool = True,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Pillar 5: Trapped Option Writer Short-Squeeze Engine (gamma_trap_squeeze).
+        Decoupled Corridors:
+          - CALL: Spot breaks above Call Sell VWAP (vwap_call_sell).
+                  Forces Call Writers into non-discretionary short-covering panic.
+          - PUT:  Spot breaks below Put Sell VWAP (vwap_put_sell).
+                  Forces Put Writers into non-discretionary long-liquidation panic.
+        Gated by:
+          1. 3-bar debounce lockout
+          2. Directional 3-candle Dow Thrust ladder (ascending for CALL, descending for PUT)
+          3. Wyckoff OFI Option Flow Harmony (opposing liquidation <= 2.5x supporting flow)
+        """
+        pz = self.get_pain_zone_vwaps()
+        cs = float(pz.get("vwap_call_sell", 0.0) or 0.0)
+        ps = float(pz.get("vwap_put_sell", 0.0) or 0.0)
+
+        is_call = str(direction).upper() in ("UP", "CALL", "CE", "C")
+        lockout_key = "P5_WRITER_TRAP_UP" if is_call else "P5_WRITER_TRAP_DOWN"
+        last_trig = self._mode_b_last_trigger_bar_idx.get(lockout_key, -100)
+
+        if (bar_idx - last_trig) < 3:
+            return False, "p5_debounce_active", {}
+
+        cb_flow = float(self._opt_flow_1m.get("call_buy_vol", 0.0))
+        pb_flow = float(self._opt_flow_1m.get("put_buy_vol", 0.0))
+        eff_lot = getattr(self, "lot_size", 65.0) or 65.0
+        active_flow_floor = 15.0 * eff_lot
+
+        if is_call:
+            if cs <= 0:
+                return False, "p5_call_sell_vwap_missing", {}
+            opened_below = curr_bar.open <= cs or (prior_bar is not None and prior_bar.close <= cs)
+            if opened_below and spot > cs:
+                if self._check_dow_thrust_progression("UP", curr_bar, spot, atr):
+                    if (cb_flow + pb_flow) > active_flow_floor and pb_flow > (2.5 * max(cb_flow, 1.0)):
+                        return False, "p5_counter_liquidation_veto", {}
+
+                    lowest_low = min(prior_bar.low if prior_bar else curr_bar.low, curr_bar.low)
+                    highest_high = max(spot, curr_bar.high)
+                    sl_price = round(lowest_low - 0.10 * atr, 2)
+                    pending = [{"type": "mode_b_lockout", "key": lockout_key, "bar_idx": bar_idx}]
+                    if commit:
+                        self._mode_b_last_trigger_bar_idx[lockout_key] = bar_idx
+                        logger.info(
+                            f"[PriceActionEngine] [MODE_B_P5] CALL Writer Trap Squeeze at spot={spot:.2f} > "
+                            f"CallSellVWAP={cs:.2f} (T+{sec_in_min}s) | DowThrust=OK"
+                        )
+                    return True, "gamma_trap_squeeze", {
+                        "pillar": 5,
+                        "pillar_id": 5,
+                        "pa_setup_name": "gamma_trap_squeeze",
+                        "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
+                        "boundary_level": round(cs, 2),
+                        "writer_vwap": round(cs, 2),
+                        "sl_price": sl_price,
+                        "trigger_sec": sec_in_min,
+                        "bar_open": round(curr_bar.open, 2),
+                        "bar_high": round(curr_bar.high, 2),
+                        "bar_low": round(curr_bar.low, 2),
+                        "bar_close": round(spot, 2),
+                        "anchor_high": round(highest_high, 2),
+                        "anchor_low": round(lowest_low, 2),
+                        "entry_bar_bucket": int(now_sec // 60),
+                        "_pending_actions": pending,
+                        "opt_delta_flow": round(cb_flow - pb_flow, 1),
+                        "opt_total_vol": round(bull_flow + bear_flow, 1),
+                        "bull_flow": round(bull_flow, 1),
+                        "bear_flow": round(bear_flow, 1),
+                    }
+        else:
+            if ps <= 0:
+                return False, "p5_put_sell_vwap_missing", {}
+            opened_above = curr_bar.open >= ps or (prior_bar is not None and prior_bar.close >= ps)
+            if opened_above and spot < ps:
+                if self._check_dow_thrust_progression("DOWN", curr_bar, spot, atr):
+                    if (cb_flow + pb_flow) > active_flow_floor and cb_flow > (2.5 * max(pb_flow, 1.0)):
+                        return False, "p5_counter_liquidation_veto", {}
+
+                    highest_high = max(prior_bar.high if prior_bar else curr_bar.high, curr_bar.high)
+                    lowest_low = min(spot, curr_bar.low)
+                    sl_price = round(highest_high + 0.10 * atr, 2)
+                    pending = [{"type": "mode_b_lockout", "key": lockout_key, "bar_idx": bar_idx}]
+                    if commit:
+                        self._mode_b_last_trigger_bar_idx[lockout_key] = bar_idx
+                        logger.info(
+                            f"[PriceActionEngine] [MODE_B_P5] PUT Writer Trap Squeeze at spot={spot:.2f} < "
+                            f"PutSellVWAP={ps:.2f} (T+{sec_in_min}s) | DowThrust=OK"
+                        )
+                    return True, "gamma_trap_squeeze", {
+                        "pillar": 5,
+                        "pillar_id": 5,
+                        "pa_setup_name": "gamma_trap_squeeze",
+                        "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
+                        "boundary_level": round(ps, 2),
+                        "writer_vwap": round(ps, 2),
+                        "sl_price": sl_price,
+                        "trigger_sec": sec_in_min,
+                        "bar_open": round(curr_bar.open, 2),
+                        "bar_high": round(curr_bar.high, 2),
+                        "bar_low": round(curr_bar.low, 2),
+                        "bar_close": round(spot, 2),
+                        "anchor_high": round(highest_high, 2),
+                        "anchor_low": round(lowest_low, 2),
+                        "entry_bar_bucket": int(now_sec // 60),
+                        "_pending_actions": pending,
+                        "opt_delta_flow": round(cb_flow - pb_flow, 1),
+                        "opt_total_vol": round(bull_flow + bear_flow, 1),
+                        "bull_flow": round(bull_flow, 1),
+                        "bear_flow": round(bear_flow, 1),
+                    }
+
+        return False, "p5_no_trigger", {}
+
     def check_mode_b_breakthrough(
         self,
         direction: str,
@@ -2328,8 +2455,11 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         """
         Mode B: Live In-Flight Intra-Bar Breakthrough Surge (Semi-HFT Zero-Gating).
         Triggers instantly upon price breaking through:
-          1. Pillar 3: Volatility Squeeze Box Breakout (box_high for CALL, box_low for PUT).
-          2. Pillar 4: Dynamic S/R Registry Breakout (res for CALL, sup for PUT).
+          1. Pillar 5: Trapped Option Writer Short-Squeeze Engine (gamma_trap_squeeze).
+          2. Pillar 3: Volatility Squeeze Box Breakout (box_high for CALL, box_low for PUT).
+          3. Pillar 4: Dynamic S/R Registry Breakout (res for CALL, sup for PUT).
+          4. Pillar 1: 20 EMA Reversal Pierce (above/below prior bar extreme).
+          5. Pillar 2: Micro-Sweep Reclaim Pierce (above/below swept level).
         Active mid-bar from T:02s onwards (rollover guard T:00s-T:01s). Single-shot clean trigger without artificial
         body ratio, wick chokes, multi-tick delays, or point clearance hurdles.
         """
@@ -2363,14 +2493,32 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                 "trigger_sec": sec_in_min,
             }
 
-        # ─── Pain Zone VWAP Alignment Gate ───
+        bar_idx = self._total_bars_seen
+        prior_bar = self.bars_1m[-1] if self.bars_1m else None
+
+        # ─── 0. PILLAR 5: Trapped Option Writer Short-Squeeze (Mode B) ───
+        ok_p5, r_p5, det_p5 = self.check_pillar_5_gamma_trap(
+            direction=direction,
+            spot=spot,
+            atr=atr,
+            now_sec=now_sec,
+            sec_in_min=sec_in_min,
+            curr_bar=curr_bar,
+            prior_bar=prior_bar,
+            bar_idx=bar_idx,
+            bull_flow=bull_flow,
+            bear_flow=bear_flow,
+            commit=commit,
+        )
+        if ok_p5:
+            return True, "gamma_trap_squeeze", det_p5
+
+        # ─── Pain Zone VWAP Alignment Gate (Pillars 1 to 4) ───
         eff_vwap_mb = external_vwap if external_vwap > 0 else self.current_vwap
         if direction == "UP" and not self._pain_zone_vwap_aligned("CALL", spot, eff_vwap_mb):
             return False, "below_vwap", {}
         if direction == "DOWN" and not self._pain_zone_vwap_aligned("PUT", spot, eff_vwap_mb):
             return False, "above_vwap", {}
-
-        bar_idx = self._total_bars_seen
 
         # ─── 1. PILLAR 3: Squeeze Box Breakout (Mode B) ───
         last_p3 = self._mode_b_last_trigger_bar_idx.get("P3_BOX_BREAKTHROUGH", -100)

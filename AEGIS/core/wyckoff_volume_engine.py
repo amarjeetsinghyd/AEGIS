@@ -109,9 +109,11 @@ class WyckoffVolumeEngine:
         pa_name = str((pa_details or {}).get("pa_setup_name", ""))
         mode_val = str((pa_details or {}).get("mode", "")).upper()
         if pa_name.startswith(("mode_b_", "mode_a_")) or mode_val.startswith(("MODE_A", "MODE_B")):
+            pillar_id = (pa_details or {}).get("pillar") or (pa_details or {}).get("pillar_id")
+            is_p1 = (pillar_id == 1) or ("20_ema" in pa_name)
             live_delta = float((pa_details or {}).get("opt_delta_flow", 0.0))
             live_vol = float((pa_details or {}).get("opt_total_vol", 0.0))
-            n1_fp = (pa_details or {}).get("n1_footprint", {})
+            n1_fp = (pa_details or {}).get("n1_footprint", {}) if is_p1 else {}
             vdr_val = 0.50 if n1_fp.get("n1_vol_dryup", False) else 1.0
             absorption = 2.0 if n1_fp.get("n1_stopping_vol", False) else 1.0
             is_up = direction.upper() in ("UP", "CALL")
@@ -130,10 +132,11 @@ class WyckoffVolumeEngine:
                 "opt_delta_flow": round(live_delta, 1),
                 "opt_total_vol": round(live_vol, 1),
                 "ofi_delta": round(live_delta, 1),
-                "vdr": round(vdr_val, 2),
-                "absorption_score": round(absorption, 1),
-                "n1_footprint": n1_fp,
             }
+            if is_p1:
+                base_metrics["vdr"] = round(vdr_val, 2)
+                base_metrics["absorption_score"] = round(absorption, 1)
+                base_metrics["n1_footprint"] = n1_fp
 
             if is_opposing:
                 return False, "wyckoff_intrabar_opposing_flow_veto", {
@@ -179,7 +182,7 @@ class WyckoffVolumeEngine:
             passed, reason, m = self._evaluate_pillar_1_pullback(is_up, bars, v_base, eff_atr, pa_details=pa_details)
         elif pillar == 2:
             passed, reason, m = self._evaluate_pillar_2_sweep(is_up, bars, v_base, eff_atr, pa_details)
-        elif pillar in (3, 4):
+        elif pillar in (3, 4, 5):
             passed, reason, m = self._evaluate_pillar_breakout(is_up, bars, v_base, eff_atr, pillar)
         else:
             passed, reason, m = True, "unsupported_pillar_pass", {}
