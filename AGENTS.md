@@ -312,7 +312,34 @@ Rules every AI agent and contributor must uphold:
 ## 🛠️ QUANT-BOT DEVELOPER & DIAGNOSTIC TOOLBOX (PROFILING, DE-BLOATING & ASYNC AUDITING)
 
 > **Mandatory Tool Usage for AI Agents and Contributors**:
-> Do NOT guess, read thousands of lines manually, or speculate when debugging or de-bloating. Always use these 5 specialized tools to inspect live processes, eliminate dead code, trace async tick latency, and profile performance.
+> Do NOT guess, read thousands of lines manually, or speculate when debugging or de-bloating. Always use these specialized tools to inspect live processes, eliminate dead code, trace async tick latency, profile performance, and map execution flows.
+
+### 🤖 AUTOMATED AGENT WORKFLOW: HOW TO USE THESE TOOLS TO EXPLAIN CODE & TRACE FLOWS (MANDATORY)
+
+> **Mandate for All AI Agents**: Whenever the user (Amarjeet bhai) asks:
+> *"यह कोड कैसे काम करता है?"*, *"इस पिलर का एंड-टू-एंड डेटा फ्लो बताओ"*, *"इस बग का कारण क्या है?"*, या *"इसमें कौन-कौन से गेट्स चेक होते हैं?"*:
+> **Do NOT read thousands of lines manually** (burns context tokens and risks hallucinations).
+> **Follow this exact automated diagnostic protocol**:
+>
+> 1. **To Trace Logic & Execution Flow (Pillars, Gates, Breakouts)** $\implies$ **`python-hunter`**:
+>    - Run a targeted trace in `scratch/` or inline using `hunter.trace(Q(module_startswith="AEGIS.core", action=CallPrinter))`.
+>    - In 0.05 seconds, it extracts the exact execution path, parameters passed, internal branch decisions, and return values.
+>    - Present the verified logic trace to the user with exact line numbers and variables.
+>
+> 2. **To Map Function Callers, Callees & Semantic Hierarchy** $\implies$ **`SEMANTIC_MAP.md` & AST Graph**:
+>    - Query caller/callee relationships to find which modules invoke or depend on a function without scanning whole packages.
+>
+> 3. **To Explain Latency, Bottlenecks & Execution Timing** $\implies$ **`viztracer`**:
+>    - Record execution with `python -m viztracer --log_async -o trace.json <script>`.
+>    - Inspect microsecond elapsed time per gate and deliver concrete empirical latency numbers.
+>
+> 4. **To Inspect Stuck or Slow Live Engine on VPS** $\implies$ **`py-spy`**:
+>    - Run `sudo /home/opc/.local/bin/py-spy dump --pid <PID>` via SSH to get an instant live thread snapshot without pausing the process.
+>
+> 5. **To Find Dead Code or Zombie Logic** $\implies$ **`vulture` + `ruff` + `coverage --branch`**:
+>    - Run `vulture` for dead functions, `ruff` for unused imports/variables, and `coverage` branch tracking for dead code islands.
+
+---
 
 ### 1. `py-spy` — Zero-Overhead Live Process Profiler & Stuck-Process Inspector
 * **Location on VPS**: `/home/opc/.local/bin/py-spy` (Installed & Verified v0.4.3).
