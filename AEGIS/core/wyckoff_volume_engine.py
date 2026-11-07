@@ -596,6 +596,33 @@ class WyckoffVolumeEngine:
                     "verdict": "UPTHRUST_INSUFFICIENT_ABSORPTION_WICK",
                 }
 
+        # ─── VETO 4 & CONFIRMATION: Delta Flip Velocity (Wyckoff Spring & Upthrust) ───
+        # In a true Wyckoff Spring (CALL):
+        # Bar N-1 (the sweep bar) flushes liquidity on panic selling -> Delta N-1 <= 0.
+        # Bar N (reclaim bar) sees aggressive institutional buying -> Delta N >= 0.
+        # In a true Wyckoff Upthrust (PUT):
+        # Bar N-1 flushes buyers on FOMO greed -> Delta N-1 >= 0.
+        # Bar N sees aggressive institutional selling -> Delta N <= 0.
+        prev_bar = bars[-2] if len(bars) >= 2 else None
+        delta_n1 = 0.0
+        delta_curr = cb_curr - pb_curr
+        delta_flip_confirmed = False
+        if prev_bar:
+            pb_cb = float(getattr(prev_bar, "call_buy_vol", 0.0) or 0.0)
+            pb_pb = float(getattr(prev_bar, "put_buy_vol", 0.0) or 0.0)
+            delta_n1 = pb_cb - pb_pb
+            prev_has_opt = (pb_cb > 0 or pb_pb > 0)
+            curr_has_opt = (cb_curr > 0 or pb_curr > 0)
+            if prev_has_opt and curr_has_opt:
+                if is_up:
+                    delta_flip_confirmed = bool(delta_n1 <= 0.0 and delta_curr >= 0.0)
+                else:
+                    delta_flip_confirmed = bool(delta_n1 >= 0.0 and delta_curr <= 0.0)
+            else:
+                delta_flip_confirmed = False
+        else:
+            delta_flip_confirmed = False
+
         vol_curr = float(getattr(curr_bar, "volume", 0.0) or 0.0)
         vdr = (vol_curr / v_base) if v_base > 0 else 1.0
         norm_spread = max(spread / atr, 0.1)
@@ -606,13 +633,21 @@ class WyckoffVolumeEngine:
             "vdr": round(vdr, 2),
             "wick_ratio": round(wick_ratio, 2),
             "absorption_score": round(absorption_score, 2),
-            "opt_delta_flow": round(cb_curr - pb_curr, 1),
+            "opt_delta_flow": round(delta_curr, 1),
+            "live_opt_delta": round(delta_curr, 1),
+            "n1_opt_delta": round(delta_n1, 1),
+            "delta_n1": round(delta_n1, 1),
+            "delta_curr": round(delta_curr, 1),
+            "delta_flip_confirmed": delta_flip_confirmed,
+            "wyckoff_confirmed": bool(delta_flip_confirmed or (vdr >= 1.0)),
             "synthetic_net_delta": round(synth_delta, 1),
             "call_buy": cb_curr,
             "call_sell": cs_curr,
             "put_buy": pb_curr,
             "put_sell": ps_curr,
-            "verdict": "WYCKOFF_SPRING_ABSORPTION" if is_up else "WYCKOFF_UPTHRUST_ABSORPTION",
+            "verdict": ("WYCKOFF_DELTA_FLIP_SPRING" if delta_flip_confirmed else "WYCKOFF_SPRING_ABSORPTION") if is_up else (
+                "WYCKOFF_DELTA_FLIP_UPTHRUST" if delta_flip_confirmed else "WYCKOFF_UPTHRUST_ABSORPTION"
+            ),
         }
 
         return True, "wyckoff_spring_reclaim_confirmed", metrics

@@ -371,3 +371,27 @@ def test_wyckoff_inflight_fastpath_3_states():
 
 
 
+
+
+def test_wyckoff_pillar_2_delta_flip_confirmed():
+    """Tests that Pillar 2 Liquidity Sweep confirms Wyckoff Spring when delta flips from negative (N-1) to positive (N)."""
+    engine = WyckoffVolumeEngine(mode="ACTIVE")
+    bars = [MockBar(open=100.0, high=102.0, low=99.0, close=101.0, volume=1000.0) for _ in range(20)]
+
+    # N-1 Sweep bar: retail panics, puts bought (cb=200, pb=800 -> delta_n1 = -600 < 0)
+    sweep_bar = MockBar(open=99.0, high=100.0, low=98.0, close=98.5, volume=2000.0, call_buy_vol=200.0, put_buy_vol=800.0)
+    bars.append(sweep_bar)
+
+    # N Reclaim bar: smart money aggressively buys calls (cb=1200, pb=300 -> delta_curr = +900 > 0)
+    # Lower wick: open=98.8, close=99.8, low=98.0 -> lower wick = 0.6, spread = 2.0 -> wick_ratio = 0.30 >= 0.30
+    reclaim_bar = MockBar(open=98.8, high=100.0, low=98.0, close=99.8, volume=2500.0, call_buy_vol=1200.0, put_buy_vol=300.0)
+    bars.append(reclaim_bar)
+
+    passed, reason, metrics = engine.evaluate(pillar=2, direction="UP", bars=bars, atr=10.0)
+    assert passed is True
+    assert reason == "wyckoff_spring_reclaim_confirmed"
+    assert metrics["delta_n1"] == -600.0
+    assert metrics["delta_curr"] == 900.0
+    assert metrics["delta_flip_confirmed"] is True
+    assert metrics["wyckoff_confirmed"] is True
+    assert metrics["verdict"] == "WYCKOFF_DELTA_FLIP_SPRING"

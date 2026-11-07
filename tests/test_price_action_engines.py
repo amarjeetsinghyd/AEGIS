@@ -2084,15 +2084,15 @@ def test_5m_and_15m_sr_registry_discovery_and_mode_b_breakthrough():
 
     # 3. Feed 5m Bar 2 (ts 600 to 900): 5 1m bars pulling back to 74,260.0
 
-    for i in range(10, 15):
+    for i in range(10, 14):
 
         engine._on_1m_bar_close(OHLCBar(i * 60, (i + 1) * 60, 74300.0, 74310.0, 74250.0, 74260.0, volume=100.0))
 
+    engine._on_1m_bar_close(OHLCBar(14 * 60, 15 * 60, 74260.0, 74280.0, 74250.0, 74275.0, volume=100.0))
 
+    # Close 5m Bar 2 by starting bar 15 at ts 900.0 (Ascending ladder N-1)
 
-    # Close 5m Bar 2 by starting bar 15 at ts 900.0
-
-    engine._on_1m_bar_close(OHLCBar(15 * 60, 16 * 60, 74260.0, 74270.0, 74250.0, 74265.0, volume=100.0))
+    engine._on_1m_bar_close(OHLCBar(15 * 60, 16 * 60, 74275.0, 74320.0, 74270.0, 74315.0, volume=100.0))
 
 
 

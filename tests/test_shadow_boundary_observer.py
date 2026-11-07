@@ -332,7 +332,7 @@ def test_shadow_ema20_rejection_and_n1_footprint():
     mock_pae._opt_flow_1m = {"call_buy_vol": 8000.0, "put_buy_vol": 500.0}
     mock_pae.get_pain_zone_vwaps.return_value = {"zone_top": 0.0, "zone_bottom": 0.0}
     mock_pae.current_atr_1m = 10.0
-    mock_pae.ema_200_1m = 22400.0
+    mock_pae.ema_200_1m = 22500.0
     mock_pae.ema_20_1m = 22500.0
 
     observer = ShadowBoundaryObserver(price_action_engine=mock_pae, strike_step=50.0, log_dir="scratch")
@@ -345,7 +345,7 @@ def test_shadow_ema20_rejection_and_n1_footprint():
     observer._check_inflight_breakthrough(spot=22515.0, now_sec=now_sec)
     assert len(observer.active_trades) == 1
     trade = observer.active_trades[0]
-    assert trade.boundary == "EMA_20_REJECTION_BREAKOUT"
+    assert trade.boundary == "EMA_200_REJECTION_BREAKOUT"
     assert trade.direction == "UP"
 
     # Verify N-1 Wyckoff Footprint Telemetry
@@ -359,7 +359,7 @@ def test_shadow_breakthrough_late_in_candle_no_upper_cap():
     """Verify shadow breakthrough triggers at T:54s (no 48s upper cap) and respects T < 8s noise guard."""
     mock_pae = MagicMock()
     mock_pae.current_atr_1m = 10.0
-    mock_pae.ema_200_1m = 22400.0
+    mock_pae.ema_200_1m = 22500.0
     mock_pae.ema_20_1m = 22500.0
     mock_pae.get_pain_zone_vwaps.return_value = {"zone_top": 0.0, "zone_bottom": 0.0}
 
@@ -401,7 +401,7 @@ def test_shadow_breakthrough_late_in_candle_no_upper_cap():
     late_sec = now_base + 54.0
     observer._check_inflight_breakthrough(spot=22515.0, now_sec=late_sec)
     assert len(observer.active_trades) == 1
-    assert observer.active_trades[0].boundary == "EMA_20_REJECTION_BREAKOUT"
+    assert observer.active_trades[0].boundary == "EMA_200_REJECTION_BREAKOUT"
 
 
 def test_pain_zone_direct_breakout_call():

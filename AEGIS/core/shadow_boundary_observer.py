@@ -70,6 +70,7 @@ class ShadowTrade:
     n1_vol_dryup: bool = False
     n1_net_delta: float = 0.0
     n1_stopping_vol: bool = False
+    delta_flip: bool = False
 
     # Pain Zone 4-Line Snapshot & Band Spread (Empirical Tracking)
     pz_top: float = 0.0
@@ -407,6 +408,17 @@ class ShadowBoundaryObserver:
         ladder_up = self._check_rejection_approach_ladder("UP", bars)
         ladder_dn = self._check_rejection_approach_ladder("DOWN", bars)
 
+        # Delta Flip Calculation (Wyckoff Spring & Upthrust Reclaim)
+        # CALL: Testing N-1 had negative/exhaustion delta (<=0) and live bar has positive delta (>=0)
+        # PUT: Testing N-1 had positive/fomo delta (>=0) and live bar has negative delta (<=0)
+        live_delta = cb - pb
+        n1_delta = float(n1_fp.get("n1_net_delta", 0.0) or 0.0)
+        has_delta_data = (abs(n1_delta) > 0.0 or abs(live_delta) > 0.0)
+        delta_flip_up = bool(n1_delta <= 0.0 and live_delta >= 0.0) if has_delta_data else True
+        delta_flip_dn = bool(n1_delta >= 0.0 and live_delta <= 0.0) if has_delta_data else True
+        n1_fp_up = {**n1_fp, "delta_flip": delta_flip_up}
+        n1_fp_dn = {**n1_fp, "delta_flip": delta_flip_dn}
+
         # 1. Pain Zone Rejection-Breakout (LRRB)
         # Prior bar tested Pain Zone level, live candle breaks prior bar extreme (Strict 1-Bar Expiry)
         pz_top, pz_bot = self._get_pain_zone_levels(atr)
@@ -421,7 +433,7 @@ class ShadowBoundaryObserver:
                         self.last_trigger_bar_idx["PAIN_ZONE_REJECTION_BREAKOUT"] = bar_idx
                         lowest_low = min(prior_bar.low, curr_bar.low)
                         logger.info(f"[SHADOW_INTRABAR_SURGE] PAIN_ZONE_REJECTION_BREAKOUT CALL | Spot: {spot:.2f} >= AnchorHigh: {prior_bar.high:.2f} at T+{sec_in_min}s")
-                        self._open_shadow_trade("PAIN_ZONE_REJECTION_BREAKOUT", "UP", spot, prior_bar.high, lowest_low, now_sec, n1_fp)
+                        self._open_shadow_trade("PAIN_ZONE_REJECTION_BREAKOUT", "UP", spot, prior_bar.high, lowest_low, now_sec, n1_fp_up)
                         return
 
                 # Bearish Rejection Breakdown: Prior (or current) bar tested Pain Zone Bottom, live spot breaks prior bar Low
@@ -432,7 +444,7 @@ class ShadowBoundaryObserver:
                         self.last_trigger_bar_idx["PAIN_ZONE_REJECTION_BREAKOUT"] = bar_idx
                         highest_high = max(prior_bar.high, curr_bar.high)
                         logger.info(f"[SHADOW_INTRABAR_SURGE] PAIN_ZONE_REJECTION_BREAKOUT PUT | Spot: {spot:.2f} <= AnchorLow: {prior_bar.low:.2f} at T+{sec_in_min}s")
-                        self._open_shadow_trade("PAIN_ZONE_REJECTION_BREAKOUT", "DOWN", spot, highest_high, prior_bar.low, now_sec, n1_fp)
+                        self._open_shadow_trade("PAIN_ZONE_REJECTION_BREAKOUT", "DOWN", spot, highest_high, prior_bar.low, now_sec, n1_fp_dn)
                         return
 
         # 2. 200 EMA Rejection-Breakout (LRRB)
@@ -449,7 +461,7 @@ class ShadowBoundaryObserver:
                         self.last_trigger_bar_idx["EMA_200_REJECTION_BREAKOUT"] = bar_idx
                         lowest_low = min(prior_bar.low, curr_bar.low)
                         logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_200_REJECTION_BREAKOUT CALL | Spot: {spot:.2f} >= AnchorHigh: {prior_bar.high:.2f} at T+{sec_in_min}s")
-                        self._open_shadow_trade("EMA_200_REJECTION_BREAKOUT", "UP", spot, prior_bar.high, lowest_low, now_sec, n1_fp)
+                        self._open_shadow_trade("EMA_200_REJECTION_BREAKOUT", "UP", spot, prior_bar.high, lowest_low, now_sec, n1_fp_up)
                         return
 
                 # Bearish Rejection Breakdown: Prior (or current) bar tested 200 EMA from below, live spot breaks prior bar Low
@@ -460,35 +472,7 @@ class ShadowBoundaryObserver:
                         self.last_trigger_bar_idx["EMA_200_REJECTION_BREAKOUT"] = bar_idx
                         highest_high = max(prior_bar.high, curr_bar.high)
                         logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_200_REJECTION_BREAKOUT PUT | Spot: {spot:.2f} <= AnchorLow: {prior_bar.low:.2f} at T+{sec_in_min}s")
-                        self._open_shadow_trade("EMA_200_REJECTION_BREAKOUT", "DOWN", spot, highest_high, prior_bar.low, now_sec, n1_fp)
-                        return
-
-        # 3. 20 EMA Rejection-Breakout (LRRB Shadow Observer)
-        # Prior bar tested 20 EMA level, live candle breaks prior bar extreme (Strict 1-Bar Expiry)
-        ema20 = float(getattr(self.pa_engine, "ema_20_1m", 0.0) or 0.0)
-        if ema20 > 0:
-            last_trig_ema20 = self.last_trigger_bar_idx.get("EMA_20_REJECTION_BREAKOUT", -100)
-            if (bar_idx - last_trig_ema20) >= 3:
-                # Bullish Rejection Breakout: Prior (or current) bar tested 20 EMA from above, live spot breaks prior bar High
-                ema20_up_tested = (prior_bar.low <= ema20 + 0.25 * atr and prior_bar.high >= ema20)
-                ema20_up_action = (prior_bar.close <= prior_bar.open) or ((prior_bar.close - prior_bar.low) >= 0.15 * max(prior_bar.high - prior_bar.low, 0.1))
-                if ladder_up and ema20_up_tested and ema20_up_action and spot >= prior_bar.high:
-                    if self._check_wyckoff_harmony("UP", curr_bar):
-                        self.last_trigger_bar_idx["EMA_20_REJECTION_BREAKOUT"] = bar_idx
-                        lowest_low = min(prior_bar.low, curr_bar.low)
-                        logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_20_REJECTION_BREAKOUT CALL | Spot: {spot:.2f} >= AnchorHigh: {prior_bar.high:.2f} at T+{sec_in_min}s")
-                        self._open_shadow_trade("EMA_20_REJECTION_BREAKOUT", "UP", spot, prior_bar.high, lowest_low, now_sec, n1_fp)
-                        return
-
-                # Bearish Rejection Breakdown: Prior (or current) bar tested 20 EMA from below, live spot breaks prior bar Low
-                ema20_dn_tested = (prior_bar.high >= ema20 - 0.25 * atr and prior_bar.low <= ema20)
-                ema20_dn_action = (prior_bar.close >= prior_bar.open) or ((prior_bar.high - prior_bar.close) >= 0.15 * max(prior_bar.high - prior_bar.low, 0.1))
-                if ladder_dn and ema20_dn_tested and ema20_dn_action and spot <= prior_bar.low:
-                    if self._check_wyckoff_harmony("DOWN", curr_bar):
-                        self.last_trigger_bar_idx["EMA_20_REJECTION_BREAKOUT"] = bar_idx
-                        highest_high = max(prior_bar.high, curr_bar.high)
-                        logger.info(f"[SHADOW_INTRABAR_SURGE] EMA_20_REJECTION_BREAKOUT PUT | Spot: {spot:.2f} <= AnchorLow: {prior_bar.low:.2f} at T+{sec_in_min}s")
-                        self._open_shadow_trade("EMA_20_REJECTION_BREAKOUT", "DOWN", spot, highest_high, prior_bar.low, now_sec, n1_fp)
+                        self._open_shadow_trade("EMA_200_REJECTION_BREAKOUT", "DOWN", spot, highest_high, prior_bar.low, now_sec, n1_fp_dn)
                         return
 
         # 4. Pain Zone Direct Breakout / Breakdown (Mode B In-Flight Surge)
@@ -887,6 +871,7 @@ class ShadowBoundaryObserver:
             n1_vol_dryup=bool(n1.get("n1_vol_dryup", False)),
             n1_net_delta=float(n1.get("n1_net_delta", 0.0)),
             n1_stopping_vol=bool(n1.get("n1_stopping_vol", False)),
+            delta_flip=bool(n1.get("delta_flip", False)),
             pz_top=pz_top_val,
             pz_bottom=pz_bot_val,
             pz_mid=float(pz_dict.get("zone_mid", 0.0) or 0.0),
@@ -903,7 +888,7 @@ class ShadowBoundaryObserver:
             f"Spot: {spot:.2f} (SL: {spot_sl:.2f}) | "
             f"OTM5: {opt_sym} @ ₹{opt_lp:.2f} (TP +4%: ₹{tp_price:.2f}, SL -12%: ₹{sl_price:.2f}) | "
             f"N-1 Footprint: Vol={trade.n1_vol:.0f} (Base={trade.n1_baseline_vol:.0f}, Dry={trade.n1_vol_dryup}) "
-            f"NetDelta={trade.n1_net_delta:+.0f} StoppingVol={trade.n1_stopping_vol}"
+            f"NetDelta={trade.n1_net_delta:+.0f} DeltaFlip={trade.delta_flip} StoppingVol={trade.n1_stopping_vol}"
         )
 
     def _close_trade(self, trade: ShadowTrade, now_sec: float, exit_reason: str, outcome: str) -> None:
