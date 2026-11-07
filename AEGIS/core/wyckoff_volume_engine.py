@@ -184,7 +184,10 @@ class WyckoffVolumeEngine:
 
         metrics.update(m)
         if base_metrics:
-            metrics.update({k: v for k, v in base_metrics.items() if k not in metrics or k in ("opt_delta_flow", "opt_total_vol", "ofi_delta")})
+            live_delta_val = base_metrics.get("opt_delta_flow", 0.0)
+            metrics["live_opt_delta"] = live_delta_val
+            metrics["opt_delta_flow"] = live_delta_val
+            metrics.update({k: v for k, v in base_metrics.items() if k not in metrics or k in ("opt_total_vol", "ofi_delta")})
             if base_metrics.get("wyckoff_confirmed"):
                 metrics["wyckoff_confirmed"] = True
 
@@ -733,9 +736,11 @@ class WyckoffVolumeEngine:
                 box_expansion_ratio = vol_curr / box_avg
                 squeeze_expansion_confirmed = box_expansion_ratio >= 1.50
 
+        n1_delta = round(cb_curr - pb_curr, 1)
         metrics = {
             "vdr": round(vdr, 2),
-            "opt_delta_flow": round(cb_curr - pb_curr, 1),
+            "n1_opt_delta": n1_delta,
+            "opt_delta_flow": n1_delta,
             "synthetic_net_delta": round(synth_delta, 1),
             "call_buy": cb_curr,
             "call_sell": cs_curr,
