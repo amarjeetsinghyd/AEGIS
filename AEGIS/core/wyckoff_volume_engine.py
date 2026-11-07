@@ -106,9 +106,13 @@ class WyckoffVolumeEngine:
         if self.mode == "DISABLED":
             return True, "wyckoff_disabled", {}
 
+        base_metrics: Dict[str, Any] = {}
         pa_name = str((pa_details or {}).get("pa_setup_name", ""))
         mode_val = str((pa_details or {}).get("mode", "")).upper()
-        if pa_name.startswith(("mode_b_", "mode_a_")) or mode_val.startswith(("MODE_A", "MODE_B")):
+        is_inflight = pa_name.startswith(("mode_b_", "mode_a_")) or mode_val.startswith(("MODE_A", "MODE_B"))
+        is_up = direction.upper() in ("UP", "CALL")
+
+        if is_inflight:
             pillar_id = (pa_details or {}).get("pillar") or (pa_details or {}).get("pillar_id")
             is_p1 = (pillar_id == 1) or ("20_ema" in pa_name)
             live_delta = float((pa_details or {}).get("opt_delta_flow", 0.0))
@@ -116,8 +120,7 @@ class WyckoffVolumeEngine:
             n1_fp = (pa_details or {}).get("n1_footprint", {}) if is_p1 else {}
             vdr_val = 0.50 if n1_fp.get("n1_vol_dryup", False) else 1.0
             absorption = 2.0 if n1_fp.get("n1_stopping_vol", False) else 1.0
-            is_up = direction.upper() in ("UP", "CALL")
-            
+
             # Explicit 3-State In-Flight Flow Contract:
             # 1. Aligned Flow: Delta matches trade direction -> Approved & wyckoff_confirmed=True
             # 2. Opposing Flow: Delta swamps against trade direction -> Hard Veto & wyckoff_confirmed=False
@@ -132,6 +135,8 @@ class WyckoffVolumeEngine:
                 "opt_delta_flow": round(live_delta, 1),
                 "opt_total_vol": round(live_vol, 1),
                 "ofi_delta": round(live_delta, 1),
+                "flow_state": "opposing" if is_opposing else ("aligned" if is_aligned else "neutral"),
+                "wyckoff_confirmed": bool(is_aligned),
             }
             if is_p1:
                 base_metrics["vdr"] = round(vdr_val, 2)
@@ -144,21 +149,11 @@ class WyckoffVolumeEngine:
                     "wyckoff_confirmed": False,
                     "flow_state": "opposing",
                 }
-            elif is_aligned:
-                return True, "wyckoff_intrabar_inflight_confirmed", {
-                    **base_metrics,
-                    "wyckoff_confirmed": True,
-                    "flow_state": "aligned",
-                }
-            else:
-                return True, "wyckoff_intrabar_neutral_flow", {
-                    **base_metrics,
-                    "wyckoff_confirmed": False,
-                    "flow_state": "neutral",
-                }
 
         if not bars or len(bars) < 4:
             # Insufficient bars at market open -> fail open
+            if is_inflight and base_metrics:
+                return True, "wyckoff_intrabar_inflight_confirmed" if base_metrics.get("wyckoff_confirmed") else "wyckoff_intrabar_neutral_flow", base_metrics
             return True, "warmup_insufficient_bars", {}
 
         curr_bar = bars[-1]
@@ -188,6 +183,10 @@ class WyckoffVolumeEngine:
             passed, reason, m = True, "unsupported_pillar_pass", {}
 
         metrics.update(m)
+        if base_metrics:
+            metrics.update({k: v for k, v in base_metrics.items() if k not in metrics or k in ("opt_delta_flow", "opt_total_vol", "ofi_delta")})
+            if base_metrics.get("wyckoff_confirmed"):
+                metrics["wyckoff_confirmed"] = True
 
         if self.mode == "SHADOW":
             # In shadow mode, log verdict but never block
@@ -719,6 +718,21 @@ class WyckoffVolumeEngine:
                 "verdict": "PHANTOM_DRIFT",
             }
 
+        # ─── N-1 Demand Ignition / Volume Expansion Ratio (VER) ───
+        is_n1_directional = (curr_bar.close > curr_bar.open) if is_up else (curr_bar.close < curr_bar.open)
+        n1_demand_ignition = bool(vdr >= 1.10 and is_n1_directional)
+
+        # ─── Squeeze Box Volume Expansion (Pillar 3) ───
+        box_expansion_ratio = 1.0
+        squeeze_expansion_confirmed = False
+        if pillar == 3 and len(bars) >= 6:
+            box_bars = bars[-6:-1]
+            box_vols = [float(getattr(b, "volume", 0.0) or 0.0) for b in box_bars]
+            box_avg = sum(box_vols) / len(box_vols) if box_vols else 0.0
+            if box_avg > 0:
+                box_expansion_ratio = vol_curr / box_avg
+                squeeze_expansion_confirmed = box_expansion_ratio >= 1.50
+
         metrics = {
             "vdr": round(vdr, 2),
             "opt_delta_flow": round(cb_curr - pb_curr, 1),
@@ -727,7 +741,13 @@ class WyckoffVolumeEngine:
             "call_sell": cs_curr,
             "put_buy": pb_curr,
             "put_sell": ps_curr,
-            "verdict": "WYCKOFF_SOS_HARMONY",
+            "n1_ver": round(vdr, 2),
+            "n1_demand_ignition": n1_demand_ignition,
+            "wyckoff_confirmed": bool(n1_demand_ignition or (vdr >= 1.0)),
+            "verdict": "WYCKOFF_DEMAND_IGNITION_CONFIRMED" if n1_demand_ignition else "WYCKOFF_SOS_HARMONY",
         }
+        if pillar == 3:
+            metrics["box_expansion_ratio"] = round(box_expansion_ratio, 2)
+            metrics["squeeze_expansion_confirmed"] = squeeze_expansion_confirmed
 
         return True, "wyckoff_breakout_harmony_confirmed", metrics

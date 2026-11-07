@@ -201,3 +201,99 @@ def test_wyckoff_vdr_absorption_non_p1_disentangled():
     assert "absorption_score" in metrics_p1
     assert metrics_p1["vdr"] == 0.50
     assert metrics_p1["absorption_score"] == 2.0
+
+
+def test_pillar_4_approach_ladder_enforcement():
+    """Validates that Pillar 4 Dynamic S/R Breakout enforces the strict 2-Candle Approach Ladder."""
+    from AEGIS.core.structural_registry import StructuralLevel
+
+    pae = PriceActionEngine(strike_step=50.0)
+    pae.current_atr_1m = 10.0
+    now = 1700000000.0
+
+    # Add a Resistance level at 22500.0
+    res = StructuralLevel(
+        level_type="RESISTANCE",
+        price=22500.0,
+        ts_created=now - 600.0,
+        prominence=2.0,
+        seq_idx=1,
+        bar_idx=1,
+        touch_count=2,
+    )
+    pae.session_levels.append(res)
+    pae._total_bars_seen = 20
+
+    # Scenario A: Non-ascending ladder (N-1 High < N-2 High -> Failure)
+    b_n2_bad = _make_bar(22480, 22495, 22475, 22490, ts_start=now - 120.0)
+    b_n1_bad = _make_bar(22490, 22492, 22480, 22488, ts_start=now - 60.0)  # High 22492 < 22495
+    pae.bars_1m = [b_n2_bad, b_n1_bad]
+
+    pae._curr_1m_bar = _make_bar(22490, 22505, 22488, 22505, ts_start=now)
+    pae.last_price = 22505.0
+
+    ok_bad, _, _ = pae.check_mode_b_breakthrough("UP", current_time=now + 15.0)
+    assert ok_bad is False  # Rejected because 2-candle approach ladder failed!
+
+    # Scenario B: Clean ascending ladder (N-1 High > N-2 High, Low > Low, Close > Open)
+    b_n2_good = _make_bar(22475, 22485, 22470, 22482, ts_start=now - 120.0)
+    b_n1_good = _make_bar(22482, 22498, 22480, 22496, ts_start=now - 60.0)  # HH, HL, Green
+    pae.bars_1m = [b_n2_good, b_n1_good]
+
+    ok_good, reason_good, details_good = pae.check_mode_b_breakthrough("UP", current_time=now + 15.0)
+    assert ok_good is True
+    assert details_good["pillar"] == 4
+    assert details_good["approach_ladder"] is True
+
+
+def test_shadow_rejection_approach_ladder():
+    """Validates that ShadowBoundaryObserver requires sharp fall into support (CALL) and sharp rise into resistance (PUT)."""
+    from AEGIS.core.shadow_boundary_observer import ShadowBoundaryObserver
+    from unittest.mock import MagicMock
+
+    obs = ShadowBoundaryObserver(price_action_engine=MagicMock(), strike_step=50.0)
+
+    # CALL / Bullish Rejection: Needs Sharp Fall into support (N-1 High < N-2 High, N-1 Low < N-2 Low)
+    b_n2_call = _make_bar(22520, 22525, 22515, 22518)
+    b_n1_call_falling = _make_bar(22518, 22514, 22505, 22508)  # Sharp fall: 22514 < 22525 and 22505 < 22515
+    assert obs._check_rejection_approach_ladder("UP", [b_n2_call, b_n1_call_falling]) is True
+
+    b_n1_call_rising = _make_bar(22518, 22530, 22516, 22528)  # Rising: NOT a pullback into support!
+    assert obs._check_rejection_approach_ladder("UP", [b_n2_call, b_n1_call_rising]) is False
+
+    # PUT / Bearish Rejection: Needs Sharp Rise into resistance (N-1 High > N-2 High, N-1 Low > N-2 Low)
+    b_n2_put = _make_bar(22480, 22485, 22475, 22482)
+    b_n1_put_rising = _make_bar(22482, 22495, 22480, 22492)  # Sharp rise: 22495 > 22485 and 22480 > 22475
+    assert obs._check_rejection_approach_ladder("DOWN", [b_n2_put, b_n1_put_rising]) is True
+
+
+def test_wyckoff_n1_demand_ignition_and_squeeze_expansion():
+    """Validates that Wyckoff Engine calculates N-1 Demand Ignition VER and Squeeze Expansion."""
+    wy = WyckoffVolumeEngine(mode="ACTIVE")
+
+    # 20 baseline bars with 1000 volume
+    bars = [_make_bar(22400, 22410, 22390, 22405, vol=1000.0) for _ in range(20)]
+
+    # Bar N-1 has 1300 volume (VER = 1.30x >= 1.10x) and bullish close
+    b_n1_ignite = _make_bar(22405, 22425, 22400, 22422, vol=1300.0)
+    bars.append(b_n1_ignite)
+
+    passed, reason, metrics = wy.evaluate(
+        pillar=4,
+        direction="UP",
+        bars=bars,
+        atr=10.0,
+        pa_details={
+            "pillar": 4,
+            "pa_setup_name": "sr_breakout",
+            "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
+            "opt_delta_flow": 2000.0,
+            "opt_total_vol": 3000.0,
+        },
+    )
+
+    assert passed is True
+    assert metrics["n1_demand_ignition"] is True
+    assert metrics["n1_ver"] >= 1.10
+    assert metrics["wyckoff_confirmed"] is True
+
