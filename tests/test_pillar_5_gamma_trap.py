@@ -297,3 +297,45 @@ def test_wyckoff_n1_demand_ignition_and_squeeze_expansion():
     assert metrics["n1_ver"] >= 1.10
     assert metrics["wyckoff_confirmed"] is True
 
+
+def test_pillar_1_live_rejection_approach_ladder():
+    """Validates that Pillar 1 (20 EMA Rejection) Mode B enforces the strict Rejection Approach Ladder in production."""
+    pae = PriceActionEngine(strike_step=50.0)
+    pae.current_atr_1m = 10.0
+    pae.ema_20_1m = 22450.0
+    pae.ema_50_1m = 22440.0
+    now = 1792730040.0
+
+    # 12 base bars trending up
+    for i in range(12):
+        b = _make_bar(22450.0 + i, 22455.0 + i, 22448.0 + i, 22453.0 + i, vol=20000.0, ts_start=now + i * 60)
+        pae.bars_1m.append(b)
+    pae._total_bars_seen = 12
+
+    # Scenario A: Clean sharp fall pullback into 20 EMA (N-1 High < N-2 High, Low < Low)
+    # N-2 (i=11): High 22466, Low 22459
+    # N-1: High 22465 (< 22466), Low 22449 (< 22459) -> Valid Pullback Ladder!
+    pullback_valid = _make_bar(22464.0, 22465.0, 22449.0, 22451.0, vol=25000.0, ts_start=now + 12 * 60)
+    pae.bars_1m.append(pullback_valid)
+    pae._total_bars_seen = 13
+
+    # Forming bar pierces N-1 High 22465.0
+    pae._curr_1m_bar = _make_bar(22452.0, 22466.0, 22450.0, 22465.5, vol=15000.0, ts_start=now + 13 * 60)
+    pae.last_price = 22465.5
+    pae.last_ts = now + 13 * 60 + 15
+
+    ok_good, reason_good, details_good = pae.check_mode_b_breakthrough("UP", current_time=pae.last_ts)
+    assert ok_good is True
+    assert details_good["pillar"] == 1
+    assert details_good["rejection_ladder"] is True
+
+    # Scenario B: Invalid pullback ladder (N-1 made a HIGHER high than N-2 -> rising away, not falling into EMA!)
+    pae.bars_1m.pop()  # remove pullback_valid
+    pullback_bad = _make_bar(22464.0, 22470.0, 22450.0, 22468.0, vol=25000.0, ts_start=now + 12 * 60)  # High 22470 > N-2 High 22466
+    pae.bars_1m.append(pullback_bad)
+
+    pae._mode_b_last_trigger_bar_idx.clear()
+    ok_bad, _, _ = pae.check_mode_b_breakthrough("UP", current_time=pae.last_ts)
+    assert ok_bad is False  # Blocked because rejection approach ladder failed!
+
+
