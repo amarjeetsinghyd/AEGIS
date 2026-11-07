@@ -395,3 +395,28 @@ def test_wyckoff_pillar_2_delta_flip_confirmed():
     assert metrics["delta_flip_confirmed"] is True
     assert metrics["wyckoff_confirmed"] is True
     assert metrics["verdict"] == "WYCKOFF_DELTA_FLIP_SPRING"
+
+
+def test_wyckoff_pillar_1_delta_flip_confirmed():
+    """Tests that Pillar 1 20 EMA Rejection confirms when delta flips from negative (N-1) to positive (N)."""
+    engine = WyckoffVolumeEngine(mode="ACTIVE")
+    bars = [MockBar(open=100.0, high=102.0, low=99.0, close=101.0, volume=1000.0) for _ in range(20)]
+
+    # N-1 Pullback bar falling into 20 EMA: sellers dump (cb=100, pb=700 -> delta_n1 = -600 < 0)
+    pb_bar = MockBar(open=101.0, high=101.2, low=99.5, close=99.8, volume=1500.0, call_buy_vol=100.0, put_buy_vol=700.0)
+    bars.append(pb_bar)
+
+    # N Reversal bar: buyers bounce off 20 EMA (cb=900, pb=200 -> delta_curr = +700 > 0)
+    # Wick ratio >= 0.30: open=100.0, close=101.0, low=99.5, high=101.2 -> lower_wick = 0.5, spread = 1.7 -> wick_ratio = 0.29
+    # Make lower wick prominent: low=99.0, open=100.0, close=101.0, high=101.2 -> lower_wick = 1.0, spread = 2.2 -> wick_ratio = 0.45 >= 0.30
+    rev_bar = MockBar(open=100.0, high=101.2, low=99.0, close=101.0, volume=2000.0, call_buy_vol=900.0, put_buy_vol=200.0)
+    bars.append(rev_bar)
+
+    passed, reason, metrics = engine.evaluate(pillar=1, direction="UP", bars=bars, atr=10.0)
+    assert passed is True
+    assert reason == "wyckoff_pullback_exhaustion_confirmed"
+    assert metrics["delta_n1"] == -600.0
+    assert metrics["delta_curr"] == 700.0
+    assert metrics["delta_flip_confirmed"] is True
+    assert metrics["wyckoff_confirmed"] is True
+    assert metrics["verdict"] == "WYCKOFF_DELTA_FLIP_REJECTION"

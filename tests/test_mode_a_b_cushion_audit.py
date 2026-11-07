@@ -176,6 +176,7 @@ def test_mode_a_breakout_from_below_veto():
 
 
 
+@pytest.mark.skip(reason="DECOMMISSIONED: Mode A purged for Zero-Entropy; Priority Mode B is sole engine")
 def test_pillar_2_micro_sweep_mode_a_arming_and_piercing():
 
     """Verify that a valid 5-bar micro-sweep & reclaim arms Mode A and triggers pierce."""
@@ -328,6 +329,7 @@ def _arm_micro_sweep_pillar_2(pa, now):
 
 
 
+@pytest.mark.skip(reason="DECOMMISSIONED: Mode A purged for Zero-Entropy; Priority Mode B is sole engine")
 def test_mode_a_pierce_blocked_by_delta_harmony():
 
     """2026-10-26: a valid buffered pierce with in-flight OFI against the direction
@@ -372,6 +374,7 @@ def test_mode_a_pierce_blocked_by_delta_harmony():
 
 
 
+@pytest.mark.skip(reason="DECOMMISSIONED: Mode A purged for Zero-Entropy; Priority Mode B is sole engine")
 def test_mode_a_pierce_passes_with_harmonious_flow():
 
     """2026-10-26: harmonious in-flight flow (bull >= 1.25x bear, cb >= cs) lets a
@@ -416,6 +419,7 @@ def test_mode_a_pierce_passes_with_harmonious_flow():
 
 
 
+@pytest.mark.skip(reason="DECOMMISSIONED: Mode A purged for Zero-Entropy; Priority Mode B is sole engine")
 def test_mode_a_pierce_harmony_bypass_on_zero_flow():
 
     """2026-10-26: zero classified option flow (synthetic tests / warmup) must
@@ -546,6 +550,7 @@ def test_mode_b_breakthrough_pillar_3_and_pillar_4():
 
 
 
+@pytest.mark.skip(reason="DECOMMISSIONED: Mode A purged for Zero-Entropy; Priority Mode B is sole engine")
 def test_mode_a_pre_close_early_entry():
 
     """Verify that Mode A Pre-Close triggers at T:50s-T:58s before candle close."""

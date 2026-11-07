@@ -240,6 +240,7 @@ class TestPainZoneVwapAlignment:
 # SCENARIO 1: Fake Pillar 1 Breakout-from-Below (CALL)
 # ═══════════════════════════════════════════════════════════════
 
+@pytest.mark.skip(reason="DECOMMISSIONED: Mode A purged for Zero-Entropy; Priority Mode B is sole engine")
 class TestScenario1FakeP1BreakoutFromBelow:
     def test_control_legit_hammer_still_fires(self):
         """Sanity: identical scaffold with a legit hammer trigger (open ABOVE the
@@ -304,6 +305,7 @@ class TestScenario1FakeP1BreakoutFromBelow:
 # SCENARIO 2: Fake Pillar 1 Breakdown-from-Above (PUT)
 # ═══════════════════════════════════════════════════════════════
 
+@pytest.mark.skip(reason="DECOMMISSIONED: Mode A purged for Zero-Entropy; Priority Mode B is sole engine")
 class TestScenario2FakeP1BreakdownFromAbove:
     def test_control_legit_shooting_star_still_fires(self):
         pa = _build_p1_engine(_PUT_P1_BASE, trigger=_PUT_BC_CONTROL)
@@ -372,6 +374,7 @@ def _p2_sweep_bar(low, ts_idx, high=22462.0):
     return OHLCBar(ts_idx * 60.0, (ts_idx + 1) * 60.0, 22458.0, high, low, 22460.0, volume=80000.0)
 
 
+@pytest.mark.skip(reason="DECOMMISSIONED: Mode A purged for Zero-Entropy; Priority Mode B is sole engine")
 class TestScenario3ModeAP2SafetyParity:
     def _armed_engine(self, sweep_low=22445.0, spike_high=None, vwap=0.0):
         pa = PriceActionEngine()
@@ -551,6 +554,7 @@ class TestScenario5InFlightOptionFlowEnrichment:
         assert enriched["opt_delta_flow"] == pytest.approx(cb - pb, abs=1.0)
         assert enriched["call_buy_vol"] == pytest.approx(cb, abs=1.0)
 
+    @pytest.mark.skip(reason="DECOMMISSIONED: Mode A purged for Zero-Entropy; Priority Mode B is sole engine")
     def test_mode_a_preclose_details_carry_live_opt_flow(self):
         pa = _build_p1_engine(_CALL_P1_BASE)
         _set_forming(pa, len(_CALL_P1_BASE), *_CALL_CONTROL[:3], spot=_CALL_CONTROL[3], vol=100.0, opt_flow=_BULL_FLOW)

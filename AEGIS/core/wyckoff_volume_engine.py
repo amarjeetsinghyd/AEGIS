@@ -297,6 +297,21 @@ class WyckoffVolumeEngine:
 
             # ─── CONFIRMATION: Dow Swing Volume Retracement & Entry Volume Check ───
             synth_delta = (cb_curr + ps_curr) - (pb_curr + cs_curr)
+            prev_bar = bars[-2] if len(bars) >= 2 else None
+            delta_n1 = 0.0
+            delta_curr = cb_curr - pb_curr
+            delta_flip_confirmed = False
+            if prev_bar:
+                pb_cb = float(getattr(prev_bar, "call_buy_vol", 0.0) or 0.0)
+                pb_pb = float(getattr(prev_bar, "put_buy_vol", 0.0) or 0.0)
+                delta_n1 = pb_cb - pb_pb
+                prev_has_opt = (pb_cb > 0 or pb_pb > 0)
+                curr_has_opt = (cb_curr > 0 or pb_curr > 0)
+                if prev_has_opt and curr_has_opt:
+                    if is_up:
+                        delta_flip_confirmed = bool(delta_n1 <= 0.0 and delta_curr >= 0.0)
+                    else:
+                        delta_flip_confirmed = bool(delta_n1 >= 0.0 and delta_curr <= 0.0)
             if vdr <= 1.05 and (vol_curr >= 0.70 * pb_avg_vol or vol_curr == 0.0):
                 verdict = "SUPPLY_DRYUP_TEST" if vdr <= self.supply_dry_test_ratio else "DOW_SWING_VOLUME_CONFIRMED"
                 metrics = {
@@ -306,6 +321,12 @@ class WyckoffVolumeEngine:
                     "entry_vol": round(vol_curr, 1),
                     "absorption_score": 1.0,
                     "opt_delta_flow": round(cb_curr - pb_curr, 1),
+                    "live_opt_delta": round(cb_curr - pb_curr, 1),
+                    "n1_opt_delta": round(delta_n1, 1),
+                    "delta_n1": round(delta_n1, 1),
+                    "delta_curr": round(delta_curr, 1),
+                    "delta_flip_confirmed": delta_flip_confirmed,
+                    "wyckoff_confirmed": bool(delta_flip_confirmed or (vdr <= 0.85)),
                     "synthetic_net_delta": round(synth_delta, 1),
                     "call_buy": cb_curr,
                     "call_sell": cs_curr,
@@ -484,10 +505,27 @@ class WyckoffVolumeEngine:
             }
 
         synth_delta = (cb_curr + ps_curr) - (pb_curr + cs_curr)
+        prev_bar = bars[-2] if len(bars) >= 2 else None
+        delta_n1 = 0.0
+        delta_curr = cb_curr - pb_curr
+        delta_flip_confirmed = False
+        if prev_bar:
+            pb_cb = float(getattr(prev_bar, "call_buy_vol", 0.0) or 0.0)
+            pb_pb = float(getattr(prev_bar, "put_buy_vol", 0.0) or 0.0)
+            delta_n1 = pb_cb - pb_pb
+            prev_has_opt = (pb_cb > 0 or pb_pb > 0)
+            curr_has_opt = (cb_curr > 0 or pb_curr > 0)
+            if prev_has_opt and curr_has_opt:
+                if is_up:
+                    delta_flip_confirmed = bool(delta_n1 <= 0.0 and delta_curr >= 0.0)
+                else:
+                    delta_flip_confirmed = bool(delta_n1 >= 0.0 and delta_curr <= 0.0)
 
-        verdict = "ASYMMETRIC_STOPPING_ABSORPTION" if is_asym_absorption else (
-            "EXPANSION_RETEST_CONFIRMATION" if is_expansion_retest else (
-                "SUPPLY_DRYUP_TEST" if is_deep_dry_test else "WYCKOFF_PULLBACK_EXHAUSTION"
+        verdict = "WYCKOFF_DELTA_FLIP_REJECTION" if delta_flip_confirmed else (
+            "ASYMMETRIC_STOPPING_ABSORPTION" if is_asym_absorption else (
+                "EXPANSION_RETEST_CONFIRMATION" if is_expansion_retest else (
+                    "SUPPLY_DRYUP_TEST" if is_deep_dry_test else "WYCKOFF_PULLBACK_EXHAUSTION"
+                )
             )
         )
 
@@ -503,6 +541,12 @@ class WyckoffVolumeEngine:
             "is_stopping_vol": is_stopping_vol,
             "is_expansion_retest": is_expansion_retest,
             "opt_delta_flow": round(cb_curr - pb_curr, 1),
+            "live_opt_delta": round(cb_curr - pb_curr, 1),
+            "n1_opt_delta": round(delta_n1, 1),
+            "delta_n1": round(delta_n1, 1),
+            "delta_curr": round(delta_curr, 1),
+            "delta_flip_confirmed": delta_flip_confirmed,
+            "wyckoff_confirmed": bool(delta_flip_confirmed or is_dry_approach or is_stopping_vol),
             "synthetic_net_delta": round(synth_delta, 1),
             "call_buy": cb_curr,
             "call_sell": cs_curr,

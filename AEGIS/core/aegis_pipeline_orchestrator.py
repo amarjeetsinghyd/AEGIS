@@ -625,8 +625,7 @@ class AegisPipelineOrchestrator:
                 anchor_arg = anchor_T if use_anchor else None
                 setup_mode = str(pa_details.get("mode", ""))
                 is_mode_b_setup = setup_mode == "MODE_B_INFLIGHT_BREAKTHROUGH"
-                is_preclose_setup = setup_mode == "MODE_A_PRECLOSE"
-                live_lookback = 10.0 if is_mode_b_setup else 30.0 if is_preclose_setup else None
+                live_lookback = 10.0 if is_mode_b_setup else None
 
                 score = 0.0
 

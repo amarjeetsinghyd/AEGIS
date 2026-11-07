@@ -264,10 +264,8 @@ def build_minute_digest(now, aegis_engine, trader, spot_price):
                 if getattr(pae, 'current_atr_1m', 0.0) > 0:
                     seg.append(f"ATR:{pae.current_atr_1m:.1f}({pae.atr_ratio:.2f}x)")
 
-                # Active Price Action Setup Status (passive display only — never mutate state on main loop thread)
-                armed_cnt = len(getattr(pae, "_mode_a_armed_setups", {}))
-                pa_status = f"ARMED({armed_cnt})" if armed_cnt > 0 else "IDLE"
-                seg.append(f"PA:{pa_status}")
+                # Active Price Action Setup Status (Priority Mode B Sole Engine)
+                seg.append("PA:MODE_B_ACTIVE")
         except Exception:
             pass
 
