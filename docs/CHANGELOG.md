@@ -1,6 +1,40 @@
 # Changelog
 
-## [Unreleased] - 2026-11-02 (GEX & Iceberg Shadow Modules, DumpDetector Integration, Double-Lot PnL Guard, SR Breakout Sanitization, Shoonya Off-Market WS Storm Silencing & Trade History Deployment)
+## [1.0.3] - 2026-11-07 (5-Pillars Microstructure Upgrade: Strict Approach & Rejection Ladders, Delta Flip Velocity, Confirmed Sweep Activation, Shadow 20 EMA Removal & Zero-Entropy Mode A Purge)
+
+### Macro Price Action & In-Flight Execution
+- **Strict 2-Candle Approach Ladder in Pillar 4 (Dynamic S/R Breakout)** (`AEGIS/core/price_action_engine.py`):
+  - Enforced monotonic 2-candle staircase ladder on closed bars prior to breakout:
+    * CALL: High(N-1) > High(N-2) and Low(N-1) > Low(N-2) and Close(N-1) > Open(N-1) (green ascending ladder piercing resistance from below).
+    * PUT: High(N-1) < High(N-2) and Low(N-1) < Low(N-2) and Close(N-1) < Open(N-1) (red descending ladder piercing support from above).
+- **Strict 2-Candle Rejection Ladder in Pillar 1 (20 EMA Rejection)** (`AEGIS/core/price_action_engine.py`):
+  - Enforced sharp pullback approach ladder into 20 EMA:
+    * CALL: High(N-1) < High(N-2) and Low(N-1) < Low(N-2) (sharp plunge into 20 EMA from above).
+    * PUT: High(N-1) > High(N-2) and Low(N-1) > Low(N-2) (sharp rise into 20 EMA from below).
+- **Mode A 100% Decommission & Zero-Entropy Purge** (`AEGIS/core/price_action_engine.py`, `AEGIS/core/aegis_pipeline_orchestrator.py`, `AEGIS/aegis_main.py`):
+  - Completely purged legacy 2-step Mode A arming state machine (`_mode_a_armed_setups`, `_evaluate_mode_a_arming`, `check_mode_a_pierce`, `check_mode_a_pre_close`), eliminating 530+ lines of redundant dead code.
+  - Locked **Priority Mode B In-Flight Breakthrough (T:02s onwards / No Upper Cap)** as the single, universal execution engine across ALL 5 Pillars.
+
+### Wyckoff Volume & Order Flow Engine
+- **Delta Flip Velocity in Pillar 1 (20 EMA Rejection)** (`AEGIS/core/wyckoff_volume_engine.py`):
+  - Enforced institutional order flow delta flip on reversal bounce:
+    * CALL: Testing bar N-1 negative delta (Delta_N-1 <= 0) -> Reversal bar N aggressive call buying flip (Delta_N >= 0).
+    * PUT: Testing bar N-1 positive delta (Delta_N-1 >= 0) -> Reversal bar N aggressive put buying flip (Delta_N <= 0).
+- **Pillar 2 Confirmed Sweep Order Flow Harmonization** (`AEGIS/core/wyckoff_volume_engine.py`, `AEGIS/core/sweep_stop_run_detector.py`):
+  - Prioritized `SweepStopRunDetector` (`SWEEP_CONFIRMED_STOP_HUNT` Burst Ratio >= 2.2x) as the primary live gatekeeper for Pillar 2.
+  - Decoupled delta flip into a non-clashing additive metric so it never conflicts with genuine stop hunt cascades.
+- **Pillar 3 Squeeze Box Expansion & Anti-Climax Cap** (`AEGIS/core/wyckoff_volume_engine.py`, `AEGIS/core/price_action_engine.py`):
+  - Squeeze-to-Expansion rate >= 1.50x baseline box volume rate.
+  - Participation floor (VDR < 0.40 veto) and anti-climax exhaustion cap (Candle <= 1.35x ATR_1m).
+
+### Shadow Microstructure & Telemetry
+- **20 EMA Removal from ShadowBoundaryObserver** (`AEGIS/core/shadow_boundary_observer.py`):
+  - Removed redundant `EMA_20_REJECTION_BREAKOUT` from shadow observer since 20 EMA Rejection is already active live in production as Pillar 1.
+  - Shadow boundary observer refocused strictly on **Absolute Pain Zone Band & 200 EMA Ribbon Breakout/Rejection Analytics**.
+- **Delta Flip Telemetry Ingestion** (`AEGIS/core/shadow_boundary_observer.py`):
+  - Added `delta_flip: bool` tracking to `ShadowTrade` and sub-minute telemetry logs.
+
+## [1.0.2] - 2026-11-02 (GEX & Iceberg Shadow Modules, DumpDetector Integration, Double-Lot PnL Guard, SR Breakout Sanitization, Shoonya Off-Market WS Storm Silencing & Trade History Deployment)
 
 ### Execution & Microstructure Protection
 - **DumpDetector EV Exit Integration** (`AEGIS/execution/dump_detector.py`, `AEGIS/execution/aegis_execution_manager.py`):
