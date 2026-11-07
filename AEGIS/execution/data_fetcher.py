@@ -1,13 +1,12 @@
 import os
 import time
 import pandas as pd
-import collections
 from datetime import datetime, timedelta, date
 
-from AEGIS.config.settings import BROKER
-ACTIVE_BROKER = (os.getenv("ACTIVE_BROKER") or BROKER).upper()
-
 from common.logger import get_logger
+from AEGIS.config.settings import BROKER
+
+ACTIVE_BROKER = (os.getenv("ACTIVE_BROKER") or BROKER).upper()
 logger = get_logger("data_fetcher")
 
 
@@ -42,93 +41,14 @@ def universe_has_both_sides(df) -> bool:
         return False
 
 
-
-# Cash Index tokens
-NIFTY_CASH_TOKEN = "26000"
-SENSEX_CASH_TOKEN = "1"
-
 class DataFetcher:
     def __init__(self, broker_gateway):
         self.broker = broker_gateway
         from AEGIS.core.instrument_repository import InstrumentRepository
         self.repo = InstrumentRepository()
-        self.candle_window = collections.deque(maxlen=512)
         self._cached_weekly_opts = None
         self._last_chain_fetch_ts = 0.0
         self._last_atm_cached = 0.0
-
-    def bootstrap_candle_window(self):
-        """
-        Fetches the last 7 trading days of Nifty 50 (or SENSEX) 5-minute candles
-        via the broker's REST API at market opening to seed the sliding window.
-        Attempts to load from disk cache first if available.
-        """
-        token, name, exchange = self.get_cash_index_token()
-        candle_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "scratch", f"underlying_candles_{name}.parquet")
-        
-        # Try loading from disk cache first
-        if os.path.exists(candle_file):
-            try:
-                df = pd.read_parquet(candle_file)
-                if not df.empty and len(df) >= 200:
-                    logger.info(f"Loading {name} candle sliding window from disk cache {candle_file}...")
-                    df = df.tail(512)
-                    self.candle_window.clear()
-                    for _, row in df.iterrows():
-                        self.candle_window.append(row.to_dict())
-                    logger.info(f"Successfully bootstrapped sliding window with {len(self.candle_window)} candles from disk.")
-                    return True
-            except Exception as e:
-                logger.warning(f"Failed to load candle cache from disk: {e}. Falling back to API bootstrap.")
-
-        logger.info(f"Bootstrapping {name} candle sliding window (last 7 trading days) via Broker REST API...")
-        df = self.get_historical_candles(exchange, token, "FIVE_MINUTE", days_back=12)
-        if df.empty:
-            logger.error(f"Failed to bootstrap candle window for {name}. REST API returned empty DataFrame.")
-            return False
-        df = df.tail(512)
-        self.candle_window.clear()
-        for _, row in df.iterrows():
-            self.candle_window.append(row.to_dict())
-        
-        # Save to disk cache
-        try:
-            os.makedirs(os.path.dirname(candle_file), exist_ok=True)
-            df.to_parquet(candle_file, index=False)
-            logger.info(f"Saved {len(df)} bootstrapped candles to disk cache: {candle_file}")
-        except Exception as e:
-            logger.error(f"Failed to save candle cache to disk: {e}")
-            
-        logger.info(f"Successfully bootstrapped sliding window with {len(self.candle_window)} candles for {name}.")
-        return True
-
-    def append_live_candle(self, candle_dict: dict):
-        self.candle_window.append(candle_dict)
-        ts = candle_dict.get('timestamp', 'N/A')
-        o = float(candle_dict.get('open', 0.0))
-        h = float(candle_dict.get('high', 0.0))
-        l = float(candle_dict.get('low', 0.0))
-        c = float(candle_dict.get('close', 0.0))
-        v = candle_dict.get('volume', 0)
-        
-        logger.info(f"[REST API CANDLE] Time: {ts} | Open: {o:.2f} | High: {h:.2f} | Low: {l:.2f} | Close: {c:.2f} | Vol: {v}")
-        logger.info(f"[SLIDING WINDOW] Appended candle [{ts}] to window (Total Size: {len(self.candle_window)}/512 candles).")
-        
-        # Save updated deque to disk cache
-        try:
-            _, name, _ = self.get_cash_index_token()
-            candle_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "scratch", f"underlying_candles_{name}.parquet")
-            df_to_save = pd.DataFrame(list(self.candle_window))
-            os.makedirs(os.path.dirname(candle_file), exist_ok=True)
-            df_to_save.to_parquet(candle_file, index=False)
-        except Exception as e:
-            logger.error(f"Failed to save live candle cache to disk: {e}")
-
-    def get_window_df(self) -> pd.DataFrame:
-        df = pd.DataFrame(list(self.candle_window))
-        if not df.empty:
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-        return df
 
     def get_index_ltp(self) -> float:
         # WS-driven spot: prefer footprint manager (live provider attribute),
@@ -258,14 +178,22 @@ class DataFetcher:
                 )
                 if isinstance(resp, list) and len(resp) > 0:
                     df = pd.DataFrame(resp)
-                    if 'time' in df.columns: df['timestamp'] = df['time']
-                    elif 'ssboe' in df.columns: df['timestamp'] = df['ssboe']
-                    if 'into' in df.columns: df['open'] = df['into']
-                    if 'inth' in df.columns: df['high'] = df['inth']
-                    if 'intl' in df.columns: df['low'] = df['intl']
-                    if 'intc' in df.columns: df['close'] = df['intc']
-                    if 'intv' in df.columns: df['volume'] = df['intv']
-                    elif 'v' in df.columns: df['volume'] = df['v']
+                    if 'time' in df.columns:
+                        df['timestamp'] = df['time']
+                    elif 'ssboe' in df.columns:
+                        df['timestamp'] = df['ssboe']
+                    if 'into' in df.columns:
+                        df['open'] = df['into']
+                    if 'inth' in df.columns:
+                        df['high'] = df['inth']
+                    if 'intl' in df.columns:
+                        df['low'] = df['intl']
+                    if 'intc' in df.columns:
+                        df['close'] = df['intc']
+                    if 'intv' in df.columns:
+                        df['volume'] = df['intv']
+                    elif 'v' in df.columns:
+                        df['volume'] = df['v']
                     
                     for col in ['open', 'high', 'low', 'close', 'volume']:
                         if col in df.columns:
