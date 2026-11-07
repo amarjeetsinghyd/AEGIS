@@ -387,6 +387,34 @@ Rules every AI agent and contributor must uphold:
     vizviewer trace.json
     ```
 
+### 6. `python-hunter` — Conditional Runtime Call Tracer (Logic X-Ray)
+* **Status**: Installed locally and on VPS (`hunter 3.9.0`).
+* **When to use**: Tracing the exact execution path, inputs, and outputs across pillars in 0.1s without manually opening or reading 3,000-line files.
+* **Key Usage**:
+  - **Targeted Pillar Call Trace**:
+    ```python
+    import hunter
+    from hunter import Q, CallPrinter
+    hunter.trace(Q(module_startswith="AEGIS.core", action=CallPrinter))
+    ```
+
+### 7. `coverage.py` with Branch Tracking — Dead Island & Zombie Code Hunter
+* **Status**: Installed locally and on VPS (`coverage 7.17.2`).
+* **When to use**: Detecting genuine **Zombie Code** that escapes `vulture` (e.g. dead islands where dead functions call dead functions, or unused dynamic mixin paths).
+* **Key Commands**:
+  - **Run Full Branch Coverage across Production Tests / Tick Replays**:
+    ```powershell
+    python -m coverage run --branch --source=AEGIS -m pytest tests/ -q
+    ```
+  - **Generate Itemized Zero-Hit Zombie Report**:
+    ```powershell
+    python -m coverage report --include="AEGIS/core/*,AEGIS/execution/*"
+    ```
+
+### 8. `hypothesis` — Property-Based Market Fuzzer (Edge-Case Bombardment)
+* **Status**: Installed locally and on VPS (`hypothesis 6.170.15`).
+* **When to use**: Fuzzing the 5 pillars against 1,000+ extreme synthetic market edge cases (Zero-spread doji, NaN depth, 0 ATR, 50 ticks/ms burst).
+
 ---
 
 ## WHEN IN DOUBT
