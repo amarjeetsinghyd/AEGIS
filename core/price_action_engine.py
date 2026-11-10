@@ -207,9 +207,6 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         self.baseline_atr_1m: float = 0.0
         self.atr_ratio: float = 1.0
 
-        # ─── P4 OPTIMIZATION: 60-Bar Median Volume O(1) Cache ───
-        self._cached_median_vol_60: float = 1.0
-
         # ─── Institutional VWAP State ───
         self._vwap_cum_vol_price: float = 0.0
         self._vwap_cum_vol: float = 0.0
@@ -360,7 +357,6 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
 
         self.bars_1m.append(bar)
         self._update_pz_intraday_bar_count()
-        self._update_median_vol_60()
         self._squeeze_box_cache.clear()
         self._cached_sr_candidates.clear()
 
@@ -461,19 +457,6 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         # 4. Dynamic Session S/R Level Registry Update (5m + 1m)
         self._update_structural_levels(bar, new_5m_bar=new_5m_bar)
 
-        # 5. Live update of 60-bar median volume cache for O(1) Wyckoff P4 lookups
-        self._update_median_vol_60()
-
-    def _update_median_vol_60(self) -> None:
-        """Updates cached 60-bar median volume on 1m bar close for O(1) Wyckoff lookups."""
-        if not self.bars_1m:
-            self._cached_median_vol_60 = 1.0
-            return
-        n = min(len(self.bars_1m), 60)
-        vols = [float(getattr(self.bars_1m[-i], "volume", 0.0) or 0.0) for i in range(1, n + 1)]
-        vols.sort()
-        self._cached_median_vol_60 = max(1.0, float(vols[len(vols) // 2]))
-
     def get_live_20_ema_and_slope(self) -> Tuple[float, float]:
         """
         Computes dynamic 20-EMA and slope on the active in-flight tick price.
@@ -545,7 +528,6 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
 
         if self.bars_1m:
             self.last_price = self.bars_1m[-1].close
-            self._update_median_vol_60()
         logger.info(f"[PriceActionEngine] Seeded {count} historical bars. Live 20 EMA: {self.ema_20_1m:.1f}, 200 EMA: {self.ema_200_1m:.1f}")
         return count
 
