@@ -1528,7 +1528,6 @@ class AegisExecutionManager:
         leg.highest_price = leg.entry_price
         leg.breakeven_locked = False
         leg.step1_sl_armed = False
-        leg.runner_locked = False
         
         if isinstance(self.order_lifecycle, PaperOrderLifecycle):
             self.tp_order_id = f"PAPER_TP_{leg.symbol}"
@@ -2792,11 +2791,6 @@ class AegisExecutionManager:
             # 🛡️ CAPITAL SELF-HEAL: reconcile funds with the broker AFTER the exit
             # SELL actually settles there (see _schedule_post_close_capital_resync).
             self._schedule_post_close_capital_resync()
-            if self.aegis_engine and getattr(self.aegis_engine, "chop_gate", None):
-                try:
-                    self.aegis_engine.chop_gate.register_trade_close(time.time())
-                except Exception:
-                    pass
             if self.trade_context == context:
                 self.trade_context = None
             self.tp_order_id = None
@@ -3149,7 +3143,6 @@ class AegisExecutionManager:
         exit_fut_px = float(getattr(self.aegis_engine, "last_futures_price", 0.0) if self.aegis_engine else 0.0)
         fut_delta_pts = round(exit_fut_px - entry_fut_px, 2) if (entry_fut_px > 0 and exit_fut_px > 0) else 0.0
         basis_pts_entry = float(dp.get("basis_pts", 0.0) or 0.0)
-        float(dp.get("basis_bps", 0.0) or 0.0)
 
         entry_latency_ms = float(dp.get("entry_latency_ms", 0.0) or 0.0)
         vol_burst_age_sec = float(dp.get("volatility_burst_age_sec", 0.0) or 0.0)
@@ -3393,7 +3386,6 @@ class AegisExecutionManager:
                         "highest_bid": getattr(leg, "highest_bid", leg.entry_price),
                         "breakeven_locked": getattr(leg, "breakeven_locked", False),
                         "step1_sl_armed": getattr(leg, "step1_sl_armed", False),
-                        "runner_locked": getattr(leg, "runner_locked", False),
                     }
                     for leg in self.trade_context.legs
                 ],
@@ -3464,7 +3456,6 @@ class AegisExecutionManager:
                 leg.highest_bid = float(ld.get("highest_bid", leg.entry_price) or leg.entry_price)
                 leg.breakeven_locked = bool(ld.get("breakeven_locked", False))
                 leg.step1_sl_armed = bool(ld.get("step1_sl_armed", False))
-                leg.runner_locked = bool(ld.get("runner_locked", False))
                 self.trade_context.add_leg(leg)
             self.trade_context.status = "OPEN"
             logger.warning("[AegisEM] Restored OPEN trade from disk")

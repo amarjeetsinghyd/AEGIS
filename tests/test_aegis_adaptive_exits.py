@@ -154,7 +154,6 @@ def create_test_manager(entry_price=19.30, spot_entry=23700.0, signal_type="PUT"
     )
     leg.highest_price = entry_price
     leg.breakeven_locked = False
-    leg.runner_locked = False
     context.add_leg(leg)
     context.status = "OPEN"
     em.trade_context = context
