@@ -201,10 +201,9 @@ class StructuralRegistryMixin:
         if cand_pcr <= 0 and total_calls > 0:
             cand_pcr = total_puts / total_calls
 
-        # 60m Median Volume for Scale-Invariant Volume Ratio (VR) - O(1) Cached Read
-        med_vol = getattr(self, "_cached_median_vol_60", 1.0)
-        vr = cand_vol / max(med_vol, 1.0) if med_vol > 0.0 else 1.0
-        vol_ratio_boost = 0.30 * min(2.5, max(0.0, vr - 1.0))
+        # Pure PA + Options Flow: Normal spot volume boost purged (Zero-Entropy)
+        vr = 1.0
+        vol_ratio_boost = 0.0
 
         # Check if prev bar was a freak 09:15 opening settlement spike
         ref_atr = atr if atr > 0 else (cand.high * 0.001)
@@ -239,8 +238,8 @@ class StructuralRegistryMixin:
                             tot_p = lvl.put_buy_vol + lvl.put_sell_vol
                             lvl.opt_pcr = round(tot_p / max(tot_c, 1.0), 2)
                             lvl.pcr_at_level = lvl.opt_pcr
-                            lvl.vol_ratio_at_level = round(lvl.volume / max(med_vol, 1.0), 2)
-                            retest_boost = 0.35 + (0.15 if vr >= 1.20 else 0.0) + (0.20 if tf_name in ("5m", "15m") else 0.0)
+                            lvl.vol_ratio_at_level = 1.0
+                            retest_boost = 0.35 + (0.20 if tf_name in ("5m", "15m") else 0.0)
                             lvl.prominence = round(lvl.prominence + retest_boost, 2)
                         else:
                             if tf_name in ("5m", "15m"):
@@ -299,8 +298,8 @@ class StructuralRegistryMixin:
                             tot_p = lvl.put_buy_vol + lvl.put_sell_vol
                             lvl.opt_pcr = round(tot_p / max(tot_c, 1.0), 2)
                             lvl.pcr_at_level = lvl.opt_pcr
-                            lvl.vol_ratio_at_level = round(lvl.volume / max(med_vol, 1.0), 2)
-                            retest_boost = 0.35 + (0.15 if vr >= 1.20 else 0.0) + (0.20 if tf_name in ("5m", "15m") else 0.0)
+                            lvl.vol_ratio_at_level = 1.0
+                            retest_boost = 0.35 + (0.20 if tf_name in ("5m", "15m") else 0.0)
                             lvl.prominence = round(lvl.prominence + retest_boost, 2)
                         else:
                             if tf_name in ("5m", "15m"):

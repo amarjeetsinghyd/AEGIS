@@ -639,16 +639,6 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         self._backfill_pending = False
         return added
 
-    def _evaluate_wyckoff_pillar_flow(
-        self,
-        pillar: int,
-        direction: str,
-        bar: Optional[OHLCBar] = None,
-        extra: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[bool, str, Dict[str, Any]]:
-        """DEPRECATED: Pure PA Engine delegates all volume evaluation to WyckoffVolumeEngine."""
-        return True, "wyckoff_delegated_to_volume_engine", {}
-
     def compute_n1_footprint(self, bar: Any, atr: float = 10.0) -> Dict[str, Any]:
         """
         Computes Wyckoff Volume & Order Flow Footprint on testing candle N-1:

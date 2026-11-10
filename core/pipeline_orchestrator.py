@@ -223,15 +223,6 @@ class AegisPipelineOrchestrator:
         self._veto_log_interval_sec = float(os.getenv("AEGIS_VETO_LOG_INTERVAL_SEC", "60.0"))
         self.outcome_telemetry = OutcomeTelemetryEngine(log_dir=telemetry_dir) if OutcomeTelemetryEngine is not None else None
         self.post_trade_tracker = PostTradeMilestoneTracker(log_dir=telemetry_dir) if PostTradeMilestoneTracker is not None else None
-        self.oi_gate = None
-        self._oi_kin_armed = 0
-        self._oi_kin_skipped = 0
-        self._oi_kin_vetoed = 0
-        self._oi_gate_vetoed = 0
-        self._di_vetoed = 0
-        self._last_wall_log_min = -1
-
-        self.vwap_engine = None
 
 
 
