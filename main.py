@@ -174,12 +174,6 @@ def _build_edges_snapshot(aegis_engine, trader):
                 "opt_spread_max": 2.5, "opt_depth_min": 500,
                 "premium_min": 5.0, "premium_max": 400.0,
             }
-            # OI shield telemetry (visibility only — gates untouched).
-            try:
-                if hasattr(aegis_engine, "get_oi_telemetry"):
-                    snap["oi"] = aegis_engine.get_oi_telemetry()
-            except Exception:
-                pass
         if trader is not None:
             from execution.execution_manager import MAX_TRADES_PER_DAY
             snap["risk"] = {
@@ -192,39 +186,6 @@ def _build_edges_snapshot(aegis_engine, trader):
     except Exception:
         pass
     return snap
-
-
-def _build_oi_universe_rows(token_map, t2s):
-    """Flattens token maps into OI poller rows (visibility only).
-
-    Returns [{token, sym, strike, kind}] for option contracts only
-    (kind 1=CE, 2=PE). Index/futures rows (strike<=0) are skipped.
-    """
-    rows = []
-    try:
-        for tkn, info in (token_map or {}).items():
-            try:
-                stk = float((info or {}).get("strike", 0.0) or 0.0)
-            except Exception:
-                continue
-            if stk <= 0:
-                continue
-            sym = str((t2s or {}).get(str(tkn), "") or "")
-            if not sym:
-                continue
-            try:
-                side = int((info or {}).get("side", 0))
-            except Exception:
-                side = 0
-            rows.append({
-                "token": str(tkn),
-                "sym": sym,
-                "strike": stk,
-                "kind": 1 if side == 0 else 2,
-            })
-    except Exception:
-        pass
-    return rows
 
 
 # ─── 1-Minute Digest for IPC/Monitoring — ACCURATE SYSTEM TELEMETRY ───
@@ -315,7 +276,7 @@ def build_minute_digest(now, aegis_engine, trader, spot_price):
 
     return " | ".join(seg)
 
-def shutdown_background_workers(trader=None, aegis_archiver=None, compiler=None, broker=None, oi_poller=None, reason="EOD Session Close"):
+def shutdown_background_workers(trader=None, aegis_archiver=None, compiler=None, broker=None, reason="EOD Session Close"):
     """Gracefully terminates all background threads, archivers, and broker websockets for clean off-market sleep."""
     logger.info(f"[AegisMain] Shutting down background workers ({reason})...")
 
@@ -357,14 +318,6 @@ def shutdown_background_workers(trader=None, aegis_archiver=None, compiler=None,
             logger.info("[AegisMain] Broker WebSocket cleanly closed for post-market sleep.")
         except Exception as e_ws:
             logger.warning(f"[AegisMain] WebSocket close warning: {e_ws}")
-
-    # 5. Stop OI Poller if active
-    if oi_poller is not None:
-        try:
-            oi_poller.stop()
-            logger.info("[AegisMain] OI poller stopped.")
-        except Exception:
-            pass
 
 def main():
     logger.info("==============================================")
@@ -583,13 +536,6 @@ def main():
 
 
 
-        # ─── OI Quotes Poller (DISABLED per operator directive) ───
-        # Operator policy: OI polling provides zero trading edge, pollutes logs,
-        # and exhausts broker REST API limits. Permanently disabled.
-        oi_universe = {"spot": 0.0, "strike_step": strike_step, "rows": []}
-        oi_poller = None
-        logger.info("[AegisMain] OI quotes poller permanently DISABLED (clean CPU & zero REST quote load)")
-        
         # ─── Execution Manager ───
         trader = AegisExecutionManager(
             broker_gateway=broker,
@@ -685,19 +631,13 @@ def main():
             
             # ─── Session Management ───
             if not is_bot_active_hours(now):
-                shutdown_background_workers(trader=trader, aegis_archiver=aegis_archiver, compiler=compiler, broker=broker, oi_poller=oi_poller, reason="EOD Session Close")
+                shutdown_background_workers(trader=trader, aegis_archiver=aegis_archiver, compiler=compiler, broker=broker, reason="EOD Session Close")
                 aegis_archiver = None
                 try:
                     update_aegis_live_state({"status": "SLEEPING", "market_state": "CLOSED", "pos": "FLAT", "trades_today": getattr(trader, "trades_today", 0), "daily_pnl": getattr(trader, "daily_pnl", 0.0)})
                 except Exception:
                     pass
                 logger.info("Bot active hours closed. Stopping background workers...")
-
-                if oi_poller is not None:
-                    try:
-                        oi_poller.stop()
-                    except Exception:
-                        pass
                 logger.info("Entering deep sleep until next pre-market (08:55 AM IST)...")
                 sleep_until_next_premarket()
                 logger.info("[AegisMain] Next pre-market reached. Exiting cleanly for fresh daily instrument boot (PM2 autorestart)...")
@@ -816,33 +756,14 @@ def main():
                                 compiler.subscribe(opt_refresh, exch_seg)
                         except Exception as e:
                             logger.warning(f"[AegisMain] compiler refresh failed: {e}")
-                        # Refresh OI poller universe so ATM±5 enrichment tracks expiry rolls.
-                        try:
-                            oi_universe["rows"] = _build_oi_universe_rows(refreshed_tmap, refreshed_t2s)
-                        except Exception:
-                            pass
 
                     if universe_has_both_sides(weekly_opts):
                         band_mgr.mark_refreshed(atm_strike, weekly_opts)
 
-                # OI poller spot refresh (every minute, off hot path).
-                try:
-                    if spot_price and spot_price > 0:
-                        oi_universe["spot"] = float(spot_price)
-                except Exception:
-                    pass
-                
                 # Log minute digest
                 digest = build_minute_digest(now, aegis_engine, trader, spot_price)
                 logger.info(digest)
 
-                # 15-minute OI fortress snapshot (off hot path, at most 1 per bucket).
-                try:
-                    if aegis_engine is not None and hasattr(aegis_engine, "maybe_log_wall_snapshot"):
-                        aegis_engine.maybe_log_wall_snapshot(spot_price, time.time())
-                except Exception:
-                    pass
-                
                 # IPC State Update
                 state_payload = {
                     "active_index": name,
@@ -876,16 +797,9 @@ def main():
     
     # ─── Graceful Shutdown ───
     logger.info("Shutting down AEGIS V1.0...")
-    shutdown_background_workers(trader=trader, aegis_archiver=aegis_archiver, compiler=compiler, broker=broker, oi_poller=oi_poller, reason="System Shutdown")
+    shutdown_background_workers(trader=trader, aegis_archiver=aegis_archiver, compiler=compiler, broker=broker, reason="System Shutdown")
     aegis_archiver = None
 
-    # Stop OI quotes poller (no new REST OI polls during teardown)
-    try:
-        if oi_poller is not None:
-            oi_poller.stop()
-            logger.info("[AegisMain] OI poller stopped")
-    except Exception as e_oi:
-        logger.warning(f"[AegisMain] OI poller stop warning (non-fatal): {e_oi}")
     trader.stop()
     if trader.has_open_trade():
         logger.warning("Force flattening open position on shutdown")

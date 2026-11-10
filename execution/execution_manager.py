@@ -275,11 +275,10 @@ def _round_tick(price: float, tick: float = OPTION_TICK_SIZE) -> float:
 
 class AegisExecutionManager:
     """
-    Execution layer for AEGIS Gamma Burst signals.
-    - Enters on GAMMA_BURST_ENTRY (direction + conviction)
-    - Exits on AEGIS exit signals (ξ_soft → 50% reduce, ξ_hard → flatten)
-    - Force-flattens at session end
-    - Feeds exact fill timestamps/prices back to AEGIS engine for latency decay
+    Execution layer for AEGIS Production v1.0.
+    - Enters on AEGIS signals (5 Macro Price Action Pillars + Mode B Mid-Bar Breakthrough)
+    - Execution: Strict 1-lot Maker TP (+4.0% Mon-Thu, +3.0% Fri), Universal Spot Invalidation, Atomic 0.75s fill window
+    - Risk Caps: Max 3 trades/day, Hard Disaster Floor (-8.0%), 15:08:00 IST CAS force flatten
     """
 
     def __init__(
@@ -1438,13 +1437,6 @@ class AegisExecutionManager:
                         "spot_sl_price": float(metrics.get("sl_price", 0.0) or 0.0),
                         "candle_high": float(metrics.get("bar_high", 0.0) or 0.0),
                         "candle_low": float(metrics.get("bar_low", 0.0) or 0.0),
-                        # ─── OI shield audit trail (visibility only — gates untouched) ───
-                        "oi_snapshot": metrics.get("oi_snapshot", {}),
-                        "oi_vel": float((metrics.get("oi_snapshot", {}) or {}).get("vel", 0.0)),
-                        "oi_acc": float((metrics.get("oi_snapshot", {}) or {}).get("acc", 0.0)),
-                        "oi_n": int((metrics.get("oi_snapshot", {}) or {}).get("n", 0)),
-                        "oi_builtup": str((metrics.get("oi_snapshot", {}) or {}).get("builtup", "UNKNOWN")),
-                        "oi_wall_dist_strikes": float((metrics.get("oi_snapshot", {}) or {}).get("wall_dist_strikes", 0.0)),
                         # ─── Pain Zone 4-Line Snapshot & Band Spread ───
                         "pain_zone_snapshot": metrics.get("pain_zone_snapshot", {}),
                         "pain_zone_top": float(metrics.get("pain_zone_top", 0.0) or 0.0),
@@ -1859,8 +1851,6 @@ class AegisExecutionManager:
                     market_struct = tb_engine.get_market_structure(context.signal_type) if (tb_engine and hasattr(tb_engine, "get_market_structure")) else "NEUTRAL"
                     # Live 20-EMA band alignment
                     live_ema, _ = getattr(tb_engine, "get_live_20_ema_and_slope", lambda: (0.0, 0.0))() if tb_engine else (0.0, 0.0)
-                    if live_ema <= 0 and tb_engine and hasattr(tb_engine, "get_live_ema_and_slope"):
-                        live_ema = tb_engine.get_live_ema_and_slope()[0]
                     is_opposed = (market_struct == "OPPOSED")
                     if live_ema > 0 and curr_spot > 0:
                         if context.signal_type == "CALL" and curr_spot < live_ema:

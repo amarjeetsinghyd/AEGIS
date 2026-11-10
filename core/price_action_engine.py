@@ -474,14 +474,6 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         live_slope_20_bps = (live_slope_20 / ref) * 10000.0
         return live_ema_20, live_slope_20_bps
 
-    def get_live_ema_and_slope(self) -> Tuple[float, float, float, float]:
-        """
-        Returns (live_ema_20, live_slope_20_bps, 0.0, 0.0)
-        for backward compatibility with legacy callers expecting 4-tuple EMA & slope metrics.
-        """
-        live_ema_20, live_slope_20_bps = self.get_live_20_ema_and_slope()
-        return live_ema_20, live_slope_20_bps, 0.0, 0.0
-
     def seed_historical_bars(self, candles: List[Dict[str, Any]]) -> int:
         """
         Pre-warms the engine with historical 1m bars from broker REST API

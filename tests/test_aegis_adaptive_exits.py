@@ -879,8 +879,6 @@ def test_point2_0dte_stagnation_trap_exit():
             return "NEUTRAL"
         def get_live_20_ema_and_slope(self):
             return (24050.0, -1.0)
-        def get_live_ema_and_slope(self):
-            return (24050.0, -1.0, 0.0, 0.0)
     em.aegis_engine.time_bar_engine = MockTBEngine()
     
     em._manage_open_trade(now=sim_now)
@@ -936,8 +934,8 @@ def test_pillar2_entry_candle_invalidation_and_no_9ema_choke():
             ]
         def get_market_structure(self, sig):
             return "NEUTRAL"
-        def get_live_ema_and_slope(self):
-            return (74875.0, 0.0, 74870.0, 0.0)
+        def get_live_20_ema_and_slope(self):
+            return (74875.0, 0.0)
 
     em.aegis_engine.time_bar_engine = MockTBEngineWith9EMA()
     em.data_fetcher._spot = 74870.0  # Above candle low (74870.0 > 74865.0)
@@ -982,8 +980,8 @@ def test_pillar1_entry_candle_invalidation_and_no_9ema_choke():
             ]
         def get_market_structure(self, sig):
             return "NEUTRAL"
-        def get_live_ema_and_slope(self):
-            return (74875.0, 0.0, 74870.0, 0.0)
+        def get_live_20_ema_and_slope(self):
+            return (74875.0, 0.0)
 
     em.aegis_engine.time_bar_engine = MockTBEngineWith9EMA()
     em.data_fetcher._spot = 74870.0  # Above candle low (74870.0 > 74865.0)
@@ -1028,8 +1026,8 @@ def test_pillar3_entry_candle_invalidation_and_no_9ema_choke():
             ]
         def get_market_structure(self, sig):
             return "NEUTRAL"
-        def get_live_ema_and_slope(self):
-            return (74875.0, 0.0, 74870.0, 0.0)
+        def get_live_20_ema_and_slope(self):
+            return (74875.0, 0.0)
 
     em.aegis_engine.time_bar_engine = MockTBEngineWith9EMA()
     em.data_fetcher._spot = 74870.0  # Above candle low (74870.0 > 74865.0)

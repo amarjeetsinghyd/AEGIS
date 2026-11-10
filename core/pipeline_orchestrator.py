@@ -310,14 +310,9 @@ class AegisPipelineOrchestrator:
         # Adaptive Veto Gate & Horizon Alignment Parameters
         self.moderate_conviction_threshold = float(self.P.get("moderate_conviction_threshold", 60.0))
         self.min_tick_rate_gate = float(self.P.get("min_tick_rate_gate", 0.05))
-        # V3.0 DEPRECATED: forward impulse memory eliminated. Backward-looking
-        # event-bound slicing (T-60s to T) is the sole validator. Attribute kept
-        # for backward import compat only; always empty, purged on any failure.
-        self.impulse_validity_window_sec = 0.0
         self.volatility_memory_window_sec = float(self.P.get("volatility_memory_window_sec", 300.0))  # 5-min macro volatility memory
         self.last_volatility_burst_ts: float = -1.0e18
         self.macro_drift_target_bps = float(self.P.get("macro_drift_target_bps", 1.0))
-        self.impulse_memory: Dict[str, Tuple[float, float, float]] = {}
 
         # Active Index Futures Tracking & Lead-Lag Basis Engine
         self.last_futures_price: float = 0.0
@@ -599,9 +594,8 @@ class AegisPipelineOrchestrator:
 
                 # PA-only mode: hidden microstructure route removed.
                 # System fires ONLY on the 4 pillars; microstructure stays as validator.
-                # V3.0 DROP policy: no pillar => instant discard, purge impulse.
+                # V3.0 DROP policy: no pillar => instant discard.
                 if not is_pa_setup:
-                    self._purge_impulse_memory(sym)
                     return None
 
                 # ─── V3.0 Event-Bound Anchor T (formal 1m close) & Timing Anchors ───
@@ -611,8 +605,6 @@ class AegisPipelineOrchestrator:
                 setup_mode = str(pa_details.get("mode", ""))
                 is_mode_b_setup = setup_mode == "MODE_B_INFLIGHT_BREAKTHROUGH"
                 live_lookback = 10.0 if is_mode_b_setup else None
-
-                self._purge_impulse_memory(sym)
 
                 # ─── Wyckoff Volume & Order Flow Delta Gate (Shadow Mode Observability) ───
                 wyckoff_passed = True
@@ -666,7 +658,6 @@ class AegisPipelineOrchestrator:
                         if pa_eng and hasattr(pa_eng, "check_key_level_proximity"):
                             key_ok, key_reason, key_m = pa_eng.check_key_level_proximity(direction, self.last_spot)
                             if not key_ok:
-                                self._purge_impulse_memory(sym)
                                 self._throttled_veto_log(
                                     "key_level_veto",
                                     f"[KEY LEVEL VETO] {sym} ({direction}) blocked: {key_reason} "
@@ -739,7 +730,6 @@ class AegisPipelineOrchestrator:
                                 # Mode B In-Flight: extract live micro metrics from immediate rolling 10s buffer
                                 # to ensure touch_i1, real spread_pct and depth are verified upfront
                                 if not self.conviction_engine or not self.scorer:
-                                    self._purge_impulse_memory(sym)
                                     self._throttled_veto_log(
                                         "v3_circuit_breaker",
                                         f"[V3 CIRCUIT BREAKER] {sym} ({direction}) {pa_setup_name} P{pillar} blocked in Mode B: "
@@ -748,7 +738,6 @@ class AegisPipelineOrchestrator:
                                     return None
                                 buf = self.scorer.history.get(sym)
                                 if not buf:
-                                    self._purge_impulse_memory(sym)
                                     self._throttled_veto_log(
                                         "v3_circuit_breaker",
                                         f"[V3 CIRCUIT BREAKER] {sym} ({direction}) {pa_setup_name} P{pillar} blocked in Mode B: no_ticks_in_buffer",
@@ -760,7 +749,6 @@ class AegisPipelineOrchestrator:
                                     lookback_sec=10.0 if is_mode_b else 30.0,
                                 )
                                 if not micro_m.get("is_valid", False):
-                                    self._purge_impulse_memory(sym)
                                     self._throttled_veto_log(
                                         "v3_circuit_breaker",
                                         f"[V3 CIRCUIT BREAKER] {sym} ({direction}) {pa_setup_name} P{pillar} blocked in Mode B: "
@@ -793,7 +781,6 @@ class AegisPipelineOrchestrator:
 
                                     # Hard Circuit Breaker Check (Liquid market sanity floor)
                                     if not micro_m.get("is_valid", True):
-                                        self._purge_impulse_memory(sym)
                                         self._throttled_veto_log(
                                             "v3_circuit_breaker",
                                             f"[V3 CIRCUIT BREAKER] {sym} ({direction}) {pa_setup_name} P{pillar} blocked: "
@@ -813,14 +800,12 @@ class AegisPipelineOrchestrator:
                                 if tot_depth > 0:
                                     top5_imb = (tot_bid_depth - tot_ask_depth) / float(tot_depth)
                                     if top5_imb < -0.40:
-                                        self._purge_impulse_memory(sym)
                                         self._throttled_veto_log("v3_drop_depth", f"[V3 DROP DEPTH] {sym} {pa_setup_name} P{pillar} blocked: severe opposing book wall (top5_imb={top5_imb:.2f} < -0.40)")
                                         return None
 
                                 mid_px = (bp1 + sp1) / 2.0 if (bp1 > 0 and sp1 > 0) else lp
                                 spread_pct = ((sp1 - bp1) / mid_px * 100.0) if (mid_px > 0 and bp1 > 0 and sp1 > 0) else 0.5
                                 if spread_pct > 1.0:
-                                    self._purge_impulse_memory(sym)
                                     self._throttled_veto_log("v3_drop_spread", f"[V3 DROP SPREAD] {sym} {pa_setup_name} P{pillar} blocked: spread {spread_pct:.2f}% > 1.00%")
                                     return None
 
@@ -849,7 +834,7 @@ class AegisPipelineOrchestrator:
 
                                 # Extract rich timing, volatility, and futures flow telemetry
                                 vol_burst_age = round(now_sec - self.last_volatility_burst_ts, 2) if getattr(self, "last_volatility_burst_ts", 0.0) > 0 else 0.0
-                                atr_1m_val = getattr(self.time_bar_engine, "current_atr_1m", 0.0) if self.time_bar_engine else 0.0
+                                atr_1m_val = getattr(self.price_action_engine, "current_atr_1m", 0.0) if self.price_action_engine else 0.0
                                 spread_val = opt_metrics.get("spread_pct", 0.0) if isinstance(opt_metrics, dict) else 0.0
                                 tot_depth_val = tot_bid_depth + tot_ask_depth
                                 fut_basis_m = self.get_futures_basis_metrics(now_sec, 60.0)
@@ -1004,7 +989,6 @@ class AegisPipelineOrchestrator:
                                         )
 
                                     if selected_candidate is None:
-                                        self._purge_impulse_memory(sym)
                                         self._throttled_veto_log(
                                             f"budget_cluster_veto_{direction}",
                                             f"[BUDGET CLUSTER VETO] {direction} {pa_setup_name}: "
@@ -1045,7 +1029,6 @@ class AegisPipelineOrchestrator:
                                     conviction_sub_scores = conviction_res.sub_scores
                                     score = conviction_score_val
                                 else:
-                                    self._purge_impulse_memory(sym)
                                     self._throttled_veto_log(
                                         "conviction_engine_unavailable",
                                         f"[BUDGET CLUSTER VETO] {direction} {pa_setup_name}: conviction components unavailable",
@@ -1064,7 +1047,6 @@ class AegisPipelineOrchestrator:
                                         daily_pnl=float(getattr(self, "_em_daily_pnl", 0.0)),
                                     )
                                 if self.quality_stack_mode == "ACTIVE" and not slot_admit:
-                                    self._purge_impulse_memory(sym)
                                     self._throttled_veto_log(
                                         "slot_policy_veto",
                                         f"[SLOT POLICY VETO] {sym} ({direction}) {pa_setup_name} blocked: {slot_reason}",
@@ -1075,7 +1057,6 @@ class AegisPipelineOrchestrator:
                                 _di_veto, _di_detail = self._delta_inflection_check(sym, direction, now_sec)
                                 if _di_veto:
                                     self._di_vetoed += 1
-                                    self._purge_impulse_memory(sym)
                                     self._throttled_veto_log("delta_inflection_veto",
                                                              f"[DELTA INFLECTION VETO] {sym} ({direction}) "
                                                              f"{pa_setup_name} blocked: {_di_detail}")
@@ -1118,7 +1099,6 @@ class AegisPipelineOrchestrator:
                                     "quality_stack_mode": self.quality_stack_mode,
                                     "slot_verdict": slot_reason,
                                     "slot_used": self.slot_policy.used if self.slot_policy else 0,
-                                    "oi_snapshot": self._get_oi_snapshot(sym, direction, now_sec),
                                     "pain_zone_snapshot": pz_snap,
                                     "pain_zone_top": pz_top,
                                     "pain_zone_bottom": pz_bot,
@@ -1274,100 +1254,6 @@ class AegisPipelineOrchestrator:
             return True, f"delta_inflection_flip {i1_early:+.2f}->{i1_late:+.2f} (mag {flip_mag:.2f})"
         return False, f"no_flip early={i1_early:+.2f} late={i1_late:+.2f}"
 
-    def _get_oi_snapshot(self, sym: str, direction: str, now_sec: float) -> Dict[str, Any]:
-        """Read-only OI snapshot for telemetry (never vetoes, fail-safe).
-
-        Captures kinematics velocity/acceleration, buildup class, wall
-        distance and unwind speed at trigger time so every fill carries
-        a post-trade OI audit trail in decision_payload.
-        """
-        snap: Dict[str, Any] = {
-            "vel": 0.0, "acc": 0.0, "n": 0,
-            "builtup": "UNKNOWN", "wall_dist_strikes": 0.0, "wall_speed": 0.0,
-        }
-        try:
-            gate = getattr(self, "oi_gate", None)
-            if gate is None:
-                snap["builtup"] = "GATE_MISSING"
-                return snap
-            vel, acc, n = gate.get_oi_kinematics(sym, float(now_sec or 0.0))
-            snap["vel"] = round(float(vel), 2)
-            snap["acc"] = round(float(acc), 2)
-            snap["n"] = int(n)
-            try:
-                builtup, _dp, _doi = gate.get_contract_builtup(sym)
-                snap["builtup"] = str(builtup)
-            except Exception:
-                pass
-            try:
-                spot = float(getattr(self, "last_spot", 0.0) or 0.0)
-                wall = gate.get_wall_snapshot(spot)
-                is_pe = str(direction).upper() in ("DOWN", "PE", "PUT") or ("PE" in str(sym).upper())
-                if is_pe:
-                    snap["wall_dist_strikes"] = float(wall.get("pe_dist_strikes", 0.0))
-                else:
-                    snap["wall_dist_strikes"] = float(wall.get("ce_dist_strikes", 0.0))
-                snap["wall_ce_strike"] = float(wall.get("max_ce_strike", 0.0))
-                snap["wall_pe_strike"] = float(wall.get("max_pe_strike", 0.0))
-            except Exception:
-                pass
-        except Exception:
-            pass
-        return snap
-
-    def get_oi_telemetry(self) -> Dict[str, Any]:
-        """Shield arm/skip/veto counters + wall snapshot for live state."""
-        out: Dict[str, Any] = {
-            "kin_armed": int(getattr(self, "_oi_kin_armed", 0)),
-            "kin_skipped": int(getattr(self, "_oi_kin_skipped", 0)),
-            "kin_vetoed": int(getattr(self, "_oi_kin_vetoed", 0)),
-            "gate_vetoed": int(getattr(self, "_oi_gate_vetoed", 0)),
-            "delta_vetoed": int(getattr(self, "_di_vetoed", 0)),
-        }
-        try:
-            gate = getattr(self, "oi_gate", None)
-            spot = float(getattr(self, "last_spot", 0.0) or 0.0)
-            if gate is not None:
-                out["walls"] = gate.get_wall_snapshot(spot)
-            else:
-                out["walls"] = {}
-        except Exception:
-            out["walls"] = {}
-        return out
-
-    def maybe_log_wall_snapshot(self, spot_price: float = 0.0, now_sec: float = 0.0) -> bool:
-        """Logs the fortress snapshot at most once per 15-minute bucket.
-
-        Called from the 1-minute main loop (off hot path). Returns True
-        when a snapshot line was emitted.
-        """
-        try:
-            ts = float(now_sec or time.time())
-            bucket = int(ts // 900)
-            if bucket == int(getattr(self, "_last_wall_log_min", -1)):
-                return False
-            self._last_wall_log_min = bucket
-            gate = getattr(self, "oi_gate", None)
-            if gate is None:
-                return False
-            spot = float(spot_price or getattr(self, "last_spot", 0.0) or 0.0)
-            wall = gate.get_wall_snapshot(spot)
-            tele = self.get_oi_telemetry()
-            logger.info(
-                f"[OI WALL SNAPSHOT] Spot:{spot:.1f} "
-                f"CE_wall:{wall.get('max_ce_strike', 0.0):.0f}@{wall.get('max_ce_oi', 0.0):.0f}"
-                f"({wall.get('ce_dist_strikes', 0.0):+.2f}stk) "
-                f"PE_wall:{wall.get('max_pe_strike', 0.0):.0f}@{wall.get('max_pe_oi', 0.0):.0f}"
-                f"({wall.get('pe_dist_strikes', 0.0):+.2f}stk) "
-                f"tracked:{wall.get('n_tracked', 0)} "
-                f"kin[armed:{tele.get('kin_armed', 0)} skipped:{tele.get('kin_skipped', 0)} "
-                f"vetoed:{tele.get('kin_vetoed', 0)}] gate_vetoed:{tele.get('gate_vetoed', 0)} "
-                f"delta_vetoed:{tele.get('delta_vetoed', 0)}"
-            )
-            return True
-        except Exception:
-            return False
-
     def _on_futures_tick(self, sym: str, lp: float, tick: Any, now_sec: float):
         """SHADOW futures tick processor (2026-10-26).
 
@@ -1474,10 +1360,10 @@ class AegisPipelineOrchestrator:
         if getattr(self, "shadow_boundary_observer", None):
             self.shadow_boundary_observer.on_underlying_tick(lp, now_sec)
 
-        # 1. Update V3 TimeBarEngine & 5-minute Volatility Impulse Memory
-        if self.time_bar_engine:
-            self.time_bar_engine.update_tick(price=lp, ts_sec=now_sec)
-            if self.time_bar_engine.atr_ratio >= 1.0 or self.time_bar_engine.current_atr_1m >= (0.00025 * lp):
+        # 1. Update PriceActionEngine & 5-minute Volatility Impulse Memory
+        if self.price_action_engine:
+            self.price_action_engine.update_tick(price=lp, ts_sec=now_sec)
+            if self.price_action_engine.atr_ratio >= 1.0 or self.price_action_engine.current_atr_1m >= (0.00025 * lp):
                 self.last_volatility_burst_ts = now_sec
 
         # Prune older than 900s (15 min)
@@ -1501,7 +1387,7 @@ class AegisPipelineOrchestrator:
     def _get_last_closed_bar_T(self) -> float:
         """Returns formal 1-minute candle close timestamp T (ts_end of last closed bar)."""
         try:
-            pae = getattr(self, "price_action_engine", None) or getattr(self, "time_bar_engine", None)
+            pae = getattr(self, "price_action_engine", None)
             if pae is not None and getattr(pae, "bars_1m", None):
                 if len(pae.bars_1m) > 0:
                     bar = pae.bars_1m[-1]
@@ -1521,14 +1407,6 @@ class AegisPipelineOrchestrator:
             return False
         age = now_sec - anchor_T
         return 0.0 <= age <= max_age_sec
-
-    def _purge_impulse_memory(self, sym: str) -> None:
-        """V3.0 DROP policy: discard any retained impulse for sym immediately."""
-        try:
-            if sym in self.impulse_memory:
-                del self.impulse_memory[sym]
-        except Exception:
-            pass
 
     def _throttled_veto_log(self, key: str, msg: Any, interval_sec: Optional[float] = None) -> None:
         """Hot-path log throttle: first hit immediate, then at most once per

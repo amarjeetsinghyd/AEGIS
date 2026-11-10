@@ -101,7 +101,7 @@ def is_market_open(now_dt: datetime = None) -> bool:
     return MARKET_OPEN_TIME <= now_dt.time() <= MARKET_CLOSE_TIME
 
 def can_enter_new_trades(now_dt: datetime = None) -> bool:
-    """Shared entry helper (09:15–TRADE_ENTRY_CUTOFF). Kronos uses its own EM gates."""
+    """AEGIS entry helper (09:15–TRADE_ENTRY_CUTOFF_TIME, 15:00 IST)."""
     if now_dt is None:
         now_dt = datetime.now()
     if not is_trading_day(now_dt.date()):
