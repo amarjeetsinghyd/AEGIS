@@ -400,7 +400,7 @@ class AegisExecutionManager:
             while len(self._order_updates) > 256:
                 self._order_updates.pop(next(iter(self._order_updates)))
 
-    def _order_fill(self, order_id: str, allow_rest: bool = False) -> Tuple[bool, float]:
+    def _order_fill(self, order_id: str, allow_rest: bool = False, force_rest: bool = False) -> Tuple[bool, float]:
         """Resolve an order fill from WebSocket state first, REST only when throttled."""
         order_id = str(order_id or "")
         if not order_id or order_id.startswith("PAPER_"):
@@ -419,7 +419,8 @@ class AegisExecutionManager:
                 self._order_history_poll_ts = poll_times
             last_poll = poll_times.get(order_id)
             if (
-                last_poll is not None
+                not force_rest
+                and last_poll is not None
                 and now_mono - last_poll < getattr(self, "_order_history_poll_interval_sec", 2.5)
             ):
                 return False, 0.0
@@ -1286,13 +1287,12 @@ class AegisExecutionManager:
                     is_retrace_reversing = (live_spot > (sig_bar_close + retrace_limit)) and (spot_delta_3s > 0.0)
 
                     is_peak_drawdown = (live_spot - post_sig_trough) > max_peak_drawdown
-                    is_mode_b = str(metrics.get("mode", "")).startswith("MODE_B")
-                    is_pillar = int(metrics.get("pillar", 0) or 0)
-                    check_opposite_color = not is_mode_b or is_pillar in (3, 4)
+                    # 🛡️ Phase 1 Universal Candle Color Invariant across ALL Pillars (P1-P5) and ALL Modes (Mode A & B)
+                    check_opposite_color = True
                     is_bar_opposite_color = (
                         check_opposite_color
                         and curr_open > 0.0
-                        and live_spot > (curr_open + 0.10 * live_atr_1m)
+                        and live_spot > (curr_open + 0.05 * live_atr_1m)
                     )
                     is_delta_reversed = (total_if_vol >= 500.0 and if_bull > (1.25 * max(if_bear, 1.0)))
 
@@ -1311,6 +1311,7 @@ class AegisExecutionManager:
                             f"if_bull={if_bull:.0f}, if_bear={if_bear:.0f})"
                         )
                         self._rollback_slot()
+                        self._drain_signal_queue(reason=f"last_mile_gate_{abort_reason.lower()}")
                         return
 
                 elif signal_type == "CALL":
@@ -1318,13 +1319,12 @@ class AegisExecutionManager:
                     is_retrace_reversing = (live_spot < (sig_bar_close - retrace_limit)) and (spot_delta_3s < 0.0)
 
                     is_peak_drawdown = (post_sig_peak - live_spot) > max_peak_drawdown
-                    is_mode_b = str(metrics.get("mode", "")).startswith("MODE_B")
-                    is_pillar = int(metrics.get("pillar", 0) or 0)
-                    check_opposite_color = not is_mode_b or is_pillar in (3, 4)
+                    # 🛡️ Phase 1 Universal Candle Color Invariant across ALL Pillars (P1-P5) and ALL Modes (Mode A & B)
+                    check_opposite_color = True
                     is_bar_opposite_color = (
                         check_opposite_color
                         and curr_open > 0.0
-                        and live_spot < (curr_open - 0.10 * live_atr_1m)
+                        and live_spot < (curr_open - 0.05 * live_atr_1m)
                     )
                     is_delta_reversed = (total_if_vol >= 500.0 and if_bear > (1.25 * max(if_bull, 1.0)))
 
@@ -1343,6 +1343,7 @@ class AegisExecutionManager:
                             f"if_bull={if_bull:.0f}, if_bear={if_bear:.0f})"
                         )
                         self._rollback_slot()
+                        self._drain_signal_queue(reason=f"last_mile_gate_{abort_reason.lower()}")
                         return
 
             # Execute entry
@@ -1853,10 +1854,10 @@ class AegisExecutionManager:
                 if cur_gain_pct < 0.005:  # Gain < +0.5%
                     tb_engine = getattr(self.aegis_engine, "time_bar_engine", None)
                     market_struct = tb_engine.get_market_structure(context.signal_type) if (tb_engine and hasattr(tb_engine, "get_market_structure")) else "NEUTRAL"
-                    # Live 20-EMA band alignment (with legacy mock fallback for 50-EMA test harnesses)
+                    # Live 20-EMA band alignment
                     live_ema, _ = getattr(tb_engine, "get_live_20_ema_and_slope", lambda: (0.0, 0.0))() if tb_engine else (0.0, 0.0)
-                    if live_ema <= 0 and tb_engine and hasattr(tb_engine, "get_live_50_ema_and_slope"):
-                        live_ema, _ = tb_engine.get_live_50_ema_and_slope()
+                    if live_ema <= 0 and tb_engine and hasattr(tb_engine, "get_live_ema_and_slope"):
+                        live_ema = tb_engine.get_live_ema_and_slope()[0]
                     is_opposed = (market_struct == "OPPOSED")
                     if live_ema > 0 and curr_spot > 0:
                         if context.signal_type == "CALL" and curr_spot < live_ema:
@@ -2386,6 +2387,11 @@ class AegisExecutionManager:
             elif any(k in r_upper for k in ("TIMEOUT", "TIME STOP", "MAX HOLD")):
                 norm_reason = "TIME_STOP"
 
+            is_catastrophic = any(
+                k in r_upper
+                for k in ("PREMIUM HARD SL", "DISASTER", "FORCE FLATTEN", "EMERGENCY")
+            )
+
             def _get_live_quote(ref_px: float) -> tuple:
                 try:
                     if hasattr(self.broker, "market_data_provider"):
@@ -2427,122 +2433,229 @@ class AegisExecutionManager:
                     best_ask=live_ask_1
                 )) if live_bid_1 > 0 else _round_tick(leg.current_price * 0.99)
                 ordno = None
-                
-                if self.tp_order_id and not str(self.tp_order_id).startswith("PAPER_"):
-                    ordno = self.tp_order_id
-                    if api and hasattr(api, "modify_order"):
-                        try:
-                            logger.info(
-                                f"[AegisEM] ⚡ ATOMIC IN-PLACE EXIT: Modifying resting TP order {ordno} -> "
-                                f"LMT @ {price_1:.2f} (live_bid={live_bid_1:.2f}) for instant fill"
-                            )
-                            resp = api.modify_order(
-                                exchange=exch_seg,
-                                tradingsymbol=leg.symbol,
-                                orderno=ordno,
-                                newquantity=qty,
-                                newprice_type="LMT",
-                                newprice=f"{price_1:.2f}",
-                            )
-                            logger.info(f"[AegisEM] modify_order response: {resp}")
-                            if isinstance(resp, dict) and resp.get("stat") != "Ok":
-                                emsg = str(resp.get("emsg", "")).lower()
-                                if "complete" in emsg or "filled" in emsg:
-                                    logger.info(f"[AegisEM] Resting TP order {ordno} already filled at broker: {resp}")
-                                    filled = True
-                                    fill_price = getattr(leg, "tp_price", price_1)
-                                else:
-                                    logger.warning(f"[AegisEM] modify_order failed: {resp}. Cancelling before fallback place_order.")
-                                    self._cancel_tp()
-                                    ordno = None
-                        except Exception as e_mod:
-                            logger.error(f"[AegisEM] Exception in modify_order: {e_mod}. Cancelling before fallback place_order.")
-                            self._cancel_tp()
-                            ordno = None
-                
-                if not ordno and not filled:
-                    if api:
-                        if hasattr(self.order_lifecycle, "_build_kwargs"):
-                            kwargs = self.order_lifecycle._build_kwargs("S", exch_seg, leg.symbol, qty, f"{price_1:.2f}")
-                        else:
-                            kwargs = {
-                                "buy_or_sell": "S",
-                                "product_type": "M",
-                                "exchange": exch_seg,
-                                "tradingsymbol": leg.symbol,
-                                "quantity": qty,
-                                "price_type": "LMT",
-                                "price": f"{price_1:.2f}",
-                            }
-                        place = getattr(api, "place_order", None)
-                        if place:
-                            try:
-                                resp = place(**kwargs)
-                                if isinstance(resp, dict) and resp.get("stat") == "Ok":
-                                    ordno = resp.get("norenordno")
-                            except Exception as e_p1:
-                                logger.error(f"[AegisEM] place_order step 1 exception: {e_p1}")
-                
-                if ordno:
-                    time.sleep(0.8)
-                    h_filled, h_px = self._order_fill(ordno, allow_rest=True)
-                    if h_filled:
-                        filled = True
-                        fill_price = h_px if h_px > 0 else price_1
-                    else:
-                        # Step 2: Refresh live bid and chase 1% below current bid
-                        live_bid_2, live_ask_2 = _get_live_quote(price_1)
-                        price_2 = _round_tick(get_marketable_exit_limit_price(
-                            live_bid_2 * 0.99,
-                            exit_reason=norm_reason,
-                            entry_price=leg.entry_price,
-                            best_ask=live_ask_2
-                        )) if live_bid_2 > 0 else _round_tick(leg.current_price * 0.98)
+
+                if is_catastrophic:
+                    logger.warning(
+                        f"🚨 [AegisEM FastExit] Catastrophic exit triggered ({reason})! "
+                        f"Bypassing 2.6s chase sleep -> executing ZERO-LAG Marketable Sweep"
+                    )
+                    # Step A: Atomic Modify resting TP order in-place if exists
+                    if self.tp_order_id and not str(self.tp_order_id).startswith("PAPER_"):
+                        ordno = self.tp_order_id
                         if api and hasattr(api, "modify_order"):
                             try:
-                                api.modify_order(exchange=exch_seg, tradingsymbol=leg.symbol, orderno=ordno,
-                                                 newquantity=qty, newprice_type="LMT", newprice=f"{price_2:.2f}")
-                            except Exception as e_mod2:
-                                logger.error(f"[AegisEM] modify_order step 2 exception: {e_mod2}")
-                        time.sleep(1.0)
+                                logger.info(
+                                    f"[AegisEM FastExit] ⚡ ATOMIC IN-PLACE EXIT: Modifying resting TP order {ordno} -> "
+                                    f"LMT @ {price_1:.2f} (live_bid={live_bid_1:.2f}) for instant fill"
+                                )
+                                resp = api.modify_order(
+                                    exchange=exch_seg,
+                                    tradingsymbol=leg.symbol,
+                                    orderno=ordno,
+                                    newquantity=qty,
+                                    newprice_type="LMT",
+                                    newprice=f"{price_1:.2f}",
+                                )
+                                logger.info(f"[AegisEM FastExit] modify_order response: {resp}")
+                                if isinstance(resp, dict) and resp.get("stat") != "Ok":
+                                    emsg = str(resp.get("emsg", "")).lower()
+                                    if "complete" in emsg or "filled" in emsg:
+                                        logger.info(f"[AegisEM FastExit] Resting TP order {ordno} already filled at broker: {resp}")
+                                        filled = True
+                                        fill_price = getattr(leg, "tp_price", price_1)
+                                    else:
+                                        logger.warning(f"[AegisEM FastExit] modify_order failed: {resp}. Cancelling before fallback place_order.")
+                                        self._cancel_tp()
+                                        ordno = None
+                            except Exception as e_mod:
+                                logger.error(f"[AegisEM FastExit] Exception in modify_order: {e_mod}. Cancelling before fallback place_order.")
+                                self._cancel_tp()
+                                ordno = None
+
+                    # Step B: If no resting TP or modify failed, cancel TP and place fresh aggressive order
+                    if not ordno and not filled:
+                        self._cancel_tp()
+                        if api:
+                            if hasattr(self.order_lifecycle, "_build_kwargs"):
+                                kwargs = self.order_lifecycle._build_kwargs("S", exch_seg, leg.symbol, qty, f"{price_1:.2f}")
+                            else:
+                                kwargs = {
+                                    "buy_or_sell": "S",
+                                    "product_type": "M",
+                                    "exchange": exch_seg,
+                                    "tradingsymbol": leg.symbol,
+                                    "quantity": qty,
+                                    "price_type": "LMT",
+                                    "price": f"{price_1:.2f}",
+                                }
+                            place = getattr(api, "place_order", None)
+                            if place:
+                                try:
+                                    resp = place(**kwargs)
+                                    if isinstance(resp, dict) and resp.get("stat") == "Ok":
+                                        ordno = resp.get("norenordno")
+                                except Exception as e_p1:
+                                    logger.error(f"[AegisEM FastExit] place_order step 1 exception: {e_p1}")
+
+                    # Step C: Micro-poll with sub-50ms checks (Total max 150ms instead of 2600ms!)
+                    if ordno and not filled:
+                        for d_sec in (0.03, 0.05, 0.07):
+                            time.sleep(d_sec)
+                            h_filled, h_px = self._order_fill(ordno, allow_rest=True, force_rest=True)
+                            if h_filled:
+                                filled = True
+                                fill_price = h_px if h_px > 0 else price_1
+                                fill_ts = time.time()
+                                break
+
+                        if not filled:
+                            # Step D: Immediate sweep if still unfilled after 150ms (zero lazy sleep)
+                            live_bid_fast, live_ask_fast = _get_live_quote(price_1)
+                            price_fast = _round_tick(get_marketable_exit_limit_price(
+                                live_bid_fast * 0.98,
+                                exit_reason=norm_reason,
+                                entry_price=leg.entry_price,
+                                best_ask=live_ask_fast,
+                            )) if live_bid_fast > 0 else _round_tick(leg.current_price * 0.97)
+                            if api and hasattr(api, "modify_order"):
+                                try:
+                                    logger.warning(f"[AegisEM FastExit] Immediate sweep modify @ {price_fast:.2f} (live_bid={live_bid_fast:.2f})")
+                                    api.modify_order(
+                                        exchange=exch_seg,
+                                        tradingsymbol=leg.symbol,
+                                        orderno=ordno,
+                                        newquantity=qty,
+                                        newprice_type="LMT",
+                                        newprice=f"{price_fast:.2f}",
+                                    )
+                                except Exception as e_mod_fast:
+                                    logger.error(f"[AegisEM FastExit] Sweep modify exception: {e_mod_fast}")
+                            for d_sec in (0.03, 0.05):
+                                time.sleep(d_sec)
+                                h_filled, h_px = self._order_fill(ordno, allow_rest=True, force_rest=True)
+                                if h_filled:
+                                    filled = True
+                                    fill_price = h_px if h_px > 0 else price_fast
+                                    fill_ts = time.time()
+                                    break
+
+                else:
+                    # Case B2: Normal chase path (non-catastrophic: NEAR_TARGET_LOCK, BREAKEVEN_GUARD, STEPPED_SL, TIME_STOP)
+                    if self.tp_order_id and not str(self.tp_order_id).startswith("PAPER_"):
+                        ordno = self.tp_order_id
+                        if api and hasattr(api, "modify_order"):
+                            try:
+                                logger.info(
+                                    f"[AegisEM] ⚡ ATOMIC IN-PLACE EXIT: Modifying resting TP order {ordno} -> "
+                                    f"LMT @ {price_1:.2f} (live_bid={live_bid_1:.2f}) for instant fill"
+                                )
+                                resp = api.modify_order(
+                                    exchange=exch_seg,
+                                    tradingsymbol=leg.symbol,
+                                    orderno=ordno,
+                                    newquantity=qty,
+                                    newprice_type="LMT",
+                                    newprice=f"{price_1:.2f}",
+                                )
+                                logger.info(f"[AegisEM] modify_order response: {resp}")
+                                if isinstance(resp, dict) and resp.get("stat") != "Ok":
+                                    emsg = str(resp.get("emsg", "")).lower()
+                                    if "complete" in emsg or "filled" in emsg:
+                                        logger.info(f"[AegisEM] Resting TP order {ordno} already filled at broker: {resp}")
+                                        filled = True
+                                        fill_price = getattr(leg, "tp_price", price_1)
+                                    else:
+                                        logger.warning(f"[AegisEM] modify_order failed: {resp}. Cancelling before fallback place_order.")
+                                        self._cancel_tp()
+                                        ordno = None
+                            except Exception as e_mod:
+                                logger.error(f"[AegisEM] Exception in modify_order: {e_mod}. Cancelling before fallback place_order.")
+                                self._cancel_tp()
+                                ordno = None
+
+                    if not ordno and not filled:
+                        if api:
+                            if hasattr(self.order_lifecycle, "_build_kwargs"):
+                                kwargs = self.order_lifecycle._build_kwargs("S", exch_seg, leg.symbol, qty, f"{price_1:.2f}")
+                            else:
+                                kwargs = {
+                                    "buy_or_sell": "S",
+                                    "product_type": "M",
+                                    "exchange": exch_seg,
+                                    "tradingsymbol": leg.symbol,
+                                    "quantity": qty,
+                                    "price_type": "LMT",
+                                    "price": f"{price_1:.2f}",
+                                }
+                            place = getattr(api, "place_order", None)
+                            if place:
+                                try:
+                                    resp = place(**kwargs)
+                                    if isinstance(resp, dict) and resp.get("stat") == "Ok":
+                                        ordno = resp.get("norenordno")
+                                except Exception as e_p1:
+                                    logger.error(f"[AegisEM] place_order step 1 exception: {e_p1}")
+
+                    if ordno:
+                        time.sleep(0.8)
                         h_filled, h_px = self._order_fill(ordno, allow_rest=True)
                         if h_filled:
                             filled = True
-                            fill_price = h_px if h_px > 0 else price_2
+                            fill_price = h_px if h_px > 0 else price_1
                         else:
-                            # Step 3: Cancel & Replace at aggressive exit 2% below fresh live bid
-                            if api and hasattr(api, "cancel_order"):
+                            # Step 2: Refresh live bid and chase 1% below current bid
+                            live_bid_2, live_ask_2 = _get_live_quote(price_1)
+                            price_2 = _round_tick(get_marketable_exit_limit_price(
+                                live_bid_2 * 0.99,
+                                exit_reason=norm_reason,
+                                entry_price=leg.entry_price,
+                                best_ask=live_ask_2
+                            )) if live_bid_2 > 0 else _round_tick(leg.current_price * 0.98)
+                            if api and hasattr(api, "modify_order"):
                                 try:
-                                    api.cancel_order(orderno=ordno)
-                                except Exception:
-                                    pass
-                            live_bid_3 = _get_live_bid(price_2)
-                            price_3 = _round_tick(min(live_bid_3 * 0.98, leg.current_price * 0.97))
-                            if api and hasattr(self.order_lifecycle, "_build_kwargs"):
-                                kwargs = self.order_lifecycle._build_kwargs("S", exch_seg, leg.symbol, qty, f"{price_3:.2f}")
-                                place = getattr(api, "place_order", None)
-                                if place:
-                                    logger.warning(f"[AegisEM Chaser] Final aggressive exit @ {price_3:.2f} (live_bid={live_bid_3:.2f})")
+                                    api.modify_order(exchange=exch_seg, tradingsymbol=leg.symbol, orderno=ordno,
+                                                     newquantity=qty, newprice_type="LMT", newprice=f"{price_2:.2f}")
+                                except Exception as e_mod2:
+                                    logger.error(f"[AegisEM] modify_order step 2 exception: {e_mod2}")
+                            time.sleep(1.0)
+                            h_filled, h_px = self._order_fill(ordno, allow_rest=True)
+                            if h_filled:
+                                filled = True
+                                fill_price = h_px if h_px > 0 else price_2
+                            else:
+                                # Step 3: Cancel & Replace at aggressive exit 2% below fresh live bid
+                                if api and hasattr(api, "cancel_order"):
                                     try:
-                                        resp = place(**kwargs)
-                                        ordno_3 = resp.get("norenordno") if isinstance(resp, dict) and resp.get("stat") == "Ok" else None
-                                    except Exception as e_p3:
-                                        logger.error(f"[AegisEM Chaser] Step-3 aggressive exit place exception: {e_p3}")
-                                        ordno_3 = None
-                                    if ordno_3:
-                                        time.sleep(0.8)
-                                        h_filled, h_px = self._order_fill(ordno_3, allow_rest=True)
-                                        if h_filled:
-                                            fill_price = h_px if h_px > 0 else price_3
-                                            filled = True
-                                            fill_ts = time.time()
+                                        api.cancel_order(orderno=ordno)
+                                    except Exception:
+                                        pass
+                                live_bid_3 = _get_live_bid(price_2)
+                                price_3 = _round_tick(min(live_bid_3 * 0.98, leg.current_price * 0.97))
+                                if api and hasattr(self.order_lifecycle, "_build_kwargs"):
+                                    kwargs = self.order_lifecycle._build_kwargs("S", exch_seg, leg.symbol, qty, f"{price_3:.2f}")
+                                    place = getattr(api, "place_order", None)
+                                    if place:
+                                        logger.warning(f"[AegisEM Chaser] Final aggressive exit @ {price_3:.2f} (live_bid={live_bid_3:.2f})")
+                                        try:
+                                            resp = place(**kwargs)
+                                            ordno_3 = resp.get("norenordno") if isinstance(resp, dict) and resp.get("stat") == "Ok" else None
+                                        except Exception as e_p3:
+                                            logger.error(f"[AegisEM Chaser] Step-3 aggressive exit place exception: {e_p3}")
+                                            ordno_3 = None
+                                        if ordno_3:
+                                            time.sleep(0.8)
+                                            h_filled, h_px = self._order_fill(ordno_3, allow_rest=True)
+                                            if h_filled:
+                                                fill_price = h_px if h_px > 0 else price_3
+                                                filled = True
+                                                fill_ts = time.time()
+                                            else:
+                                                with self._order_update_lock:
+                                                    latest = self._order_updates.get(ordno_3, {})
+                                                status = latest.get("status", "OPEN")
+                                                logger.error(f"[AegisEM Chaser] Step-3 exit order {ordno_3} NOT filled (status={status}) — position may still be open at broker")
                                         else:
-                                            with self._order_update_lock:
-                                                latest = self._order_updates.get(ordno_3, {})
-                                            status = latest.get("status", "OPEN")
-                                            logger.error(f"[AegisEM Chaser] Step-3 exit order {ordno_3} NOT filled (status={status}) — position may still be open at broker")
-                                    else:
-                                        logger.error(f"[AegisEM Chaser] Step-3 aggressive exit order placement failed: {resp}")
+                                            logger.error(f"[AegisEM Chaser] Step-3 aggressive exit order placement failed: {resp}")
             
             if not filled:
                 # Fallback: marketable exit order

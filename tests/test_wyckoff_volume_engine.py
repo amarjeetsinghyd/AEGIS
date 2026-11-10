@@ -368,6 +368,36 @@ def test_wyckoff_inflight_fastpath_3_states():
     assert m_ne["wyckoff_confirmed"] is False
     assert m_ne["flow_state"] == "neutral"
 
+    # 4. Phase 2: Insufficient Volume Hard Floor (< 3 lots = 195 qty for lot_size=65)
+    pa_low_vol = {
+        "mode": "MODE_B",
+        "pa_setup_name": "mode_b_breakthrough",
+        "bull_flow": 80.0,
+        "bear_flow": 20.0,
+        "tot_flow": 100.0,  # 100 < 195 (3 lots)
+        "opt_delta_flow": +60.0,
+        "lot_size": 65.0,
+    }
+    p_lv, r_lv, m_lv = engine.evaluate(pillar=3, direction="CALL", bars=[], atr=10.0, pa_details=pa_low_vol)
+    assert p_lv is False
+    assert r_lv == "wyckoff_inflight_insufficient_volume"
+    assert m_lv["verdict"] == "VETO_DRY_ORDER_FLOW"
+
+    # 5. Phase 2: Weak Dominance Veto (< 1.50x ratio, e.g. 500 bull vs 400 bear = 1.25x)
+    pa_weak_call = {
+        "mode": "MODE_B",
+        "pa_setup_name": "mode_b_breakthrough",
+        "bull_flow": 500.0,
+        "bear_flow": 400.0,  # 500 / 400 = 1.25x < 1.50x
+        "tot_flow": 900.0,
+        "opt_delta_flow": +100.0,
+        "lot_size": 65.0,
+    }
+    p_wc, r_wc, m_wc = engine.evaluate(pillar=3, direction="CALL", bars=[], atr=10.0, pa_details=pa_weak_call)
+    assert p_wc is False
+    assert r_wc == "wyckoff_inflight_call_dominance_failed"
+    assert m_wc["verdict"] == "VETO_WEAK_BULL_FLOW"
+
 
 
 

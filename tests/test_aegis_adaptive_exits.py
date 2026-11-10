@@ -873,14 +873,14 @@ def test_point2_0dte_stagnation_trap_exit():
     # Gain is +0.2% (100.20)
     em.broker.market_data_provider._quote = {"ltp": 100.20, "bp1": 100.20, "sp1": 100.30, "sq1": 500, "bq1": 500}
     
-    # Mock time bar engine with 50 EMA opposed (Spot 24000 < 50-EMA 24050 for CALL)
+    # Mock time bar engine with 20 EMA opposed (Spot 24000 < 20-EMA 24050 for CALL)
     class MockTBEngine:
         def get_market_structure(self, sig):
             return "NEUTRAL"
-        def get_live_50_ema_and_slope(self):
+        def get_live_20_ema_and_slope(self):
             return (24050.0, -1.0)
         def get_live_ema_and_slope(self):
-            return (24000.0, 0.0, 0.0, 0.0)
+            return (24050.0, -1.0, 0.0, 0.0)
     em.aegis_engine.time_bar_engine = MockTBEngine()
     
     em._manage_open_trade(now=sim_now)
@@ -938,8 +938,6 @@ def test_pillar2_entry_candle_invalidation_and_no_9ema_choke():
             return "NEUTRAL"
         def get_live_ema_and_slope(self):
             return (74875.0, 0.0, 74870.0, 0.0)
-        def get_live_50_ema_and_slope(self):
-            return (74850.0, 0.0)
 
     em.aegis_engine.time_bar_engine = MockTBEngineWith9EMA()
     em.data_fetcher._spot = 74870.0  # Above candle low (74870.0 > 74865.0)
@@ -986,8 +984,6 @@ def test_pillar1_entry_candle_invalidation_and_no_9ema_choke():
             return "NEUTRAL"
         def get_live_ema_and_slope(self):
             return (74875.0, 0.0, 74870.0, 0.0)
-        def get_live_50_ema_and_slope(self):
-            return (74850.0, 0.0)
 
     em.aegis_engine.time_bar_engine = MockTBEngineWith9EMA()
     em.data_fetcher._spot = 74870.0  # Above candle low (74870.0 > 74865.0)
@@ -1034,8 +1030,6 @@ def test_pillar3_entry_candle_invalidation_and_no_9ema_choke():
             return "NEUTRAL"
         def get_live_ema_and_slope(self):
             return (74875.0, 0.0, 74870.0, 0.0)
-        def get_live_50_ema_and_slope(self):
-            return (74850.0, 0.0)
 
     em.aegis_engine.time_bar_engine = MockTBEngineWith9EMA()
     em.data_fetcher._spot = 74870.0  # Above candle low (74870.0 > 74865.0)
@@ -1896,3 +1890,113 @@ def test_friday_4dte_low_capital_guard():
 
             assert em.trade_context is None
             em.aegis_engine.slot_policy.rollback_admission.assert_called_once()
+
+
+def test_catastrophic_disaster_exit_zero_sleep_fast_path():
+    """Phase 1: Verify catastrophic exit (DISASTER_SL / PREMIUM HARD SL) executes sub-150ms zero-lag sweep."""
+    em, ctx, leg = create_test_manager(entry_price=100.0, spot_entry=24000.0, signal_type="CALL")
+    ctx.entry_time = datetime.now() - timedelta(seconds=30)
+    em.tp_order_id = "240925000777"
+    em.broker.market_data_provider._quote = {"ltp": 91.0, "bp1": 91.0, "sp1": 91.10, "sq1": 500, "bq1": 500}
+
+    modified_orders = []
+    placed_orders = []
+
+    class FastMockShoonyaAPI:
+        def __init__(self):
+            self.modified = False
+
+        def modify_order(self, **kwargs):
+            modified_orders.append(kwargs)
+            self.modified = True
+            return {"stat": "Ok", "result": kwargs.get("orderno")}
+
+        def single_order_history(self, orderno):
+            if self.modified:
+                return [{"status": "COMPLETE", "flprc": "91.00"}]
+            return [{"status": "OPEN", "flprc": "0.00"}]
+
+        def cancel_order(self, orderno):
+            return {"stat": "Ok"}
+
+        def place_order(self, **kwargs):
+            placed_orders.append(kwargs)
+            return {"stat": "Ok", "norenordno": "FAST_999"}
+
+    em.broker._api = FastMockShoonyaAPI()
+    em.get_instrument_params = lambda: {"exchange": "NFO", "lot_size": 25}
+    em._append_history = lambda r, p: None
+
+    t0 = time.time()
+    em._do_chase_exit("Premium Hard SL (-8.0% disaster floor: -9.0% @ 91.00)")
+    elapsed_ms = (time.time() - t0) * 1000.0
+
+    # Catastrophic exit must complete in < 250ms (bypassing 2.6s sleeps)
+    assert elapsed_ms < 250.0, f"Catastrophic exit took {elapsed_ms:.1f}ms, expected < 250ms"
+    assert leg.status == "CLOSED"
+    assert len(modified_orders) == 1
+    assert modified_orders[0]["orderno"] == "240925000777"
+
+
+def test_mode_b_universal_candle_color_shield_abort_and_drain():
+    """Phase 1: Verify Mode B P1/P2 signals strictly abort if forming candle is opposite color."""
+    import queue
+    from unittest.mock import MagicMock
+    from AEGIS.core.price_action_engine import OHLCBar
+    em, ctx, leg = create_test_manager(entry_price=100.0, spot_entry=74000.0, signal_type="CALL")
+    em.trade_context = None
+    em.trades_today = 0
+    em.can_enter = lambda now: True
+
+    aegis_engine = MagicMock()
+    aegis_engine.last_spot = 73995.0  # Dropped 5 pts below open (74000)
+    aegis_engine.get_spot_drift.return_value = 0.0
+    aegis_engine.slot_policy = MagicMock()
+    em.aegis_engine = aegis_engine
+
+    # Put a stale signal in the queue to verify queue drain on abort
+    em.signal_queue = queue.Queue()
+    em.signal_queue.put({"type": "STALE_SIGNAL"})
+
+    # Mode B Pillar 1 CALL signal
+    mode_b_p1_signal = {
+        "type": "GAMMA_BURST_ENTRY",
+        "signal": "UP",
+        "conviction": 88.0,
+        "spot": 74000.0,
+        "lp": 50.0,
+        "sym": "SENSEX74000CE",
+        "timestamp": time.time() - 0.2,
+        "metrics": {
+            "atr_1m": 40.0,
+            "bar_close": 74000.0,
+            "bar_high": 74010.0,
+            "bar_low": 73990.0,
+            "mode": "MODE_B_MID_BAR_BREAKOUT",
+            "pillar": 1,  # Pillar 1 in Mode B previously bypassed color check!
+            "pa_setup_name": "momentum_breakout",
+        },
+    }
+    attach_scored_contract(em, mode_b_p1_signal, token="3001", strike=74000.0)
+
+    # Forming bar: open at 74000, current spot at 73995 (< open - 0.05 * 40 = 73998)
+    in_flight_bar = OHLCBar(0, 60, 74000.0, 74005.0, 73994.0, 73995.0, volume=100.0)
+    tb_engine = MagicMock()
+    tb_engine.current_bar = in_flight_bar
+    tb_engine.current_atr_1m = 40.0
+    aegis_engine.time_bar_engine = tb_engine
+    aegis_engine.spot_history = [(mode_b_p1_signal["timestamp"], 74000.0)]
+
+    import pandas as pd
+    weekly_df = pd.DataFrame([{"strike": 74000.0, "option_type": "CE", "token": "3001", "symbol": "SENSEX74000CE"}])
+    em.data_fetcher.get_active_instrument = lambda: ("SENSEX", "SENSEX")
+    em.data_fetcher.get_weekly_option_tokens = lambda: weekly_df
+    em._option_cache = {"3001": 50.0}
+
+    em._process_aegis_signal(mode_b_p1_signal)
+
+    # Must abort entry, rollback admission, and drain stale signal queue!
+    assert em.trade_context is None
+    aegis_engine.slot_policy.rollback_admission.assert_called_once()
+    assert em.signal_queue.empty(), "Signal queue must be drained on last-mile color abort"
+

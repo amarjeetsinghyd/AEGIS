@@ -915,22 +915,6 @@ class AegisPipelineOrchestrator:
                                                 if c_m.get("is_valid", False):
                                                     cluster_micro_map[c_sym] = c_m
 
-                                    # Cluster Median Ensemble I1: spatial consensus across the corridor
-                                    valid_i1s = [
-                                        float(m["touch_i1"])
-                                        for m in cluster_micro_map.values()
-                                        if "touch_i1" in m
-                                    ]
-                                    if len(valid_i1s) >= 2:
-                                        sorted_i1s = sorted(valid_i1s)
-                                        n_ens = len(sorted_i1s)
-                                        ens_mid = n_ens // 2
-                                        ensemble_median_i1 = sorted_i1s[ens_mid] if (n_ens % 2 == 1) else (sorted_i1s[ens_mid - 1] + sorted_i1s[ens_mid]) / 2.0
-                                    elif len(valid_i1s) == 1:
-                                        ensemble_median_i1 = valid_i1s[0]
-                                    else:
-                                        ensemble_median_i1 = None
-
                                     for candidate in cluster:
                                         candidate_sym = candidate["symbol"]
                                         candidate_history = self.scorer.history.get(candidate_sym)
@@ -990,9 +974,9 @@ class AegisPipelineOrchestrator:
                                                 rejection_reasons.append(f"{candidate['priority']}:{quality_reason}")
                                                 continue
 
-                                        # Directional touch I1: blend temporal smoothing with cluster spatial consensus
+                                        # 🛡️ Phase 2: Pure Individual Candidate Evaluation (No max leakage from adjacent strikes)
                                         cand_i1 = float(candidate_micro.get("touch_i1", 0.0))
-                                        eval_i1 = max(cand_i1, ensemble_median_i1) if ensemble_median_i1 is not None else cand_i1
+                                        eval_i1 = cand_i1
 
                                         candidate_conviction = self.conviction_engine.compute_conviction_score(
                                             direction=direction,

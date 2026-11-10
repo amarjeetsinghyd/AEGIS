@@ -525,17 +525,24 @@ class DowMacroShieldsMixin:
         ignore_pivots_below: Optional[float] = None,
         ignore_pivots_above: Optional[float] = None,
         check_day_extremes: bool = False,
+        min_runway_atr: Optional[float] = None,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
         Structural Obstacle Shield (Dynamic S/R Registry Anchors + Multi-Touch Horizontal Clusters).
         Prevents buying PUTs directly into an underlying support wall (e.g. 11:33 & 11:39 double-bottom)
         or buying CALLs directly into an overhead resistance wall.
-        Threshold is normalized via localized volatility (0.85x ATR).
+        Threshold is normalized via localized volatility: 1.0x ATR for breakouts (Pillar 4 / check_day_extremes),
+        0.85x ATR for mean-reversion pullbacks (Pillar 1/2).
         """
         if self.current_atr_1m <= 0 or current_price <= 0:
             return True, "clear", {}
 
-        hurdle_pts = 0.85 * self.current_atr_1m
+        # 🟢 Task 3: Expanded Structural Obstacle Runway (Minimum 1.0x ATR for Breakouts)
+        runway_k = min_runway_atr if min_runway_atr is not None else (1.0 if check_day_extremes else 0.85)
+        if runway_k >= 1.0 and self.current_atr_1m >= 10.0:
+            hurdle_pts = max(runway_k * self.current_atr_1m, 0.0006 * current_price)
+        else:
+            hurdle_pts = runway_k * self.current_atr_1m
 
         # 1m Structural Horizontal Pivots / Multi-Touch Clusters
         if len(self.bars_1m) >= 4:

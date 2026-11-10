@@ -473,10 +473,9 @@ def main():
                 if isinstance(candles_raw, list) and candles_raw:
                     seeded = pa_eng.seed_historical_bars(candles_raw)
                     live_20, live_slope_20 = getattr(pa_eng, "get_live_20_ema_and_slope", lambda: (0.0, 0.0))()
-                    live_50, live_slope_50 = getattr(pa_eng, "get_live_50_ema_and_slope", lambda: (0.0, 0.0))()
                     logger.info(
                         f"[AegisMain] Seeded PriceActionEngine with {seeded} 1m bars for {inst_name} ({spot_exch}:{spot_token}) | "
-                        f"20 EMA: {live_20:.2f} ({live_slope_20:+.2f}bps) | 50 EMA: {live_50:.2f} ({live_slope_50:+.2f}bps)"
+                        f"20 EMA: {live_20:.2f} ({live_slope_20:+.2f}bps)"
                     )
                 else:
                     logger.warning(f"[AegisMain] No historical 1m bars returned for {inst_name} ({spot_exch}:{spot_token})")
@@ -662,7 +661,6 @@ def main():
     # ─── Dynamic Subscription Management ───
     last_minute = datetime.now().minute
     last_subscribed_opts = set()
-    last_atm_strike = 0.0
     step = 100.0  # Default BankNifty; updated per instrument
     
     # Determine initial step
@@ -738,7 +736,6 @@ def main():
                     if aegis_engine is not None:
                         aegis_engine.atm_sync.force(atm_strike, spot=spot_price, reason="seed")
                     logger.info(f"[AegisMain] ATM seeded: {atm_strike:.0f} from spot {spot_price:.0f}")
-                last_atm_strike = atm_strike
                 
                 # Ensure token map is current (expiry changes, etc.)
                 _need_universe = (

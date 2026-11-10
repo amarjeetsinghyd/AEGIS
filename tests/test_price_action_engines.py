@@ -2354,3 +2354,152 @@ def test_two_phase_peek_and_commit_setup_parity():
     engine.commit_setup(det_peek)
     assert sr_lvl.is_broken is True, "Level must be marked broken after commit!"
     assert engine._mode_b_last_trigger_bar_idx.get("P4_SR_BREAKTHROUGH") == engine._total_bars_seen, "Lockout must be set after commit!"
+
+
+# ═══════════════════════════════════════════════════════════════
+# PHASE 3: LEVEL-CENTRIC REFINEMENTS & ZERO-ENTROPY TESTS
+# ═══════════════════════════════════════════════════════════════
+
+class TestPhase3_Refinements_And_Debloating:
+
+    def test_pillar1_n1_doji_range_hurdle_prevents_false_bounces(self):
+        """
+        Task 1: Verify that Pillar 1 rejects doji / tiny-range pullback bars (< 0.35 * ATR)
+        and triggers ONLY when prior_bar range >= 0.35 * ATR.
+        """
+        engine = PriceActionEngine(atr_period=14)
+        now = 1787023500.0
+
+        # Seed 25 bars with ATR ~ 18.0
+        for i in range(25):
+            engine._on_1m_bar_close(OHLCBar(
+                ts_start=now - (25 - i) * 60,
+                ts_end=now - (24 - i) * 60,
+                open=24000.0 + i * 2.0,
+                high=24010.0 + i * 2.0,
+                low=23992.0 + i * 2.0,
+                close=24005.0 + i * 2.0,
+                volume=1000,
+            ))
+
+        atr = engine.current_atr_1m
+        assert atr >= 10.0
+
+        # Create prior bar as a 2.0 pt DOJI (2.0 < 0.35 * 18 = 6.3 pts)
+        doji_bar = OHLCBar(
+            ts_start=now - 60.0,
+            ts_end=now,
+            open=24050.0,
+            high=24051.0,
+            low=24049.0,
+            close=24049.5,
+            volume=500,
+        )
+        engine._on_1m_bar_close(doji_bar)
+
+        # Forming bar crossing above doji_bar.high (24051.5 >= 24051.0)
+        engine._curr_1m_bar = OHLCBar(
+            ts_start=now,
+            ts_end=now + 60.0,
+            open=24049.5,
+            high=24052.0,
+            low=24049.0,
+            close=24051.5,
+            volume=200,
+        )
+        engine.last_price = 24051.5
+
+        # Must NOT trigger because doji range (2.0) < 0.35 * ATR
+        engine.last_price = 24051.5
+        ok, setup, _ = engine.check_mode_b_breakthrough("UP", current_time=now + 15.0)
+        assert not (ok and setup == "20_ema_rejection"), "Doji bar must NOT trigger P1 20 EMA bounce!"
+
+    def test_pillar3_squeeze_box_expansion_clearance_hurdle(self):
+        """
+        Task 2: Verify that Pillar 3 requires box_min_pierce = max(2.5, 0.00012 * spot, 0.08 * atr).
+        A 0.5 pt wick above box_high must NOT trigger; true clearance >= box_min_pierce triggers.
+        """
+        engine = PriceActionEngine(atr_period=14)
+        now = 1787023500.0
+
+        # Seed 20 bars
+        for i in range(20):
+            engine._on_1m_bar_close(OHLCBar(
+                ts_start=now - (20 - i) * 60,
+                ts_end=now - (19 - i) * 60,
+                open=24000.0,
+                high=24005.0,
+                low=23995.0,
+                close=24000.0,
+                volume=1000,
+            ))
+
+        # Setup squeeze box with box_high=24005.0, box_low=23995.0
+        engine._get_squeeze_box_cached = lambda direction, atr, bar_idx, last_p3: (
+            True, {"box_high": 24005.0, "box_low": 23995.0, "bar_count": 6}
+        )
+
+        atr = engine.current_atr_1m
+        spot = 24000.0
+        req_pierce = max(2.5, 0.00012 * spot, 0.08 * atr)
+        assert req_pierce >= 2.5
+
+        # Sub-tick pierce: spot = box_high + 0.5 (24005.5 < 24005.0 + req_pierce)
+        engine._curr_1m_bar = OHLCBar(
+            ts_start=now, ts_end=now + 60.0,
+            open=24004.0, high=24005.5, low=24003.0, close=24005.5, volume=200,
+        )
+        engine.last_price = 24005.5
+        ok_weak, setup_weak, _ = engine.check_mode_b_breakthrough("UP", current_time=now + 10.0)
+        assert not (ok_weak and setup_weak == "volatility_squeeze_breakout"), "Weak 0.5pt pierce must NOT trigger P3!"
+
+        # True expansion pierce: spot = box_high + req_pierce + 0.2
+        true_spot = 24005.0 + req_pierce + 0.2
+        engine._curr_1m_bar = OHLCBar(
+            ts_start=now, ts_end=now + 60.0,
+            open=24004.0, high=true_spot, low=24003.0, close=true_spot, volume=200,
+        )
+        engine.last_price = true_spot
+        ok_true, setup_true, det_true = engine.check_mode_b_breakthrough("UP", current_time=now + 10.0)
+        assert ok_true is True
+        assert setup_true == "volatility_squeeze_breakout"
+        assert det_true["pillar"] == 3
+
+    def test_pillar4_expanded_structural_obstacle_runway(self):
+        """
+        Task 3: Verify that Pillar 4 enforces minimum 1.0x ATR obstacle runway for breakouts.
+        """
+        engine = PriceActionEngine(atr_period=14)
+        engine.current_atr_1m = 18.0
+
+        # Simulate bars where a swing high resistance is established at 24025.0
+        engine.bars_1m = deque(maxlen=400)
+        now = 1787023500.0
+        for i in range(10):
+            engine.bars_1m.append(OHLCBar(
+                ts_start=now - (10 - i) * 60,
+                ts_end=now - (9 - i) * 60,
+                open=24000.0,
+                high=24025.0 if i == 5 else 24010.0,
+                low=23990.0,
+                close=24000.0,
+                volume=1000,
+            ))
+
+        # Test at price 24015.0: distance to resistance is 10.0 pts.
+        # With 1.0x ATR hurdle (18.0 pts), 10.0 < 18.0 -> blocked!
+        ok_close, r_close, _ = engine._check_structural_obstacle("CALL", current_price=24015.0, check_day_extremes=True)
+        assert ok_close is False
+        assert r_close == "trapped_near_resistance"
+
+        # Test at price 24000.0: distance to resistance is 25.0 pts (> 18.0 pts) -> clear!
+        ok_clear, r_clear, _ = engine._check_structural_obstacle("CALL", current_price=24000.0, check_day_extremes=True)
+        assert ok_clear is True
+        assert "clear" in r_clear
+
+    def test_50_ema_dead_stub_eliminated(self):
+        """
+        Task 4: Verify that get_live_50_ema_and_slope is permanently eliminated from PriceActionEngine.
+        """
+        engine = PriceActionEngine()
+        assert not hasattr(engine, "get_live_50_ema_and_slope"), "get_live_50_ema_and_slope must be completely purged!"

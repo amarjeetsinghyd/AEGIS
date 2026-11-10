@@ -87,6 +87,112 @@ class WyckoffVolumeEngine:
             return 0.0
         return sum(pos_vols) / len(pos_vols)
 
+    def evaluate_inflight_flow(
+        self,
+        direction: str,
+        flow_dict: Dict[str, Any],
+        lot_size: float = 65.0,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Single source of truth for in-flight option volume validation.
+        Enforces true institutional demand ahead of conviction scoring.
+        """
+        is_up = direction.upper() in ("UP", "CALL")
+        tot_flow = float(flow_dict.get("tot_flow", 0.0) or flow_dict.get("opt_total_vol", 0.0) or 0.0)
+        delta_flow = float(flow_dict.get("opt_delta_flow", 0.0) or 0.0)
+
+        bull_flow = float(flow_dict.get("bull_flow", 0.0) or 0.0)
+        bear_flow = float(flow_dict.get("bear_flow", 0.0) or 0.0)
+        if bull_flow <= 0.0 and bear_flow <= 0.0 and tot_flow > 0.0:
+            bull_flow = max(0.0, (tot_flow + delta_flow) / 2.0)
+            bear_flow = max(0.0, (tot_flow - delta_flow) / 2.0)
+        if tot_flow <= 0.0 and (bull_flow > 0.0 or bear_flow > 0.0):
+            tot_flow = bull_flow + bear_flow
+
+        # 0. Synthetic Test / Cold Start Bypass: When tot_flow <= 0, fails-open as neutral
+        if tot_flow <= 0.0:
+            return True, "wyckoff_intrabar_neutral_flow", {
+                "tot_flow": 0.0,
+                "opt_total_vol": 0.0,
+                "opt_delta_flow": 0.0,
+                "wyckoff_confirmed": False,
+                "flow_state": "neutral",
+            }
+
+        # 1. Hard Floor: Minimum 3 lots active traded volume (No 1-lot fakeouts)
+        eff_lot = float(lot_size) if lot_size and float(lot_size) > 0 else 65.0
+        min_active_volume = 3.0 * eff_lot  # NIFTY ~195 Qty, SENSEX ~60 Qty
+        if tot_flow < min_active_volume:
+            return False, "wyckoff_inflight_insufficient_volume", {
+                "tot_flow": tot_flow,
+                "opt_total_vol": tot_flow,
+                "opt_delta_flow": delta_flow,
+                "min_required": min_active_volume,
+                "verdict": "VETO_DRY_ORDER_FLOW",
+                "wyckoff_confirmed": False,
+                "flow_state": "insufficient_volume",
+            }
+
+        # 2. Strict 1.5x Directional Dominance & Directional Delta (No 50/50 chop)
+        if is_up:
+            if delta_flow <= 0.0:
+                return False, "wyckoff_intrabar_opposing_flow_veto", {
+                    "bull_flow": bull_flow,
+                    "bear_flow": bear_flow,
+                    "tot_flow": tot_flow,
+                    "opt_total_vol": tot_flow,
+                    "opt_delta_flow": delta_flow,
+                    "verdict": "VETO_NEGATIVE_DELTA",
+                    "wyckoff_confirmed": False,
+                    "flow_state": "opposing",
+                }
+            if bull_flow < (1.50 * max(bear_flow, 1.0)):
+                return False, "wyckoff_inflight_call_dominance_failed", {
+                    "bull_flow": bull_flow,
+                    "bear_flow": bear_flow,
+                    "tot_flow": tot_flow,
+                    "opt_total_vol": tot_flow,
+                    "opt_delta_flow": delta_flow,
+                    "ratio": round(bull_flow / max(bear_flow, 1.0), 2),
+                    "verdict": "VETO_WEAK_BULL_FLOW",
+                    "wyckoff_confirmed": False,
+                    "flow_state": "weak_dominance",
+                }
+        else:
+            if delta_flow >= 0.0:
+                return False, "wyckoff_intrabar_opposing_flow_veto", {
+                    "bull_flow": bull_flow,
+                    "bear_flow": bear_flow,
+                    "tot_flow": tot_flow,
+                    "opt_total_vol": tot_flow,
+                    "opt_delta_flow": delta_flow,
+                    "verdict": "VETO_POSITIVE_DELTA",
+                    "wyckoff_confirmed": False,
+                    "flow_state": "opposing",
+                }
+            if bear_flow < (1.50 * max(bull_flow, 1.0)):
+                return False, "wyckoff_inflight_put_dominance_failed", {
+                    "bull_flow": bull_flow,
+                    "bear_flow": bear_flow,
+                    "tot_flow": tot_flow,
+                    "opt_total_vol": tot_flow,
+                    "opt_delta_flow": delta_flow,
+                    "ratio": round(bear_flow / max(bull_flow, 1.0), 2),
+                    "verdict": "VETO_WEAK_BEAR_FLOW",
+                    "wyckoff_confirmed": False,
+                    "flow_state": "weak_dominance",
+                }
+
+        return True, "wyckoff_intrabar_inflight_confirmed", {
+            "bull_flow": bull_flow,
+            "bear_flow": bear_flow,
+            "tot_flow": tot_flow,
+            "opt_total_vol": tot_flow,
+            "opt_delta_flow": delta_flow,
+            "wyckoff_confirmed": True,
+            "flow_state": "aligned",
+        }
+
     def evaluate(
         self,
         pillar: int,
@@ -113,30 +219,26 @@ class WyckoffVolumeEngine:
         if is_inflight:
             pillar_id = (pa_details or {}).get("pillar") or (pa_details or {}).get("pillar_id")
             is_p1 = (pillar_id == 1) or ("20_ema" in pa_name)
-            live_delta = float((pa_details or {}).get("opt_delta_flow", 0.0))
-            live_vol = float((pa_details or {}).get("opt_total_vol", 0.0))
-            n1_fp = (pa_details or {}).get("n1_footprint", {}) if is_p1 else {}
-            vdr_val = 0.50 if n1_fp.get("n1_vol_dryup", False) else 1.0
-            absorption = 2.0 if n1_fp.get("n1_stopping_vol", False) else 1.0
+            lot_sz = float((pa_details or {}).get("lot_size", 0.0) or getattr(self, "lot_size", 65.0) or 65.0)
 
-            # Explicit 3-State In-Flight Flow Contract:
-            # 1. Aligned Flow: Delta matches trade direction -> Approved & wyckoff_confirmed=True
-            # 2. Opposing Flow: Delta swamps against trade direction -> Hard Veto & wyckoff_confirmed=False
-            # 3. Neutral / Zero Volume: Fails-open for synthetic/cold start -> Passed, but wyckoff_confirmed=False
-            is_opposing = (live_delta < 0 and live_vol > 0) if is_up else (live_delta > 0 and live_vol > 0)
-            is_aligned = (live_delta > 0 and live_vol > 0) if is_up else (live_delta < 0 and live_vol > 0)
+            flow_ok, flow_reason, flow_metrics = self.evaluate_inflight_flow(
+                direction=direction,
+                flow_dict=pa_details or {},
+                lot_size=lot_sz,
+            )
+            if not flow_ok:
+                return False, flow_reason, flow_metrics
 
-            base_metrics = {
+            base_metrics = dict(flow_metrics)
+            base_metrics.update({
                 "in_flight_validated": True,
                 "setup_name": pa_name or mode_val,
                 "atr": round(max(float(atr or 10.0), 1.0), 2),
-                "opt_delta_flow": round(live_delta, 1),
-                "opt_total_vol": round(live_vol, 1),
-                "ofi_delta": round(live_delta, 1),
-                "flow_state": "opposing" if is_opposing else ("aligned" if is_aligned else "neutral"),
-                "wyckoff_confirmed": bool(is_aligned),
-            }
+            })
             if is_p1:
+                n1_fp = (pa_details or {}).get("n1_footprint", {})
+                vdr_val = 0.50 if n1_fp.get("n1_vol_dryup", False) else 1.0
+                absorption = 2.0 if n1_fp.get("n1_stopping_vol", False) else 1.0
                 base_metrics["vdr"] = round(vdr_val, 2)
                 base_metrics["absorption_score"] = round(absorption, 1)
                 base_metrics["n1_footprint"] = n1_fp
@@ -152,13 +254,6 @@ class WyckoffVolumeEngine:
                 base_metrics["n1_demand_ignition"] = n1_demand_ignition
                 if n1_demand_ignition:
                     base_metrics["wyckoff_confirmed"] = True
-
-            if is_opposing:
-                return False, "wyckoff_intrabar_opposing_flow_veto", {
-                    **base_metrics,
-                    "wyckoff_confirmed": False,
-                    "flow_state": "opposing",
-                }
 
             # ─── P0 FIX: In-Flight Mode B Breakthrough Terminal Verdict ───
             # The breakthrough candle is the ACTIVE FORMING candle, NOT closed bar N-1!
