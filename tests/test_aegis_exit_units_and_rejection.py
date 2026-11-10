@@ -21,9 +21,9 @@ import pytest
 
 os.environ.setdefault("AEGIS_SILENCE_ALARM", "1")  # keep tests quiet (no terminal bell)
 
-from common.execution.trade_context import TradeContext, TradeLeg, resolve_leg_net_qty
-from common.execution.order_lifecycle import ShoonyaOrderLifecycle
-from AEGIS.aegis_execution_manager import AegisExecutionManager
+from execution.trade_context import TradeContext, TradeLeg, resolve_leg_net_qty
+from execution.order_lifecycle import ShoonyaOrderLifecycle
+from execution.execution_manager import AegisExecutionManager
 
 
 class DummyDataProvider:

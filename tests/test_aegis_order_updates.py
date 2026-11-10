@@ -1,9 +1,9 @@
 import threading
 from types import SimpleNamespace
 
-from AEGIS.execution import aegis_execution_manager as execution_module
-from AEGIS.execution.aegis_execution_manager import AegisExecutionManager
-from common.broker.shoonya_adapter import ShoonyaMarketDataProvider
+from execution import execution_manager as execution_module
+from execution.execution_manager import AegisExecutionManager
+from broker.shoonya_adapter import ShoonyaMarketDataProvider
 
 
 class _HistoryApi:

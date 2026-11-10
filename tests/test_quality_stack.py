@@ -9,7 +9,7 @@ import time
 import pytest
 from datetime import datetime
 
-from AEGIS.execution.aegis_execution_manager import (
+from execution.execution_manager import (
     QualitySlotPolicy,
     PostTriggerStabilityTracker,
     AegisExecutionManager,

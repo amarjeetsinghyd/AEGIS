@@ -1,7 +1,7 @@
 import pytest
 from dataclasses import dataclass
 from typing import Optional
-from AEGIS.core.wyckoff_volume_engine import WyckoffVolumeEngine
+from core.wyckoff_volume_engine import WyckoffVolumeEngine
 
 
 @dataclass

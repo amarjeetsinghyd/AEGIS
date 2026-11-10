@@ -1,4 +1,4 @@
-# AI AGENT INSTRUCTIONS — quant-bot repo
+# AI AGENT INSTRUCTIONS — AEGIS repo
 
 > **Read this before making any change in this repository.**
 > Applies to every AI coder (Cursor, Antigravity, Devin, deepseek-harness, etc.) and every human contributor.
@@ -48,7 +48,7 @@
 
 * **Single Source of Truth (Canonical Strategy Specs)**:
   - **Strategy & Rules Blueprint**: [`docs/5_PILLARS_MASTER_BLUEPRINT.md`](file:///c:/Users/Amarjeet%20Singh/quant-bot/docs/5_PILLARS_MASTER_BLUEPRINT.md)
-  - **Architecture Authority**: [`AEGIS/AEGIS_V1.0_ARCHITECTURE.md`](file:///c:/Users/Amarjeet%20Singh/quant-bot/AEGIS/AEGIS_V1.0_ARCHITECTURE.md)
+  - **Architecture Authority**: [`docs/AEGIS_V1.0_ARCHITECTURE.md`](file:///c:/Users/Amarjeet%20Singh/quant-bot/docs/AEGIS_V1.0_ARCHITECTURE.md)
 * **Core Trading Invariants**:
   - **Strategy**: 5 Macro Price Action Pillars + Priority Mode B Mid-Bar Breakthrough (`T:02s` onwards).
   - **Order Execution**: Strict 1-lot Maker TP (`+4.0%` Mon–Thu, `+3.0%` Fri), Universal Spot Invalidation, Atomic `0.75s` fill window, 0 order chasing.
@@ -85,19 +85,18 @@ Before writing or modifying ANY strategy, gatekeeper, or execution code, every A
 - **Pytest Execution Governance (Smart, Targeted, and Frugal)**:
   - **NEVER run pytest for non-engine tasks**: Do NOT run pytest when editing documentation (`.md`), writing or running analysis scripts (`scratch/`, `scripts/`), modifying data/JSON files, editing UI/HTML artifacts, or answering user questions/inspecting logs. Running tests for these wastes user time and burns tokens unnecessarily.
   - **Single-Module Edits $\implies$ Targeted Tests ONLY**: If you edit a single module, run ONLY its corresponding test file (e.g., `python -m pytest tests/test_shadow_boundary_observer.py -q`). It finishes in 2 seconds. Do NOT run the entire suite.
-  - **Full Test Suite (`python -m pytest tests\ -q`) $\implies$ Core Multi-Module Changes ONLY**: Run the full suite only when refactoring shared core infrastructure (`common/execution/`, `common/market/`), modifying multi-module interfaces, or before a major production deployment.
-  - **Suite Cleanliness**: The test suite must remain green when tests are appropriately run. As of 2026-08-16, Kronos is decommissioned; the obsolete `test_kronos_settings_use_kronos_package_paths` has been removed and shared-library fallback branches in `common/` are dormant. If a kronos-related test failure ever appears, remove the obsolete reference—do NOT revive Kronos code.
-- Hot-path modules (`value_engine.py`, `tick_compiler.py`, `on_tick` handlers) must not
+  - **Full Test Suite (`python -m pytest tests\ -q`) $\implies$ Core Multi-Module Changes ONLY**: Run the full suite only when refactoring core infrastructure (`execution/`, `market/`), modifying multi-module interfaces, or before a major production deployment.
+  - **Suite Cleanliness**: The test suite must remain green when tests are appropriately run. As of 2026-08-16, Kronos is decommissioned; the obsolete `test_kronos_settings_use_kronos_package_paths` has been removed. If a kronos-related test failure ever appears, remove the obsolete reference—do NOT revive Kronos code.
+- Hot-path modules (`market/tick_compiler.py`, `on_tick` handlers) must not
   import `pandas`/`scipy`/`sklearn`. Heavy libs are allowed only off-hot-path
-  (e.g. `l2_archiver.py` 15-min flush).
+  (e.g. `l2_options_archiver.py` flush).
 - **Scale-Invariance & Normalization Mandatory**: NEVER hardcode fixed point thresholds
   (e.g. `15.0 pts`, `8.0 pts`) for index calculations. NIFTY (24k), SENSEX (80k),
   BANKNIFTY (51k), and FINNIFTY (23k) operate on radically different point scales. ALL
   spot distances, triggers, invalidations, and confirmation thresholds must be
   normalized via Basis Points (bps, where 1 bps = 0.01% of spot), percentage of spot,
   or localized volatility multiples ($k \times \text{ATR}_{1m}$).
-- Single source of truth for symbols: `common/symbols.py` (`SUBSCRIPTION_UNIVERSE`,
-  `NIFTY100`). Do not hardcode symbol lists elsewhere.
+- Single source of truth for symbols: `symbols.py` (`INDEX_SPECS`, `ACTIVE_CONFIG`). Do not hardcode symbol lists elsewhere.
 - Never modify Shoonya/Noren API assumptions lightly; see harness doc §1.1.1
   (weekday-only, static IP, single session, ~24h expiry). See §SHOONYA below for the
   weekend rule.
@@ -141,13 +140,13 @@ Before writing or modifying ANY strategy, gatekeeper, or execution code, every A
   - **Last Rotated Date**: `08 October 2026` (Active: `Freedom@2026`).
   - **Next Mandatory Rotation Deadline**: `31 December 2026`.
   - **Human Ownership**: The user maintains a personal alarm/reminder and rotates this manually via the Shoonya web portal. AI agents must NEVER attempt automated credential rotation, scraping, or brute-force logins.
-  - **When user rotates password**: Update **ONLY** the single canonical root `.env` (`c:\Users\Amarjeet Singh\quant-bot\.env` locally and `/home/opc/.env` on VPS). Clear cached session files (`data/shoonya_session.json` and `tokens_cache.json`) to trigger automatic fresh OAuth login.
-- **Single Root `.env` Architecture (Engine-Level `.env` Strictly Prohibited)**:
+  - **When user rotates password**: Update **ONLY** the single canonical root `.env` (`c:\Users\Amarjeet Singh\aegis\.env` locally and `/home/opc/.env` on VPS). Clear cached session files (`data/shoonya_session.json` and `tokens_cache.json`) to trigger automatic fresh OAuth login.
+- **Single Root `.env` Architecture (Subdirectory `.env` Strictly Prohibited)**:
   - There is exactly **ONE** `.env` file per environment:
-    - Local: `c:\Users\Amarjeet Singh\quant-bot\.env`
-    - VPS: `/home/opc/.env` (and repo root `/home/opc/quant-bot/.env`)
-  - **Strict Prohibition**: Engine subdirectories (such as `AEGIS/.env`, `ARGUS/.env`, `astra_bot/.env`) are **STRICTLY PROHIBITED**.
-  - **Root Cause & Rationale**: On 2026-10-08, a legacy `/home/opc/AEGIS/.env` overrode the root `.env` with stale credentials, causing repeated broker auth rejections and account lockout. All engines (including `AEGIS/config/settings.py`) load solely from repo root / `/home/opc/.env`.
+    - Local: `c:\Users\Amarjeet Singh\aegis\.env`
+    - VPS: `/home/opc/.env` (and repo root `/home/opc/aegis/.env`)
+  - **Strict Prohibition**: Subdirectory `.env` files are **STRICTLY PROHIBITED**.
+  - **Root Cause & Rationale**: All settings load solely from repo root / `/home/opc/.env`.
 - **Weekend offline is normal.** The Shoonya WebSocket drops on Saturdays/Sundays and
   NSE holidays. A Sat/Sun 'no tick' or WS close is **not a bug** — do not file it,
   add alerts for it, or build weekday-specific reconnect logic for it. Reconnect /
@@ -164,11 +163,16 @@ Before writing or modifying ANY strategy, gatekeeper, or execution code, every A
 
 > **VPS Lean Deployment Rule**: ONLY active, production-critical runtime files are allowed on the VPS. All tests, test data, scratch experiments, historical archives, and forensics documentation MUST stay strictly on the local development machine. Never deploy or leave non-runtime files on the VPS.
 
-- **Host:** `137.23.41.38` (Oracle Cloud, Ubuntu). **User:** `opc`. Repo on VPS: `/home/opc`.
+- **Host:** `137.23.41.38` (Oracle Cloud, Ubuntu). **User:** `opc`. Repo on VPS: `/home/opc/aegis`.
 - **Allowed on VPS (Runtime Only)**:
-  - `AEGIS/` (production options engine)
-  - `unified_dashboard/` (monitoring UI)
-  - `common/` (broker adapters, IPC, runtime paths, symbols)
+  - `core/` (pure price action, Wyckoff volume, composite conviction)
+  - `execution/` (order lifecycle, strike selector, capital engine, trade context)
+  - `broker/` (shoonya adapter, session manager, rate limiter)
+  - `market/` (tick compiler, market calendar, instrument registry)
+  - `dashboard/` (monitoring UI)
+  - `config/` (paths, settings)
+  - `ipc/` (live state cross-process bridge)
+  - `main.py`, `backtest.py`, `logger.py`, `symbols.py`
   - `ecosystem.config.js` (PM2 process manifest)
   - `.env` (root credentials only — never in subdirectories)
 - **Forbidden on VPS (Local-Only)**:
@@ -178,7 +182,7 @@ Before writing or modifying ANY strategy, gatekeeper, or execution code, every A
   - Heavy ML datasets, raw parquets, or forensic notebooks
 - **SSH key location (local):** repo-root `Oracle SSH keys/ssh-key-2026-07-11.key`. It is the ONLY copy — never replicate it into an engine subfolder.
 - **SSH command:** `ssh -i "Oracle SSH keys/ssh-key-2026-07-11.key" opc@137.23.41.38`
-- **Process manager:** PM2, config `ecosystem.config.js` — active apps: `aegis-bot`, `unified-dashboard`.
+- **Process manager:** PM2, config `ecosystem.config.js` — active apps: `aegis-bot`, `aegis-dashboard`.
 
 ---
 
@@ -193,20 +197,9 @@ Rules every AI agent and contributor must uphold:
 - **No Temp / Scratch Files at Repo Root**: Scratch goes in `scratch/` (which is gitignored). Never place `temp.json`, `scratch_state.json`, or ad-hoc log files at repo root.
 - **No One-Shot Debug Scripts in `scripts/`**: `scripts/` is reserved ONLY for permanent operational tools (e.g. `trace_trade_pipeline.py`). Ad-hoc patch scripts must be executed in `scratch/` and promptly deleted.
 - **Pristine Jujutsu Working Copy**: Before concluding a session, verify that `jj st` shows a zero-entropy state (no stray files, no untracked noise).
-- **SSH key only at repo root** (`Oracle SSH keys/`), never inside an engine dir.
-- **No engine-level `.env` files.** Credentials live ONLY in the root `.env` (locally) or `/home/opc/.env` (VPS). Never place `.env` inside `AEGIS/`, `ARGUS/`, or any engine subdirectory.
-- **Engine files stay in their engine.** A file used by only one engine lives in
-  that engine's folder; cross-engine code goes through `common/`.
-- **Legacy / backup copies** go in the relevant engine's `archive/` (e.g.
-  `astra_bot/archive/`, `stock_order_flow/archive/`) or root `_archive/` — never
-  loose alongside live engine files.
-- **Logs live in the engine's `logs/`** (e.g. `AEGIS/logs/aegis.log`),
-  never loose at root or in the engine top-level.
-- **Stray engine dirs from dead engines:** `kronos_bot/` was deleted on 2026-10-25
-  (empty husk; full history in `_archive/kronos_bot/`). Empty `astra_bot/` +
-  `kronos_bot/` shells may reappear after test runs — a mkdir side-effect of the
-  protected legacy branch in `common/runtime/paths.py` (`get_runtime_paths("kronos")`).
-  They are gitignored — never commit or populate them.
+- **SSH key only at repo root** (`Oracle SSH keys/`), never inside a subfolder.
+- **No nested `.env` files.** Credentials live ONLY in the root `.env` (locally) or `/home/opc/.env` (VPS).
+- **Logs live in root `logs/`** (e.g. `logs/aegis.log`), never loose at root or scattered.
 
 ---
 
@@ -265,15 +258,11 @@ Rules every AI agent and contributor must uphold:
 * **Key Commands**:
   - **Core Engine High-Confidence Dead Code Scan**:
     ```powershell
-    python -m vulture AEGIS/core/ --min-confidence 80
-    ```
-  - **Shared Library Dead Code Scan**:
-    ```powershell
-    python -m vulture common/ --min-confidence 90
+    python -m vulture core/ execution/ broker/ market/ --min-confidence 80
     ```
   - **Full AEGIS Package Audit**:
     ```powershell
-    python -m vulture AEGIS/ --min-confidence 85
+    python -m vulture core/ execution/ broker/ market/ dashboard/ config/ ipc/ main.py --min-confidence 85
     ```
 
 ### 3. `ruff` — Ultra-Fast AST Linter & Dead Import / Variable Eliminator
@@ -282,11 +271,11 @@ Rules every AI agent and contributor must uphold:
 * **Key Commands**:
   - **Detect Unused Imports and Dead Variables**:
     ```powershell
-    python -m ruff check AEGIS/core/ --select F401,F841
+    python -m ruff check core/ execution/ --select F401,F841
     ```
   - **Safe Auto-Fix (Remove unused imports automatically)**:
     ```powershell
-    python -m ruff check AEGIS/core/ --select F401 --fix
+    python -m ruff check core/ execution/ --select F401 --fix
     ```
 
 ### 4. Asyncio Event Loop Latency & Blocking Detector (Built-in + `PYTHONASYNCIODEBUG=1`)
@@ -299,7 +288,7 @@ Rules every AI agent and contributor must uphold:
     ```
   - **Environment Variable Flag**:
     ```powershell
-    $env:PYTHONASYNCIODEBUG="1"; python AEGIS/aegis_main.py
+    $env:PYTHONASYNCIODEBUG="1"; python main.py
     ```
 
 ### 5. `viztracer` — Microsecond Timeline & Async Call Graph Visualizer
@@ -323,7 +312,7 @@ Rules every AI agent and contributor must uphold:
     ```python
     import hunter
     from hunter import Q, CallPrinter
-    hunter.trace(Q(module_startswith="AEGIS.core", action=CallPrinter))
+    hunter.trace(Q(module_startswith="core.", action=CallPrinter))
     ```
 
 ### 7. `coverage.py` with Branch Tracking — Dead Island & Zombie Code Hunter
@@ -332,11 +321,11 @@ Rules every AI agent and contributor must uphold:
 * **Key Commands**:
   - **Run Full Branch Coverage across Production Tests / Tick Replays**:
     ```powershell
-    python -m coverage run --branch --source=AEGIS -m pytest tests/ -q
+    python -m coverage run --branch --source=core,execution -m pytest tests/ -q
     ```
   - **Generate Itemized Zero-Hit Zombie Report**:
     ```powershell
-    python -m coverage report --include="AEGIS/core/*,AEGIS/execution/*"
+    python -m coverage report --include="core/*,execution/*"
     ```
 
 ### 8. `hypothesis` — Property-Based Market Fuzzer (Edge-Case Bombardment)
@@ -348,4 +337,3 @@ Rules every AI agent and contributor must uphold:
 ## WHEN IN DOUBT
 - Trust the harness doc (v3.5) over older docs; older docs can be deleted when stale.
 - Kronos is dead. If a change re-introduces Kronos, it is wrong by definition.
-- Ask the human before deleting shared-library kronos branches in `common/`.

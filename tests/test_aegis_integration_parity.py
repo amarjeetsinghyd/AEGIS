@@ -24,8 +24,8 @@ repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from AEGIS.backtest_engine import AegisParquetBacktester, ParquetTickAdapter
-from AEGIS.aegis_pipeline_orchestrator import AegisPipelineOrchestrator
+from backtest import AegisParquetBacktester, ParquetTickAdapter
+from core.pipeline_orchestrator import AegisPipelineOrchestrator
 
 
 class TestAegisIntegrationParity:

@@ -1,5 +1,5 @@
 """Absolute Pain Zone veto uses strict, inclusive band boundaries."""
-from AEGIS.core.price_action_engine import PriceActionEngine, OHLCBar
+from core.price_action_engine import PriceActionEngine, OHLCBar
 
 
 def _engine():

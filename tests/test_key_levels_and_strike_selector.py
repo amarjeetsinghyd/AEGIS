@@ -1,8 +1,8 @@
 import pytest
 import pandas as pd
 from datetime import datetime
-from common.execution.strike_selector import StrikeSelector
-from AEGIS.core.price_action_engine import PriceActionEngine, OHLCBar
+from execution.strike_selector import StrikeSelector
+from core.price_action_engine import PriceActionEngine, OHLCBar
 
 
 def test_strike_selector_picks_highest_affordable_without_testing_band():

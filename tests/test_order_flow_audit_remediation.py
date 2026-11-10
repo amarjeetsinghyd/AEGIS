@@ -1,10 +1,10 @@
 import pytest
 import time
 from unittest.mock import MagicMock
-from AEGIS.core.price_action_engine import PriceActionEngine, OHLCBar
-from AEGIS.core.option_order_flow import CompositeConvictionEngine
-from AEGIS.core.option_quality import OptionQualityEngine
-from common.market.tick_compiler import TickCompiler, ParsedTick
+from core.price_action_engine import PriceActionEngine, OHLCBar
+from core.option_order_flow import CompositeConvictionEngine
+from core.option_quality import OptionQualityEngine
+from market.tick_compiler import TickCompiler, ParsedTick
 
 
 def test_out_of_order_tick_rejects_phantom_volume():

@@ -33,9 +33,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from AEGIS.core.price_action_engine import PriceActionEngine, OHLCBar, StructuralLevel
-from AEGIS.aegis_execution_manager import AegisExecutionManager
-from common.execution.trade_context import TradeContext, TradeLeg
+from core.price_action_engine import PriceActionEngine, OHLCBar, StructuralLevel
+from execution.execution_manager import AegisExecutionManager
+from execution.trade_context import TradeContext, TradeLeg
 
 
 # ═══════════════════════════════════════════════════════════════

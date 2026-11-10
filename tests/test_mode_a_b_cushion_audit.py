@@ -6,11 +6,11 @@ from unittest.mock import MagicMock
 
 from queue import Queue
 
-from AEGIS.core.price_action_engine import PriceActionEngine, OHLCBar
+from core.price_action_engine import PriceActionEngine, OHLCBar
 
-from AEGIS.core.sweep_stop_run_detector import SWEEP_CONFIRMED_STOP_HUNT
+from core.sweep_stop_run_detector import SWEEP_CONFIRMED_STOP_HUNT
 
-from AEGIS.aegis_execution_manager import AegisExecutionManager, TradeContext, TradeLeg
+from execution.execution_manager import AegisExecutionManager, TradeContext, TradeLeg
 
 
 
@@ -102,6 +102,7 @@ def test_trailing_spot_sl_cushion_preserved_on_entry():
 
 
 
+@pytest.mark.skip(reason="DECOMMISSIONED: Mode A purged for Zero-Entropy; Priority Mode B is sole engine")
 def test_mode_a_breakout_from_below_veto():
 
     """Verify that price coming from below 20 EMA cannot arm a Mode A CALL rejection."""
@@ -655,7 +656,7 @@ def test_mode_b_p4_triggers_with_larger_origin_dist_and_expansion():
 
     """Verify that Mode B P4 triggers cleanly when open is 6pts below resistance and range expands."""
 
-    from AEGIS.core.price_action_engine import StructuralLevel
+    from core.price_action_engine import StructuralLevel
 
     pa = PriceActionEngine()
 
@@ -1143,7 +1144,7 @@ def test_micro_sweep_sr_registry_mapping():
 
     """Verify that Pillar 2 micro-sweep maps to active StructuralLevel Support/Resistance from the Registry."""
 
-    from AEGIS.core.price_action_engine import StructuralLevel
+    from core.price_action_engine import StructuralLevel
 
     pa = PriceActionEngine()
 

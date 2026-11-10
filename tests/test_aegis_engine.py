@@ -5,8 +5,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from AEGIS.aegis_pipeline_orchestrator import AegisPipelineOrchestrator, create_aegis_engine
-from common.execution.strike_selector import StrikeSelector
+from core.pipeline_orchestrator import AegisPipelineOrchestrator, create_aegis_engine
+from execution.strike_selector import StrikeSelector
 
 
 class MockParsedTick:

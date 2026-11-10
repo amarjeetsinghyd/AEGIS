@@ -1,9 +1,9 @@
 from types import SimpleNamespace
 from unittest.mock import Mock, MagicMock
 
-from AEGIS.execution.aegis_execution_manager import AegisExecutionManager
-from AEGIS.aegis_pipeline_orchestrator import AegisPipelineOrchestrator
-from common.execution.strike_selector import StrikeSelector
+from execution.execution_manager import AegisExecutionManager
+from core.pipeline_orchestrator import AegisPipelineOrchestrator
+from execution.strike_selector import StrikeSelector
 
 
 def test_execution_manager_stages_independent_directional_budget_targets(monkeypatch):
@@ -57,7 +57,7 @@ def test_execution_manager_budget_anchor_refresh_is_limited_to_ten_seconds(monke
     manager._last_budget_target_refresh = 100.0
     manager.aegis_engine = engine
 
-    monkeypatch.setattr("AEGIS.execution.aegis_execution_manager.time.monotonic", lambda: 105.0)
+    monkeypatch.setattr("execution.execution_manager.time.monotonic", lambda: 105.0)
     manager._refresh_budget_strike_targets()
 
     engine.set_budget_strike_targets.assert_not_called()
@@ -113,7 +113,7 @@ def test_budget_cluster_pure_individual_candidate_evaluation_prevents_leakage():
     """
     import queue
     import numpy as np
-    from AEGIS.aegis_pipeline_orchestrator import create_aegis_engine
+    from core.pipeline_orchestrator import create_aegis_engine
 
     class MockParsedTick:
         def __init__(self, tok, lp, vol, ts):

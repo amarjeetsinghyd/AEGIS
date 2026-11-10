@@ -38,6 +38,7 @@ tokens_cache.json
 
 # Runtime market data & binary stores
 data/shm/
+data/l2_raw/
 *.parquet
 *.db
 *.sqlite

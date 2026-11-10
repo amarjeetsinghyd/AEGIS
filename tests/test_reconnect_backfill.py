@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from AEGIS.core.price_action_engine import OHLCBar, PriceActionEngine
+from core.price_action_engine import OHLCBar, PriceActionEngine
 
 
 def _rest_candle(ts_start, close=24010.0):

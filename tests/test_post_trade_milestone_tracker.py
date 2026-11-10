@@ -2,7 +2,7 @@ import os
 import json
 import time
 import pytest
-from AEGIS.core.outcome_telemetry import PostTradeMilestoneTracker, PostTradeMilestoneRecord
+from core.outcome_telemetry import PostTradeMilestoneTracker, PostTradeMilestoneRecord
 
 
 def test_post_trade_tracker_initialization(tmp_path):

@@ -4,7 +4,7 @@ import tracemalloc
 import numpy as np
 import pytest
 
-from AEGIS.core.gex_engine import GexShadowEngine, INV_SQRT_2PI
+from core.gex_engine import GexShadowEngine, INV_SQRT_2PI
 
 
 def test_black_scholes_gamma_mathematical_accuracy():

@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import MagicMock
-from AEGIS.core.price_action_engine import PriceActionEngine, OHLCBar, StructuralLevel
-from AEGIS.core.shadow_boundary_observer import ShadowBoundaryObserver, ShadowTrade
+from core.price_action_engine import PriceActionEngine, OHLCBar, StructuralLevel
+from core.shadow_boundary_observer import ShadowBoundaryObserver, ShadowTrade
 
 
 def test_shadow_observer_initialization():

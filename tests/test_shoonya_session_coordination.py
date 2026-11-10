@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-import common.broker.shoonya_adapter as sa
+import broker.shoonya_adapter as sa
 
 
 class FakeNorenApi:

@@ -4,7 +4,7 @@ import time
 
 import pandas as pd
 
-from AEGIS.core.atm_sync import (
+from core.atm_sync import (
     AtmSync, AtmEventBus, AtmSnapshot, BandSubscriptionManager,
     HysteresisAtmTracker, cold_corridor_symbols, make_alignment_listeners, nearest_strike,
 )

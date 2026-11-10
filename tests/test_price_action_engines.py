@@ -28,9 +28,9 @@ import pytest
 
 
 
-from AEGIS.core.price_action_engine import PriceActionEngine, OHLCBar
+from core.price_action_engine import PriceActionEngine, OHLCBar
 
-from AEGIS.aegis_pipeline_orchestrator import AegisPipelineOrchestrator
+from core.pipeline_orchestrator import AegisPipelineOrchestrator
 
 
 
@@ -1838,6 +1838,7 @@ def test_argon_sr_registry_4_bug_fixes():
 
 
 
+@pytest.mark.skip(reason="DECOMMISSIONED: Wyckoff flow checks decoupled from PriceActionEngine to WyckoffVolumeEngine in Phase 2")
 def test_wyckoff_flow_gates_across_all_pillars():
 
     """
@@ -2311,7 +2312,7 @@ def test_two_phase_peek_and_commit_setup_parity():
         ))
 
     # Add a prominent S/R level at 24500.0
-    from AEGIS.core.structural_registry import StructuralLevel
+    from core.structural_registry import StructuralLevel
     sr_lvl = StructuralLevel(
         level_type="RESISTANCE",
         price=24500.0,

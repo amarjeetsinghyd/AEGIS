@@ -6,15 +6,15 @@ Verifies O(1) Zero-Allocation Stop Hunt vs Dry Sweep Detection in Shadow & Live 
 
 import pytest
 import numpy as np
-from AEGIS.core.sweep_stop_run_detector import (
+from core.sweep_stop_run_detector import (
     SweepStopRunDetector,
     SWEEP_NONE,
     SWEEP_CONFIRMED_STOP_HUNT,
     SWEEP_VETO_DRY_NO_STOPS,
     SWEEP_VETO_UNABSORBED_PANIC,
 )
-from AEGIS.core.price_action_engine import PriceActionEngine
-from AEGIS.core.structural_registry import StructuralLevel
+from core.price_action_engine import PriceActionEngine
+from core.structural_registry import StructuralLevel
 
 
 def test_detector_initialization_and_sync():
@@ -243,7 +243,7 @@ def test_interior_cluster_unlocked_for_sweep_and_banned_for_breakout():
     assert inner_lvl.breakout_tier == "B_SWEEP_ONLY"
 
     # 2. Check Pillar 2 In-flight Sweep eligibility -> must qualify and NOT be vetoed!
-    from AEGIS.core.price_action_engine import OHLCBar
+    from core.price_action_engine import OHLCBar
     prior_bar = OHLCBar(ts_start=1000.0, ts_end=1060.0, open=24060.0, high=24065.0, low=24040.0, close=24055.0)
     curr_bar = OHLCBar(ts_start=1060.0, ts_end=1120.0, open=24055.0, high=24070.0, low=24048.0, close=24068.0)
 

@@ -1,7 +1,7 @@
 import pytest
 from datetime import date, datetime, timedelta
-from AEGIS.core.price_action_engine import PriceActionEngine, StructuralLevel, OHLCBar
-from common.market.market_calendar import get_previous_trading_day, is_exchange_trading_day, NSE_HOLIDAYS_2026
+from core.price_action_engine import PriceActionEngine, StructuralLevel, OHLCBar
+from market.market_calendar import get_previous_trading_day, is_exchange_trading_day, NSE_HOLIDAYS_2026
 
 
 def test_get_previous_trading_day():

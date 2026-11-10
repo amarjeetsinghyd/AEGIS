@@ -13,8 +13,8 @@ from datetime import datetime, timedelta
 import time
 import pytest
 
-from common.execution.trade_context import TradeContext, TradeLeg
-from AEGIS.aegis_execution_manager import (
+from execution.trade_context import TradeContext, TradeLeg
+from execution.execution_manager import (
     AegisExecutionManager,
     DEFAULT_MIN_NOISE_FLOOR_RS,
     get_adaptive_target_profit_pct,
@@ -369,7 +369,7 @@ def test_entry_exception_clears_trade_context():
             pass
     em.capital_engine = DummyCapEngine()
 
-    with patch("AEGIS.aegis_execution_manager.StrikeSelector.select_strikes") as mock_sel:
+    with patch("execution.execution_manager.StrikeSelector.select_strikes") as mock_sel:
         mock_sel.return_value = [({"symbol": "NIFTY24500CE", "token": "12345", "strike": 24500.0}, 1, 25.0)]
 
         # Force execute_entry to raise an unhandled broker exception
@@ -395,7 +395,7 @@ def test_entry_exception_clears_trade_context():
 
 def test_stale_spot_history_returns_zero_drift():
     """Verify that get_spot_drift and get_spot_drift_bps return 0.0 when spot feed is older than 60s."""
-    from AEGIS.aegis_pipeline_orchestrator import AegisPipelineOrchestrator
+    from core.pipeline_orchestrator import AegisPipelineOrchestrator
     engine = AegisPipelineOrchestrator(
         token_to_symbol={"26000": "NIFTY"},
         token_map={"26000": {"side": 0, "strike": 0.0, "is_index": True}},
@@ -414,7 +414,7 @@ def test_stale_spot_history_returns_zero_drift():
 
 def test_backtest_breakeven_spot_confirmation_parity():
     """Verify backtest engine arms breakeven on favorable spot move (Key 2) even before 60s."""
-    from AEGIS.backtest_engine import SimulatedPositionManager
+    from backtest import SimulatedPositionManager
     # NOTE: BE-arming needs peak gain above 2.5x noise floor WITHOUT hitting TP first,
     # so this test pins a wide 35% target to isolate breakeven logic (live default is 4%).
     pos_mgr = SimulatedPositionManager(target_pct=35.0)
@@ -648,7 +648,7 @@ def _make_backtest_squeeze_signal(lp=100.0, pa_setup="volatility_squeeze_breakou
 
 def test_backtest_squeeze_timeout_and_route_lockout_parity():
     """Backtest must allow squeeze trades to sustain the 5-minute window (live parity)."""
-    from AEGIS.backtest_engine import SimulatedPositionManager
+    from backtest import SimulatedPositionManager
     pos_mgr = SimulatedPositionManager()
     pos_mgr.update_spot(24000.0)
 
@@ -676,7 +676,7 @@ def test_backtest_squeeze_timeout_and_route_lockout_parity():
 
 def test_backtest_fast_four_percent_tp():
     """Backtest must honor the live +4.0% resting TP instead of the legacy 35% floor."""
-    from AEGIS.backtest_engine import SimulatedPositionManager
+    from backtest import SimulatedPositionManager
     pos_mgr = SimulatedPositionManager()
     pos_mgr.update_spot(24000.0)
 
@@ -688,7 +688,7 @@ def test_backtest_fast_four_percent_tp():
 
 def test_backtest_adaptive_six_min_extension():
     """Backtest time ceiling: flat trade exits at 5m, running winner extends to 6m (live parity)."""
-    from AEGIS.backtest_engine import SimulatedPositionManager
+    from backtest import SimulatedPositionManager
 
     # Winner (+3%): survives 305s, exits at 360s ceiling
     pos_mgr = SimulatedPositionManager()
@@ -910,7 +910,7 @@ def test_pillar3_12pct_disaster_sl_allows_small_noise():
 def test_pillar2_entry_candle_invalidation_and_no_9ema_choke():
     """Verify that Pillar 2 (Micro-Sweep & Reclaim) is NOT choked by 9-EMA bar close,
     and exits ONLY when spot breaks the Entry Candle Low (CALL) / High (PUT)."""
-    from AEGIS.core.price_action_engine import OHLCBar
+    from core.price_action_engine import OHLCBar
     em, ctx, leg = create_test_manager(entry_price=25.20, spot_entry=74884.0, signal_type="CALL")
     t0 = datetime.now() - timedelta(seconds=70)
     ctx.entry_time = t0
@@ -957,7 +957,7 @@ def test_pillar2_entry_candle_invalidation_and_no_9ema_choke():
 def test_pillar1_entry_candle_invalidation_and_no_9ema_choke():
     """Verify that Pillar 1 (20 EMA Pullback) is NOT choked by 9-EMA bar close,
     and exits ONLY when spot breaks the Entry Candle Low (CALL) / High (PUT)."""
-    from AEGIS.core.price_action_engine import OHLCBar
+    from core.price_action_engine import OHLCBar
     em, ctx, leg = create_test_manager(entry_price=25.20, spot_entry=74884.0, signal_type="CALL")
     t0 = datetime.now() - timedelta(seconds=70)
     ctx.entry_time = t0
@@ -1003,7 +1003,7 @@ def test_pillar1_entry_candle_invalidation_and_no_9ema_choke():
 def test_pillar3_entry_candle_invalidation_and_no_9ema_choke():
     """Verify that Pillar 3 (Volatility Squeeze Breakout) is NOT choked by 9-EMA bar close,
     and exits ONLY when spot breaks the Entry Candle Low (CALL) / High (PUT)."""
-    from AEGIS.core.price_action_engine import OHLCBar
+    from core.price_action_engine import OHLCBar
     em, ctx, leg = create_test_manager(entry_price=25.20, spot_entry=74884.0, signal_type="CALL")
     t0 = datetime.now() - timedelta(seconds=70)
     ctx.entry_time = t0
@@ -1156,7 +1156,7 @@ def test_atomic_modify_fallback_on_error():
 
 def test_trailing_structural_sl_on_entry_bar_close():
     """Verify that once the entry candle closes, the structural SL trails to the entry candle's low."""
-    from AEGIS.core.price_action_engine import OHLCBar
+    from core.price_action_engine import OHLCBar
     em, ctx, leg = create_test_manager(entry_price=14.0, spot_entry=23122.0, signal_type="CALL")
     t_signal = datetime.now() - timedelta(seconds=90)
     t_entry = t_signal + timedelta(seconds=65)  # 5s into the entry bar
@@ -1211,7 +1211,7 @@ def test_trailing_structural_sl_on_entry_bar_close():
 
 def test_trailing_structural_sl_put():
     """Verify that for PUT trades, once the entry candle closes, structural SL trails down to entry candle's high + cushion."""
-    from AEGIS.core.price_action_engine import OHLCBar
+    from core.price_action_engine import OHLCBar
     em, ctx, leg = create_test_manager(entry_price=18.0, spot_entry=23100.0, signal_type="PUT")
     t_signal = datetime.now() - timedelta(seconds=90)
     t_entry = t_signal + timedelta(seconds=65)
@@ -1265,7 +1265,7 @@ def test_trailing_structural_sl_put():
 
 def test_trade37_forensic_replication():
     """Forensic verification: Trade #37 on 16 Oct exits early on entry candle low breakdown rather than 300s timeout."""
-    from AEGIS.core.price_action_engine import OHLCBar
+    from core.price_action_engine import OHLCBar
     em, ctx, leg = create_test_manager(entry_price=14.05, spot_entry=23122.30, signal_type="CALL")
     t0 = datetime.now() - timedelta(seconds=140)  # ~2.3 minutes ago (well within 300s time ceiling)
     ctx.entry_time = t0 + timedelta(seconds=65)  # 13:11:05
@@ -1302,7 +1302,7 @@ def test_trade37_forensic_replication():
 def test_thin_candle_bypass_and_cushion_protection():
     """Verify that thin candles (< 1.5 bps hurdle) are skipped for trailing,
     and micro-wicks within the cushion buffer do not prematurely stop out the trade."""
-    from AEGIS.core.price_action_engine import OHLCBar
+    from core.price_action_engine import OHLCBar
     em, ctx, leg = create_test_manager(entry_price=20.0, spot_entry=23988.0, signal_type="CALL")
     t0 = datetime.now() - timedelta(seconds=150)
     ctx.entry_time = t0 + timedelta(seconds=65)
@@ -1373,7 +1373,7 @@ def test_ratchet_only_rule_never_loosens_sl():
     """Verify Ratchet-Only Rule:
     If a candle has range >= hurdle and green close, but its low is lower than current SL,
     the stop loss MUST NEVER loosen (drop)."""
-    from AEGIS.core.price_action_engine import OHLCBar
+    from core.price_action_engine import OHLCBar
     em, ctx, leg = create_test_manager(entry_price=25.0, spot_entry=24000.0, signal_type="CALL")
     t0 = datetime.now() - timedelta(seconds=180)
     ctx.entry_time = t0 + timedelta(seconds=65)
@@ -1422,7 +1422,7 @@ def test_ratchet_only_rule_never_loosens_sl():
 def test_multi_bar_continuous_trailing_t1_t2_t3():
     """Verify that Bar-by-Bar Trailing SL runs continuously across every subsequent bar (T+1, T+2, T+3...)
     until the trade exits."""
-    from AEGIS.core.price_action_engine import OHLCBar
+    from core.price_action_engine import OHLCBar
     em, ctx, leg = create_test_manager(entry_price=30.0, spot_entry=24000.0, signal_type="CALL")
     t0 = datetime.now() - timedelta(seconds=240)
     ctx.entry_time = t0 + timedelta(seconds=65)
@@ -1579,7 +1579,7 @@ def test_argon_last_mile_spot_hygiene_gate_abort_and_pass():
     """
     from unittest.mock import MagicMock, patch
     import queue
-    from AEGIS.aegis_execution_manager import AegisExecutionManager
+    from execution.execution_manager import AegisExecutionManager
 
     broker = MagicMock()
     data_fetcher = MagicMock()
@@ -1605,7 +1605,7 @@ def test_argon_last_mile_spot_hygiene_gate_abort_and_pass():
     em.capital_engine = MagicMock()
     em.capital_engine.get_available_funds.return_value = 5000.0
 
-    with patch("AEGIS.aegis_execution_manager.StrikeSelector.select_strikes") as mock_select:
+    with patch("execution.execution_manager.StrikeSelector.select_strikes") as mock_select:
         mock_select.return_value = [
             ({"symbol": "SENSEX26OCT74300PE", "token": "1001", "strike": 74300.0}, 1, 30.0)
         ]
@@ -1668,7 +1668,7 @@ def test_execution_uses_the_scored_contract_without_strike_reselection():
     }
     attach_scored_contract(em, signal, token="2001", strike=73400.0)
 
-    with patch("common.execution.strike_selector.StrikeSelector.select_strikes") as mock_select:
+    with patch("execution.strike_selector.StrikeSelector.select_strikes") as mock_select:
         em.order_lifecycle = MagicMock()
         em.order_lifecycle.execute_entry.return_value = True
         with patch("time.time", return_value=t50_epoch + 5.0):
@@ -1708,7 +1708,7 @@ def test_execution_rejects_contract_identity_mismatch():
 
 def test_premarket_bridge_only_shifts_atm_and_stops_at_open():
     from unittest.mock import MagicMock, patch
-    from AEGIS import aegis_execution_manager as execution_manager_module
+    from execution import execution_manager as execution_manager_module
 
     em, _, _ = create_test_manager()
     em.aegis_engine.shift_atm = MagicMock()
@@ -1748,7 +1748,7 @@ def test_last_mile_in_flight_continuation_and_drawdown_gate():
     3. In-Flight Delta Reversal: Order flow flipped to > 1.25x opposing volume.
     """
     from unittest.mock import MagicMock
-    from AEGIS.core.price_action_engine import OHLCBar
+    from core.price_action_engine import OHLCBar
     em, ctx, leg = create_test_manager(entry_price=100.0, spot_entry=73400.0, signal_type="CALL")
     em.trade_context = None
     em.trades_today = 0
@@ -1837,7 +1837,7 @@ def test_friday_4dte_low_capital_guard():
     from unittest.mock import MagicMock, patch
     import os
     import queue
-    from AEGIS.aegis_execution_manager import AegisExecutionManager
+    from execution.execution_manager import AegisExecutionManager
 
     em, ctx, leg = create_test_manager(entry_price=8.15, spot_entry=22472.0, signal_type="PUT")
     em.trade_context = None
@@ -1873,7 +1873,7 @@ def test_friday_4dte_low_capital_guard():
     # 2. _process_aegis_signal: Low capital on Friday blocks execution
     em.capital_engine.get_available_funds.return_value = 1200.0  # < ₹3,000
     with patch.dict(os.environ, {"AEGIS_FRIDAY_TRADING_ENABLED": "1"}):
-        with patch("AEGIS.aegis_execution_manager.datetime") as mock_dt:
+        with patch("execution.execution_manager.datetime") as mock_dt:
             mock_dt.now.return_value = friday_noon
             em._process_aegis_signal(signal)
 
@@ -1884,7 +1884,7 @@ def test_friday_4dte_low_capital_guard():
     em.aegis_engine.slot_policy.rollback_admission.reset_mock()
     em.capital_engine.get_available_funds.return_value = 50000.0
     with patch.dict(os.environ, {"AEGIS_FRIDAY_TRADING_ENABLED": "0"}):
-        with patch("AEGIS.aegis_execution_manager.datetime") as mock_dt:
+        with patch("execution.execution_manager.datetime") as mock_dt:
             mock_dt.now.return_value = friday_noon
             em._process_aegis_signal(signal)
 
@@ -1942,7 +1942,7 @@ def test_mode_b_universal_candle_color_shield_abort_and_drain():
     """Phase 1: Verify Mode B P1/P2 signals strictly abort if forming candle is opposite color."""
     import queue
     from unittest.mock import MagicMock
-    from AEGIS.core.price_action_engine import OHLCBar
+    from core.price_action_engine import OHLCBar
     em, ctx, leg = create_test_manager(entry_price=100.0, spot_entry=74000.0, signal_type="CALL")
     em.trade_context = None
     em.trades_today = 0

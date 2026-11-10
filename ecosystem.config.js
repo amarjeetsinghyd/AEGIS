@@ -2,8 +2,8 @@ module.exports = {
   apps: [
     {
       name: "aegis-bot",
-      script: "AEGIS/aegis_main.py",
-      cwd: "/home/opc/quant-bot",
+      script: "main.py",
+      cwd: "/home/opc/aegis",
       interpreter: "python3.12",
       autorestart: true,
       watch: false,
@@ -12,7 +12,7 @@ module.exports = {
       restart_delay: 5000,
       env: {
         TZ: "Asia/Kolkata",
-        PYTHONPATH: "/home/opc/quant-bot",
+        PYTHONPATH: "/home/opc/aegis",
         BOT_RUNTIME: "aegis",
         MAX_TRADES_PER_DAY: "3",
         AEGIS_CONSEC_LOSS_STOP: "2",
@@ -24,9 +24,9 @@ module.exports = {
       }
     },
     {
-      name: "unified-dashboard",
-      script: "unified_dashboard/dashboard.py",
-      cwd: "/home/opc/quant-bot",
+      name: "aegis-dashboard",
+      script: "dashboard/dashboard.py",
+      cwd: "/home/opc/aegis",
       interpreter: "python3.12",
       autorestart: true,
       watch: false,
@@ -35,7 +35,7 @@ module.exports = {
       restart_delay: 3000,
       env: {
         TZ: "Asia/Kolkata",
-        PYTHONPATH: "/home/opc/quant-bot"
+        PYTHONPATH: "/home/opc/aegis"
       }
     }
   ]

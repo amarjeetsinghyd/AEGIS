@@ -3,7 +3,7 @@ Unit tests for AEGIS Core Microstructure Components:
 - OutcomeTelemetryEngine
 """
 import pytest
-from AEGIS.core.outcome_telemetry import OutcomeTelemetryEngine
+from core.outcome_telemetry import OutcomeTelemetryEngine
 
 
 class TestOutcomeTelemetry:

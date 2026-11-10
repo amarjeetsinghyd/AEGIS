@@ -16,11 +16,11 @@ import pytest
 from dataclasses import dataclass
 from unittest.mock import MagicMock
 
-from AEGIS.core.option_order_flow import (
+from core.option_order_flow import (
     CompositeConvictionEngine,
     ConvictionResult,
 )
-from AEGIS.core.price_action_engine import OHLCBar, PriceActionEngine
+from core.price_action_engine import OHLCBar, PriceActionEngine
 
 
 @dataclass

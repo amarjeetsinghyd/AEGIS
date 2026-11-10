@@ -1,8 +1,8 @@
 import time
 import pytest
 from types import SimpleNamespace
-from AEGIS.execution.aegis_execution_manager import AegisExecutionManager
-from common.execution.trade_context import TradeContext, TradeLeg
+from execution.execution_manager import AegisExecutionManager
+from execution.trade_context import TradeContext, TradeLeg
 
 
 class MockBroker:
@@ -20,7 +20,7 @@ class MockEngine:
 def test_dump_detector_initialization():
     em = AegisExecutionManager.__new__(AegisExecutionManager)
     em.is_sensex = False
-    from AEGIS.execution.dump_detector import DumpDetector
+    from execution.dump_detector import DumpDetector
     em.dump_detector = DumpDetector(tick=0.05, lot=65, tp_pct=0.04, sl_pct=-0.08, arm_pct=0.02)
     assert em.dump_detector is not None
     assert em.dump_detector.armed is False
@@ -29,7 +29,7 @@ def test_dump_detector_initialization():
 
 def test_dump_detector_arming_and_disarming():
     em = AegisExecutionManager.__new__(AegisExecutionManager)
-    from AEGIS.execution.dump_detector import DumpDetector
+    from execution.dump_detector import DumpDetector
     em.dump_detector = DumpDetector(tick=0.05, lot=65, tp_pct=0.04, sl_pct=-0.08, arm_pct=0.02)
     em.dump_detector.arm(100.0, tp_pct=0.04, sl_pct=-0.08)
     assert em.dump_detector.armed is True
@@ -40,7 +40,7 @@ def test_dump_detector_arming_and_disarming():
 
 def test_dump_detector_on_option_tick_triggers_emergency_exit():
     em = AegisExecutionManager.__new__(AegisExecutionManager)
-    from AEGIS.execution.dump_detector import DumpDetector
+    from execution.dump_detector import DumpDetector
     em.dump_detector = DumpDetector(tick=0.05, lot=65, tp_pct=0.04, sl_pct=-0.08, arm_pct=0.02, pull_ticks=2.0)
     
     # Setup open trade

@@ -16,7 +16,7 @@ import time
 import pytest
 import numpy as np
 
-from AEGIS.core.iceberg_detector import (
+from core.iceberg_detector import (
     IcebergShadowDetector,
     STATE_NONE,
     STATE_BID_ICEBERG_HOLD,

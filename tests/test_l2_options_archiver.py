@@ -1,6 +1,6 @@
 import threading
 
-from AEGIS.core import l2_options_archiver
+from core import l2_options_archiver
 
 
 def test_tick_listener_queues_rows_and_worker_owns_flush(monkeypatch, tmp_path):

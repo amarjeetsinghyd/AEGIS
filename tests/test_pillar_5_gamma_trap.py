@@ -11,9 +11,9 @@ Validates:
 import time
 import pytest
 from types import SimpleNamespace
-from AEGIS.core.price_action_engine import PriceActionEngine, OHLCBar
-from AEGIS.core.wyckoff_volume_engine import WyckoffVolumeEngine
-from AEGIS.core.sweep_stop_run_detector import (
+from core.price_action_engine import PriceActionEngine, OHLCBar
+from core.wyckoff_volume_engine import WyckoffVolumeEngine
+from core.sweep_stop_run_detector import (
     SWEEP_CONFIRMED_STOP_HUNT,
     SWEEP_VETO_DRY_NO_STOPS,
     SWEEP_VETO_UNABSORBED_PANIC,
@@ -205,7 +205,7 @@ def test_wyckoff_vdr_absorption_non_p1_disentangled():
 
 def test_pillar_4_approach_ladder_enforcement():
     """Validates that Pillar 4 Dynamic S/R Breakout enforces the strict 2-Candle Approach Ladder."""
-    from AEGIS.core.structural_registry import StructuralLevel
+    from core.structural_registry import StructuralLevel
 
     pae = PriceActionEngine(strike_step=50.0)
     pae.current_atr_1m = 10.0
@@ -248,7 +248,7 @@ def test_pillar_4_approach_ladder_enforcement():
 
 def test_shadow_rejection_approach_ladder():
     """Validates that ShadowBoundaryObserver requires sharp fall into support (CALL) and sharp rise into resistance (PUT)."""
-    from AEGIS.core.shadow_boundary_observer import ShadowBoundaryObserver
+    from core.shadow_boundary_observer import ShadowBoundaryObserver
     from unittest.mock import MagicMock
 
     obs = ShadowBoundaryObserver(price_action_engine=MagicMock(), strike_step=50.0)
