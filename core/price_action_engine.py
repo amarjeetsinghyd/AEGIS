@@ -461,7 +461,8 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         # 4. Dynamic Session S/R Level Registry Update (5m + 1m)
         self._update_structural_levels(bar, new_5m_bar=new_5m_bar)
 
-        # Mode A Arming Permanently Decommissioned (Zero-Entropy Priority Mode B Sole Engine)
+        # 5. Live update of 60-bar median volume cache for O(1) Wyckoff P4 lookups
+        self._update_median_vol_60()
 
     def _update_median_vol_60(self) -> None:
         """Updates cached 60-bar median volume on 1m bar close for O(1) Wyckoff lookups."""

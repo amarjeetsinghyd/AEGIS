@@ -336,29 +336,6 @@ class TickCompiler:
             return self.broker
         return None
 
-    # ─── TIER 2 INTRADAY FILTER API ───
-    def set_tier2_symbols(self, symbols: set):
-        """Set top 30 symbols for Tier 2 pre-filter (15-min rolling filter)."""
-        self._tier2_symbols = set(symbols) if symbols else set()
-        logger.info(f"[TIER2] Updated Tier 2 symbols: {len(self._tier2_symbols)} symbols")
-
-    def set_engine_symbols(self, symbols: set):
-        """Set top 15 symbols for adaptive engine dispatch."""
-        self._engine_symbols = set(symbols) if symbols else set()
-        logger.info(f"[TIER2] Updated Engine symbols: {len(self._engine_symbols)} symbols")
-
-    def get_15min_stats(self, sym: str) -> dict | None:
-        """Legacy stub for 15-min stats (purged from AEGIS v1.1)."""
-        return None
-
-    def get_5min_stats(self, symbol: str) -> dict | None:
-        return None
-
-    def reset_15min_stats(self):
-        pass
-
-    def reset_5min_stats(self):
-        pass
 
     def reset_session(self):
         """Reset session-level state for market open / day rollover.

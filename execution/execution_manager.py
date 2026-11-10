@@ -425,6 +425,9 @@ class AegisExecutionManager:
             ):
                 return False, 0.0
             poll_times[order_id] = now_mono
+            # Bounded cache hygiene: maintain max 256 keys to prevent multi-day memory leak
+            while len(poll_times) > 256:
+                poll_times.pop(next(iter(poll_times)))
 
         api = getattr(self.broker, "_api", None)
         history = getattr(api, "single_order_history", None)

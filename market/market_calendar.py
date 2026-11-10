@@ -41,18 +41,11 @@ NSE_HOLIDAYS_2027 = {
 ALL_NSE_HOLIDAYS = NSE_HOLIDAYS_2026 | NSE_HOLIDAYS_2027
 
 MARKET_OPEN_TIME = dt_time(9, 15, 0)
-# CAS era (from Aug 2026): continuous cash for F&O-eligible underlyings is 09:15–15:15.
-# House standard for Kronos/data: treat continuous session as 09:15 open → 15:15 close.
-# (Index/stock F&O may still quote later; we do not use post-15:15 auction prints in the ML series.)
+# AEGIS CAS era: continuous cash trading session is 09:15 open → 15:15 close.
 MARKET_CLOSE_TIME = dt_time(15, 15, 0)
-TRADE_ENTRY_CUTOFF_TIME = dt_time(15, 00, 0)  # Shared helper (Astra/CAS); Kronos EM matches 15:00 (K-ENTRY-1500)
+TRADE_ENTRY_CUTOFF_TIME = dt_time(15, 0, 0)  # AEGIS trade entry cutoff time (15:00 IST)
 PRE_MARKET_TIME = dt_time(8, 55, 0)
-# Last Kronos 5m bar is labeled 15:10 but covers wall-clock 15:10→15:15 (WS synth vol still accrues).
-# Fire EOD REST only after that bar has closed (≥15:15); 15:17 gives a small buffer before auction spike ~15:25.
-POST_MARKET_TIME = dt_time(15, 17, 0)
-# House rule (Kronos): flatten options by 15:10 (start of last continuous 5m bar / before late chaos).
-KRONOS_FORCE_FLATTEN_TIME = dt_time(15, 10, 0)
-KRONOS_ENTRY_CUTOFF_TIME = dt_time(15, 0, 0)
+POST_MARKET_TIME = dt_time(15, 17, 0)  # EOD reconciliation buffer
 
 def is_exchange_trading_day(d: date = None) -> bool:
     """Returns True if the given date is an official NSE/BSE trading day (Mon-Fri, non-holiday).

@@ -39,6 +39,7 @@ tokens_cache.json
 # Runtime market data & binary stores
 data/shm/
 data/l2_raw/
+data/trades/aegis_active_trade_context.json
 *.parquet
 *.db
 *.sqlite

@@ -7,7 +7,7 @@ INDEX_SPECS = {
         "index_token": "26000",
         "strike_step": 50,
         "lot_size": 65,
-        "trading_days": ["Monday", "Tuesday"],
+        "trading_days": ["Monday", "Tuesday", "Friday"],  # Friday is 4-DTE opt-in via AEGIS_FRIDAY_TRADING_ENABLED
     },
     "SENSEX": {
         "symbol": "SENSEX",
@@ -17,7 +17,3 @@ INDEX_SPECS = {
         "trading_days": ["Wednesday", "Thursday"],
     },
 }
-
-# Decommissioned equities universe stubs (kept empty for zero-entropy)
-SUBSCRIPTION_UNIVERSE: set[str] = set()
-NIFTY100: list[str] = []
