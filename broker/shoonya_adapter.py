@@ -5,14 +5,13 @@ import logging
 import threading
 from datetime import datetime, time as dt_time
 
-from broker.exceptions import BrokerFeatureUnavailableError
 from broker.manifest import BrokerManifest, IdentityCapability, AuthenticationCapability, RateLimitCapability, WebSocketCapability, MarketDataCapability, HistoricalDataCapability, OrderManagementCapability, ProductSupportCapability, ExchangeSupportCapability, FeatureFlagCapability, PerformanceRecommendation
 from broker.rate_limiter import TokenBucketLimiter, call_with_retry
 from broker.interfaces import IBrokerGateway, ISessionProvider, IMarketDataProvider, IExecutionProvider, IHistoricalProvider, IPortfolioProvider
 from execution.order_lifecycle import OrderLifecycle, ShoonyaOrderLifecycle
 from execution.trade_context import TradeLeg
 from logger import get_logger
-from config.settings import DEFAULT_PRODUCT_TYPE, get_data_dir
+from config.settings import get_data_dir
 logger = get_logger("shoonya_adapter")
 
 try:

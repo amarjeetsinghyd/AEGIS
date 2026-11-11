@@ -397,7 +397,7 @@ class MicrostructureScorer:
     and cross-strike gamma coherence to output a calibrated 0-100 conviction score.
     """
     
-    def __init__(self, weights_path: Optional[str] = None, high_conviction_threshold: float = 75.0):
+    def __init__(self, high_conviction_threshold: float = 75.0, **_kwargs: Any):
         self.high_conviction_threshold = high_conviction_threshold
         self.moderate_conviction_threshold = 60.0
         

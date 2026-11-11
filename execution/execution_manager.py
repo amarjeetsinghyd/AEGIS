@@ -382,6 +382,26 @@ class AegisExecutionManager:
         if market_data is not None and hasattr(market_data, "add_order_listener"):
             market_data.add_order_listener(self.on_order_update)
 
+    @property
+    def _pa_engine(self):
+        """Returns the active price action engine, supporting both modern price_action_engine
+        and backward-compatible test mock time_bar_engine."""
+        eng = self.aegis_engine
+        if not eng:
+            return None
+        pa = getattr(eng, "price_action_engine", None)
+        tb = getattr(eng, "time_bar_engine", None)
+        # Check pa first (production standard), then fallback to tb (legacy test mock)
+        if pa is not None:
+            pa_dict = getattr(pa, "__dict__", {})
+            if any(k in pa_dict for k in ("bars_1m", "current_bar", "_curr_1m_bar", "current_atr_1m", "get_in_flight_opt_flow")):
+                return pa
+        if tb is not None:
+            tb_dict = getattr(tb, "__dict__", {})
+            if any(k in tb_dict for k in ("bars_1m", "current_bar", "_curr_1m_bar", "current_atr_1m", "get_in_flight_opt_flow")):
+                return tb
+        return pa or tb
+
     def on_order_update(self, message: Any) -> None:
         """Cache broker order events so exit management can inspect fills without REST."""
         if not isinstance(message, dict):
@@ -658,7 +678,7 @@ class AegisExecutionManager:
         except Exception as e_dump:
             logger.debug(f"[AegisEM] Dump detector tick evaluation exception: {e_dump}")
 
-    def on_atm_roll(self, snap) -> None:
+    def on_atm_roll(self, _snap=None) -> None:
         """ATM-bus listener: re-stage budget anchors on the next loop pass instead of waiting
         out the 10 s throttle (float write; safe across threads)."""
         self._last_budget_target_refresh = 0.0
@@ -1226,9 +1246,8 @@ class AegisExecutionManager:
 
             # Last-Mile Pre-Trade Spot & In-Flight Continuation Gate
             # Guards against post-candle reversal / dead-cat bounce / adverse fill during order dispatch latency
-            tb_engine = getattr(self.aegis_engine, "time_bar_engine", None) if self.aegis_engine else None
-            pa_engine = getattr(self.aegis_engine, "price_action_engine", None) if self.aegis_engine else None
-            live_atr_1m = float(metrics.get("atr_1m", 0.0) or getattr(tb_engine, "current_atr_1m", 0.0) or getattr(pa_engine, "current_atr_1m", 0.0) or 0.0)
+            pa_engine = self._pa_engine
+            live_atr_1m = float(metrics.get("atr_1m", 0.0) or getattr(pa_engine, "current_atr_1m", 0.0) or 0.0)
             live_spot = float(getattr(self.aegis_engine, "last_spot", 0.0) or 0.0)
             if live_spot <= 0.0:
                 live_spot = self._get_current_spot()
@@ -1251,9 +1270,7 @@ class AegisExecutionManager:
                     spot_delta_3s = self.aegis_engine.get_spot_drift(time.time(), 3.0)
 
                 # In-flight candle check (mock-safe)
-                curr_bar = getattr(tb_engine, "current_bar", None) or getattr(tb_engine, "_curr_1m_bar", None)
-                if curr_bar is None and pa_engine:
-                    curr_bar = getattr(pa_engine, "current_bar", None) or getattr(pa_engine, "_curr_1m_bar", None)
+                curr_bar = getattr(pa_engine, "current_bar", None) or getattr(pa_engine, "_curr_1m_bar", None) if pa_engine else None
 
                 spot_history = getattr(self.aegis_engine, "spot_history", ())
                 post_signal_spots: List[float] = []
@@ -1353,7 +1370,7 @@ class AegisExecutionManager:
             with self.trade_lock:
                 self.trade_context = TradeContext(
                     signal_type=signal_type,
-                    strategy="AEGIS_GAMMA_BURST",
+                    strategy="AEGIS_V1",
                     index_entry=spot_price,
                     decision_payload={
                         "conviction": conviction,
@@ -1846,10 +1863,10 @@ class AegisExecutionManager:
             # Point 2: Conditional Stagnation Trap Check at 90s (Expiry session after 12:30 PM)
             if is_expiry and is_post_1230 and hold_sec >= 90.0:
                 if cur_gain_pct < 0.005:  # Gain < +0.5%
-                    tb_engine = getattr(self.aegis_engine, "time_bar_engine", None)
-                    market_struct = tb_engine.get_market_structure(context.signal_type) if (tb_engine and hasattr(tb_engine, "get_market_structure")) else "NEUTRAL"
+                    pa_engine = self._pa_engine
+                    market_struct = pa_engine.get_market_structure(context.signal_type) if (pa_engine and hasattr(pa_engine, "get_market_structure")) else "NEUTRAL"
                     # Live 20-EMA band alignment
-                    live_ema, _ = getattr(tb_engine, "get_live_20_ema_and_slope", lambda: (0.0, 0.0))() if tb_engine else (0.0, 0.0)
+                    live_ema, _ = getattr(pa_engine, "get_live_20_ema_and_slope", lambda: (0.0, 0.0))() if pa_engine else (0.0, 0.0)
                     is_opposed = (market_struct == "OPPOSED")
                     if live_ema > 0 and curr_spot > 0:
                         if context.signal_type == "CALL" and curr_spot < live_ema:
@@ -1863,8 +1880,8 @@ class AegisExecutionManager:
                         return
 
             # Check eligibility for 6-minute extension (Only non-expiry days or strong running momentum):
-            tb_engine = getattr(self.aegis_engine, "time_bar_engine", None) if self.aegis_engine else None
-            market_struct = tb_engine.get_market_structure(context.signal_type) if (tb_engine and hasattr(tb_engine, "get_market_structure")) else "NEUTRAL"
+            pa_engine = self._pa_engine
+            market_struct = pa_engine.get_market_structure(context.signal_type) if (pa_engine and hasattr(pa_engine, "get_market_structure")) else "NEUTRAL"
 
             is_profit_running = False
             if leg0 and leg0.entry_price > 0:
@@ -1907,8 +1924,7 @@ class AegisExecutionManager:
         if is_mode_b:
             b_level = float(getattr(context, "boundary_level", 0.0) or 0.0)
             entry_bucket = getattr(context, "entry_bar_bucket", None)
-            pa_eng = (getattr(self.aegis_engine, "price_action_engine", None)
-                      or getattr(self.aegis_engine, "time_bar_engine", None)) if self.aegis_engine else None
+            pa_eng = self._pa_engine
             if entry_bucket is not None and b_level > 0 and pa_eng and getattr(pa_eng, "bars_1m", None):
                 curr_bucket = int(now_ts // 60)
                 if curr_bucket > entry_bucket:
@@ -1943,8 +1959,8 @@ class AegisExecutionManager:
                             return
 
         # 3. Spot Adverse Movement SL (Normalized Basis Points + 1m ATR regime expansion)
-        tb_engine = getattr(self.aegis_engine, "time_bar_engine", None) if self.aegis_engine else None
-        atr_1m = getattr(tb_engine, "current_atr_1m", 0.0) if tb_engine else 0.0
+        pa_engine = self._pa_engine
+        atr_1m = getattr(pa_engine, "current_atr_1m", 0.0) if pa_engine else 0.0
         ref_spot = context.index_entry if context.index_entry > 0 else (curr_spot if curr_spot > 0 else 24000.0)
         base_spot_sl_pts = ref_spot * (DEFAULT_SPOT_SL_BPS / 10000.0)
         spot_sl_pts = max(base_spot_sl_pts, SPOT_SL_ATR_MULT * atr_1m) if atr_1m > 0 else base_spot_sl_pts
@@ -1981,8 +1997,8 @@ class AegisExecutionManager:
             pillar_label = "Price Action"
 
         # Resilient fallback: populate candle low/high from bars_1m if not set on context
-        if is_pillar_trade and (c_low <= 0 or c_high <= 0) and tb_engine and getattr(tb_engine, "bars_1m", None):
-            last_bar = tb_engine.bars_1m[-1]
+        if is_pillar_trade and (c_low <= 0 or c_high <= 0) and pa_engine and getattr(pa_engine, "bars_1m", None):
+            last_bar = pa_engine.bars_1m[-1]
             if c_low <= 0:
                 c_low = float(last_bar.low)
                 context.candle_low = c_low
@@ -2020,10 +2036,10 @@ class AegisExecutionManager:
         )
 
         # ─── P3 OPTIMIZATION: ZERO-COPY REVERSE SCAN FOR CLOSED BARS POST-ENTRY ───
-        if is_pillar_trade and tb_engine and getattr(tb_engine, "bars_1m", None) and entry_ts > 0:
+        if is_pillar_trade and pa_engine and getattr(pa_engine, "bars_1m", None) and entry_ts > 0:
             # 400 बार्स की कॉपी (copy()) हटाकर केवल एंट्री के बाद क्लोज हुए 1-2 बार्स को O(1) में स्कैन करें
             recent_bars = []
-            for b in reversed(tb_engine.bars_1m):
+            for b in reversed(pa_engine.bars_1m):
                 b_end = getattr(b, "ts_end", getattr(b, "timestamp", 0.0))
                 if b_end <= entry_ts:
                     break
@@ -3166,8 +3182,6 @@ class AegisExecutionManager:
             classification = "TREND_REVERSAL_EXIT"
         elif "Breakeven" in reason:
             classification = "BREAKEVEN_GUARD"
-        elif "Runner" in reason:
-            classification = "RUNNER_DYNAMIC_TRAIL"
         elif "SL" in reason:
             classification = "STOP_LOSS_HIT"
         elif "Force Flatten" in reason:
@@ -3279,7 +3293,7 @@ class AegisExecutionManager:
             "date": entry_dt_str,
             "entry_time": entry_dt_str,
             "exit_time": exit_dt_str,
-            "strategy": "AEGIS_GAMMA_BURST",
+            "strategy": "AEGIS_V1",
             "signal": context.signal_type if context else "",
             "signal_type": context.signal_type if context else "",
             "symbol": leg0.symbol if leg0 else "",
@@ -3305,7 +3319,6 @@ class AegisExecutionManager:
             "daily_net_pnl": round(self.daily_net_pnl, 2),
             "exit_reason": reason,
             "reason": reason,
-            "feature_vector": dp,
             "telemetry": trade_telemetry,
             "post_trade_attribution": post_trade_attribution,
             "decision_payload": dp,
@@ -3348,7 +3361,7 @@ class AegisExecutionManager:
             payload = {
                 "status": "OPEN",
                 "signal_type": self.trade_context.signal_type,
-                "strategy": "AEGIS_GAMMA_BURST",
+                "strategy": "AEGIS_V1",
                 "entry_time": self.trade_context.entry_time.isoformat() if self.trade_context.entry_time else None,
                 "index_entry": self.trade_context.index_entry,
                 "spot_peak_mfe_pts": getattr(self.trade_context, "spot_peak_mfe_pts", 0.0),
@@ -3405,7 +3418,7 @@ class AegisExecutionManager:
                 return
             self.trade_context = TradeContext(
                 signal_type=data.get("signal_type", "CALL"),
-                strategy="AEGIS_GAMMA_BURST",
+                strategy="AEGIS_V1",
                 index_entry=float(data.get("index_entry") or 0),
             )
             self.trade_context.spot_peak_mfe_pts = float(data.get("spot_peak_mfe_pts", 0.0) or 0.0)

@@ -1583,9 +1583,9 @@ class AegisPipelineOrchestrator:
                 self.history_30s[sym] = deque(maxlen=300)
         logger.info(f"[AEGIS] Token maps refreshed — {len(self.token_map)} tokens, {len(self.strike_to_symbol)} strikes")
 
-    def shift_atm(self, shift: int, new_atm: float = 0.0):
+    def shift_atm(self, _shift: int = 0, new_atm: float = 0.0):
         """External force-set (pre-market bridge). Bypasses hysteresis on purpose.
-        `shift` is kept for signature compatibility; ATM mid-session is owned by atm_sync."""
+        `_shift` is kept for signature compatibility; ATM mid-session is owned by atm_sync."""
         if new_atm > 0:
             self.atm_sync.force(new_atm, reason="external")
 
