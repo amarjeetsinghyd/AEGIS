@@ -2545,25 +2545,34 @@ class TestPhase3_Refinements_And_Debloating:
         # Must PASS CALL!
         assert engine._check_strict_2bar_approach_ladder("UP") is True
 
-    def test_opposing_sweep_and_absorption_wick_veto(self):
+    def test_opposing_sweep_and_live_orderflow_absorption_veto(self):
         """
-        Verify Confirmed Opposing Sweep and Absorption Wick Veto:
-        1. Vetoes PUT when lower absorption wick >= 35% on forming or prior bar.
-        2. Vetoes CALL when upper rejection wick >= 35% on forming or prior bar.
+        Verify Confirmed Opposing Sweep and Pure Microstructure Order-Flow Absorption Veto:
+        1. Vetoes PUT when aggressive buy-side flow absorbs the breakdown (bull_flow > 1.5x bear_flow).
+        2. Vetoes CALL when aggressive sell-side flow absorbs the breakout (bear_flow > 1.5x bull_flow).
         """
         engine = PriceActionEngine()
-        now = 1787023500.0
+        engine.lot_size = 20.0  # SENSEX lot size
 
-        # Bar with long lower absorption wick: open=24000, high=24000, low=23970, close=23985
-        # Range = 30.0, lower wick = 15.0 (50% wick >= 35%)
-        sweep_candle = OHLCBar(now, now + 60, 24000.0, 24000.0, 23970.0, 23985.0, 500)
-        vetoed_put, reason_put = engine._check_opposing_sweep_veto("DOWN", level_price=24000.0, curr_bar=sweep_candle)
+        # Case 1: In-flight PUT breakdown, but aggressive buyers absorb the flow:
+        # call_buy=500, put_sell=500 -> bull_flow = 1000
+        # put_buy=100, call_sell=100 -> bear_flow = 200
+        # bull_flow (1000) > 1.5x bear_flow (300) -> BUY ABSORPTION!
+        engine._opt_flow_1m = {"call_buy_vol": 500.0, "put_sell_vol": 500.0, "put_buy_vol": 100.0, "call_sell_vol": 100.0}
+        vetoed_put, reason_put = engine._check_opposing_sweep_veto("DOWN", level_price=82283.0, curr_bar=None)
         assert vetoed_put is True
-        assert "opposing_lower_absorption_wick" in reason_put
+        assert reason_put == "opposing_buy_order_absorption_veto"
 
-        # Bar with long upper rejection wick: open=24000, high=24030, low=24000, close=24015
-        # Range = 30.0, upper wick = 15.0 (50% wick >= 35%)
-        rejection_candle = OHLCBar(now, now + 60, 24000.0, 24030.0, 24000.0, 24015.0, 500)
-        vetoed_call, reason_call = engine._check_opposing_sweep_veto("UP", level_price=24020.0, curr_bar=rejection_candle)
+        # Case 2: In-flight CALL breakout, but aggressive sellers absorb the flow:
+        # put_buy=500, call_sell=500 -> bear_flow = 1000
+        # call_buy=100, put_sell=100 -> bull_flow = 200
+        # bear_flow (1000) > 1.5x bull_flow (300) -> SELL ABSORPTION!
+        engine._opt_flow_1m = {"call_buy_vol": 100.0, "put_sell_vol": 100.0, "put_buy_vol": 500.0, "call_sell_vol": 500.0}
+        vetoed_call, reason_call = engine._check_opposing_sweep_veto("UP", level_price=82400.0, curr_bar=None)
         assert vetoed_call is True
-        assert "opposing_upper_rejection_wick" in reason_call
+        assert reason_call == "opposing_sell_order_absorption_veto"
+
+        # Case 3: Aligned flow (PUT breakdown with bear_flow dominating):
+        engine._opt_flow_1m = {"call_buy_vol": 50.0, "put_sell_vol": 50.0, "put_buy_vol": 600.0, "call_sell_vol": 400.0}
+        vetoed_aligned, _ = engine._check_opposing_sweep_veto("DOWN", level_price=82283.0, curr_bar=None)
+        assert vetoed_aligned is False

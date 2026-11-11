@@ -1699,34 +1699,40 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
             except Exception as e_sw:
                 logger.debug(f"[PriceActionEngine] Sweep veto query exception (bypassed): {e_sw}")
 
-        # ─── Part 2: Absorption Wick Rejection Check (>= 35% Opposing Wick) ───
-        check_bars = [b for b in (curr_bar, prior_bar) if b is not None]
-        for b in check_bars:
-            if hasattr(b, "_mock_name"):
-                continue
-            try:
-                op = float(getattr(b, "open", 0.0) or 0.0)
-                cl = float(getattr(b, "close", 0.0) or 0.0)
-                hi = float(getattr(b, "high", 0.0) or 0.0)
-                lo = float(getattr(b, "low", 0.0) or 0.0)
-            except (TypeError, ValueError, AttributeError):
-                continue
+        # ─── Part 2: Pure Real-Time Microstructure Order-Flow Absorption Veto ───
+        # When a level is breached live in-flight (T:02s+), no wick exists yet (spot is at extreme).
+        # We check whether live aggressive orders are being actively absorbed in the OPPOSING direction:
+        cb = float(self._opt_flow_1m.get("call_buy_vol", 0.0))
+        cs = float(self._opt_flow_1m.get("call_sell_vol", 0.0))
+        pb = float(self._opt_flow_1m.get("put_buy_vol", 0.0))
+        ps = float(self._opt_flow_1m.get("put_sell_vol", 0.0))
+        eff_lot = getattr(self, "lot_size", 65.0) or 65.0
+        active_flow_floor = 15.0 * eff_lot  # scale-invariant activity floor
 
-            rng = max(hi - lo, 0.1)
-            # Minimum absolute range filter: at least 2.0 pts to avoid micro-tick noise
-            if rng > 2.0:
-                if is_call:
-                    # On CALL: An upper wick >= 35% means sellers pushed price down from the highs
-                    upper_wick = hi - max(op, cl)
-                    upper_wick_pct = upper_wick / rng
-                    if upper_wick_pct >= 0.35:
-                        return True, f"opposing_upper_rejection_wick_{upper_wick_pct*100:.0f}pct"
-                else:
-                    # On PUT: A lower wick >= 35% means buyers absorbed the dip and pushed price up
-                    lower_wick = min(op, cl) - lo
-                    lower_wick_pct = lower_wick / rng
-                    if lower_wick_pct >= 0.35:
-                        return True, f"opposing_lower_absorption_wick_{lower_wick_pct*100:.0f}pct"
+        bull_flow = cb + ps
+        bear_flow = pb + cs
+
+        if (bull_flow + bear_flow) >= active_flow_floor:
+            if is_call:
+                # For CALL breakout (price breaking up through resistance):
+                # If aggressive SELLERS dominate (bear_flow > 1.5 * bull_flow),
+                # buy orders are being absorbed by smart-money sellers!
+                if bear_flow > (1.5 * max(bull_flow, 1.0)):
+                    logger.info(
+                        f"[PriceActionEngine] 🛑 SWEEP VETO: CALL breakout at {level_price:.2f} blocked — "
+                        f"live sell-side order absorption (bear_flow={bear_flow:.0f} > 1.5x bull_flow={bull_flow:.0f})"
+                    )
+                    return True, "opposing_sell_order_absorption_veto"
+            else:
+                # For PUT breakdown (price breaking down through support/VWAP):
+                # If aggressive BUYERS dominate (bull_flow > 1.5 * bear_flow),
+                # sell orders are being absorbed by smart-money buyers!
+                if bull_flow > (1.5 * max(bear_flow, 1.0)):
+                    logger.info(
+                        f"[PriceActionEngine] 🛑 SWEEP VETO: PUT breakdown at {level_price:.2f} blocked — "
+                        f"live buy-side order absorption (bull_flow={bull_flow:.0f} > 1.5x bear_flow={bear_flow:.0f})"
+                    )
+                    return True, "opposing_buy_order_absorption_veto"
 
         return False, ""
 
