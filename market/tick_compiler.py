@@ -1,5 +1,5 @@
 """Tick compiler: alias-tolerant WS parsing, stateful L1-L5 depth,
-dual bar books (3m + 15m)
+zero-allocation dispatch to AEGIS 1m & 5m PriceActionEngine.
 SYMBOL-keyed via set_symbol_map. market_depth preserves last good values."""
 from __future__ import annotations
 import os
@@ -236,7 +236,7 @@ class TickCompiler:
                 self._subscribe_feeds(mdp, tokens, exchange)
             except Exception as e_sub:
                 logger.warning(f"Subscribe deferred ({exchange} {len(tokens)} tokens): {e_sub}")
-        logger.info(f"Subscribed {len(tokens)} equities on {exchange} (touchline+depth) for 3m+15m WS candles.")
+        logger.info(f"Subscribed {len(tokens)} instruments on {exchange} (touchline+depth) for AEGIS tick feed.")
 
     @staticmethod
     def _subscribe_feeds(mdp, tokens, exchange) -> None:
