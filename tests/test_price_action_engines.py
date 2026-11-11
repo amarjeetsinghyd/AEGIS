@@ -2504,3 +2504,66 @@ class TestPhase3_Refinements_And_Debloating:
         """
         engine = PriceActionEngine()
         assert not hasattr(engine, "get_live_50_ema_and_slope"), "get_live_50_ema_and_slope must be completely purged!"
+
+    def test_strict_2bar_approach_ladder_color_invariant(self):
+        """
+        Verify Amarjeet Bhai's Strict 2-Candle Color & Momentum Ladder Invariant:
+        For PUT: Both N-2 and N-1 must be RED with lower highs/lows. Mixed green/red rejected!
+        For CALL: Both N-2 and N-1 must be GREEN with higher highs/lows. Mixed green/red rejected!
+        """
+        engine = PriceActionEngine()
+        engine.bars_1m = deque(maxlen=400)
+        now = 1787023500.0
+
+        # Case 1: 10:42 was GREEN, 10:43 was RED (the exact 10:44 trap today!)
+        # Bar N-2: Green (open=24010, close=24020, high=24025, low=24005)
+        # Bar N-1: Red (open=24020, close=24005, high=24020, low=24000)
+        bar_n2_green = OHLCBar(now - 120, now - 60, 24010.0, 24025.0, 24005.0, 24020.0, 500)
+        bar_n1_red = OHLCBar(now - 60, now, 24020.0, 24020.0, 24000.0, 24005.0, 500)
+        engine.bars_1m.append(bar_n2_green)
+        engine.bars_1m.append(bar_n1_red)
+
+        # Must REJECT PUT because N-2 is GREEN!
+        assert engine._check_strict_2bar_approach_ladder("DOWN") is False
+
+        # Case 2: Both N-2 and N-1 are RED with lower highs and lower lows
+        bar_n2_red = OHLCBar(now - 120, now - 60, 24030.0, 24035.0, 24015.0, 24020.0, 500)
+        engine.bars_1m.clear()
+        engine.bars_1m.append(bar_n2_red)
+        engine.bars_1m.append(bar_n1_red)
+
+        # Must PASS PUT!
+        assert engine._check_strict_2bar_approach_ladder("DOWN") is True
+
+        # Case 3: For CALL, both N-2 and N-1 must be GREEN
+        bar_n2_green2 = OHLCBar(now - 120, now - 60, 24000.0, 24015.0, 23995.0, 24010.0, 500)
+        bar_n1_green = OHLCBar(now - 60, now, 24010.0, 24030.0, 24005.0, 24025.0, 500)
+        engine.bars_1m.clear()
+        engine.bars_1m.append(bar_n2_green2)
+        engine.bars_1m.append(bar_n1_green)
+
+        # Must PASS CALL!
+        assert engine._check_strict_2bar_approach_ladder("UP") is True
+
+    def test_opposing_sweep_and_absorption_wick_veto(self):
+        """
+        Verify Confirmed Opposing Sweep and Absorption Wick Veto:
+        1. Vetoes PUT when lower absorption wick >= 35% on forming or prior bar.
+        2. Vetoes CALL when upper rejection wick >= 35% on forming or prior bar.
+        """
+        engine = PriceActionEngine()
+        now = 1787023500.0
+
+        # Bar with long lower absorption wick: open=24000, high=24000, low=23970, close=23985
+        # Range = 30.0, lower wick = 15.0 (50% wick >= 35%)
+        sweep_candle = OHLCBar(now, now + 60, 24000.0, 24000.0, 23970.0, 23985.0, 500)
+        vetoed_put, reason_put = engine._check_opposing_sweep_veto("DOWN", level_price=24000.0, curr_bar=sweep_candle)
+        assert vetoed_put is True
+        assert "opposing_lower_absorption_wick" in reason_put
+
+        # Bar with long upper rejection wick: open=24000, high=24030, low=24000, close=24015
+        # Range = 30.0, upper wick = 15.0 (50% wick >= 35%)
+        rejection_candle = OHLCBar(now, now + 60, 24000.0, 24030.0, 24000.0, 24015.0, 500)
+        vetoed_call, reason_call = engine._check_opposing_sweep_veto("UP", level_price=24020.0, curr_bar=rejection_candle)
+        assert vetoed_call is True
+        assert "opposing_upper_rejection_wick" in reason_call

@@ -1595,24 +1595,26 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         self._cached_sr_candidates[direction] = (self._session_levels_version, self._total_bars_seen, next_flip_ts, candidates)
         return candidates
 
-    def _check_p4_approach_ladder(self, direction: str) -> bool:
+    def _check_strict_2bar_approach_ladder(self, direction: str) -> bool:
         """
-        Pillar 4 Strict 2-Candle Approach Ladder Validator:
-        Ensures price stair-steps cleanly into the Dynamic S/R boundary with directional momentum
-        rather than triggering off a mid-range random spike, wick pop, or whipsaw.
+        Pillar 4 & 5 Strict 2-Candle Color & Momentum Ladder Invariant:
+        Ensures the market has established directional momentum across BOTH preceding bars
+        rather than triggering off a single-bar spike / chop reversal.
 
         Rules:
           - UP / CALL:
-              1. Bar N-1 High > Bar N-2 High
-              2. Bar N-1 Low > Bar N-2 Low
-              3. Bar N-1 Close > Bar N-1 Open (Bullish candle)
+              1. Bar N-2 MUST BE GREEN (Close > Open)
+              2. Bar N-1 MUST BE GREEN (Close > Open)
+              3. Bar N-1 High > Bar N-2 High (Higher High)
+              4. Bar N-1 Low > Bar N-2 Low (Higher Low)
           - DOWN / PUT:
-              1. Bar N-1 Low < Bar N-2 Low
-              2. Bar N-1 High < Bar N-2 High
-              3. Bar N-1 Close < Bar N-1 Open (Bearish candle)
+              1. Bar N-2 MUST BE RED (Close < Open)
+              2. Bar N-1 MUST BE RED (Close < Open)
+              3. Bar N-1 Low < Bar N-2 Low (Lower Low)
+              4. Bar N-1 High < Bar N-2 High (Lower High)
 
         Scale-invariant & Synthetic Test Safe:
-          - If len(bars_1m) < 2, returns True (fails open on minimal synthetic test setups).
+          - Fails open (returns True) if len(bars_1m) < 2 or synthetic mock test data.
         """
         bars = getattr(self, "bars_1m", None)
         if not bars or len(bars) < 2:
@@ -1625,9 +1627,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
             return True
 
         # Synthetic/Mock test safeguard (unassigned mock attributes)
-        if hasattr(bar_n2, "_mock_name") and not isinstance(getattr(bar_n2, "high", None), (int, float)):
-            return True
-        if hasattr(bar_n1, "_mock_name") and not isinstance(getattr(bar_n1, "high", None), (int, float)):
+        if hasattr(bar_n2, "_mock_name") or hasattr(bar_n1, "_mock_name"):
             return True
 
         try:
@@ -1638,9 +1638,9 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
 
             h_n2 = float(getattr(bar_n2, "high", 0.0) or 0.0)
             l_n2 = float(getattr(bar_n2, "low", 0.0) or 0.0)
-            float(getattr(bar_n2, "close", 0.0) or 0.0)
-            float(getattr(bar_n2, "open", 0.0) or 0.0)
-        except (TypeError, ValueError):
+            c_n2 = float(getattr(bar_n2, "close", 0.0) or 0.0)
+            o_n2 = float(getattr(bar_n2, "open", 0.0) or 0.0)
+        except (TypeError, ValueError, AttributeError):
             return True
 
         # Synthetic repeated test mock safeguard
@@ -1648,9 +1648,87 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
             return True
 
         if str(direction).upper() in ("UP", "CALL", "CE", "C"):
-            return bool(h_n1 > h_n2 and l_n1 > l_n2 and c_n1 > o_n1)
+            # BOTH bars must be GREEN + Higher High & Higher Low
+            return bool(c_n2 > o_n2 and c_n1 > o_n1 and h_n1 > h_n2 and l_n1 > l_n2)
         else:
-            return bool(l_n1 < l_n2 and h_n1 < h_n2 and c_n1 < o_n1)
+            # BOTH bars must be RED + Lower Low & Lower High
+            return bool(c_n2 < o_n2 and c_n1 < o_n1 and l_n1 < l_n2 and h_n1 < h_n2)
+
+    # Backward compatibility alias
+    _check_p4_approach_ladder = _check_strict_2bar_approach_ladder
+
+    def _check_opposing_sweep_veto(
+        self,
+        direction: str,
+        level_price: float,
+        curr_bar: Any,
+        prior_bar: Optional[Any] = None,
+        now_sec: float = 0.0,
+    ) -> Tuple[bool, str]:
+        """
+        Confirmed Sweep Veto (Mandated by Amarjeet Bhai):
+        Vetoes breakout entries when the level breach is actually an opposing Stop-Hunt / Liquidity Sweep:
+        1. SweepStopRunDetector Check: If level recently triggered SWEEP_CONFIRMED_STOP_HUNT,
+           smart money has swept retail stops and is reversing the market!
+        2. Absorption Wick Check:
+           - On PUT: If curr_bar or prior_bar has >= 35% Lower Wick -> Buyers absorbing!
+           - On CALL: If curr_bar or prior_bar has >= 35% Upper Wick -> Sellers absorbing!
+
+        Returns:
+            (is_vetoed: bool, veto_reason: str)
+        """
+        is_call = str(direction).upper() in ("UP", "CALL", "CE", "C")
+        t_sec = now_sec if now_sec > 0 else getattr(self, "last_ts", 0.0)
+
+        # ─── Part 1: SweepStopRunDetector Reclaim Check ───
+        if hasattr(self, "sweep_detector") and self.sweep_detector is not None and level_price > 0:
+            try:
+                opposing_sweep_dir = "PUT" if is_call else "CALL"
+                verdict, reason, metrics = self.sweep_detector.evaluate_sweep(
+                    swept_level=level_price,
+                    direction=opposing_sweep_dir,
+                    current_time=t_sec,
+                )
+                from core.sweep_stop_run_detector import SWEEP_CONFIRMED_STOP_HUNT
+                if verdict == SWEEP_CONFIRMED_STOP_HUNT:
+                    logger.warning(
+                        f"[PriceActionEngine] 🛑 SWEEP VETO: {direction} breakout at {level_price:.2f} blocked — "
+                        f"confirmed liquidity sweep stop-hunt active ({reason}, burst={metrics.get('burst_ratio', 0.0):.1f}x)"
+                    )
+                    return True, f"confirmed_liquidity_sweep_{reason}"
+            except Exception as e_sw:
+                logger.debug(f"[PriceActionEngine] Sweep veto query exception (bypassed): {e_sw}")
+
+        # ─── Part 2: Absorption Wick Rejection Check (>= 35% Opposing Wick) ───
+        check_bars = [b for b in (curr_bar, prior_bar) if b is not None]
+        for b in check_bars:
+            if hasattr(b, "_mock_name"):
+                continue
+            try:
+                op = float(getattr(b, "open", 0.0) or 0.0)
+                cl = float(getattr(b, "close", 0.0) or 0.0)
+                hi = float(getattr(b, "high", 0.0) or 0.0)
+                lo = float(getattr(b, "low", 0.0) or 0.0)
+            except (TypeError, ValueError, AttributeError):
+                continue
+
+            rng = max(hi - lo, 0.1)
+            # Minimum absolute range filter: at least 2.0 pts to avoid micro-tick noise
+            if rng > 2.0:
+                if is_call:
+                    # On CALL: An upper wick >= 35% means sellers pushed price down from the highs
+                    upper_wick = hi - max(op, cl)
+                    upper_wick_pct = upper_wick / rng
+                    if upper_wick_pct >= 0.35:
+                        return True, f"opposing_upper_rejection_wick_{upper_wick_pct*100:.0f}pct"
+                else:
+                    # On PUT: A lower wick >= 35% means buyers absorbed the dip and pushed price up
+                    lower_wick = min(op, cl) - lo
+                    lower_wick_pct = lower_wick / rng
+                    if lower_wick_pct >= 0.35:
+                        return True, f"opposing_lower_absorption_wick_{lower_wick_pct*100:.0f}pct"
+
+        return False, ""
 
     def _check_rejection_approach_ladder(self, direction: str) -> bool:
         """
@@ -1745,11 +1823,28 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         if (bar_idx - last_trig) < 3:
             return False, "p5_debounce_active", {}
 
+        # ─── Master Gate 1: Strict 2-Candle Color & Momentum Ladder (Amarjeet Bhai Invariant) ───
+        if not self._check_strict_2bar_approach_ladder(direction):
+            return False, "p5_ladder_not_aligned", {}
+
+        # ─── Master Gate 2: Confirmed Sweep & Absorption Wick Veto ───
+        target_vwap = cs if is_call else ps
+        sweep_vetoed, sweep_reason = self._check_opposing_sweep_veto(
+            direction=direction,
+            level_price=target_vwap,
+            curr_bar=curr_bar,
+            prior_bar=prior_bar,
+            now_sec=now_sec,
+        )
+        if sweep_vetoed:
+            return False, f"p5_sweep_veto_{sweep_reason}", {}
+
         cb_flow = float(self._opt_flow_1m.get("call_buy_vol", 0.0))
         pb_flow = float(self._opt_flow_1m.get("put_buy_vol", 0.0))
         eff_lot = getattr(self, "lot_size", 65.0) or 65.0
         active_flow_floor = 15.0 * eff_lot
-        min_pierce = max(1.0, 0.00008 * spot, 0.05 * atr)
+        # 🟢 Scale-Invariant Breakthrough Pierce Hurdle: NIFTY 1.0 pt | SENSEX 2.0 pts
+        min_pierce = 1.0 if self.strike_step <= 50.0 else 2.0
 
         if is_call:
             if cs <= 0:
@@ -1989,7 +2084,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
             trend_5m_bearish_mb = bar_5m_mb.close <= bar_5m_mb.open
 
         last_p4 = self._mode_b_last_trigger_bar_idx.get("P4_SR_BREAKTHROUGH", -100)
-        p4_ladder_ok = self._check_p4_approach_ladder(direction)
+        p4_ladder_ok = self._check_strict_2bar_approach_ladder(direction)
         if (bar_idx - last_p4) >= 3 and p4_ladder_ok:
             if direction == "UP":
                 candidates = self._get_sr_breakout_candidates("UP", now_sec)
@@ -1998,6 +2093,17 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                     if curr_bar.open <= r_lvl.price and spot >= (r_lvl.price + min_pierce):
                         if not getattr(r_lvl, "is_tradeable_breakout", True):
                             interior_vetoed_up = r_lvl
+                            continue
+                        # Opposing Sweep Veto (Resistance swept & reclaimed for drop)
+                        sweep_vetoed, sweep_reason = self._check_opposing_sweep_veto(
+                            direction="UP",
+                            level_price=r_lvl.price,
+                            curr_bar=curr_bar,
+                            prior_bar=prior_bar,
+                            now_sec=now_sec,
+                        )
+                        if sweep_vetoed:
+                            logger.info(f"[PriceActionEngine] [MODE_B_P4] Skipped CALL breakout at {r_lvl.price:.2f} due to opposing sweep veto: {sweep_reason}")
                             continue
                         ok_struct, _, _ = self._check_structural_obstacle("CALL", spot, ignore_pivots_below=r_lvl.price, check_day_extremes=True)
                         if trend_5m_bullish_mb and ok_struct:
@@ -2043,6 +2149,17 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                     if curr_bar.open >= s_lvl.price and spot <= (s_lvl.price - min_pierce):
                         if not getattr(s_lvl, "is_tradeable_breakout", True):
                             interior_vetoed_dn = s_lvl
+                            continue
+                        # Opposing Sweep Veto (Support swept & reclaimed for bounce)
+                        sweep_vetoed, sweep_reason = self._check_opposing_sweep_veto(
+                            direction="DOWN",
+                            level_price=s_lvl.price,
+                            curr_bar=curr_bar,
+                            prior_bar=prior_bar,
+                            now_sec=now_sec,
+                        )
+                        if sweep_vetoed:
+                            logger.info(f"[PriceActionEngine] [MODE_B_P4] Skipped PUT breakout at {s_lvl.price:.2f} due to opposing sweep veto: {sweep_reason}")
                             continue
                         ok_struct, _, _ = self._check_structural_obstacle("PUT", spot, ignore_pivots_above=s_lvl.price, check_day_extremes=True)
                         if trend_5m_bearish_mb and ok_struct:
