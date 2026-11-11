@@ -867,7 +867,8 @@ class AegisPipelineOrchestrator:
                                     premium_max = float(target_meta.get("premium_max", 0.0) or 0.0)
                                     micro_anchor = now_sec if live_lookback is not None else (anchor_arg if use_anchor else None)
                                     micro_lookback = 10.0 if is_mode_b_setup else 30.0
-                                    approval_floor = max(80.0, self.conviction_engine.min_approval_score)
+                                    max_quote_age = 2.5 if is_mode_b_setup else 1.5
+                                    approval_floor = 75.0 if is_mode_b_setup else max(80.0, self.conviction_engine.min_approval_score)
                                     rejection_reasons = []
                                     eligible_candidates = []
 
@@ -879,7 +880,7 @@ class AegisPipelineOrchestrator:
                                         if c_hist and len(c_hist) >= 2:
                                             c_latest = c_hist[-1]
                                             c_age = now_sec - float(c_latest[0])
-                                            if 0.0 <= c_age <= 1.5:
+                                            if 0.0 <= c_age <= max_quote_age:
                                                 c_m = self.conviction_engine.extract_micro_metrics(
                                                     tick_buffer=c_hist,
                                                     anchor_T=micro_anchor,
@@ -897,7 +898,7 @@ class AegisPipelineOrchestrator:
 
                                         latest = candidate_history[-1]
                                         quote_age = now_sec - float(latest[0])
-                                        if quote_age < 0.0 or quote_age > 1.5:
+                                        if quote_age < 0.0 or quote_age > max_quote_age:
                                             rejection_reasons.append(f"{candidate['priority']}:stale_quote")
                                             continue
 

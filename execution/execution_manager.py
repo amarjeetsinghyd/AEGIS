@@ -1313,7 +1313,9 @@ class AegisExecutionManager:
                         and curr_open > 0.0
                         and live_spot > (curr_open + 0.05 * live_atr_1m)
                     )
-                    is_delta_reversed = (total_if_vol >= 500.0 and if_bull > (1.25 * max(if_bear, 1.0)))
+                    lot_sz = int(params.get("lot_size", 20 if "SENSEX" in symbol else 65))
+                    min_if_vol = max(150.0, 5.0 * lot_sz)
+                    is_delta_reversed = (total_if_vol >= min_if_vol and if_bull > (1.25 * max(if_bear, 1.0)))
 
                     if is_noise_blown or is_retrace_reversing or is_peak_drawdown or is_bar_opposite_color or is_delta_reversed:
                         abort_reason = (
@@ -1345,7 +1347,9 @@ class AegisExecutionManager:
                         and curr_open > 0.0
                         and live_spot < (curr_open - 0.05 * live_atr_1m)
                     )
-                    is_delta_reversed = (total_if_vol >= 500.0 and if_bear > (1.25 * max(if_bull, 1.0)))
+                    lot_sz = int(params.get("lot_size", 20 if "SENSEX" in symbol else 65))
+                    min_if_vol = max(150.0, 5.0 * lot_sz)
+                    is_delta_reversed = (total_if_vol >= min_if_vol and if_bear > (1.25 * max(if_bull, 1.0)))
 
                     if is_noise_blown or is_retrace_reversing or is_peak_drawdown or is_bar_opposite_color or is_delta_reversed:
                         abort_reason = (
@@ -2162,8 +2166,8 @@ class AegisExecutionManager:
             is_reduced_tp = init_tp <= 0.032  # Friday 4 DTE (3.0% TP) or lowered target mode
 
             # Stepped Protection Smoothing:
-            step1_trigger = 0.018 if is_reduced_tp else 0.025   # Armed at +2.5% gain
-            step1_sl_pct  = -0.015 if is_reduced_tp else -0.020  # Tighten SL to -2.0% (cut disaster floor in half)
+            step1_trigger = 0.018 if is_reduced_tp else float(os.environ.get("AEGIS_STEP1_TRIGGER_PCT", "0.030"))   # Armed at +3.0% gain
+            step1_sl_pct  = -0.015 if is_reduced_tp else float(os.environ.get("AEGIS_STEP1_SL_PCT", "-0.030"))      # Wide breathing room: -3.0%
             step2_trigger = 0.022 if is_reduced_tp else float(os.environ.get("AEGIS_STEP2_TRIGGER_PCT", "0.035"))   # Armed at +3.5% gain -> Lock 0.0% Breakeven
             near_target_trigger = 0.025 if is_reduced_tp else float(os.environ.get("AEGIS_NEAR_TARGET_TRIGGER_PCT", "0.035"))
             near_target_tolerance = 0.005 if is_reduced_tp else float(os.environ.get("AEGIS_NEAR_TARGET_TOLERANCE", "0.006"))
@@ -2631,43 +2635,57 @@ class AegisExecutionManager:
                                 filled = True
                                 fill_price = h_px if h_px > 0 else price_2
                             else:
-                                # Step 3: Cancel & Replace at aggressive exit 2% below fresh live bid
-                                if api and hasattr(api, "cancel_order"):
-                                    try:
-                                        api.cancel_order(orderno=ordno)
-                                    except Exception:
-                                        pass
-                                live_bid_3 = _get_live_bid(price_2)
-                                price_3 = _round_tick(min(live_bid_3 * 0.98, leg.current_price * 0.97))
-                                if api and hasattr(self.order_lifecycle, "_build_kwargs"):
-                                    kwargs = self.order_lifecycle._build_kwargs("S", exch_seg, leg.symbol, qty, f"{price_3:.2f}")
-                                    place = getattr(api, "place_order", None)
-                                    if place:
-                                        logger.warning(f"[AegisEM Chaser] Final aggressive exit @ {price_3:.2f} (live_bid={live_bid_3:.2f})")
+                                verified_net = self._get_verified_broker_net_units(leg)
+                                if verified_net == 0:
+                                    filled = True
+                                    fill_price = float(getattr(leg, "exit_price", 0.0) or leg.current_price or leg.entry_price)
+                                    fill_ts = time.time()
+                                    logger.info(f"[AegisEM] {leg.symbol}: broker net position already 0 — suppressing Step-3 duplicate sell order")
+                                else:
+                                    # Step 3: Cancel & Replace at aggressive exit 2% below fresh live bid
+                                    if api and hasattr(api, "cancel_order"):
                                         try:
-                                            resp = place(**kwargs)
-                                            ordno_3 = resp.get("norenordno") if isinstance(resp, dict) and resp.get("stat") == "Ok" else None
-                                        except Exception as e_p3:
-                                            logger.error(f"[AegisEM Chaser] Step-3 aggressive exit place exception: {e_p3}")
-                                            ordno_3 = None
-                                        if ordno_3:
-                                            time.sleep(0.8)
-                                            h_filled, h_px = self._order_fill(ordno_3, allow_rest=True)
-                                            if h_filled:
-                                                fill_price = h_px if h_px > 0 else price_3
-                                                filled = True
-                                                fill_ts = time.time()
+                                            api.cancel_order(orderno=ordno)
+                                        except Exception:
+                                            pass
+                                    live_bid_3 = _get_live_bid(price_2)
+                                    price_3 = _round_tick(min(live_bid_3 * 0.98, leg.current_price * 0.97))
+                                    if api and hasattr(self.order_lifecycle, "_build_kwargs"):
+                                        kwargs = self.order_lifecycle._build_kwargs("S", exch_seg, leg.symbol, qty, f"{price_3:.2f}")
+                                        place = getattr(api, "place_order", None)
+                                        if place:
+                                            logger.warning(f"[AegisEM Chaser] Final aggressive exit @ {price_3:.2f} (live_bid={live_bid_3:.2f})")
+                                            try:
+                                                resp = place(**kwargs)
+                                                ordno_3 = resp.get("norenordno") if isinstance(resp, dict) and resp.get("stat") == "Ok" else None
+                                            except Exception as e_p3:
+                                                logger.error(f"[AegisEM Chaser] Step-3 aggressive exit place exception: {e_p3}")
+                                                ordno_3 = None
+                                            if ordno_3:
+                                                time.sleep(0.8)
+                                                h_filled, h_px = self._order_fill(ordno_3, allow_rest=True)
+                                                if h_filled:
+                                                    fill_price = h_px if h_px > 0 else price_3
+                                                    filled = True
+                                                    fill_ts = time.time()
+                                                else:
+                                                    with self._order_update_lock:
+                                                        latest = self._order_updates.get(ordno_3, {})
+                                                    status = latest.get("status", "OPEN")
+                                                    logger.error(f"[AegisEM Chaser] Step-3 exit order {ordno_3} NOT filled (status={status}) — position may still be open at broker")
                                             else:
-                                                with self._order_update_lock:
-                                                    latest = self._order_updates.get(ordno_3, {})
-                                                status = latest.get("status", "OPEN")
-                                                logger.error(f"[AegisEM Chaser] Step-3 exit order {ordno_3} NOT filled (status={status}) — position may still be open at broker")
-                                        else:
-                                            logger.error(f"[AegisEM Chaser] Step-3 aggressive exit order placement failed: {resp}")
+                                                logger.error(f"[AegisEM Chaser] Step-3 aggressive exit order placement failed: {resp}")
             
             if not filled:
-                # Fallback: marketable exit order
-                exit_ok = self.order_lifecycle.execute_exit(leg, reason)
+                verified_net = self._get_verified_broker_net_units(leg)
+                if verified_net == 0:
+                    filled = True
+                    fill_price = float(getattr(leg, "exit_price", 0.0) or leg.current_price or leg.entry_price)
+                    fill_ts = time.time()
+                    logger.info(f"[AegisEM] {leg.symbol}: broker net position already 0 — suppressing Fallback duplicate sell order")
+                else:
+                    # Fallback: marketable exit order
+                    exit_ok = self.order_lifecycle.execute_exit(leg, reason)
                 if exit_ok:
                     filled = True
                     # 🛡️ REAL-FILL RESOLUTION: a placed LMT is NOT a filled exit.

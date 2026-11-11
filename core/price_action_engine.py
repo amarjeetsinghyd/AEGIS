@@ -1139,7 +1139,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                     }
 
         buffer_pts = max(5.0, (ref_spot / 24000.0) * 5.0)
-        min_sweep_depth = max(1.5, (ref_spot / 24000.0) * 1.5, 0.08 * _atr_ref)
+        min_sweep_depth = 1.5 if self.strike_step <= 50.0 else 3.0
 
         # ─── Priority 1: Dynamic Session S/R Level Registry Mapping ───
         sr_lvl = self._find_swept_sr_level(direction, bar, min_sweep_depth, _atr_ref)
@@ -1867,9 +1867,8 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         spot = self.last_price
 
         # ─── P1 QUANT ENHANCEMENT: Scale-Invariant Breakthrough Pierce Hurdle ───
-        # Prevents sub-tick 0.05pt liquidity flick traps on large indices (NIFTY 24k / SENSEX 78k)
-        # NIFTY ~2.0 pts | SENSEX ~6.5 pts
-        min_pierce = max(1.0, 0.00008 * spot, 0.05 * atr)
+        # NIFTY: 1.0 pt | SENSEX: 2.0 pts
+        min_pierce = 1.0 if self.strike_step <= 50.0 else 2.0
 
         cb = float(self._opt_flow_1m.get("call_buy_vol", 0.0))
         cs = float(self._opt_flow_1m.get("call_sell_vol", 0.0))
@@ -1926,7 +1925,8 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
             box_low = float(box_meta["box_low"])
             box_bars_n = int(box_meta.get("bar_count", 5))
             # 🟢 Pillar 3: Scale-Invariant Box Expansion Clearance Hurdle
-            box_min_pierce = max(2.5, 0.00012 * spot, 0.08 * atr)
+            # NIFTY: 1.5 pts | SENSEX: 2.5 pts
+            box_min_pierce = 1.5 if self.strike_step <= 50.0 else 2.5
             if direction == "UP":
                 # Instant breakout: candle opened inside/at box, spot crossed above box_high with true expansion
                 if curr_bar.open <= box_high and spot >= (box_high + box_min_pierce):
@@ -2205,8 +2205,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                     is_lunch_chop = False
             if not is_lunch_chop:
                 prior_bar = self.bars_1m[-1]
-                ref_spot_2 = spot if spot > 0 else 24000.0
-                min_sweep_depth = max(1.5, (ref_spot_2 / 24000.0) * 1.5, 0.08 * atr)
+                min_sweep_depth = 1.5 if self.strike_step <= 50.0 else 3.0
                 last_p2 = self._mode_b_last_trigger_bar_idx.get(f"P2_SWEEP_{direction}", -100)
                 if (bar_idx - last_p2) >= 3:
                     if direction == "UP":
