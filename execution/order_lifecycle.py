@@ -1,11 +1,10 @@
 import math
-import time
 import uuid
 from typing import Optional
 
 from logger import get_logger
 from execution.trade_context import TradeLeg, resolve_leg_net_qty
-from config.settings import EXIT_LIMIT_GRACE_PERIOD_SEC, DEFAULT_PRODUCT_TYPE, NIFTY_LOT_SIZE, SENSEX_LOT_SIZE
+from config.settings import EXIT_LIMIT_GRACE_PERIOD_SEC, NIFTY_LOT_SIZE, SENSEX_LOT_SIZE
 
 logger = get_logger("order_lifecycle")
 
@@ -336,7 +335,6 @@ class ShoonyaOrderLifecycle(OrderLifecycle):
 
         exch_seg = getattr(leg, 'exchange', 'BFO' if 'SENSEX' in leg.symbol else 'NFO')
         qty = resolve_leg_net_qty(leg, SENSEX_LOT_SIZE if "SENSEX" in leg.symbol else NIFTY_LOT_SIZE)
-        token = str(leg.token)
         
         base_price = live_bid if (live_bid and live_bid > 0) else leg.current_price
         limit_price = get_marketable_exit_limit_price(base_price)

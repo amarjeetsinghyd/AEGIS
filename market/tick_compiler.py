@@ -12,8 +12,6 @@ if BASE_DIR not in sys.path:
 
 import threading
 import time
-from collections import defaultdict
-from datetime import datetime
 from logger import get_logger
 
 logger = get_logger("tick_compiler")
@@ -118,7 +116,6 @@ class TickCompiler:
                     depth = {"lp": 0.0, "v": 0.0, "bp1": 0.0, "sp1": 0.0, "ts": now_sec}
                     self.market_depth[token] = depth
                 old_vol = depth["v"]
-                vol_delta = new_vol - old_vol if old_vol > 0.0 and new_vol >= old_vol else 0.0
                 if lp > 0.0:
                     depth["lp"] = lp
                 if new_vol >= old_vol:
