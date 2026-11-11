@@ -598,12 +598,17 @@ class StructuralRegistryMixin:
                         lvl.is_tradeable_breakout = (lvl.prominence >= 1.25)
                         lvl.breakout_tier = "A_STANDARD" if lvl.prominence >= 1.25 else "C_UNQUALIFIED"
 
-        # Sync active S/R levels into SweepStopRunDetector if present
+        # Sync active S/R levels + Option Writer VWAPs into SweepStopRunDetector if present
         if hasattr(self, "sweep_detector") and self.sweep_detector is not None:
+            pz = self.get_pain_zone_vwaps() if hasattr(self, "get_pain_zone_vwaps") else {}
+            cs_vwap = float(pz.get("vwap_call_sell", 0.0) or 0.0)
+            ps_vwap = float(pz.get("vwap_put_sell", 0.0) or 0.0)
             self.sweep_detector.sync_levels(
                 self.session_levels,
                 pdh=getattr(self, "pdh", 0.0),
                 pdl=getattr(self, "pdl", 0.0),
+                cs_vwap=cs_vwap,
+                ps_vwap=ps_vwap,
             )
 
     def seed_previous_day_5m_bars(self, candles: Any) -> Dict[str, Any]:

@@ -2547,32 +2547,59 @@ class TestPhase3_Refinements_And_Debloating:
 
     def test_opposing_sweep_and_live_orderflow_absorption_veto(self):
         """
-        Verify Confirmed Opposing Sweep and Pure Microstructure Order-Flow Absorption Veto:
-        1. Vetoes PUT when aggressive buy-side flow absorbs the breakdown (bull_flow > 1.5x bear_flow).
-        2. Vetoes CALL when aggressive sell-side flow absorbs the breakout (bear_flow > 1.5x bull_flow).
+        Verify Confirmed Opposing Sweep and Pure Microstructure Stop-Loss Burst & Absorption Veto:
+        1. Vetoes PUT when an aggressive stop-loss burst is absorbed by smart money (burst_ratio >= 2.2, reclaim_flow >= 0).
+        2. Bypasses when order flow is unabsorbed continuation (reclaim_flow < 0).
         """
         engine = PriceActionEngine()
         engine.lot_size = 20.0  # SENSEX lot size
 
-        # Case 1: In-flight PUT breakdown, but aggressive buyers absorb the flow:
-        # call_buy=500, put_sell=500 -> bull_flow = 1000
-        # put_buy=100, call_sell=100 -> bear_flow = 200
-        # bull_flow (1000) > 1.5x bear_flow (300) -> BUY ABSORPTION!
-        engine._opt_flow_1m = {"call_buy_vol": 500.0, "put_sell_vol": 500.0, "put_buy_vol": 100.0, "call_sell_vol": 100.0}
-        vetoed_put, reason_put = engine._check_opposing_sweep_veto("DOWN", level_price=82283.0, curr_bar=None)
+        # Warm up 60s baseline rate in sweep_detector (baseline ~100 vol/s)
+        for t in range(100, 160):
+            engine.sweep_detector.on_option_tick(
+                sym="SENSEX", strike=82300.0, side=0, buy_vol=50.0, sell_vol=50.0,
+                ts=float(t), atm_strike=82300.0, strike_step=100.0
+            )
+
+        # Register support level 82283.0
+        engine.sweep_detector.register_level(82283.0, level_type=1)
+
+        # Spot breaches level at t=161.0
+        engine.sweep_detector.on_spot_tick(82280.0, ts=161.0)
+
+        # Case 1: Massive Stop-Loss Burst (Call panic sell + Put panic buy) + Call absorption flip
+        # Burst: 300 call sell + 300 put buy = 600 panic volume in 1s -> rate=600/s (6x baseline)
+        engine.sweep_detector.on_option_tick(
+            sym="SENSEX", strike=82300.0, side=0, buy_vol=0.0, sell_vol=300.0,
+            ts=161.0, atm_strike=82300.0, strike_step=100.0
+        )
+        engine.sweep_detector.on_option_tick(
+            sym="SENSEX", strike=82300.0, side=1, buy_vol=300.0, sell_vol=0.0,
+            ts=161.0, atm_strike=82300.0, strike_step=100.0
+        )
+        # Absorption: Institutional Call Buying soaking up the panic (ce_buy - ce_sell >= 0)
+        engine.sweep_detector.on_option_tick(
+            sym="SENSEX", strike=82300.0, side=0, buy_vol=500.0, sell_vol=50.0,
+            ts=161.0, atm_strike=82300.0, strike_step=100.0
+        )
+
+        vetoed_put, reason_put = engine._check_opposing_sweep_veto("DOWN", level_price=82283.0, curr_bar=None, now_sec=161.0)
         assert vetoed_put is True
-        assert reason_put == "opposing_buy_order_absorption_veto"
+        assert "stop_hunt_absorbed" in reason_put
 
-        # Case 2: In-flight CALL breakout, but aggressive sellers absorb the flow:
-        # put_buy=500, call_sell=500 -> bear_flow = 1000
-        # call_buy=100, put_sell=100 -> bull_flow = 200
-        # bear_flow (1000) > 1.5x bull_flow (300) -> SELL ABSORPTION!
-        engine._opt_flow_1m = {"call_buy_vol": 100.0, "put_sell_vol": 100.0, "put_buy_vol": 500.0, "call_sell_vol": 500.0}
-        vetoed_call, reason_call = engine._check_opposing_sweep_veto("UP", level_price=82400.0, curr_bar=None)
-        assert vetoed_call is True
-        assert reason_call == "opposing_sell_order_absorption_veto"
-
-        # Case 3: Aligned flow (PUT breakdown with bear_flow dominating):
-        engine._opt_flow_1m = {"call_buy_vol": 50.0, "put_sell_vol": 50.0, "put_buy_vol": 600.0, "call_sell_vol": 400.0}
-        vetoed_aligned, _ = engine._check_opposing_sweep_veto("DOWN", level_price=82283.0, curr_bar=None)
+        # Case 2: Aligned Continuation Breakdown (Unabsorbed panic cascade, reclaim_flow < 0)
+        engine2 = PriceActionEngine()
+        for t in range(100, 160):
+            engine2.sweep_detector.on_option_tick(
+                sym="SENSEX", strike=82300.0, side=0, buy_vol=50.0, sell_vol=50.0,
+                ts=float(t), atm_strike=82300.0, strike_step=100.0
+            )
+        engine2.sweep_detector.register_level(82283.0, level_type=1)
+        engine2.sweep_detector.on_spot_tick(82280.0, ts=161.0)
+        # Heavy Call selling, zero call buying (reclaim_flow = -400 < 0)
+        engine2.sweep_detector.on_option_tick(
+            sym="SENSEX", strike=82300.0, side=0, buy_vol=0.0, sell_vol=400.0,
+            ts=161.0, atm_strike=82300.0, strike_step=100.0
+        )
+        vetoed_aligned, _ = engine2._check_opposing_sweep_veto("DOWN", level_price=82283.0, curr_bar=None, now_sec=161.0)
         assert vetoed_aligned is False

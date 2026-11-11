@@ -1666,73 +1666,38 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         now_sec: float = 0.0,
     ) -> Tuple[bool, str]:
         """
-        Confirmed Sweep Veto (Mandated by Amarjeet Bhai):
+        Confirmed Sweep & Absorption Veto (Mandated by Amarjeet Bhai):
         Vetoes breakout entries when the level breach is actually an opposing Stop-Hunt / Liquidity Sweep:
-        1. SweepStopRunDetector Check: If level recently triggered SWEEP_CONFIRMED_STOP_HUNT,
-           smart money has swept retail stops and is reversing the market!
-        2. Absorption Wick Check:
-           - On PUT: If curr_bar or prior_bar has >= 35% Lower Wick -> Buyers absorbing!
-           - On CALL: If curr_bar or prior_bar has >= 35% Upper Wick -> Sellers absorbing!
+        Uses SweepStopRunDetector's live formula:
+          1. Aggressive Stop-Loss orders were triggered/cut (Burst Ratio >= 2.2x baseline rate)
+          2. Smart Money passively absorbed the panic cascade and flipped directional delta (ReclaimFlow >= 0.0)
 
-        Returns:
-            (is_vetoed: bool, veto_reason: str)
+        Zero Wick Lag: Evaluated in real-time at the moment of breakthrough (T:02s+).
         """
         is_call = str(direction).upper() in ("UP", "CALL", "CE", "C")
         t_sec = now_sec if now_sec > 0 else getattr(self, "last_ts", 0.0)
+        # For CALL (breakout above resistance), level is resistance (ltype = -1)
+        # For PUT (breakdown below support), level is support (ltype = 1)
+        level_type = -1 if is_call else 1
 
-        # ─── Part 1: SweepStopRunDetector Reclaim Check ───
         if hasattr(self, "sweep_detector") and self.sweep_detector is not None and level_price > 0:
             try:
-                opposing_sweep_dir = "PUT" if is_call else "CALL"
-                verdict, reason, metrics = self.sweep_detector.evaluate_sweep(
-                    swept_level=level_price,
-                    direction=opposing_sweep_dir,
+                is_sweep_absorbed, reason, metrics = self.sweep_detector.evaluate_live_stop_burst_and_absorption(
+                    level_price=level_price,
+                    level_type=level_type,
                     current_time=t_sec,
                 )
-                from core.sweep_stop_run_detector import SWEEP_CONFIRMED_STOP_HUNT
-                if verdict == SWEEP_CONFIRMED_STOP_HUNT:
+                if is_sweep_absorbed:
                     logger.warning(
-                        f"[PriceActionEngine] 🛑 SWEEP VETO: {direction} breakout at {level_price:.2f} blocked — "
-                        f"confirmed liquidity sweep stop-hunt active ({reason}, burst={metrics.get('burst_ratio', 0.0):.1f}x)"
+                        f"[PriceActionEngine] 🛑 SWEEP ABSORPTION VETO: {direction} breakout at {level_price:.2f} blocked — "
+                        f"stop-hunt absorbed ({reason}, burst={metrics.get('burst_ratio', 0.0):.1f}x, "
+                        f"reclaim_flow={metrics.get('reclaim_flow', 0.0):+.1f})"
                     )
-                    return True, f"confirmed_liquidity_sweep_{reason}"
+                    return True, f"confirmed_stop_hunt_absorbed_{reason}"
             except Exception as e_sw:
                 logger.debug(f"[PriceActionEngine] Sweep veto query exception (bypassed): {e_sw}")
 
-        # ─── Part 2: Pure Real-Time Microstructure Order-Flow Absorption Veto ───
-        # When a level is breached live in-flight (T:02s+), no wick exists yet (spot is at extreme).
-        # We check whether live aggressive orders are being actively absorbed in the OPPOSING direction:
-        cb = float(self._opt_flow_1m.get("call_buy_vol", 0.0))
-        cs = float(self._opt_flow_1m.get("call_sell_vol", 0.0))
-        pb = float(self._opt_flow_1m.get("put_buy_vol", 0.0))
-        ps = float(self._opt_flow_1m.get("put_sell_vol", 0.0))
-        eff_lot = getattr(self, "lot_size", 65.0) or 65.0
-        active_flow_floor = 15.0 * eff_lot  # scale-invariant activity floor
-
-        bull_flow = cb + ps
-        bear_flow = pb + cs
-
-        if (bull_flow + bear_flow) >= active_flow_floor:
-            if is_call:
-                # For CALL breakout (price breaking up through resistance):
-                # If aggressive SELLERS dominate (bear_flow > 1.5 * bull_flow),
-                # buy orders are being absorbed by smart-money sellers!
-                if bear_flow > (1.5 * max(bull_flow, 1.0)):
-                    logger.info(
-                        f"[PriceActionEngine] 🛑 SWEEP VETO: CALL breakout at {level_price:.2f} blocked — "
-                        f"live sell-side order absorption (bear_flow={bear_flow:.0f} > 1.5x bull_flow={bull_flow:.0f})"
-                    )
-                    return True, "opposing_sell_order_absorption_veto"
-            else:
-                # For PUT breakdown (price breaking down through support/VWAP):
-                # If aggressive BUYERS dominate (bull_flow > 1.5 * bear_flow),
-                # sell orders are being absorbed by smart-money buyers!
-                if bull_flow > (1.5 * max(bear_flow, 1.0)):
-                    logger.info(
-                        f"[PriceActionEngine] 🛑 SWEEP VETO: PUT breakdown at {level_price:.2f} blocked — "
-                        f"live buy-side order absorption (bull_flow={bull_flow:.0f} > 1.5x bear_flow={bear_flow:.0f})"
-                    )
-                    return True, "opposing_buy_order_absorption_veto"
+        return False, ""
 
         return False, ""
 
@@ -1833,8 +1798,12 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         if not self._check_strict_2bar_approach_ladder(direction):
             return False, "p5_ladder_not_aligned", {}
 
-        # ─── Master Gate 2: Confirmed Sweep & Absorption Wick Veto ───
+        # ─── Master Gate 2: Confirmed Sweep & Absorption Veto ───
         target_vwap = cs if is_call else ps
+        if hasattr(self, "sweep_detector") and self.sweep_detector is not None and target_vwap > 0:
+            ltype = -1 if is_call else 1
+            self.sweep_detector.register_level(target_vwap, ltype)
+
         sweep_vetoed, sweep_reason = self._check_opposing_sweep_veto(
             direction=direction,
             level_price=target_vwap,

@@ -97,9 +97,11 @@ class SweepStopRunDetector:
         session_levels: List[Any],
         pdh: float = 0.0,
         pdl: float = 0.0,
+        cs_vwap: float = 0.0,
+        ps_vwap: float = 0.0,
     ) -> None:
         """
-        Syncs active S/R levels into pre-allocated NumPy array slots.
+        Syncs active S/R levels and Option Writer VWAPs into pre-allocated NumPy array slots.
         Preserves existing in-flight breach states for unbroken levels.
         """
         current_active: List[Tuple[float, int]] = []
@@ -110,7 +112,17 @@ class SweepStopRunDetector:
         if pdh > 0.0:
             current_active.append((round(pdh, 2), -1))  # Resistance
 
-        # 2. Registered session levels
+        # 2. Dynamic Option Writer VWAPs (Pain Zone Levels)
+        if ps_vwap > 0.0:
+            ps_rounded = round(float(ps_vwap), 2)
+            if not any(abs(p - ps_rounded) < 0.25 and t == 1 for p, t in current_active):
+                current_active.append((ps_rounded, 1))  # Support
+        if cs_vwap > 0.0:
+            cs_rounded = round(float(cs_vwap), 2)
+            if not any(abs(p - cs_rounded) < 0.25 and t == -1 for p, t in current_active):
+                current_active.append((cs_rounded, -1)) # Resistance
+
+        # 3. Registered session levels
         for lvl in session_levels:
             if getattr(lvl, "is_broken", False):
                 continue
@@ -488,3 +500,138 @@ class SweepStopRunDetector:
             if abs(price_val - swept_price) <= 1.0:
                 return float(self.breach_start_ts[slot])
         return 0.0
+
+    def register_level(self, price: float, level_type: int) -> int:
+        """
+        Dynamically registers or updates an S/R or Writer VWAP level into an available slot.
+        Returns slot index (or -1 if full).
+        """
+        if price <= 0.0:
+            return -1
+        r_price = round(float(price), 2)
+        # Check if already present within 0.5 points
+        for p, s in self._price_to_slot.items():
+            if abs(p - r_price) <= 0.5 and self.level_types[s] == level_type:
+                return s
+        # Find first available slot
+        for s in range(self.capacity):
+            if self.sr_levels[s] <= 0.0 or (s not in self._price_to_slot.values()):
+                self._price_to_slot[r_price] = s
+                self.sr_levels[s] = r_price
+                self.level_types[s] = level_type
+                self.in_breach[s] = 0
+                self.breach_start_ts[s] = 0.0
+                self.breach_panic_vol[s] = 0.0
+                self.breach_peak_rate[s] = 0.0
+                self.breach_extreme_spot[s] = r_price
+                self.last_verdict[s] = SWEEP_NONE
+                self.last_burst_ratio[s] = 0.0
+                self._active_slot_count = len(self._price_to_slot)
+                return s
+        return -1
+
+    def evaluate_live_stop_burst_and_absorption(
+        self,
+        level_price: float,
+        level_type: int,  # +1 = SUPPORT (downside breach), -1 = RESISTANCE (upside breach)
+        current_time: float = 0.0,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Live Real-Time Microstructure Stop-Loss Burst & Absorption Evaluator (Amarjeet Bhai Mandate).
+        Evaluates whether a level breach is an institutional stop hunt / liquidity sweep where:
+          1. Aggressive Stop-Loss orders were triggered/cut (StopBurstRatio >= 2.2x baseline rate)
+          2. Smart Money passively absorbed the panic cascade and flipped directional delta (ReclaimFlow >= 0.0)
+
+        Zero Wick Lag: Evaluates purely from real-time tick-by-tick order-flow dynamics at T:02s+.
+        Synthetic Test Safe: Gracefully bypasses if option order flow is absent/uninitialized.
+
+        Returns:
+            (is_sweep_absorbed: bool, reason: str, metrics: Dict[str, Any])
+        """
+        now_sec = current_time if current_time > 0.0 else self._last_spot_ts
+        baseline_rate = self.get_rolling_60s_baseline_rate(now_sec)
+
+        # 1. Synthetic test / Cold-start safety bypass
+        if self._total_option_ticks_seen < 5 or baseline_rate <= 0.0:
+            return False, "bypassed_insufficient_option_flow", {}
+
+        effective_baseline = max(baseline_rate, 1.0)
+        swept_price = round(float(level_price), 2)
+
+        # 2. Check tracked slot state if registered
+        tol = max(2.5, swept_price * 0.0001)
+        target_slot = -1
+        min_dist = 999.0
+        for price_val, slot in self._price_to_slot.items():
+            dist = abs(price_val - swept_price)
+            if dist < min_dist and dist <= tol:
+                min_dist = dist
+                target_slot = slot
+
+        # Check in-flight breach state for tracked slot
+        if target_slot >= 0:
+            if self.in_breach[target_slot] == 1:
+                elapsed = max(now_sec - self.breach_start_ts[target_slot], MIN_BREACH_WINDOW_SEC)
+                curr_rate = max(self.breach_peak_rate[target_slot], self.breach_panic_vol[target_slot] / elapsed)
+                burst_ratio = curr_rate / effective_baseline
+                ltype = self.level_types[target_slot]
+                reclaim_flow = self.get_recent_reclaim_flow(ltype, now_sec)
+
+                # Check exact Stop-Hunt & Absorption condition
+                if burst_ratio >= BURST_RATIO_CONFIRMED and reclaim_flow >= 0.0:
+                    metrics = {
+                        "level": swept_price,
+                        "burst_ratio": round(burst_ratio, 2),
+                        "peak_rate": round(curr_rate, 1),
+                        "baseline_rate": round(effective_baseline, 1),
+                        "reclaim_flow": round(reclaim_flow, 1),
+                        "panic_vol": round(self.breach_panic_vol[target_slot], 1),
+                        "status": "IN_FLIGHT_BREACH_CONFIRMED",
+                    }
+                    return True, "in_flight_stop_hunt_absorbed", metrics
+
+            elif self.last_reclaim_ts[target_slot] > 0.0:
+                rec_age = now_sec - self.last_reclaim_ts[target_slot]
+                if rec_age <= RECLAIM_FRESHNESS_SEC:
+                    if int(self.last_verdict[target_slot]) == SWEEP_CONFIRMED_STOP_HUNT:
+                        metrics = {
+                            "level": swept_price,
+                            "burst_ratio": round(float(self.last_burst_ratio[target_slot]), 2),
+                            "reclaim_flow": round(float(self.last_reclaim_flow[target_slot]), 1),
+                            "reclaim_age_sec": round(rec_age, 1),
+                            "status": "RECENT_RECLAIM_CONFIRMED",
+                        }
+                        return True, "recent_reclaim_stop_hunt_absorbed", metrics
+
+        # 3. Direct Recent Order-Flow Fallback (For newly formed or dynamic levels)
+        curr_int_sec = int(now_sec)
+        recent_vol = 0.0
+        active_secs = 0
+        for i in range(60):
+            b_ts = self._sec_timestamps[i]
+            if 0 <= (curr_int_sec - b_ts) <= 3:
+                recent_vol += self._sec_buckets[i]
+                active_secs += 1
+
+        recent_rate = recent_vol / max(float(active_secs), 1.0)
+        recent_burst_ratio = recent_rate / effective_baseline
+        reclaim_flow = self.get_recent_reclaim_flow(level_type, now_sec)
+
+        # Stop-cascade burst ratio >= 2.2x AND directional absorption delta >= 0.0
+        if recent_burst_ratio >= BURST_RATIO_CONFIRMED and reclaim_flow >= 0.0:
+            metrics = {
+                "level": swept_price,
+                "burst_ratio": round(recent_burst_ratio, 2),
+                "recent_rate": round(recent_rate, 1),
+                "baseline_rate": round(effective_baseline, 1),
+                "reclaim_flow": round(reclaim_flow, 1),
+                "status": "LIVE_FLOW_STOP_HUNT_ABSORBED",
+            }
+            return True, "live_orderflow_stop_hunt_absorbed", metrics
+
+        return False, "no_sweep_absorption_detected", {
+            "level": swept_price,
+            "burst_ratio": round(recent_burst_ratio, 2),
+            "reclaim_flow": round(reclaim_flow, 1),
+            "baseline_rate": round(effective_baseline, 1),
+        }
