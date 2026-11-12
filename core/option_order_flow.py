@@ -111,16 +111,37 @@ class OptionOrderFlowMixin:
         """
         Buyer-initiated fraction (0.0-1.0) using Touch-first classification
         with Lee-Ready Tick Rule fallback. Returns None if unclassifiable.
+        Includes Post-Sweep Quote-Step detection to prevent book-stepping ask sweeps
+        from falsely classifying as sells when post-sweep bp1 advances to lp.
         """
         valid_quote = bp1 > 0 and sp1 > 0 and sp1 > bp1
+        prev_lp = self._opt_last_lp.get(sym)
 
-        if valid_quote and lp >= sp1:
-            frac = 1.0                          # Lifted the ask — pure buy
-        elif valid_quote and lp <= bp1:
-            frac = 0.0                          # Hit the bid — pure sell
+        if valid_quote:
+            if lp >= sp1:
+                frac = 1.0                          # Lifted the ask — pure buy
+            elif prev_lp is not None and lp > prev_lp and lp >= bp1:
+                frac = 1.0                          # Post-sweep quote step up -> aggressive buyer sweep!
+            elif prev_lp is not None and lp < prev_lp and lp <= sp1:
+                frac = 0.0                          # Post-sweep quote step down -> aggressive seller sweep!
+            elif lp <= bp1:
+                frac = 0.0                          # Hit the bid — pure sell
+            else:
+                # Inside spread -> Tick Rule (Lee-Ready fallback)
+                if prev_lp is None or prev_lp <= 0:
+                    self._opt_last_lp[sym] = lp
+                    return None
+                if lp > prev_lp:
+                    frac = 1.0
+                elif lp < prev_lp:
+                    frac = 0.0
+                else:
+                    frac = self._opt_last_frac.get(sym)   # Zero-tick: carry forward
+                    if frac is None:
+                        self._opt_last_lp[sym] = lp
+                        return None
         else:
-            # Inside spread OR broken/locked quote -> Tick Rule (Lee-Ready fallback)
-            prev_lp = self._opt_last_lp.get(sym)
+            # Broken/locked quote -> Tick Rule (Lee-Ready fallback)
             if prev_lp is None or prev_lp <= 0:
                 self._opt_last_lp[sym] = lp
                 return None
@@ -129,7 +150,7 @@ class OptionOrderFlowMixin:
             elif lp < prev_lp:
                 frac = 0.0
             else:
-                frac = self._opt_last_frac.get(sym)   # Zero-tick: carry forward
+                frac = self._opt_last_frac.get(sym)
                 if frac is None:
                     self._opt_last_lp[sym] = lp
                     return None
@@ -729,6 +750,7 @@ class CompositeConvictionEngine:
         tick_rate: Optional[float] = None,
         wyckoff_details: Optional[Dict[str, Any]] = None,
         option_delta: Optional[float] = None,
+        micro_ret: Optional[float] = None,
     ) -> Tuple[float, Dict[str, float], Dict[str, Any], str]:
         """
         Mode B Conviction Profile: In-Flight Mid-Bar Breakthrough Surge.
@@ -740,6 +762,21 @@ class CompositeConvictionEngine:
           2. Live Tick Arrival Intensity: 35 pts
           3. Contract Tradability & Spread: 25 pts
         """
+        # Mode B Hard Momentum Velocity Floor:
+        # Never approve Mode B in-flight breakthrough on a decaying or stagnant option contract!
+        # The option must be expanding (micro_ret >= +0.20% over lookback window).
+        if micro_ret is not None and micro_ret < 0.0020:
+            sub_zero = {
+                "touch_aggression": 0.0, "tick_intensity": 0.0, "contract_tradability": 0.0,
+                "flow": 0.0, "impulse": 0.0, "contract": 0.0, "structure": 0.0,
+            }
+            details_veto = {
+                "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
+                "micro_ret": round(micro_ret, 5),
+                "reason": "stagnant_or_negative_option_velocity",
+            }
+            return 0.0, sub_zero, details_veto, "mode_b_conviction_too_low: option_not_expanding"
+
         is_up = direction.upper() in ("UP", "CALL")
         # Option Buyer mandate: Whether buying CE (UP) or PE (DOWN), the trader is LONG the option.
         # Strong bid support (touch_i1 > 0) on the option contract is always bullish for that option.
@@ -768,10 +805,9 @@ class CompositeConvictionEngine:
             ofi_aligned = (ofi > 0) if is_up else (ofi < 0)
             ofi_opposing = (ofi < 0) if is_up else (ofi > 0)
             n1_fp = (wyckoff_details or {}).get("n1_footprint") or {}
-            # C4 fix: Only grant Wyckoff floor when flow is NOT an opposing ask wall (eff_i1 >= -0.20).
-            # When eff_i1 < -0.20 (strong ask wall opposing our direction), Wyckoff floor is vetoed —
-            # the hollow floor that allowed 34+22+25=81 on a bearish ask wall is now closed.
-            if eff_i1 >= -0.20:
+            # Only grant Wyckoff floor when flow has real bid support (eff_i1 >= 0.05),
+            # never when book is dominated by opposing ask walls.
+            if eff_i1 >= 0.05:
                 if ofi_aligned:
                     agg_pts = max(agg_pts, 34.0)
                 elif not ofi_opposing and (n1_fp.get("n1_vol_dryup", False) or n1_fp.get("n1_stopping_vol", False)):
@@ -1013,6 +1049,7 @@ class CompositeConvictionEngine:
                 tick_rate=tick_intensity,
                 wyckoff_details=wyckoff_details,
                 option_delta=option_delta,
+                micro_ret=m_ret,
             )
             profile_name = "MODE_B_INFLIGHT_PROFILE"
         else:
@@ -1029,8 +1066,9 @@ class CompositeConvictionEngine:
             )
             profile_name = "MODE_A_REJECTION_PROFILE"
 
-        # Sizing Tier & Approval Gate
-        is_approved = total_score >= self.min_approval_score
+        # Sizing Tier & Approval Gate (Mode B in-flight surge has dedicated 75.0 floor)
+        eff_approval_floor = 75.0 if is_mode_b else self.min_approval_score
+        is_approved = total_score >= eff_approval_floor
         if total_score >= self.high_conviction_score:
             sizing_tier = "FULL_SIZE"
             rec_tp = self.high_conviction_tp_pct

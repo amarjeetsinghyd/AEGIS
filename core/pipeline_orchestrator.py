@@ -963,14 +963,37 @@ class AegisPipelineOrchestrator:
                                             wyckoff_details=wyckoff_context,
                                             micro_metrics=candidate_micro,
                                         )
+                                        is_mode_b_approved = is_mode_b_setup and candidate_conviction.total_score >= approval_floor
                                         if (
                                             candidate_conviction.total_score < approval_floor
-                                            or not candidate_conviction.is_approved
+                                            or (not candidate_conviction.is_approved and not is_mode_b_approved)
                                         ):
                                             rejection_reasons.append(
                                                 f"{candidate['priority']}:conviction_{candidate_conviction.total_score:.1f}"
                                             )
                                             continue
+
+                                        # 🛡️ Option Elasticity Shield (Anti-Pinning & Operator Trap Defense)
+                                        # Mode B requires the option contract to expand in lockstep with the spot breakthrough.
+                                        # If spot surged favorably (>= 0.00008 * spot, i.e. ~2.0 pts NIFTY / ~6.5 pts SENSEX),
+                                        # but the option contract is pinned/dumped and reflects < 50% of expected delta move, veto!
+                                        if is_mode_b_setup and self.last_spot > 0 and len(self.spot_history) >= 2:
+                                            spot_drift_10s = self.get_spot_drift(now_sec, lookback_sec=micro_lookback)
+                                            fav_spot_move = spot_drift_10s if direction.upper() in ("UP", "CALL") else -spot_drift_10s
+                                            min_spot_surge = max(1.5, 0.00008 * self.last_spot)
+                                            if fav_spot_move >= min_spot_surge:
+                                                otm_depth = candidate.get("otm_depth", 0)
+                                                est_delta = max(0.20, min(0.55, 0.50 - 0.08 * otm_depth))
+                                                expected_opt_move = est_delta * fav_spot_move
+                                                p0 = float(candidate_micro.get("p0", candidate_ltp))
+                                                p1 = float(candidate_micro.get("p1", candidate_ltp))
+                                                opt_price_change = p1 - p0
+                                                min_required_opt_move = 0.50 * expected_opt_move
+                                                if opt_price_change < min_required_opt_move:
+                                                    rejection_reasons.append(
+                                                        f"{candidate['priority']}:elasticity_pin_trap(dSpot={fav_spot_move:.1f},dOpt={opt_price_change:.2f}<{min_required_opt_move:.2f})"
+                                                    )
+                                                    continue
 
                                         eligible_candidates.append({
                                             "candidate": candidate,
@@ -1231,7 +1254,15 @@ class AegisPipelineOrchestrator:
         if not hist or len(hist) < 6:
             return False, "insufficient_history"
         n = len(hist)
-        half = n // 2
+        # Timestamp-based window splitting (15s early vs 15s late) to prevent burst-sampling distortion
+        cutoff_half = now_eff - 15.0
+        early_rows = [r for r in hist if r[0] < cutoff_half]
+        late_rows = [r for r in hist if r[0] >= cutoff_half]
+        if not early_rows or not late_rows:
+            half = n // 2
+            early_rows = list(hist)[:half]
+            late_rows = list(hist)[half:]
+
         def _mean_i1(rows):
             vals = []
             for r in rows:
@@ -1242,15 +1273,17 @@ class AegisPipelineOrchestrator:
                 if b1 + a1 > 0:
                     vals.append((b1 - a1) / (b1 + a1))
             return sum(vals) / len(vals) if vals else 0.0
-        i1_early = _mean_i1(list(hist)[:half])
-        i1_late = _mean_i1(list(hist)[half:])
+
+        i1_early = _mean_i1(early_rows)
+        i1_late = _mean_i1(late_rows)
         flip_mag = abs(i1_late - i1_early)
         flipped_against = (direction == "UP" and i1_early > 0 and i1_late < 0) or \
                           (direction == "DOWN" and i1_early < 0 and i1_late > 0)
         if flipped_against and flip_mag >= 0.15:
+            veto_window = min(20.0, float(getattr(self, "_spot_inflection_veto_window_sec", 20.0)))
             _veto_until_map[direction] = max(
                 float(_veto_until_map.get(direction, 0.0) or 0.0),
-                now_eff + getattr(self, "_spot_inflection_veto_window_sec", 45.0),
+                now_eff + veto_window,
             )
             return True, f"delta_inflection_flip {i1_early:+.2f}->{i1_late:+.2f} (mag {flip_mag:.2f})"
         return False, f"no_flip early={i1_early:+.2f} late={i1_late:+.2f}"
@@ -1672,8 +1705,8 @@ class AegisPipelineOrchestrator:
 
         ordered_depths = (
             ("target", depth),
-            ("minus_one", depth + 1),
-            ("plus_one", depth - 1),
+            ("plus_one", depth - 1),   # Nearer ATM fallback first (higher delta, lower spread ratio)
+            ("minus_one", depth + 1),  # Farther OTM fallback only
         )
         cluster: List[Dict[str, Any]] = []
         seen_strikes = set()
@@ -1697,11 +1730,12 @@ class AegisPipelineOrchestrator:
                 "symbol": symbol,
                 "strike": candidate_strike,
                 "side": expected_side,
+                "otm_depth": otm_depth,
             })
         return cluster
 
     def _get_budget_strike_cluster(self, direction: str) -> List[Dict[str, Any]]:
-        """Return target, farther-OTM fallback, then nearer-ATM fallback."""
+        """Return target, nearer-ATM fallback, then farther-OTM fallback."""
         cluster, _ = self._get_budget_strike_cluster_cached(direction)
         return cluster
 
@@ -1710,7 +1744,7 @@ class AegisPipelineOrchestrator:
         cluster: List[Dict[str, Any]],
         eligible_candidates: List[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-        """Pick the first eligible member in target, farther-OTM, nearer-ATM order."""
+        """Pick the first eligible member in target, nearer-ATM, farther-OTM order."""
         eligible_by_token = {
             entry["candidate"]["token"]: entry
             for entry in eligible_candidates

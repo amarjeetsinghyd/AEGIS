@@ -75,3 +75,7 @@ kronos_bot/
 # Accidental bundle guard
 *.tar.gz
 *.zip
+
+# Audit dumps & PDFs
+Code_for_Argon_Audit/
+Code_for_Argon_PDFs/

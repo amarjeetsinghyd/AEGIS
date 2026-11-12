@@ -204,14 +204,14 @@ def test_budget_cluster_pure_individual_candidate_evaluation_prevents_leakage():
     tick = MockParsedTick(tok="c_target", lp=50.0, vol=1000, ts=now_ms)
     engine.on_tick_parsed(tick)
 
-    # Verify conviction calls: Target evaluated strictly with its own negative i1 (-0.15), NOT leaked +0.25!
+    # Verify conviction calls: Nearer-ATM (plus_one) is now prioritized before Farther-OTM (minus_one)
     assert len(conviction_calls) == 3
     assert conviction_calls[0]["touch_i1"] == -0.15
-    assert conviction_calls[1]["touch_i1"] == 0.25
-    assert conviction_calls[2]["touch_i1"] == 0.10
+    assert conviction_calls[1]["touch_i1"] == 0.10  # plus_one (Nearer ATM) evaluated first!
+    assert conviction_calls[2]["touch_i1"] == 0.25  # minus_one (Farther OTM) evaluated last
 
-    # Verify signal emitted: Target failed conviction, so Priority 2 (minus_one / NIFTY24150CE) was selected!
+    # Verify signal emitted: Target failed conviction, so Nearer ATM (plus_one / NIFTY24050CE) was selected!
     assert not sig_q.empty()
     signal = sig_q.get()
-    assert signal["sym"] == "NIFTY24150CE"
-    assert signal["metrics"]["cluster_priority"] == "minus_one"
+    assert signal["sym"] == "NIFTY24050CE"
+    assert signal["metrics"]["cluster_priority"] == "plus_one"

@@ -1962,6 +1962,11 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         bar_idx = self._total_bars_seen
         prior_bar = self.bars_1m[-1] if self.bars_1m else None
 
+        # Same-candle debounce guard: Never fire twice in the same candle for the same direction
+        dir_lockout_key = f"DIR_{direction.upper()}"
+        if self._mode_b_last_trigger_bar_idx.get(dir_lockout_key, -100) == bar_idx:
+            return False, "same_candle_already_triggered", {}
+
         # ─── 0. PILLAR 5: Trapped Option Writer Short-Squeeze (Mode B) ───
         ok_p5, _, det_p5 = self.check_pillar_5_gamma_trap(
             direction=direction,
@@ -2207,7 +2212,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                 tick_count=getattr(curr_bar, "tick_count", 0),
                             )
                             dow = self._validate_dow_hl2_lh2_structure("CALL", touch2_offset=0, virtual_bar=forming_snapshot)
-                            if dow.is_valid or len(self.bars_1m) < 16:
+                            if dow.is_valid:
                                 ok_struct, _, _ = self._check_structural_obstacle("CALL", spot)
                                 if ok_struct:
                                     pending = [{"type": "mode_b_lockout", "key": "P1_EMA20_UP", "bar_idx": bar_idx}]
@@ -2254,7 +2259,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                 tick_count=getattr(curr_bar, "tick_count", 0),
                             )
                             dow = self._validate_dow_hl2_lh2_structure("PUT", touch2_offset=0, virtual_bar=forming_snapshot_dn)
-                            if dow.is_valid or len(self.bars_1m) < 16:
+                            if dow.is_valid:
                                 ok_struct, _, _ = self._check_structural_obstacle("PUT", spot)
                                 if ok_struct:
                                     pending = [{"type": "mode_b_lockout", "key": "P1_EMA20_DOWN", "bar_idx": bar_idx}]
@@ -2509,8 +2514,12 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                 self._classify_level_roles()
             elif act_type == "mode_b_lockout":
                 key = act.get("key")
+                b_idx = act.get("bar_idx", self._total_bars_seen)
                 if key:
-                    self._mode_b_last_trigger_bar_idx[key] = act.get("bar_idx", self._total_bars_seen)
+                    self._mode_b_last_trigger_bar_idx[key] = b_idx
+                direction = act.get("direction")
+                if direction:
+                    self._mode_b_last_trigger_bar_idx[f"DIR_{direction.upper()}"] = b_idx
 
     def evaluate_setup(
         self,

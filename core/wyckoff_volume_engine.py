@@ -122,8 +122,15 @@ class WyckoffVolumeEngine:
             "opt_delta_flow": delta_flow,
         }
 
-        # 0. Synthetic Test / Cold Start / Zero Flow Bypass: Fails-open as neutral
+        # 0. Synthetic Test / Cold Start / Zero Flow Handling
+        # Live mode requires proven flow (> 0.0); synthetic tests only fail-open in non-ACTIVE mode
         if tot_flow <= 0.0:
+            if self.mode == "ACTIVE":
+                return False, "insufficient_intrabar_flow", {
+                    **base_metrics,
+                    "wyckoff_confirmed": False,
+                    "flow_state": "insufficient",
+                }
             return True, "wyckoff_intrabar_neutral_flow", {
                 **base_metrics,
                 "wyckoff_confirmed": False,

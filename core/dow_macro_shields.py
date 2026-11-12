@@ -160,10 +160,9 @@ class DowMacroShieldsMixin:
                 chain.veto_reason = "noise_veto_pullback_too_short"
                 return chain
 
-            # 2. Find Global HH2 within 4 to 12 bars prior to idx_t2
-            # 2. Find Global HH2 within 5 to 10 bars prior to idx_t2
+            # 2. Find Global HH2 within 3 to 10 bars prior to idx_t2 (0-DTE Momentum Pullback)
             search_hh2_start = max(trend_start + 3, idx_t2 - 12)
-            if idx_t2 - 5 < search_hh2_start:
+            if idx_t2 - 3 < search_hh2_start:
                 chain.veto_reason = "noise_veto_pullback_too_short"
                 return chain
 
@@ -175,7 +174,7 @@ class DowMacroShieldsMixin:
                 return chain
 
             pullback_bars = idx_t2 - idx_hh2
-            if not (5 <= pullback_bars <= 10):
+            if not (3 <= pullback_bars <= 10):
                 chain.veto_reason = f"noise_veto_pullback_out_of_bounds ({pullback_bars})"
                 return chain
 
@@ -295,9 +294,9 @@ class DowMacroShieldsMixin:
                 chain.veto_reason = "noise_veto_pullback_too_short"
                 return chain
 
-            # 2. Find Global LL2 within 5 to 10 bars prior to idx_t2
+            # 2. Find Global LL2 within 3 to 10 bars prior to idx_t2 (0-DTE Momentum Pullback)
             search_ll2_start = max(trend_start + 3, idx_t2 - 12)
-            if idx_t2 - 5 < search_ll2_start:
+            if idx_t2 - 3 < search_ll2_start:
                 chain.veto_reason = "noise_veto_pullback_too_short"
                 return chain
 
@@ -309,7 +308,7 @@ class DowMacroShieldsMixin:
                 return chain
 
             pullback_bars = idx_t2 - idx_ll2
-            if not (5 <= pullback_bars <= 10):
+            if not (3 <= pullback_bars <= 10):
                 chain.veto_reason = f"noise_veto_pullback_out_of_bounds ({pullback_bars})"
                 return chain
 

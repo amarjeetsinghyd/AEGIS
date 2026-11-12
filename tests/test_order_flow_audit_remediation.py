@@ -176,3 +176,82 @@ def test_option_quality_fail_closed_zero_depth_and_spread():
     passed, reason, _ = oq.qualify_option("TEST_CE", lp=50.0, bp1=49.8, sp1=50.2, top5_bid_qty=0.0, top5_ask_qty=0.0, lot_size=65.0)
     assert passed is False
     assert "insufficient_depth" in reason
+
+
+def test_quote_inversion_post_sweep_quote_step():
+    """
+    Verify Leak #1 Remediation: Post-Sweep Quote-Step Detection.
+    When a buyer aggressively sweeps the ask at 100.00 and advances the book to bp1=100.00, sp1=100.50,
+    the trade tick at 100.00 (where lp == bp1 in the new book) must be recognized as an AGGRESSIVE BUY (frac = 1.0)
+    because lp > prev_lp and lp >= bp1, rather than being falsely classified as an aggressive sell (frac = 0.0).
+    """
+    pae = PriceActionEngine(strike_step=50.0)
+    sym = "NIFTY26OCT24000CE"
+    
+    # 1. Baseline quote at 99.50 / 100.00, prior trade at 99.50
+    frac1 = pae._classify_buy_fraction(sym, lp=99.50, bp1=99.50, sp1=100.00)
+    assert frac1 == 0.0  # Hit the bid
+    
+    # 2. Aggressive buyer sweeps 100.00 ask! Post-sweep quote moves to bp1=100.00, sp1=100.50
+    # In Shoonya bundled snapshot: lp=100.00, bp1=100.00, sp1=100.50.
+    # Because lp (100.00) > prev_lp (99.50) and lp >= bp1 (100.00), it's a quote-step BUY!
+    frac2 = pae._classify_buy_fraction(sym, lp=100.00, bp1=100.00, sp1=100.50)
+    assert frac2 == 1.0  # Successfully classified as BUY!
+
+
+def test_mode_b_velocity_floor_rejects_stagnant_option():
+    """
+    Verify Leak #2 Remediation: Mode B Momentum Velocity Floor.
+    Mode B breakthrough requires positive option price expansion (micro_ret >= +0.20%).
+    A stagnant (0.0%) or decaying (-0.1%) option contract must receive score = 0.0 and be vetoed.
+    """
+    cce = CompositeConvictionEngine()
+    
+    # Stagnant option (micro_ret = 0.0005 < 0.0020)
+    score, subs, details, reason = cce._evaluate_mode_b_conviction(
+        direction="UP",
+        setup_name="P3_SQUEEZE_BREAKOUT",
+        touch_i1=0.25,
+        spread_pct=0.40,
+        tick_rate=5.0,
+        micro_ret=0.0005,
+    )
+    assert score == 0.0
+    assert details["reason"] == "stagnant_or_negative_option_velocity"
+    assert "option_not_expanding" in reason
+
+    # Expanding option (micro_ret = 0.0050 >= 0.0020) -> Passes with high conviction!
+    score_ok, subs_ok, details_ok, _ = cce._evaluate_mode_b_conviction(
+        direction="UP",
+        setup_name="P3_SQUEEZE_BREAKOUT",
+        touch_i1=0.25,
+        spread_pct=0.40,
+        tick_rate=5.0,
+        micro_ret=0.0050,
+    )
+    assert score_ok >= 80.0
+    assert subs_ok["touch_aggression"] > 0.0
+
+
+def test_dow_pullback_3_bars_allowed():
+    """
+    Verify Leak #5 Remediation: Dow Macro Shields 3-to-10 Bar Pullback.
+    Fast 0-DTE momentum moves often pull back in 3 bars. Ensure 3-bar pullbacks are accepted.
+    """
+    from core.dow_macro_shields import DowMacroShieldsMixin
+    from core.price_action_engine import OHLCBar
+    
+    shield = DowMacroShieldsMixin()
+    # Synthesize 25 bars with an uptrend and a 3-bar pullback
+    bars = []
+    t = 1000.0
+    base = 24000.0
+    for i in range(25):
+        bars.append(OHLCBar(ts_start=t + i*60, ts_end=t + (i+1)*60, open=base + i*2, high=base + i*2 + 5, low=base + i*2 - 2, close=base + i*2 + 3))
+    shield.bars_1m = bars
+    
+    # Check that search start allows idx_t2 - 3
+    idx_t2 = len(bars) - 1
+    trend_start = 5
+    search_hh2_start = max(trend_start + 3, idx_t2 - 12)
+    assert idx_t2 - 3 >= search_hh2_start

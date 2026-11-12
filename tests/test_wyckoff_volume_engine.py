@@ -355,7 +355,8 @@ def test_wyckoff_inflight_fastpath_3_states():
     assert m_op["wyckoff_confirmed"] is False
     assert m_op["flow_state"] == "opposing"
 
-    # 3. Neutral / Zero Flow (CALL with zero delta/volume) -> Fails-open, but unconfirmed
+    # 3. Neutral / Zero Flow (CALL with zero delta/volume)
+    # In ACTIVE mode: Must reject zero flow as insufficient (no unconfirmed entries allowed).
     pa_neutral = {
         "mode": "MODE_B",
         "pa_setup_name": "mode_b_breakthrough",
@@ -363,10 +364,18 @@ def test_wyckoff_inflight_fastpath_3_states():
         "opt_total_vol": 0.0,
     }
     p_ne, r_ne, m_ne = engine.evaluate(pillar=3, direction="CALL", bars=[], atr=10.0, pa_details=pa_neutral)
-    assert p_ne is True
-    assert r_ne == "wyckoff_intrabar_neutral_flow"
+    assert p_ne is False
+    assert r_ne == "insufficient_intrabar_flow"
     assert m_ne["wyckoff_confirmed"] is False
-    assert m_ne["flow_state"] == "neutral"
+    assert m_ne["flow_state"] == "insufficient"
+
+    # In OBSERVER mode: Fails-open for synthetic tests
+    engine_obs = WyckoffVolumeEngine(mode="OBSERVER")
+    p_obs, r_obs, m_obs = engine_obs.evaluate(pillar=3, direction="CALL", bars=[], atr=10.0, pa_details=pa_neutral)
+    assert p_obs is True
+    assert r_obs == "wyckoff_intrabar_neutral_flow"
+    assert m_obs["wyckoff_confirmed"] is False
+    assert m_obs["flow_state"] == "neutral"
 
     # 4. Phase 2: Insufficient Volume Hard Floor (< 3 lots = 195 qty for lot_size=65)
     pa_low_vol = {
