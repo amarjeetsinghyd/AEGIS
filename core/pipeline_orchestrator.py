@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import queue
 import sys
+import threading
 import json
 import math
 import time
@@ -145,6 +146,7 @@ class AegisPipelineOrchestrator:
         self.strike_step = strike_step
         self.underlying_tokens = underlying_tokens or {"26000", "1", "99919000", "99926000"}
         self.signal_queue = signal_queue
+        self._map_lock = threading.RLock()
         # Signal churn debounce (Pillar-level spam guard). Mode-B evaluates
         # every tick by design; a 15s per-direction cooldown on EMISSION stops
         # candidate-signal spam from hammering the veto stack / EM queue.
@@ -378,7 +380,8 @@ class AegisPipelineOrchestrator:
         """Processes zero-copy incoming tick from market WebSocket."""
         try:
             tok_str = str(tick.tok)
-            sym = self.t2s.get(tok_str) or getattr(tick, "sym", None)
+            with self._map_lock:
+                sym = self.t2s.get(tok_str) or getattr(tick, "sym", None)
             if not sym:
                 return
 
@@ -410,7 +413,8 @@ class AegisPipelineOrchestrator:
             if em is not None:
                 em.on_option_tick(tick)
 
-            info = self.token_map.get(tok_str)
+            with self._map_lock:
+                info = self.token_map.get(tok_str)
             if not info:
                 return
 
@@ -1021,6 +1025,43 @@ class AegisPipelineOrchestrator:
                                         )
                                         return None
 
+                                    # ─── 2-Layer Institutional Anti-Trap Quant Shield ───
+                                    # 1. True Option-Contract Intraday VWAP Gate
+                                    cand_sym = selected_candidate["candidate"]["symbol"]
+                                    cand_lp = float(selected_candidate["ltp"])
+                                    cand_micro = selected_candidate["micro_metrics"]
+                                    cand_ret = float(cand_micro.get("micro_ret", 0.0) or 0.0)
+
+                                    if self.price_action_engine and hasattr(self.price_action_engine, "get_option_contract_vwap"):
+                                        opt_vwap = float(self.price_action_engine.get_option_contract_vwap(cand_sym))
+                                        # Option must be above its own intraday VWAP (0.4% tolerance) unless exploding > +0.8% in 10s
+                                        if opt_vwap > 0.0 and cand_lp < (opt_vwap * 0.996) and cand_ret < 0.008:
+                                            self._throttled_veto_log(
+                                                f"opt_vwap_veto_{cand_sym}",
+                                                f"[QUANT VETO] {cand_sym} below option intraday VWAP: lp={cand_lp:.2f} < vwap={opt_vwap:.2f}",
+                                            )
+                                            return None
+
+                                    # 2. Cross-Strike Mirror Unwind Gate (CE vs PE Coherence)
+                                    # When buying CE (UP), the opposing PE strike should not be aggressively surging
+                                    opp_direction = "DOWN" if direction.upper() in ("UP", "CALL") else "UP"
+                                    opp_cluster, _ = self._get_budget_strike_cluster_cached(opp_direction)
+                                    if opp_cluster and self.scorer:
+                                        opp_sym = opp_cluster[0]["symbol"]
+                                        opp_hist = self.scorer.history.get(opp_sym)
+                                        if opp_hist and len(opp_hist) >= 6 and self.conviction_engine:
+                                            opp_m = self.conviction_engine.extract_micro_metrics(opp_hist, now_sec, lookback_sec=10.0)
+                                            opp_ret = float(opp_m.get("micro_ret", 0.0) or 0.0)
+                                            opp_i1 = float(opp_m.get("touch_i1", 0.0) or 0.0)
+                                            # If opposing option is ALSO surging (+0.45% and Bid-heavy), it's a volatility/straddle trap
+                                            if opp_ret > 0.0045 and opp_i1 > 0.12:
+                                                self._throttled_veto_log(
+                                                    f"mirror_trap_{cand_sym}",
+                                                    f"[QUANT VETO] {cand_sym} ({direction}) opposing strike {opp_sym} is also surging "
+                                                    f"(ret={opp_ret*100:.2f}%, i1={opp_i1:+.2f}) -> Straddle/IV trap detected",
+                                                )
+                                                return None
+
                                     selected = selected_candidate["candidate"]
                                     sym = selected["symbol"]
                                     tok_str = selected["token"]
@@ -1604,17 +1645,18 @@ class AegisPipelineOrchestrator:
 
     def refresh_token_maps(self, token_to_symbol: Dict[str, str], token_map: Dict[str, Dict]):
         """Hot-refresh after expiry roll / ATM rebuild (called by aegis_main on 1-min boundary)."""
-        self.t2s = {str(k): str(v) for k, v in token_to_symbol.items()}
-        self.token_map = {str(k): v for k, v in token_map.items()}
-        self._rebuild_strike_to_symbol()          # swap first ...
-        self._map_version += 1                    # ... then invalidate, so no cluster is cached off a half-built map
-        self._budget_cluster_cache.clear()
-        # Warm tick_ring & history_30s for any new symbols without disturbing existing deques
-        for sym in self.t2s.values():
-            if sym not in self.tick_ring:
-                self.tick_ring[sym] = deque(maxlen=300)
-            if sym not in self.history_30s:
-                self.history_30s[sym] = deque(maxlen=300)
+        with self._map_lock:
+            self.t2s = {str(k): str(v) for k, v in token_to_symbol.items()}
+            self.token_map = {str(k): v for k, v in token_map.items()}
+            self._rebuild_strike_to_symbol()          # swap first ...
+            self._map_version += 1                    # ... then invalidate, so no cluster is cached off a half-built map
+            self._budget_cluster_cache.clear()
+            # Warm tick_ring & history_30s for any new symbols without disturbing existing deques
+            for sym in self.t2s.values():
+                if sym not in self.tick_ring:
+                    self.tick_ring[sym] = deque(maxlen=300)
+                if sym not in self.history_30s:
+                    self.history_30s[sym] = deque(maxlen=300)
         logger.info(f"[AEGIS] Token maps refreshed — {len(self.token_map)} tokens, {len(self.strike_to_symbol)} strikes")
 
     def shift_atm(self, _shift: int = 0, new_atm: float = 0.0):
@@ -1661,9 +1703,10 @@ class AegisPipelineOrchestrator:
                 "strike": strike,
                 "side": 0 if side == "UP" else 1,
             }
-        self.budget_strike_targets = normalized
-        self._targets_version += 1
-        self._budget_cluster_cache.clear()
+        with self._map_lock:
+            self.budget_strike_targets = normalized
+            self._targets_version += 1
+            self._budget_cluster_cache.clear()
 
     def _get_budget_strike_cluster_cached(self, direction: str) -> Tuple[List[Dict[str, Any]], FrozenSet[str]]:
         """O(1) cached cluster and symbols set lookup."""
@@ -1744,15 +1787,27 @@ class AegisPipelineOrchestrator:
         cluster: List[Dict[str, Any]],
         eligible_candidates: List[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-        """Pick the first eligible member in target, nearer-ATM, farther-OTM order."""
-        eligible_by_token = {
-            entry["candidate"]["token"]: entry
-            for entry in eligible_candidates
-        }
-        return next(
-            (eligible_by_token[candidate["token"]] for candidate in cluster if candidate["token"] in eligible_by_token),
-            None,
-        )
+        """
+        Amarjeet Bhai Capital Mandate:
+        The budget 'target' strike is strictly matched to available account funds by StrikeSelector.
+        If 'target' is eligible and passed budget/quote sanity, it is ALWAYS the #1 choice.
+        Adjacent strikes in the cluster serve ONLY as fallbacks if target has stale/missing quotes.
+        """
+        if not eligible_candidates:
+            return None
+        eligible_by_priority = {entry["candidate"]["priority"]: entry for entry in eligible_candidates}
+
+        # 👑 CAPITAL INVARIANT: Always choose the affordable OTM target first!
+        if "target" in eligible_by_priority:
+            return eligible_by_priority["target"]
+
+        # Fallback to cluster order only if target failed quote/sanity checks
+        for member in cluster:
+            pri = member["priority"]
+            if pri in eligible_by_priority:
+                return eligible_by_priority[pri]
+
+        return eligible_candidates[0]
 
     def _emit_signal(
         self,
@@ -1813,15 +1868,16 @@ class AegisPipelineOrchestrator:
         idx = self.fill_ptr % 500
         self.fill_latency_buf[idx] = lat_ms
         self.fill_ptr += 1
-        self._pending_edge_measures.append({
-            "fill_ts": fill_ts,
-            "fill_price": fill_price,
-            "signal_price": signal_price,
-            "measure_at": fill_ts + 30.0,
-            "buf_idx": idx,
-            "sym": sym,
-            "token": str(token) if token is not None else None,
-        })
+        with self._map_lock:
+            self._pending_edge_measures.append({
+                "fill_ts": fill_ts,
+                "fill_price": fill_price,
+                "signal_price": signal_price,
+                "measure_at": fill_ts + 30.0,
+                "buf_idx": idx,
+                "sym": sym,
+                "token": str(token) if token is not None else None,
+            })
         logger.info(f"[AEGIS] Fill recorded: latency={lat_ms:.1f}ms | px={fill_price:.2f}")
 
     def _resolve_option_ltp(self, sym: Optional[str], token: Optional[str]) -> float:
@@ -1831,7 +1887,9 @@ class AegisPipelineOrchestrator:
             if px > 0:
                 return px
         if sym:
-            for t, sn in self.t2s.items():
+            with self._map_lock:
+                t2s_items = list(self.t2s.items())
+            for t, sn in t2s_items:
                 if sn == sym and t in self.option_cache:
                     px = float(self.option_cache[t])
                     if px > 0:
@@ -1847,8 +1905,10 @@ class AegisPipelineOrchestrator:
         (accepted only if within 200% of fill_price, so a stale index-spot
         value can never poison the metric again — see P0-3).
         """
+        with self._map_lock:
+            pending_items = list(self._pending_edge_measures)
         still_pending = []
-        for item in self._pending_edge_measures:
+        for item in pending_items:
             if now >= item["measure_at"]:
                 fill_px = float(item["fill_price"])
                 px = self._resolve_option_ltp(sym or item.get("sym"), token or item.get("token"))
@@ -1861,7 +1921,8 @@ class AegisPipelineOrchestrator:
                     self.post_fill_edge_buf[item["buf_idx"]] = ret_bps
             else:
                 still_pending.append(item)
-        self._pending_edge_measures = still_pending
+        with self._map_lock:
+            self._pending_edge_measures = still_pending
 
     def get_state_summary(self) -> Dict[str, Any]:
         """Provides snapshot metrics for monitoring / UI dashboard."""

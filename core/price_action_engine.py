@@ -228,6 +228,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
 
         # ─── Intra-Bar Priority Mode B High-Precision Execution State ───
         self._mode_b_last_trigger_bar_idx: Dict[str, int] = {}
+        self._last_committed_bar_idx: Dict[str, int] = {}
 
         # ─── O(1) Bar-Close & State Caches for Hot Path ───
         self._squeeze_box_cache: Dict[Tuple[int, str], Tuple[bool, Dict[str, Any]]] = {}
@@ -552,7 +553,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
             return 0
 
         current_bucket = float(int(current_ts // 60) * 60)
-        session_open = datetime.fromtimestamp(current_ts).replace(
+        session_open = datetime.fromtimestamp(current_ts, tz=_IST).replace(
             hour=9, minute=15, second=0, microsecond=0
         ).timestamp()
         last_end = float(self.bars_1m[-1].ts_end) if self.bars_1m else 0.0
@@ -593,6 +594,14 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         expected_starts = set(range(int(first_missing), int(current_bucket), 60))
         available_starts = {int(row[0]) for row in parsed_bars}
         missing_starts = expected_starts - available_starts
+        if missing_starts:
+            self._backfill_pending = True
+            logger.error(
+                f"[PriceActionEngine] Incomplete reconnect backfill: {len(missing_starts)} "
+                f"closed 1m bars are still missing; entry evaluation remains gated"
+            )
+            return 0
+
         self._curr_1m_bar = None
         self._curr_1m_bucket = -1
         self._opt_flow_1m = {
@@ -602,13 +611,6 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
             "put_sell_vol": 0.0,
             "unclass_vol": 0.0,
         }
-        if missing_starts:
-            self._backfill_pending = True
-            logger.error(
-                f"[PriceActionEngine] Incomplete reconnect backfill: {len(missing_starts)} "
-                f"closed 1m bars are still missing; entry evaluation remains gated"
-            )
-            return 0
 
         added = 0
         for ts_start, op, hi, lo, cl, volume in parsed_bars:
@@ -699,8 +701,10 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
             return False, "wyckoff_n1_unabsorbed_volume_dump"
 
         # ─── VETO 2: Opposing Synthetic Net Delta Swamp ───
-        # Active only when non-trivial options flow is present (bulls + bears >= 500)
-        if (bulls + bears) >= 500.0:
+        # Active only when non-trivial options flow is present (bulls + bears >= min_swamp_vol)
+        eff_lot = float(getattr(self, "lot_size", 65.0) or 65.0)
+        min_swamp_vol = max(150.0, 5.0 * eff_lot)
+        if (bulls + bears) >= min_swamp_vol:
             is_up = direction.upper() in ("UP", "CALL")
             if is_up:
                 # On CALL: if net delta is negative and bear flow swamps bull flow by > 1.50x
@@ -727,6 +731,10 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         into the 20 EMA High-Low Band after 2 confirmed Higher Highs (or Lower Lows)
         and a 4-to-12 candle orderly retracement.
         """
+        dir_key = str(direction).upper()
+        if self._last_committed_bar_idx.get(dir_key, -100) == self._total_bars_seen:
+            return False, "same_candle_already_fired", {}
+
         live_ema_20, live_slope_20_bps = self.get_live_20_ema_and_slope()
         if live_ema_20 <= 0 or self.last_price <= 0:
             return False, "no_ema20_data", {}
@@ -1089,6 +1097,10 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         and closes firmly back inside the range in the direction of the dominant trend.
         Full-candle entries only.
         """
+        dir_key = str(direction).upper()
+        if self._last_committed_bar_idx.get(dir_key, -100) == self._total_bars_seen:
+            return False, "same_candle_already_fired", {}
+
         # ─── LUNCH CHOP REGIME VETO (11:15 to 13:00 IST) ───
         # Micro-sweeps during midday lunch consolidation represent low-volume retail wick noise,
         # lacking institutional expansion follow-through.
@@ -1833,9 +1845,10 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                     lowest_low = min(prior_bar.low if prior_bar else curr_bar.low, curr_bar.low)
                     highest_high = max(spot, curr_bar.high)
                     sl_price = round(lowest_low - 0.10 * atr, 2)
-                    pending = [{"type": "mode_b_lockout", "key": lockout_key, "bar_idx": bar_idx}]
+                    pending = [{"type": "mode_b_lockout", "key": lockout_key, "bar_idx": bar_idx, "direction": direction}]
                     if commit:
                         self._mode_b_last_trigger_bar_idx[lockout_key] = bar_idx
+                        self._mode_b_last_trigger_bar_idx[f"DIR_{direction.upper()}"] = bar_idx
                         logger.info(
                             f"[PriceActionEngine] [MODE_B_P5] CALL Writer Trap Squeeze at spot={spot:.2f} > "
                             f"CallSellVWAP={cs:.2f} (T+{sec_in_min}s) | DowThrust=OK"
@@ -1843,6 +1856,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                     return True, "gamma_trap_squeeze", {
                         "pillar": 5,
                         "pillar_id": 5,
+                        "direction": direction,
                         "pa_setup_name": "gamma_trap_squeeze",
                         "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
                         "boundary_level": round(cs, 2),
@@ -1874,9 +1888,10 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                     highest_high = max(prior_bar.high if prior_bar else curr_bar.high, curr_bar.high)
                     lowest_low = min(spot, curr_bar.low)
                     sl_price = round(highest_high + 0.10 * atr, 2)
-                    pending = [{"type": "mode_b_lockout", "key": lockout_key, "bar_idx": bar_idx}]
+                    pending = [{"type": "mode_b_lockout", "key": lockout_key, "bar_idx": bar_idx, "direction": direction}]
                     if commit:
                         self._mode_b_last_trigger_bar_idx[lockout_key] = bar_idx
+                        self._mode_b_last_trigger_bar_idx[f"DIR_{direction.upper()}"] = bar_idx
                         logger.info(
                             f"[PriceActionEngine] [MODE_B_P5] PUT Writer Trap Squeeze at spot={spot:.2f} < "
                             f"PutSellVWAP={ps:.2f} (T+{sec_in_min}s) | DowThrust=OK"
@@ -1884,6 +1899,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                     return True, "gamma_trap_squeeze", {
                         "pillar": 5,
                         "pillar_id": 5,
+                        "direction": direction,
                         "pa_setup_name": "gamma_trap_squeeze",
                         "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
                         "boundary_level": round(ps, 2),
@@ -1924,6 +1940,10 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         Active mid-bar from T:02s onwards (rollover guard T:00s-T:01s). Single-shot clean trigger without artificial
         body ratio, wick chokes, multi-tick delays, or point clearance hurdles.
         """
+        dir_key = str(direction).upper()
+        if self._last_committed_bar_idx.get(dir_key, -100) == self._total_bars_seen:
+            return False, "same_candle_already_fired", {}
+
         now_sec = current_time if current_time > 0 else self.last_ts
         sec_in_min = int(now_sec % 60)
         if sec_in_min < 2:
@@ -1967,6 +1987,13 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         if self._mode_b_last_trigger_bar_idx.get(dir_lockout_key, -100) == bar_idx:
             return False, "same_candle_already_triggered", {}
 
+        # ─── Master Session VWAP Alignment Gate (Absolute Pre-Condition for ALL Pillars) ───
+        eff_vwap_mb = external_vwap if external_vwap > 0 else self.current_vwap
+        if direction == "UP" and not self._pain_zone_vwap_aligned("CALL", spot, eff_vwap_mb):
+            return False, "below_vwap", {}
+        if direction == "DOWN" and not self._pain_zone_vwap_aligned("PUT", spot, eff_vwap_mb):
+            return False, "above_vwap", {}
+
         # ─── 0. PILLAR 5: Trapped Option Writer Short-Squeeze (Mode B) ───
         ok_p5, _, det_p5 = self.check_pillar_5_gamma_trap(
             direction=direction,
@@ -1982,14 +2009,8 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
             commit=commit,
         )
         if ok_p5:
+            det_p5["direction"] = direction
             return True, "gamma_trap_squeeze", det_p5
-
-        # ─── Pain Zone VWAP Alignment Gate (Pillars 1 to 4) ───
-        eff_vwap_mb = external_vwap if external_vwap > 0 else self.current_vwap
-        if direction == "UP" and not self._pain_zone_vwap_aligned("CALL", spot, eff_vwap_mb):
-            return False, "below_vwap", {}
-        if direction == "DOWN" and not self._pain_zone_vwap_aligned("PUT", spot, eff_vwap_mb):
-            return False, "above_vwap", {}
 
         # ─── 1. PILLAR 3: Squeeze Box Breakout (Mode B) ───
         last_p3 = self._mode_b_last_trigger_bar_idx.get("P3_BOX_BREAKTHROUGH", -100)
@@ -2000,60 +2021,105 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
             box_low = float(box_meta["box_low"])
             box_bars_n = int(box_meta.get("bar_count", 5))
             # 🟢 Pillar 3: Scale-Invariant Box Expansion Clearance Hurdle
-            # NIFTY: 1.5 pts | SENSEX: 2.5 pts
-            box_min_pierce = 1.5 if self.strike_step <= 50.0 else 2.5
+            box_min_pierce = max(1.5 if self.strike_step <= 50.0 else 2.5, 0.20 * atr)
+
+            # 5m Trend Alignment for Pillar 3
+            trend_5m_bullish = True
+            trend_5m_bearish = True
+            if self.bars_5m:
+                b5 = self.bars_5m[-1]
+                trend_5m_bullish = b5.close >= b5.open
+                trend_5m_bearish = b5.close <= b5.open
+
+            eff_lot_p3 = float(getattr(self, "lot_size", 65.0) or 65.0)
+            cb_flow_p3 = float(self._opt_flow_1m.get("call_buy_vol", 0.0) or 0.0)
+            cs_flow_p3 = float(self._opt_flow_1m.get("call_sell_vol", 0.0) or 0.0)
+            pb_flow_p3 = float(self._opt_flow_1m.get("put_buy_vol", 0.0) or 0.0)
+            ps_flow_p3 = float(self._opt_flow_1m.get("put_sell_vol", 0.0) or 0.0)
+            tot_opt_flow_p3 = cb_flow_p3 + cs_flow_p3 + pb_flow_p3 + ps_flow_p3
+            bull_opt_flow_p3 = cb_flow_p3 + ps_flow_p3
+            bear_opt_flow_p3 = pb_flow_p3 + cs_flow_p3
+
             if direction == "UP":
                 # Instant breakout: candle opened inside/at box, spot crossed above box_high with true expansion
-                if curr_bar.open <= box_high and spot >= (box_high + box_min_pierce):
-                    ok_struct, _, _ = self._check_structural_obstacle("CALL", spot, check_day_extremes=True)
-                    if ok_struct:
-                        pending = [{"type": "mode_b_lockout", "key": "P3_BOX_BREAKTHROUGH", "bar_idx": bar_idx}]
-                        if commit:
-                            self._mode_b_last_trigger_bar_idx["P3_BOX_BREAKTHROUGH"] = bar_idx
-                            logger.info(f"[PriceActionEngine] [MODE_B_P3] Squeeze Box CALL Breakout at spot={spot:.2f} >= box_high+pierce={(box_high + box_min_pierce):.2f} (T+{sec_in_min}s) | BoxBars={box_bars_n}")
-                        return True, "volatility_squeeze_breakout", {
-                            "pillar": 3,
-                            "pa_setup_name": "volatility_squeeze_breakout",
-                            "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
-                            "box_high": round(box_high, 2),
-                            "box_low": round(box_low, 2),
-                            "boundary_level": round(box_high, 2),
-                            "sl_price": round(curr_bar.low - 0.10 * atr, 2),
-                            "trigger_sec": sec_in_min,
-                            "bar_open": round(curr_bar.open, 2),
-                            "bar_high": round(curr_bar.high, 2),
-                            "bar_low": round(curr_bar.low, 2),
-                            "bar_close": round(spot, 2),
-                            "entry_bar_bucket": int(now_sec // 60),
-                            "_pending_actions": pending,
-                            **_get_flow_dict(),
-                        }
+                if curr_bar.open <= box_high and spot >= (box_high + box_min_pierce) and trend_5m_bullish:
+                    sweep_vetoed, sweep_reason = self._check_opposing_sweep_veto(
+                        direction="UP",
+                        level_price=box_high,
+                        curr_bar=curr_bar,
+                        prior_bar=prior_bar,
+                        now_sec=now_sec,
+                    )
+                    if sweep_vetoed:
+                        logger.info(f"[PriceActionEngine] [MODE_B_P3] Skipped CALL breakout at box_high={box_high:.2f} due to opposing sweep veto: {sweep_reason}")
+                    elif tot_opt_flow_p3 >= (3.0 * eff_lot_p3) and (bull_opt_flow_p3 <= bear_opt_flow_p3 or pb_flow_p3 > (2.0 * max(cb_flow_p3, 1.0))):
+                        logger.info(f"[PriceActionEngine] [MODE_B_P3] Skipped CALL breakout at box_high={box_high:.2f} due to option flow divergence veto (bull={bull_opt_flow_p3:.1f}, bear={bear_opt_flow_p3:.1f}, pb={pb_flow_p3:.1f}, cb={cb_flow_p3:.1f})")
+                    else:
+                        ok_struct, _, _ = self._check_structural_obstacle("CALL", spot, check_day_extremes=True)
+                        if ok_struct:
+                            pending = [{"type": "mode_b_lockout", "key": "P3_BOX_BREAKTHROUGH", "bar_idx": bar_idx, "direction": direction}]
+                            if commit:
+                                self._mode_b_last_trigger_bar_idx["P3_BOX_BREAKTHROUGH"] = bar_idx
+                                self._mode_b_last_trigger_bar_idx[f"DIR_{direction.upper()}"] = bar_idx
+                                logger.info(f"[PriceActionEngine] [MODE_B_P3] Squeeze Box CALL Breakout at spot={spot:.2f} >= box_high+pierce={(box_high + box_min_pierce):.2f} (T+{sec_in_min}s) | BoxBars={box_bars_n}")
+                            return True, "volatility_squeeze_breakout", {
+                                "pillar": 3,
+                                "direction": direction,
+                                "pa_setup_name": "volatility_squeeze_breakout",
+                                "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
+                                "box_high": round(box_high, 2),
+                                "box_low": round(box_low, 2),
+                                "boundary_level": round(box_high, 2),
+                                "sl_price": round(curr_bar.low - 0.10 * atr, 2),
+                                "trigger_sec": sec_in_min,
+                                "bar_open": round(curr_bar.open, 2),
+                                "bar_high": round(curr_bar.high, 2),
+                                "bar_low": round(curr_bar.low, 2),
+                                "bar_close": round(spot, 2),
+                                "entry_bar_bucket": int(now_sec // 60),
+                                "_pending_actions": pending,
+                                **_get_flow_dict(),
+                            }
             elif direction == "DOWN":
                 # Instant breakout: candle opened inside/at box, spot crossed below box_low with true expansion
-                if curr_bar.open >= box_low and spot <= (box_low - box_min_pierce):
-                    ok_struct, _, _ = self._check_structural_obstacle("PUT", spot, check_day_extremes=True)
-                    if ok_struct:
-                        pending = [{"type": "mode_b_lockout", "key": "P3_BOX_BREAKTHROUGH", "bar_idx": bar_idx}]
-                        if commit:
-                            self._mode_b_last_trigger_bar_idx["P3_BOX_BREAKTHROUGH"] = bar_idx
-                            logger.info(f"[PriceActionEngine] [MODE_B_P3] Squeeze Box PUT Breakout at spot={spot:.2f} <= box_low-pierce={(box_low - box_min_pierce):.2f} (T+{sec_in_min}s) | BoxBars={box_bars_n}")
-                        return True, "volatility_squeeze_breakout", {
-                            "pillar": 3,
-                            "pa_setup_name": "volatility_squeeze_breakout",
-                            "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
-                            "box_high": round(box_high, 2),
-                            "box_low": round(box_low, 2),
-                            "boundary_level": round(box_low, 2),
-                            "sl_price": round(curr_bar.high + 0.10 * atr, 2),
-                            "trigger_sec": sec_in_min,
-                            "bar_open": round(curr_bar.open, 2),
-                            "bar_high": round(curr_bar.high, 2),
-                            "bar_low": round(curr_bar.low, 2),
-                            "bar_close": round(spot, 2),
-                            "entry_bar_bucket": int(now_sec // 60),
-                            "_pending_actions": pending,
-                            **_get_flow_dict(),
-                        }
+                if curr_bar.open >= box_low and spot <= (box_low - box_min_pierce) and trend_5m_bearish:
+                    sweep_vetoed, sweep_reason = self._check_opposing_sweep_veto(
+                        direction="DOWN",
+                        level_price=box_low,
+                        curr_bar=curr_bar,
+                        prior_bar=prior_bar,
+                        now_sec=now_sec,
+                    )
+                    if sweep_vetoed:
+                        logger.info(f"[PriceActionEngine] [MODE_B_P3] Skipped PUT breakout at box_low={box_low:.2f} due to opposing sweep veto: {sweep_reason}")
+                    elif tot_opt_flow_p3 >= (3.0 * eff_lot_p3) and (bear_opt_flow_p3 <= bull_opt_flow_p3 or cb_flow_p3 > (2.0 * max(pb_flow_p3, 1.0))):
+                        logger.info(f"[PriceActionEngine] [MODE_B_P3] Skipped PUT breakout at box_low={box_low:.2f} due to option flow divergence veto (bear={bear_opt_flow_p3:.1f}, bull={bull_opt_flow_p3:.1f}, cb={cb_flow_p3:.1f}, pb={pb_flow_p3:.1f})")
+                    else:
+                        ok_struct, _, _ = self._check_structural_obstacle("PUT", spot, check_day_extremes=True)
+                        if ok_struct:
+                            pending = [{"type": "mode_b_lockout", "key": "P3_BOX_BREAKTHROUGH", "bar_idx": bar_idx, "direction": direction}]
+                            if commit:
+                                self._mode_b_last_trigger_bar_idx["P3_BOX_BREAKTHROUGH"] = bar_idx
+                                self._mode_b_last_trigger_bar_idx[f"DIR_{direction.upper()}"] = bar_idx
+                                logger.info(f"[PriceActionEngine] [MODE_B_P3] Squeeze Box PUT Breakout at spot={spot:.2f} <= box_low-pierce={(box_low - box_min_pierce):.2f} (T+{sec_in_min}s) | BoxBars={box_bars_n}")
+                            return True, "volatility_squeeze_breakout", {
+                                "pillar": 3,
+                                "direction": direction,
+                                "pa_setup_name": "volatility_squeeze_breakout",
+                                "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
+                                "box_high": round(box_high, 2),
+                                "box_low": round(box_low, 2),
+                                "boundary_level": round(box_low, 2),
+                                "sl_price": round(curr_bar.high + 0.10 * atr, 2),
+                                "trigger_sec": sec_in_min,
+                                "bar_open": round(curr_bar.open, 2),
+                                "bar_high": round(curr_bar.high, 2),
+                                "bar_low": round(curr_bar.low, 2),
+                                "bar_close": round(spot, 2),
+                                "entry_bar_bucket": int(now_sec // 60),
+                                "_pending_actions": pending,
+                                **_get_flow_dict(),
+                            }
 
         # ─── 2. PILLAR 4: Dynamic Session S/R Registry & T-2 Prominence Hub Breakout (Mode B) ───
         trend_5m_bullish_mb = True
@@ -2088,11 +2154,12 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                         ok_struct, _, _ = self._check_structural_obstacle("CALL", spot, ignore_pivots_below=r_lvl.price, check_day_extremes=True)
                         if trend_5m_bullish_mb and ok_struct:
                             pending = [
-                                {"type": "mode_b_lockout", "key": "P4_SR_BREAKTHROUGH", "bar_idx": bar_idx},
+                                {"type": "mode_b_lockout", "key": "P4_SR_BREAKTHROUGH", "bar_idx": bar_idx, "direction": direction},
                                 {"type": "sr_broken", "level_type": r_lvl.level_type, "price": r_lvl.price, "seq_idx": r_lvl.seq_idx, "ts_broken": now_sec},
                             ]
                             if commit:
                                 self._mode_b_last_trigger_bar_idx["P4_SR_BREAKTHROUGH"] = bar_idx
+                                self._mode_b_last_trigger_bar_idx[f"DIR_{direction.upper()}"] = bar_idx
                                 r_lvl.is_broken = True
                                 r_lvl.ts_broken = now_sec
                                 self._session_levels_version += 1
@@ -2100,6 +2167,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                 logger.info(f"[PriceActionEngine] [MODE_B_P4] Dynamic S/R CALL Breakout at spot={spot:.2f} >= res+pierce={(r_lvl.price + min_pierce):.2f} role={getattr(r_lvl, 'level_role', 'UNKNOWN')} (T+{sec_in_min}s)")
                             return True, "sr_breakout", {
                                 "pillar": 4,
+                                "direction": direction,
                                 "pa_setup_name": "sr_breakout",
                                 "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
                                 "boundary_level": round(r_lvl.price, 2),
@@ -2144,11 +2212,12 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                         ok_struct, _, _ = self._check_structural_obstacle("PUT", spot, ignore_pivots_above=s_lvl.price, check_day_extremes=True)
                         if trend_5m_bearish_mb and ok_struct:
                             pending = [
-                                {"type": "mode_b_lockout", "key": "P4_SR_BREAKTHROUGH", "bar_idx": bar_idx},
+                                {"type": "mode_b_lockout", "key": "P4_SR_BREAKTHROUGH", "bar_idx": bar_idx, "direction": direction},
                                 {"type": "sr_broken", "level_type": s_lvl.level_type, "price": s_lvl.price, "seq_idx": s_lvl.seq_idx, "ts_broken": now_sec},
                             ]
                             if commit:
                                 self._mode_b_last_trigger_bar_idx["P4_SR_BREAKTHROUGH"] = bar_idx
+                                self._mode_b_last_trigger_bar_idx[f"DIR_{direction.upper()}"] = bar_idx
                                 s_lvl.is_broken = True
                                 s_lvl.ts_broken = now_sec
                                 self._session_levels_version += 1
@@ -2156,6 +2225,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                 logger.info(f"[PriceActionEngine] [MODE_B_P4] Dynamic S/R PUT Breakout at spot={spot:.2f} <= sup-pierce={(s_lvl.price - min_pierce):.2f} role={getattr(s_lvl, 'level_role', 'UNKNOWN')} (T+{sec_in_min}s)")
                             return True, "sr_breakout", {
                                 "pillar": 4,
+                                "direction": direction,
                                 "pa_setup_name": "sr_breakout",
                                 "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
                                 "boundary_level": round(s_lvl.price, 2),
@@ -2213,17 +2283,22 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                             )
                             dow = self._validate_dow_hl2_lh2_structure("CALL", touch2_offset=0, virtual_bar=forming_snapshot)
                             if dow.is_valid:
+                                n1_fp = self.compute_n1_footprint(prior_bar, atr)
+                                n1_ok, n1_reason = self.check_n1_wyckoff_gate("UP", n1_fp)
+                                if not n1_ok:
+                                    return False, f"mode_b_p1_{n1_reason}", {}
                                 ok_struct, _, _ = self._check_structural_obstacle("CALL", spot)
                                 if ok_struct:
-                                    pending = [{"type": "mode_b_lockout", "key": "P1_EMA20_UP", "bar_idx": bar_idx}]
-                                    n1_fp = self.compute_n1_footprint(prior_bar, atr)
+                                    pending = [{"type": "mode_b_lockout", "key": "P1_EMA20_UP", "bar_idx": bar_idx, "direction": direction}]
                                     if commit:
                                         self._mode_b_last_trigger_bar_idx["P1_EMA20_UP"] = bar_idx
+                                        self._mode_b_last_trigger_bar_idx[f"DIR_{direction.upper()}"] = bar_idx
                                         logger.info(f"[PriceActionEngine] [MODE_B_P1] 20 EMA CALL In-Flight Reversal Breakout at spot={spot:.2f} >= prior_high={prior_bar.high:.2f} (T+{sec_in_min}s) | N1Dry={n1_fp.get('n1_vol_dryup')}")
                                     lowest_low = min(prior_bar.low, curr_bar.low)
                                     sl_price = round(lowest_low - 0.10 * atr, 2)
                                     return True, "20_ema_rejection", {
                                         "pillar": 1,
+                                        "direction": direction,
                                         "pa_setup_name": "20_ema_rejection",
                                         "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
                                         "boundary": "20_EMA_BAND",
@@ -2260,17 +2335,22 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                             )
                             dow = self._validate_dow_hl2_lh2_structure("PUT", touch2_offset=0, virtual_bar=forming_snapshot_dn)
                             if dow.is_valid:
+                                n1_fp = self.compute_n1_footprint(prior_bar, atr)
+                                n1_ok, n1_reason = self.check_n1_wyckoff_gate("DOWN", n1_fp)
+                                if not n1_ok:
+                                    return False, f"mode_b_p1_{n1_reason}", {}
                                 ok_struct, _, _ = self._check_structural_obstacle("PUT", spot)
                                 if ok_struct:
-                                    pending = [{"type": "mode_b_lockout", "key": "P1_EMA20_DOWN", "bar_idx": bar_idx}]
-                                    n1_fp = self.compute_n1_footprint(prior_bar, atr)
+                                    pending = [{"type": "mode_b_lockout", "key": "P1_EMA20_DOWN", "bar_idx": bar_idx, "direction": direction}]
                                     if commit:
                                         self._mode_b_last_trigger_bar_idx["P1_EMA20_DOWN"] = bar_idx
+                                        self._mode_b_last_trigger_bar_idx[f"DIR_{direction.upper()}"] = bar_idx
                                         logger.info(f"[PriceActionEngine] [MODE_B_P1] 20 EMA PUT In-Flight Reversal Breakdown at spot={spot:.2f} <= prior_low={prior_bar.low:.2f} (T+{sec_in_min}s) | N1Dry={n1_fp.get('n1_vol_dryup')}")
                                     highest_high = max(prior_bar.high, curr_bar.high)
                                     sl_price = round(highest_high + 0.10 * atr, 2)
                                     return True, "20_ema_rejection", {
                                         "pillar": 1,
+                                        "direction": direction,
                                         "pa_setup_name": "20_ema_rejection",
                                         "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
                                         "boundary": "20_EMA_BAND",
@@ -2335,20 +2415,28 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                     if getattr(self, "enforce_live_sweep_gate", False) and verdict in (SWEEP_VETO_DRY_NO_STOPS, SWEEP_VETO_UNABSORBED_PANIC):
                                         return False, f"mode_b_sweep_gate_{reason}", {}
 
-                                # ─── User-Locked Entry Gates (2026-11-05): Same-Candle Sweep-Flow Confirm + ≥40% Live Wick ───
-                                _bar_c_start = curr_bar.ts_start if curr_bar.ts_start > 0 else (now_sec - float(sec_in_min))
+                                # ─── User-Locked Entry Gates (2026-11-05): Same/Prior-Candle Sweep-Flow Confirm + ≥40% Live Wick ───
+                                _bar_c_start = float(getattr(curr_bar, "ts_start", 0.0) or 0.0)
+                                if _bar_c_start <= 0.0:
+                                    _bar_c_start = now_sec - float(sec_in_min)
+                                _prior_b_start = float(getattr(prior_bar, "ts_start", _bar_c_start) or _bar_c_start) if prior_bar is not None else _bar_c_start
                                 _det_g = getattr(self, "sweep_detector", None)
                                 if sweep_shadow_info is not None and _det_g is not None:
                                     _breach_ts = float(_det_g.get_breach_start_ts(swept_low))
-                                    _same_candle = bool(_breach_ts > 0.0 and _breach_ts >= _bar_c_start)
-                                    sweep_shadow_info["same_candle_sweep"] = _same_candle
+                                    fresh_window_start = min(_prior_b_start, _bar_c_start)
+                                    same_or_prior_candle_sweep = bool(
+                                        _breach_ts > 0.0
+                                        and _breach_ts >= fresh_window_start
+                                        and (now_sec - _breach_ts) <= 90.0
+                                    )
+                                    sweep_shadow_info["same_candle_sweep"] = same_or_prior_candle_sweep
                                     sweep_shadow_info["breach_start_ts"] = round(_breach_ts, 2)
                                     _verdict_ok = int(sweep_shadow_info.get("verdict", 0)) == SWEEP_CONFIRMED_STOP_HUNT
-                                    if not (_verdict_ok and _same_candle):
+                                    if not (_verdict_ok and same_or_prior_candle_sweep):
                                         self._log_p2_gate_once("CALL", bar_idx, (
-                                            f"[P2 GATE] Mode B CALL blocked | same-candle sweep-order-flow confirmation missing | "
+                                            f"[P2 GATE] Mode B CALL blocked | same-or-prior-candle sweep-order-flow confirmation missing | "
                                             f"verdict={int(sweep_shadow_info.get('verdict', 0))} | breach_ts={_breach_ts:.2f} | "
-                                            f"candle_start={_bar_c_start:.2f} | lvl={swept_low:.2f}"
+                                            f"fresh_start={fresh_window_start:.2f} | lvl={swept_low:.2f}"
                                         ))
                                         return False, "mode_b_p2_sweep_same_candle_gate", {}
                                 _wick_ok, _wick_m = _p2_mode_b_live_wick_verdict("UP", curr_bar.open, curr_bar.high, curr_bar.low, spot, atr)
@@ -2360,15 +2448,17 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                     ))
                                     return False, "mode_b_p2_wick_gate", {}
 
-                                pending = [{"type": "mode_b_lockout", "key": "P2_SWEEP_UP", "bar_idx": bar_idx}]
+                                pending = [{"type": "mode_b_lockout", "key": "P2_SWEEP_UP", "bar_idx": bar_idx, "direction": direction}]
                                 n1_fp = self.compute_n1_footprint(prior_bar, atr)
                                 if commit:
                                     self._mode_b_last_trigger_bar_idx["P2_SWEEP_UP"] = bar_idx
+                                    self._mode_b_last_trigger_bar_idx[f"DIR_{direction.upper()}"] = bar_idx
                                     logger.info(f"[PriceActionEngine] [MODE_B_P2] Micro-Sweep CALL In-Flight Reversal Breakout at spot={spot:.2f} >= prior_high={prior_bar.high:.2f} (T+{sec_in_min}s, sr_lvl={swept_low:.2f}, role={getattr(sr_lvl_up, 'level_role', 'UNKNOWN')}) | N1Dry={n1_fp.get('n1_vol_dryup')}")
                                 lowest_low = min(prior_bar.low, curr_bar.low)
                                 sl_price = round(lowest_low - 0.10 * atr, 2)
                                 return True, "micro_sweep_reclaim", {
                                     "pillar": 2,
+                                    "direction": direction,
                                     "pa_setup_name": "micro_sweep_reclaim",
                                     "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
                                     "boundary": "MICRO_SWEEP_RECLAIM",
@@ -2419,20 +2509,28 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                     if getattr(self, "enforce_live_sweep_gate", False) and verdict in (SWEEP_VETO_DRY_NO_STOPS, SWEEP_VETO_UNABSORBED_PANIC):
                                         return False, f"mode_b_sweep_gate_{reason}", {}
 
-                                # ─── User-Locked Entry Gates (2026-11-05): Same-Candle Sweep-Flow Confirm + ≥40% Live Wick ───
-                                _bar_p_start = curr_bar.ts_start if curr_bar.ts_start > 0 else (now_sec - float(sec_in_min))
+                                # ─── User-Locked Entry Gates (2026-11-05): Same/Prior-Candle Sweep-Flow Confirm + ≥40% Live Wick ───
+                                _bar_p_start = float(getattr(curr_bar, "ts_start", 0.0) or 0.0)
+                                if _bar_p_start <= 0.0:
+                                    _bar_p_start = now_sec - float(sec_in_min)
+                                _prior_b_start = float(getattr(prior_bar, "ts_start", _bar_p_start) or _bar_p_start) if prior_bar is not None else _bar_p_start
                                 _det_g = getattr(self, "sweep_detector", None)
                                 if sweep_shadow_info is not None and _det_g is not None:
                                     _breach_ts = float(_det_g.get_breach_start_ts(swept_high))
-                                    _same_candle = bool(_breach_ts > 0.0 and _breach_ts >= _bar_p_start)
-                                    sweep_shadow_info["same_candle_sweep"] = _same_candle
+                                    fresh_window_start = min(_prior_b_start, _bar_p_start)
+                                    same_or_prior_candle_sweep = bool(
+                                        _breach_ts > 0.0
+                                        and _breach_ts >= fresh_window_start
+                                        and (now_sec - _breach_ts) <= 90.0
+                                    )
+                                    sweep_shadow_info["same_candle_sweep"] = same_or_prior_candle_sweep
                                     sweep_shadow_info["breach_start_ts"] = round(_breach_ts, 2)
                                     _verdict_ok = int(sweep_shadow_info.get("verdict", 0)) == SWEEP_CONFIRMED_STOP_HUNT
-                                    if not (_verdict_ok and _same_candle):
+                                    if not (_verdict_ok and same_or_prior_candle_sweep):
                                         self._log_p2_gate_once("PUT", bar_idx, (
-                                            f"[P2 GATE] Mode B PUT blocked | same-candle sweep-order-flow confirmation missing | "
+                                            f"[P2 GATE] Mode B PUT blocked | same-or-prior-candle sweep-order-flow confirmation missing | "
                                             f"verdict={int(sweep_shadow_info.get('verdict', 0))} | breach_ts={_breach_ts:.2f} | "
-                                            f"candle_start={_bar_p_start:.2f} | lvl={swept_high:.2f}"
+                                            f"fresh_start={fresh_window_start:.2f} | lvl={swept_high:.2f}"
                                         ))
                                         return False, "mode_b_p2_sweep_same_candle_gate", {}
                                 _wick_ok, _wick_m = _p2_mode_b_live_wick_verdict("DOWN", curr_bar.open, curr_bar.high, curr_bar.low, spot, atr)
@@ -2444,15 +2542,17 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                                     ))
                                     return False, "mode_b_p2_wick_gate", {}
 
-                                pending = [{"type": "mode_b_lockout", "key": "P2_SWEEP_DOWN", "bar_idx": bar_idx}]
+                                pending = [{"type": "mode_b_lockout", "key": "P2_SWEEP_DOWN", "bar_idx": bar_idx, "direction": direction}]
                                 n1_fp = self.compute_n1_footprint(prior_bar, atr)
                                 if commit:
                                     self._mode_b_last_trigger_bar_idx["P2_SWEEP_DOWN"] = bar_idx
+                                    self._mode_b_last_trigger_bar_idx[f"DIR_{direction.upper()}"] = bar_idx
                                     logger.info(f"[PriceActionEngine] [MODE_B_P2] Micro-Sweep PUT In-Flight Reversal Breakdown at spot={spot:.2f} <= prior_low={prior_bar.low:.2f} (T+{sec_in_min}s, sr_lvl={swept_high:.2f}, role={getattr(sr_lvl_dn, 'level_role', 'UNKNOWN')}) | N1Dry={n1_fp.get('n1_vol_dryup')}")
                                 highest_high = max(prior_bar.high, curr_bar.high)
                                 sl_price = round(highest_high + 0.10 * atr, 2)
                                 return True, "micro_sweep_reclaim", {
                                     "pillar": 2,
+                                    "direction": direction,
                                     "pa_setup_name": "micro_sweep_reclaim",
                                     "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
                                     "boundary": "MICRO_SWEEP_RECLAIM",
@@ -2502,6 +2602,18 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         """
         if not details or not isinstance(details, dict):
             return
+        b_idx = details.get("entry_bar_bucket", self._total_bars_seen)
+        dir_str = str(details.get("direction", "")).upper()
+        if dir_str:
+            self._last_committed_bar_idx[dir_str] = self._total_bars_seen
+            if dir_str in ("UP", "CALL"):
+                self._last_committed_bar_idx["UP"] = self._total_bars_seen
+                self._last_committed_bar_idx["CALL"] = self._total_bars_seen
+            elif dir_str in ("DOWN", "PUT"):
+                self._last_committed_bar_idx["DOWN"] = self._total_bars_seen
+                self._last_committed_bar_idx["PUT"] = self._total_bars_seen
+        self._last_committed_bar_idx["ANY"] = self._total_bars_seen
+
         actions = details.get("_pending_actions", [])
         for act in actions:
             act_type = act.get("type")

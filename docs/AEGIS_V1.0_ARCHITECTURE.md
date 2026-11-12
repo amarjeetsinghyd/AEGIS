@@ -15,7 +15,7 @@
    - AEGIS operates strictly on a **Macro Price Action Primary Trigger** across 5 canonical pillars governed by **Priority Mode B In-Flight Breakthrough**:
      - **Priority Mode B (In-Flight Breakthrough Surge)**: Mid-bar entry evaluated from **T:02s onwards (no upper cap)** when forming candle pierces pre-mapped boundary (P3 Squeeze Box, P4 Dynamic S/R Registry, P1 20 EMA Reversal Pierce, P2 Micro-Sweep Reclaim Pierce, P5 Trapped Writer VWAP Breach) with single-shot clean execution entering ahead of retail, filling resting +4.0% Maker TP before or as candle closes.
      - **Pillar 1 (`20_ema_rejection`)**: Classical Dow Theory 20 EMA Retracement Engine ($HH_1 \to HL_1 \to HH_2 \to HL_2$). Rejection Approach Ladder (sharp 2-bar pullback into 20 EMA), Candle N-1 Smart Wyckoff Gate, and Mode B in-flight reversal pierce.
-     - **Pillar 2 (`micro_sweep_reclaim`)**: Liquidity Sweep & Reclaim across Dynamic S/R Registry & Day Extremes (PDH/PDL). Stop-run detection ($\ge 2.2\times$ burst ratio), Same-Candle Sweep-Flow confirmation, and $\ge 40\%$ live wick requirement.
+     - **Pillar 2 (`micro_sweep_reclaim`)**: Liquidity Sweep & Reclaim across Dynamic S/R Registry & Day Extremes (PDH/PDL). Stop-run detection ($\ge 2.2\times$ burst ratio), Same-or-Prior-Candle Sweep-Flow confirmation, and $\ge 40\%$ live wick requirement.
      - **Pillar 3 (`volatility_squeeze_breakout`)**: 5-7 bar box compression ($\le 1.15\times \text{ATR}_{1m}$, drift $\le 50\%$, anti-staircase/waterfall, median oscillation $\ge 50\%$), anti-climax cap ($\le 1.35\times \text{ATR}_{1m}$), and expansion breakout.
      - **Pillar 4 (`sr_breakout` / `topological_prominence_breakout`)**: Outermost Roof/Floor Dynamic S/R Registry Breakout ($Prominence \ge 1.25$, age $\ge 3$ bars / $180\text{s}$), Strict 2-Candle Approach Ladder ($N-1$ vs $N-2$), 5m trend alignment, and Day Extreme Runway Shield.
      - **Pillar 5 (`gamma_trap_squeeze`)**: Trapped Option Writer Short-Squeeze Engine. Decoupled Corridors: CALL breaks above `vwap_call_sell` (Call writers trapped $\to$ short covering); PUT breaks below `vwap_put_sell` (Put writers trapped $\to$ liquidation). 3-bar debounce and 3-candle Dow Thrust progression.
@@ -137,7 +137,7 @@ flowchart TD
 | `AEGIS/core/price_action_engine.py` | **2,749** | **Primary Macro Trigger**: 1m/5m/15m OHLC bar aggregation, 5 active pillars (P1 20 EMA, P2 Micro-Sweep Reclaim, P3 Vol Squeeze, P4 S/R Breakout, P5 Gamma Trap Trapped Writer Squeeze), and Priority Mode B In-Flight Breakthrough (`check_mode_b_breakthrough`). |
 | `AEGIS/core/aegis_pipeline_orchestrator.py` | **1,926** | **Central Pipeline Brain**: Master L2 tick router, 6-gate synchronization, 3-strike budget cluster pre-staging, and signal queue dispatch. |
 | `AEGIS/core/option_order_flow.py` | **1,300** | **Option Microstructure & Conviction Gatekeeper**: ATM $\pm 25$ strikes tape reading, OFI delta flow, Absolute Pain Zone VWAP envelope, and continuous 0–100 dual-profile conviction scoring (`CompositeConvictionEngine`, 40-35-25 model, $\ge 80.0$). |
-| `AEGIS/core/structural_registry.py` | **982** | **Dynamic S/R Level Registry**: Monotonic `seq_idx` tracking, 5m candle clustering, role classification (`OUTERMOST_ROOF`, `OUTERMOST_FLOOR`, `INTERIOR_CLUSTER`), and multi-touch prominence boost. |
+| `AEGIS/core/structural_registry.py` | **982** | **Dynamic S/R Level Registry**: Monotonic `seq_idx` tracking, 5m candle clustering, role classification (`OUTERMOST_ROOF`, `OUTERMOST_FLOOR`, `INTERIOR_CLUSTER`), and multi-touch prominence boost. Prominence is a PURE birth/touch attribute — dynamic post-excursion inflation is decommissioned (Task 4). |
 | `AEGIS/core/shadow_boundary_observer.py` | **897** | **Shadow Telemetry**: Zero-capital empirical paper-trader tracking Pain Zone and 200 EMA breakout/rejection analytics. |
 | `AEGIS/core/wyckoff_volume_engine.py` | **730** | **Wyckoff Volume & Delta Gate**: Effort vs Result, Volume Dry-Up Ratio (VDR), Absorption pin wick, Delta Harmony (Call Buy vs Put Buy), and Candle N-1 smart protection. |
 | `AEGIS/core/dow_macro_shields.py` | **583** | **Dow Theory & Macro Obstacle Shields**: 4-point HL2/LH2 sequence, 20 EMA High/Low bands, and scale-invariant Day Extreme Runway Shield (`min_runway_pts = max(1.25 * ATR_1m, 0.0008 * Spot)`). |
@@ -152,7 +152,7 @@ flowchart TD
 - **Dow Theory Sequence ($HH_1 \to HL_1 \to HH_2 \to HL_2$)**:
   - $HL_1$ (1st Touch): Strictly skipped (`first_touch_hl1_not_found_no_entry_on_hl1`).
   - $HH_2$ (BOS): Confirmed higher high ($HH_2 > HH_1 + \min(1.5, 0.15 \times \text{ATR})$).
-  - Orderly Retracement: 4 to 12 candles orderly cooling off ($Descent \ge 60\%$) down to 20 EMA Band with volume dry-up ($VDR \le 1.15$).
+  - Orderly Retracement: 3 to 10 candles orderly cooling off ($Descent \ge 60\%$) down to 20 EMA Band with volume dry-up ($VDR \le 1.15$).
   - $HL_2$ (2nd Touch): Retests 20 EMA High-Low Band with $HL_2 > HL_1$.
 - **Rejection Approach Ladder (Closed Bars $N-1$ & $N-2$)**:
   - **CALL**: $High_{N-1} < High_{N-2} \land Low_{N-1} < Low_{N-2}$ (sharp fall into 20 EMA).
@@ -164,13 +164,15 @@ flowchart TD
   - Inside-bar trap protection: If lower wick $< 45\%$, must clear prior pullback bar's open, body, and high.
 - **Wyckoff N-1 Smart Safe Gate (`check_n1_wyckoff_gate`)**:
   - Spiking volume ($\ge 1.25\times$ baseline) on $N-1$ MUST be stopping volume (absorption wick $\ge 40\%$); unabsorbed spikes trigger immediate dump veto.
-  - Opposing synthetic delta swamp veto ($Bears > 1.5\times Bulls$ on CALL when volume $\ge 500$).
+  - Opposing synthetic delta swamp veto ($Bears > 1.5\times Bulls$ on CALL) armed only once the N-1 footprint crosses the lot-scaled floor $\max(150, 5 \times \text{lot size})$ shares (NIFTY 65 → 325, SENSEX 20 → 150) — never a hardcoded 500.
 - **Priority Mode B In-Flight Reversal Pierce**:
   - Active mid-bar at $T:02s+$: Triggers immediately when forming bar bounces from 20 EMA Band and pierces prior pullback bar extreme ($Spot \ge High_{N-1}$ for CALL, $Spot \le Low_{N-1}$ for PUT).
+  - The same `check_n1_wyckoff_gate` (unabsorbed volume dump + delta swamp) is enforced inside Mode B, so an in-flight pierce can never bypass the N-1 absorption mandate.
 
 ### 2. Pillar 2: Liquidity Sweep & Reclaim (`micro_sweep_reclaim`)
 - **Dynamic S/R Registry & Day Extreme Mapping**:
   - Sweeps active registered `StructuralLevel` (Support/PDL for CALL, Resistance/PDH for PUT). Eliminates random 5-bar wiggles in no-man's land.
+  - **Qualification (Task 5, Nov 2026)**: only `OUTERMOST_FLOOR`, `OUTERMOST_ROOF`, `PDH`, `PDL`, and high-prominence `MAJOR_SWING` ($Prominence \ge 1.50$) qualify. `INTERIOR_CLUSTER` (interior chop) and `C_UNQUALIFIED` are strictly vetoed — raiding an interior cluster is not an institutional liquidity sweep.
 - **Scale-Invariant Minimum Sweep Depth**:
   $$\text{min\_sweep\_depth} = \max\left(1.5, \frac{\text{Spot}}{24000} \times 1.5, 0.08 \times \text{ATR}_{1m}\right)$$
 - **Lunch Chop Shield**:
@@ -179,7 +181,7 @@ flowchart TD
   - Candle sweeps below level but closes firmly back inside with lower wick $\ge 35\%$, upper wick $\le 15\%$, close edge $\ge 0.55$, and lower wick $\ge 1.25\times$ upper wick.
 - **Confirmed Sweep Gate & Live Wick Controls (User-Locked 2026-11-05)**:
   - `SweepStopRunDetector`: Tick burst ratio $\ge 2.20\times$ (panic retail stops hit) + Reclaim Flow $\ge 0.0$ (institutional absorption).
-  - **Same-Candle Sweep-Flow Confirm**: Breach start timestamp must be within the active forming candle (`same_candle_sweep == True`).
+  - **Same-or-Prior Candle Sweep-Flow Confirm**: Breach start timestamp must fall inside the active forming candle or the immediately prior candle ($N-1$) with $\le 90\text{s}$ freshness — a valid $N-1$ sweep that reclaims on $N$ is tradeable instead of being killed by a forming-candle-only window.
   - **$\ge 40\%$ Live Wick Gate**: Forming candle must have established at least $40\%$ live wick (`MODE_B_P2_WICK_MIN_PCT = 0.40`, range $\ge 0.30\times \text{ATR}$).
 
 ### 3. Pillar 3: Volatility Squeeze Breakout (`volatility_squeeze_breakout`)
@@ -195,7 +197,9 @@ flowchart TD
 - **Anti-Climax Cap**:
   - Breakout candle range must NOT exceed $1.35 \times \text{ATR}_{1m}$ to prevent entering at exhaustion peaks.
 - **Mode B In-Flight Breakthrough**:
-  - Candle opens inside/at box, spot pierces $High_{box}$ (CALL) or $Low_{box}$ (PUT) at $T:02s+$ with 3-bar debounce lockout.
+  - Candle opens inside/at box, spot pierces $High_{box}$ (CALL) or $Low_{box}$ (PUT) at $T:02s+$ with a direction-scoped same-candle lockout (`DIR_UP` / `DIR_DOWN`).
+  - **Opposing Sweep Veto**: an opposing-side sweep verdict at the box boundary blocks the breakout (`p3_sweep_veto_*`).
+  - **Option-Flow Harmony Veto**: once in-flight option flow $\ge 3 \times$ lot size, bull flow must dominate bear flow for CALL (mirror for PUT) and counter-side aggression must not exceed $2\times$ the aligned side, else `p3_option_flow_divergence_veto`.
 
 ### 4. Pillar 4: Dynamic S/R Breakout (`sr_breakout` / `topological_prominence_breakout`)
 - **Dynamic S/R Registry & Role Classification**:
@@ -289,8 +293,9 @@ Monitored at 2 Hz by `_manage_open_trade()`:
    - Evaluated strictly against cash index spot price:
      $$\text{CALL SL} = \text{Entry Candle Low} - (0.10 \times \text{ATR}_{1m})$$
      $$\text{PUT SL} = \text{Entry Candle High} + (0.10 \times \text{ATR}_{1m})$$
-6. **Tick-Cadence Option Premium Disaster Circuit Breaker**:
-   - Option bid drops $\le Entry - 8.0\%$ (-6.5% Friday) triggers instant emergency market exit.
+6. **Tick-Cadence Option Premium Disaster Circuit Breaker (DECOMMISSIONED, Nov 12 2026)**:
+   - Permanently OFF by default (`AEGIS_ENABLE_PREMIUM_DISASTER_FLOOR = "0"`). 0-DTE option bid wiggles/spreads caused fake shakeouts while spot was 100% safe.
+   - Retained only as an optional env-flag-gated emergency breaker (Entry - 8.0%, -6.5% Friday) for explicit operator override.
 7. **0DTE Stagnation Trap**:
    - After 12:30 PM on expiry days: If held $\ge 90\text{s}$, gain $< +0.5\%$, and 50 EMA is opposed $\implies$ instant stagnation exit.
 8. **Time Ceiling**:

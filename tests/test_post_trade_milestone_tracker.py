@@ -329,3 +329,51 @@ def test_post_sl_premature_choke_recovery(tmp_path):
     assert res.sl_recovered_to_tp is True
     assert res.time_to_tp_sec == 150.0
     assert res.post_sl_verdict == "PREMATURE_CHOKE_RECOVERED_TO_TP"
+
+
+def test_post_trade_tracker_thread_safety(tmp_path):
+    """Verify concurrent registration, exit notification and option ticks never cause RuntimeError."""
+    import threading
+    log_dir = str(tmp_path / "logs")
+    hist_file = str(tmp_path / "trade_history.json")
+    tracker = PostTradeMilestoneTracker(log_dir=log_dir, history_file=hist_file, tracking_window_sec=10.0)
+
+    stop_flag = threading.Event()
+    exceptions = []
+
+    def writer_thread():
+        try:
+            for i in range(200):
+                if stop_flag.is_set():
+                    break
+                tid = f"T_{i}"
+                sym = f"SYM_{i % 5}"
+                tracker.register_executed_trade(trade_id=tid, symbol=sym, direction="CALL", entry_price=100.0, entry_ts=time.time())
+                tracker.notify_trade_exit(sym, exit_price=102.0, exit_ts=time.time(), exit_reason="Target Hit")
+                time.sleep(0.001)
+        except Exception as exc:
+            exceptions.append(exc)
+
+    def tick_thread():
+        try:
+            for i in range(300):
+                if stop_flag.is_set():
+                    break
+                sym = f"SYM_{i % 5}"
+                tracker.on_option_tick(sym, 100.0 + (i % 10), time.time())
+                time.sleep(0.001)
+        except Exception as exc:
+            exceptions.append(exc)
+
+    threads = [
+        threading.Thread(target=writer_thread),
+        threading.Thread(target=tick_thread),
+        threading.Thread(target=tick_thread),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(exceptions) == 0, f"Thread safety violated: {exceptions}"
+

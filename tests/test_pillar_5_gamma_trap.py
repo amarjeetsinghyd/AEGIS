@@ -299,7 +299,11 @@ def test_wyckoff_n1_demand_ignition_and_squeeze_expansion():
 
 
 def test_pillar_1_live_rejection_approach_ladder():
-    """Validates that Pillar 1 (20 EMA Rejection) Mode B enforces the strict Rejection Approach Ladder in production."""
+    """Validates that Pillar 1 (20 EMA Rejection) Mode B enforces the strict Rejection Approach Ladder in production.
+
+    Note (Nov 2026): the Dow HL2/LH2 ladder now mandates a 3-to-10 bar orderly pullback, so this
+    series carries TWO completed red pullback bars plus the forming bar (pullback_bars = 3).
+    """
     pae = PriceActionEngine(strike_step=50.0)
     pae.current_atr_1m = 10.0
     pae.ema_20_1m = 22450.0
@@ -312,17 +316,19 @@ def test_pillar_1_live_rejection_approach_ladder():
         pae.bars_1m.append(b)
     pae._total_bars_seen = 12
 
-    # Scenario A: Clean sharp fall pullback into 20 EMA (N-1 High < N-2 High, Low < Low)
+    # Scenario A: Clean two-bar falling pullback into the 20 EMA band
     # N-2 (i=11): High 22466, Low 22459
-    # N-1: High 22465 (< 22466), Low 22449 (< 22459) -> Valid Pullback Ladder!
-    pullback_valid = _make_bar(22464.0, 22465.0, 22449.0, 22451.0, vol=25000.0, ts_start=now + 12 * 60)
+    # N-2 (new): High 22465, Low 22453 | N-1: High 22458 (< 22465), Low 22450 (< 22453) -> Valid Pullback Ladder!
+    pullback_n2 = _make_bar(22464.0, 22465.0, 22453.0, 22457.0, vol=18000.0, ts_start=now + 12 * 60)
+    pae.bars_1m.append(pullback_n2)
+    pullback_valid = _make_bar(22457.0, 22458.0, 22450.0, 22453.5, vol=17000.0, ts_start=now + 13 * 60)
     pae.bars_1m.append(pullback_valid)
-    pae._total_bars_seen = 13
+    pae._total_bars_seen = 14
 
-    # Forming bar pierces N-1 High 22465.0
-    pae._curr_1m_bar = _make_bar(22452.0, 22466.0, 22450.0, 22465.5, vol=15000.0, ts_start=now + 13 * 60)
-    pae.last_price = 22465.5
-    pae.last_ts = now + 13 * 60 + 15
+    # Forming bar pierces N-1 High 22458.0
+    pae._curr_1m_bar = _make_bar(22453.0, 22468.0, 22455.0, 22467.0, vol=15000.0, ts_start=now + 14 * 60)
+    pae.last_price = 22467.0
+    pae.last_ts = now + 14 * 60 + 15
 
     ok_good, reason_good, details_good = pae.check_mode_b_breakthrough("UP", current_time=pae.last_ts)
     assert ok_good is True
@@ -331,11 +337,11 @@ def test_pillar_1_live_rejection_approach_ladder():
 
     # Scenario B: Invalid pullback ladder (N-1 made a HIGHER high than N-2 -> rising away, not falling into EMA!)
     pae.bars_1m.pop()  # remove pullback_valid
-    pullback_bad = _make_bar(22464.0, 22470.0, 22450.0, 22468.0, vol=25000.0, ts_start=now + 12 * 60)  # High 22470 > N-2 High 22466
+    pullback_bad = _make_bar(22457.0, 22470.0, 22452.0, 22468.0, vol=17000.0, ts_start=now + 13 * 60)  # High 22470 > N-2 High 22465
     pae.bars_1m.append(pullback_bad)
 
     pae._mode_b_last_trigger_bar_idx.clear()
     ok_bad, _, _ = pae.check_mode_b_breakthrough("UP", current_time=pae.last_ts)
-    assert ok_bad is False  # Blocked because rejection approach ladder failed!
+    assert ok_bad is False  # Blocked because rejection approach ladder failed! 
 
 

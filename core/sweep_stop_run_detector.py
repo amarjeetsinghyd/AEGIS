@@ -91,6 +91,13 @@ class SweepStopRunDetector:
 
         # Default fallback baseline rate (vol/s) before warm-up
         self.default_baseline_rate: float = float(os.getenv("AEGIS_SWEEP_DEFAULT_BASELINE_RATE", "100.0"))
+        self.enforce_live_sweep_gate: bool = os.getenv("AEGIS_ENFORCE_LIVE_SWEEP_GATE", "1").strip().lower() in ("1", "true")
+
+    def _match_tolerance(self, ref_price: float) -> float:
+        """Unified scale-invariant matching tolerance (~1 bps of spot, floor 1.5 pts NIFTY / 3.0 pts SENSEX)."""
+        if ref_price <= 0.0:
+            return 1.5
+        return max(1.5, ref_price * 0.0001)
 
     def sync_levels(
         self,
@@ -115,11 +122,11 @@ class SweepStopRunDetector:
         # 2. Dynamic Option Writer VWAPs (Pain Zone Levels)
         if ps_vwap > 0.0:
             ps_rounded = round(float(ps_vwap), 2)
-            if not any(abs(p - ps_rounded) < 0.25 and t == 1 for p, t in current_active):
+            if not any(abs(p - ps_rounded) <= self._match_tolerance(ps_rounded) and t == 1 for p, t in current_active):
                 current_active.append((ps_rounded, 1))  # Support
         if cs_vwap > 0.0:
             cs_rounded = round(float(cs_vwap), 2)
-            if not any(abs(p - cs_rounded) < 0.25 and t == -1 for p, t in current_active):
+            if not any(abs(p - cs_rounded) <= self._match_tolerance(cs_rounded) and t == -1 for p, t in current_active):
                 current_active.append((cs_rounded, -1)) # Resistance
 
         # 3. Registered session levels
@@ -131,7 +138,7 @@ class SweepStopRunDetector:
                 continue
             ltype_str = str(getattr(lvl, "level_type", "")).upper()
             ltype = 1 if ltype_str in ("SUPPORT", "FLOOR") else -1
-            if not any(abs(p - lvl_price) < 0.25 and t == ltype for p, t in current_active):
+            if not any(abs(p - lvl_price) <= self._match_tolerance(lvl_price) and t == ltype for p, t in current_active):
                 current_active.append((lvl_price, ltype))
 
         # Re-map into slots
@@ -139,12 +146,22 @@ class SweepStopRunDetector:
         slots_to_keep = set()
 
         for lvl_price, ltype in current_active[:self.capacity]:
-            existing_slot = self._price_to_slot.get(lvl_price)
-            if existing_slot is not None and existing_slot < self.capacity:
-                new_price_to_slot[lvl_price] = existing_slot
-                self.sr_levels[existing_slot] = lvl_price
-                self.level_types[existing_slot] = ltype
-                slots_to_keep.add(existing_slot)
+            tol = self._match_tolerance(lvl_price)
+            best_slot = -1
+            min_dist = 999.0
+            for old_price, old_slot in self._price_to_slot.items():
+                if old_slot not in slots_to_keep and self.level_types[old_slot] == ltype:
+                    dist = abs(self.sr_levels[old_slot] - lvl_price)
+                    if dist <= tol and dist < min_dist:
+                        min_dist = dist
+                        best_slot = old_slot
+
+            if best_slot >= 0 and best_slot < self.capacity:
+                new_price_to_slot[lvl_price] = best_slot
+                self.sr_levels[best_slot] = lvl_price
+                self.level_types[best_slot] = ltype
+                # Preserves in-flight breach states without wiping memory mid-sweep
+                slots_to_keep.add(best_slot)
             else:
                 # Find first available slot
                 available_slot = -1
@@ -241,6 +258,16 @@ class SweepStopRunDetector:
                     # Directional Reclaim Flow from recent 5s window
                     reclaim_dir_flow = self.get_recent_reclaim_flow(ltype, ts)
 
+                    total_recent_opt_flow = (
+                        float(self.opt_ring_cb.sum() + self.opt_ring_pb.sum() + self.opt_ring_cs.sum() + self.opt_ring_ps.sum())
+                        if hasattr(self, "opt_ring_cb")
+                        else float(np.sum(self._sec_buckets))
+                    )
+                    if getattr(self, "enforce_live_sweep_gate", False) and total_recent_opt_flow > 0.0:
+                        reclaim_flow_ok = (reclaim_dir_flow > 0.0)
+                    else:
+                        reclaim_flow_ok = (reclaim_dir_flow >= 0.0)
+
                     # Compute Verdict
                     if self._total_option_ticks_seen < 5 or baseline_rate <= 0.0:
                         # Synthetic test environment or cold start: neutral verdict
@@ -248,7 +275,7 @@ class SweepStopRunDetector:
                     elif burst_ratio < BURST_RATIO_DRY:
                         # Level crossed on dry flow; no stops were hit
                         verdict = SWEEP_VETO_DRY_NO_STOPS
-                    elif burst_ratio >= BURST_RATIO_CONFIRMED and reclaim_dir_flow >= 0.0:
+                    elif burst_ratio >= BURST_RATIO_CONFIRMED and reclaim_flow_ok:
                         # Genuine stop hunt followed by institutional absorption & reclaim flip
                         verdict = SWEEP_CONFIRMED_STOP_HUNT
                     else:
@@ -398,12 +425,13 @@ class SweepStopRunDetector:
         now_sec = current_time if current_time > 0.0 else self._last_spot_ts
         swept_price = round(float(swept_level), 2)
 
-        # Find closest registered slot within 1.0 point tolerance
+        # Find closest registered slot within scale-invariant tolerance
+        tol = self._match_tolerance(swept_price)
         target_slot = -1
         min_dist = 999.0
         for price_val, slot in self._price_to_slot.items():
             dist = abs(price_val - swept_price)
-            if dist < min_dist and dist <= 1.0:
+            if dist < min_dist and dist <= tol:
                 min_dist = dist
                 target_slot = slot
 
@@ -423,7 +451,17 @@ class SweepStopRunDetector:
             ltype = self.level_types[target_slot]
             reclaim_flow = self.get_recent_reclaim_flow(ltype, now_sec)
 
-            if ratio >= BURST_RATIO_CONFIRMED and reclaim_flow >= 0.0:
+            total_recent_opt_flow = (
+                float(self.opt_ring_cb.sum() + self.opt_ring_pb.sum() + self.opt_ring_cs.sum() + self.opt_ring_ps.sum())
+                if hasattr(self, "opt_ring_cb")
+                else float(np.sum(self._sec_buckets))
+            )
+            if getattr(self, "enforce_live_sweep_gate", False) and total_recent_opt_flow > 0.0:
+                reclaim_flow_ok = (reclaim_flow > 0.0)
+            else:
+                reclaim_flow_ok = (reclaim_flow >= 0.0)
+
+            if ratio >= BURST_RATIO_CONFIRMED and reclaim_flow_ok:
                 verdict = SWEEP_CONFIRMED_STOP_HUNT
                 reason = "in_flight_confirmed_stop_hunt"
             elif ratio < BURST_RATIO_DRY:
@@ -491,13 +529,14 @@ class SweepStopRunDetector:
     def get_breach_start_ts(self, swept_level: float) -> float:
         """
         Read-only accessor: breach excursion start timestamp of a tracked level (0.0 when untracked).
-        Mirrors evaluate_sweep's 1.0-point tolerance lookup. Zero new state — reads the existing
+        Mirrors evaluate_sweep's tolerance lookup. Zero new state — reads the existing
         breach_start_ts slot array. Used by the Mode B P2 same-candle sweep-confirmation gate
         (2026-11-05 forensics mandate).
         """
         swept_price = round(float(swept_level), 2)
+        tol = self._match_tolerance(swept_price)
         for price_val, slot in self._price_to_slot.items():
-            if abs(price_val - swept_price) <= 1.0:
+            if abs(price_val - swept_price) <= tol:
                 return float(self.breach_start_ts[slot])
         return 0.0
 
@@ -509,9 +548,10 @@ class SweepStopRunDetector:
         if price <= 0.0:
             return -1
         r_price = round(float(price), 2)
-        # Check if already present within 0.5 points
+        tol = self._match_tolerance(r_price)
+        # Check if already present within unified matching tolerance
         for p, s in self._price_to_slot.items():
-            if abs(p - r_price) <= 0.5 and self.level_types[s] == level_type:
+            if abs(p - r_price) <= tol and self.level_types[s] == level_type:
                 return s
         # Find first available slot
         for s in range(self.capacity):
@@ -559,7 +599,7 @@ class SweepStopRunDetector:
         swept_price = round(float(level_price), 2)
 
         # 2. Check tracked slot state if registered
-        tol = max(2.5, swept_price * 0.0001)
+        tol = self._match_tolerance(swept_price)
         target_slot = -1
         min_dist = 999.0
         for price_val, slot in self._price_to_slot.items():
@@ -567,6 +607,12 @@ class SweepStopRunDetector:
             if dist < min_dist and dist <= tol:
                 min_dist = dist
                 target_slot = slot
+
+        total_recent_opt_flow = (
+            float(self.opt_ring_cb.sum() + self.opt_ring_pb.sum() + self.opt_ring_cs.sum() + self.opt_ring_ps.sum())
+            if hasattr(self, "opt_ring_cb")
+            else float(np.sum(self._sec_buckets))
+        )
 
         # Check in-flight breach state for tracked slot
         if target_slot >= 0:
@@ -577,8 +623,13 @@ class SweepStopRunDetector:
                 ltype = self.level_types[target_slot]
                 reclaim_flow = self.get_recent_reclaim_flow(ltype, now_sec)
 
+                if getattr(self, "enforce_live_sweep_gate", False) and total_recent_opt_flow > 0.0:
+                    reclaim_flow_ok = (reclaim_flow > 0.0)
+                else:
+                    reclaim_flow_ok = (reclaim_flow >= 0.0)
+
                 # Check exact Stop-Hunt & Absorption condition
-                if burst_ratio >= BURST_RATIO_CONFIRMED and reclaim_flow >= 0.0:
+                if burst_ratio >= BURST_RATIO_CONFIRMED and reclaim_flow_ok:
                     metrics = {
                         "level": swept_price,
                         "burst_ratio": round(burst_ratio, 2),
@@ -617,8 +668,13 @@ class SweepStopRunDetector:
         recent_burst_ratio = recent_rate / effective_baseline
         reclaim_flow = self.get_recent_reclaim_flow(level_type, now_sec)
 
-        # Stop-cascade burst ratio >= 2.2x AND directional absorption delta >= 0.0
-        if recent_burst_ratio >= BURST_RATIO_CONFIRMED and reclaim_flow >= 0.0:
+        if getattr(self, "enforce_live_sweep_gate", False) and total_recent_opt_flow > 0.0:
+            fallback_reclaim_flow_ok = (reclaim_flow > 0.0)
+        else:
+            fallback_reclaim_flow_ok = (reclaim_flow >= 0.0)
+
+        # Stop-cascade burst ratio >= 2.2x AND directional absorption delta
+        if recent_burst_ratio >= BURST_RATIO_CONFIRMED and fallback_reclaim_flow_ok:
             metrics = {
                 "level": swept_price,
                 "burst_ratio": round(recent_burst_ratio, 2),

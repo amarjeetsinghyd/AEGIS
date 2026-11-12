@@ -37,8 +37,14 @@ class OptionOrderFlowMixin:
         }
         self._opt_last_cum_vol: Dict[str, float] = {}
         self._opt_last_lp: Dict[str, float] = {}
+        self._opt_last_bp1: Dict[str, float] = {}
+        self._opt_last_sp1: Dict[str, float] = {}
         self._last_global_opt_tick_ts: float = 0.0
         self._opt_last_frac: Dict[str, float] = {}
+
+        self._opt_contract_cum_pv: Dict[str, float] = {}
+        self._opt_contract_cum_vol: Dict[str, float] = {}
+        self._opt_flow_ring_15s: deque = deque(maxlen=2048)
 
         # 4-Line Trapped-Buyer Pain Zone VWAP Accumulators
         self._cum_cb_pv: float = 0.0
@@ -87,6 +93,50 @@ class OptionOrderFlowMixin:
             "net_delta": bull - bear,
         }
 
+    def get_live_1m_option_flow(self) -> Dict[str, float]:
+        """
+        Returns live option order flow. During the first 15 seconds after 1m bar close
+        (sawtooth reset), blends the rolling 15-second window so Mode B has full flow visibility.
+        """
+        cur_flow = self.get_in_flight_opt_flow()
+        cur_tot = cur_flow.get("total_vol", 0.0)
+
+        if not getattr(self, "_opt_flow_ring_15s", None) or len(self._opt_flow_ring_15s) == 0:
+            return cur_flow
+
+        latest_ts = self._opt_flow_ring_15s[-1][0]
+        cutoff = latest_ts - 15.0
+        while self._opt_flow_ring_15s and self._opt_flow_ring_15s[0][0] < cutoff:
+            self._opt_flow_ring_15s.popleft()
+
+        r_cb = sum(x[1] for x in self._opt_flow_ring_15s)
+        r_cs = sum(x[2] for x in self._opt_flow_ring_15s)
+        r_pb = sum(x[3] for x in self._opt_flow_ring_15s)
+        r_ps = sum(x[4] for x in self._opt_flow_ring_15s)
+        ring_tot = r_cb + r_cs + r_pb + r_ps
+
+        if ring_tot > cur_tot:
+            bull = r_cb + r_ps
+            bear = r_pb + r_cs
+            return {
+                "call_buy_vol": r_cb,
+                "call_sell_vol": r_cs,
+                "put_buy_vol": r_pb,
+                "put_sell_vol": r_ps,
+                "bullish_vol": bull,
+                "bearish_vol": bear,
+                "total_vol": ring_tot,
+                "net_delta": bull - bear,
+            }
+        return cur_flow
+
+    def get_option_contract_vwap(self, sym: str) -> float:
+        """Returns the true intraday VWAP of a specific option contract."""
+        vol = getattr(self, "_opt_contract_cum_vol", {}).get(sym, 0.0)
+        if vol <= 0.0:
+            return 0.0
+        return self._opt_contract_cum_pv.get(sym, 0.0) / vol
+
     # ═══════════════════════════════════════════════════════════
     # 1. REAL-TIME TICK AGGREGATION & INDICATOR UPDATES
     # ═══════════════════════════════════════════════════════════
@@ -96,6 +146,8 @@ class OptionOrderFlowMixin:
         """Resets option flow accumulators and tracking state on session rollover."""
         self._opt_last_cum_vol.clear()
         self._opt_last_lp.clear()
+        self._opt_last_bp1.clear()
+        self._opt_last_sp1.clear()
         self._last_global_opt_tick_ts = 0.0
         self._opt_last_frac.clear()
         self._cum_cb_pv = 0.0
@@ -106,57 +158,53 @@ class OptionOrderFlowMixin:
         self._cum_pb_vol = 0.0
         self._cum_ps_pv = 0.0
         self._cum_ps_vol = 0.0
+        self._opt_contract_cum_pv.clear()
+        self._opt_contract_cum_vol.clear()
+        self._opt_flow_ring_15s.clear()
 
     def _classify_buy_fraction(self, sym: str, lp: float, bp1: float, sp1: float) -> Optional[float]:
-        """
-        Buyer-initiated fraction (0.0-1.0) using Touch-first classification
-        with Lee-Ready Tick Rule fallback. Returns None if unclassifiable.
-        Includes Post-Sweep Quote-Step detection to prevent book-stepping ask sweeps
-        from falsely classifying as sells when post-sweep bp1 advances to lp.
-        """
         valid_quote = bp1 > 0 and sp1 > 0 and sp1 > bp1
         prev_lp = self._opt_last_lp.get(sym)
+        prev_bp1 = self._opt_last_bp1.get(sym)
+        prev_sp1 = self._opt_last_sp1.get(sym)
 
         if valid_quote:
-            if lp >= sp1:
-                frac = 1.0                          # Lifted the ask — pure buy
-            elif prev_lp is not None and lp > prev_lp and lp >= bp1:
-                frac = 1.0                          # Post-sweep quote step up -> aggressive buyer sweep!
-            elif prev_lp is not None and lp < prev_lp and lp <= sp1:
-                frac = 0.0                          # Post-sweep quote step down -> aggressive seller sweep!
+            # 1. Book-stepping sweep detection (comparing trade price to pre-trade quotes)
+            if prev_sp1 is not None and prev_sp1 > 0 and lp >= prev_sp1 and (prev_bp1 is None or lp > prev_bp1):
+                frac = 1.0  # Aggressive buyer swept ask, advancing the book!
+            elif prev_bp1 is not None and prev_bp1 > 0 and lp <= prev_bp1 and (prev_sp1 is None or lp < prev_sp1):
+                frac = 0.0  # Aggressive seller swept bid, depressing the book!
+            # 2. Direct touch on current book
+            elif lp >= sp1:
+                frac = 1.0  # Lifted current ask -> pure buy
             elif lp <= bp1:
-                frac = 0.0                          # Hit the bid — pure sell
+                frac = 0.0  # Hit current bid -> pure sell
             else:
-                # Inside spread -> Tick Rule (Lee-Ready fallback)
+                # 3. Inside spread -> Lee-Ready Tick Rule fallback
                 if prev_lp is None or prev_lp <= 0:
-                    self._opt_last_lp[sym] = lp
-                    return None
-                if lp > prev_lp:
+                    frac = None
+                elif lp > prev_lp:
                     frac = 1.0
                 elif lp < prev_lp:
                     frac = 0.0
                 else:
-                    frac = self._opt_last_frac.get(sym)   # Zero-tick: carry forward
-                    if frac is None:
-                        self._opt_last_lp[sym] = lp
-                        return None
+                    frac = self._opt_last_frac.get(sym)
         else:
-            # Broken/locked quote -> Tick Rule (Lee-Ready fallback)
+            # Broken/locked quote -> Tick Rule
             if prev_lp is None or prev_lp <= 0:
-                self._opt_last_lp[sym] = lp
-                return None
-            if lp > prev_lp:
+                frac = None
+            elif lp > prev_lp:
                 frac = 1.0
             elif lp < prev_lp:
                 frac = 0.0
             else:
                 frac = self._opt_last_frac.get(sym)
-                if frac is None:
-                    self._opt_last_lp[sym] = lp
-                    return None
 
         self._opt_last_lp[sym] = lp
-        self._opt_last_frac[sym] = frac
+        self._opt_last_bp1[sym] = bp1
+        self._opt_last_sp1[sym] = sp1
+        if frac is not None:
+            self._opt_last_frac[sym] = frac
         return frac
 
     def get_pain_zone_vwaps(self, lot_size: Optional[float] = None, min_bars: Optional[int] = None) -> Dict[str, float]:
@@ -276,6 +324,7 @@ class OptionOrderFlowMixin:
         sp1: float,
         vol: float,
         atm_strike: Optional[float] = None,
+        now_ts: Optional[float] = None,
     ) -> None:
         """
         Accumulates option flow (Buyer vs Seller initiated) and updates
@@ -287,7 +336,8 @@ class OptionOrderFlowMixin:
             return
 
         import time as _time
-        now_ts = self.last_ts if self.last_ts > 0 else _time.time()
+        if now_ts is None or now_ts <= 0:
+            now_ts = self.last_ts if self.last_ts > 0 else _time.time()
 
         # Global WebSocket Reconnect / Freeze Guard:
         # If the entire options feed went silent for > 5.0s (any duration), clear cum vols
@@ -355,6 +405,16 @@ class OptionOrderFlowMixin:
                 self._cum_pb_vol += buy_vol
                 self._cum_ps_pv += self.last_price * sell_vol
                 self._cum_ps_vol += sell_vol
+
+        # Update True Option-Contract Intraday VWAP (lp * volume)
+        self._opt_contract_cum_pv[sym] = self._opt_contract_cum_pv.get(sym, 0.0) + (lp * delta_vol)
+        self._opt_contract_cum_vol[sym] = self._opt_contract_cum_vol.get(sym, 0.0) + float(delta_vol)
+
+        # Append to 15s Rolling Flow Ring
+        if side == 0:  # CALL
+            self._opt_flow_ring_15s.append((now_ts, buy_vol, sell_vol, 0.0, 0.0))
+        elif side == 1:  # PUT
+            self._opt_flow_ring_15s.append((now_ts, 0.0, 0.0, buy_vol, sell_vol))
 
         # 4. Composite Option-Weighted Spot VWAP Update
         if self.last_price > 0:

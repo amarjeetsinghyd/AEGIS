@@ -53,12 +53,20 @@ def test_backfill_appends_closed_bars_once_without_option_flow():
 def test_incomplete_backfill_does_not_append_partial_history_and_fails_closed():
     engine, start = _engine_with_last_closed_bar()
     current_ts = start + 6 * 60.0 + 15.0
+    # Simulate an active live forming bar & in-flight option flow
+    forming_bar = OHLCBar(ts_start=start + 6 * 60.0, ts_end=start + 7 * 60.0, open=24005.0, high=24006.0, low=24004.0, close=24005.0, tick_count=5)
+    engine._curr_1m_bar = forming_bar
+    engine._curr_1m_bucket = float(int(current_ts // 60) * 60)
+    engine._opt_flow_1m["call_buy_vol"] = 100.0
 
     added = engine.backfill_missing_bars([_rest_candle(start + 60.0)], current_ts)
 
     assert added == 0
     assert len(engine.bars_1m) == 1
     assert engine.backfill_pending is True
+    # Forming bar and option flow must NOT be wiped on incomplete backfill!
+    assert engine._curr_1m_bar is forming_bar
+    assert engine._opt_flow_1m["call_buy_vol"] == 100.0
 
 
 def test_queued_backfill_is_applied_on_next_spot_tick():

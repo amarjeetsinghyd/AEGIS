@@ -141,17 +141,11 @@ class StructuralRegistryMixin:
                         lvl.is_broken = True
                         lvl.ts_broken = cand_hist.ts_end
 
-        # 2. Dynamic Post-Excursion Prominence Update for active unbroken levels
-        for lvl in self.session_levels:
-            if not lvl.is_broken:
-                if lvl.level_type == "SUPPORT":
-                    excursion = (bar.high - lvl.price) / max(atr, 1e-4)
-                    if excursion > lvl.prominence:
-                        lvl.prominence = round(excursion, 2)
-                elif lvl.level_type == "RESISTANCE":
-                    excursion = (lvl.price - bar.low) / max(atr, 1e-4)
-                    if excursion > lvl.prominence:
-                        lvl.prominence = round(excursion, 2)
+        # 2. Dynamic Post-Excursion Prominence Mutation: PERMANENTLY DECOMMISSIONED (Task 4, Nov 2026).
+        # Rationale: Prominence is a PURE birth/touch structural attribute. Inflating it merely because
+        # spot trended away from the level made ancient levels look institutionally strong and let
+        # Pillar 4 breakout candidates self-promote during strong trends. Prominence now only grows
+        # through genuine multi-touch re-tests (+0.35 boost) and 5m/15m multi-timeframe confirmation.
 
         if len(self.bars_1m) < 3:
             return
@@ -526,7 +520,7 @@ class StructuralRegistryMixin:
           - OUTERMOST_ROOF: The highest active resistance boundary (Blue Sky ahead) -> A+ Breakout.
           - OUTERMOST_FLOOR: The lowest active support boundary -> A+ Breakdown.
           - MAJOR_SWING: Has at least min_runway (1.25x ATR) of clear space before the next level -> A Standard.
-          - INTERIOR_CLUSTER: Has an overhead ceiling or underlying floor within min_runway -> VETOED FOR BREAKOUT (B_SWEEP_ONLY).
+          - INTERIOR_CLUSTER: Has an overhead ceiling or underlying floor within min_runway -> VETOED FOR BREAKOUT AND SWEEPS (interior chop).
           - C_UNQUALIFIED: Prominence < 1.25 -> VETOED FOR BREAKOUT.
         """
         atr = self.current_atr_1m if self.current_atr_1m > 0 else (self.pdc * 0.0008 if self.pdc > 0 else 20.0)
@@ -890,11 +884,11 @@ class StructuralRegistryMixin:
         from self.session_levels or Day Extremes (PDH/PDL).
         
         Strict Institutional Qualification:
-          - CALL (Spring): Must be OUTERMOST_FLOOR, PDL, high-prominence MAJOR_SWING (>= 1.25 prom),
-            or registered INTERIOR_CLUSTER (B_SWEEP_ONLY).
-          - PUT (Upthrust): Must be OUTERMOST_ROOF, PDH, high-prominence MAJOR_SWING (>= 1.25 prom),
-            or registered INTERIOR_CLUSTER (B_SWEEP_ONLY).
-          - C_UNQUALIFIED is STRICTLY VETOED.
+          - CALL (Spring): Must be OUTERMOST_FLOOR, PDL, or high-prominence MAJOR_SWING (>= 1.50 prom).
+          - PUT (Upthrust): Must be OUTERMOST_ROOF, PDH, or high-prominence MAJOR_SWING (>= 1.50 prom).
+          - INTERIOR_CLUSTER (B_SWEEP_ONLY) and C_UNQUALIFIED are STRICTLY VETOED (Task 5, Nov 2026):
+            an interior cluster sits INSIDE the day range, so a "sweep" of it is ordinary chop, not a
+            liquidity raid on a real structural boundary.
         """
         is_up = direction.upper() in ("UP", "CALL")
         target_type = "SUPPORT" if is_up else "RESISTANCE"
@@ -904,9 +898,9 @@ class StructuralRegistryMixin:
             if lvl.level_type != target_type or lvl.is_broken:
                 continue
             role = getattr(lvl, "level_role", "NORMAL")
-            if role == "C_UNQUALIFIED" or getattr(lvl, "breakout_tier", "") == "C_UNQUALIFIED":
+            if role in ("C_UNQUALIFIED", "INTERIOR_CLUSTER") or getattr(lvl, "breakout_tier", "") == "C_UNQUALIFIED":
                 continue
-            if role == "MAJOR_SWING" and lvl.prominence < 1.25:
+            if role == "MAJOR_SWING" and lvl.prominence < 1.50:
                 continue
             if (self._total_bars_seen - lvl.seq_idx) < 2 and (getattr(bar, "ts_start", 0) - lvl.ts_created) < 120.0:
                 continue
@@ -956,8 +950,9 @@ class StructuralRegistryMixin:
     ) -> Optional[StructuralLevel]:
         """
         Maps an in-flight forming candle to an active registered Structural Level for Mode B Reversal Breakout.
-        Allows registered OUTERMOST_FLOOR, OUTERMOST_ROOF, PDL, PDH, high-prominence MAJOR_SWING,
-        and INTERIOR_CLUSTER (B_SWEEP_ONLY) levels.
+        Allows registered OUTERMOST_FLOOR, OUTERMOST_ROOF, PDL, PDH, and high-prominence MAJOR_SWING (>= 1.50).
+        INTERIOR_CLUSTER (B_SWEEP_ONLY) is STRICTLY VETOED (Task 5, Nov 2026) — interior chop raids are not
+        institutional liquidity sweeps, and they generated midday fake Turtle Soup entries.
         """
         is_up = direction.upper() in ("UP", "CALL")
         target_type = "SUPPORT" if is_up else "RESISTANCE"
@@ -967,9 +962,9 @@ class StructuralRegistryMixin:
             if lvl.level_type != target_type or lvl.is_broken:
                 continue
             role = getattr(lvl, "level_role", "NORMAL")
-            if role == "C_UNQUALIFIED" or getattr(lvl, "breakout_tier", "") == "C_UNQUALIFIED":
+            if role in ("C_UNQUALIFIED", "INTERIOR_CLUSTER") or getattr(lvl, "breakout_tier", "") == "C_UNQUALIFIED":
                 continue
-            if role == "MAJOR_SWING" and lvl.prominence < 1.25:
+            if role == "MAJOR_SWING" and lvl.prominence < 1.50:
                 continue
             if (self._total_bars_seen - lvl.seq_idx) < 2 and (getattr(curr_bar, "ts_start", 0) - lvl.ts_created) < 120.0:
                 continue

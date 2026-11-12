@@ -255,3 +255,88 @@ def test_dow_pullback_3_bars_allowed():
     trend_start = 5
     search_hh2_start = max(trend_start + 3, idx_t2 - 12)
     assert idx_t2 - 3 >= search_hh2_start
+
+
+def test_shoonya_adapter_volume_delta_and_depth_preservation():
+    """Verify Group 1 fixes: Shoonya last_vol tracking, zero-depth preservation & exchange_ts forwarding."""
+    from unittest.mock import MagicMock
+    from broker.shoonya_adapter import ShoonyaMarketDataProvider
+
+    mock_api = MagicMock()
+    mdp = ShoonyaMarketDataProvider(mock_api)
+
+    ticks_received = []
+    mdp.start_live_feed(lambda msg: ticks_received.append(msg))
+    subscribe_cb = mock_api.start_websocket.call_args[1]["subscribe_callback"]
+
+    # 1. First tick: ltq=0, v=1000 -> seeds _last_vol, ltq=0
+    subscribe_cb({"t": "tk", "e": "NSE", "tk": "26000", "lp": "24000.0", "v": "1000", "ltq": "0", "ft": "1700000001"})
+    assert len(ticks_received) == 1
+    assert ticks_received[-1]["volume_trade_for_the_day"] == 1000
+    assert ticks_received[-1].get("last_traded_quantity", 0) == 0
+    assert ticks_received[-1]["exchange_ts"] == 1700000001.0
+
+    # 2. Intermediate tick with ltq > 0: ltq=20, v=1020 -> updates _last_vol to 1020
+    subscribe_cb({"t": "tk", "e": "NSE", "tk": "26000", "lp": "24001.0", "v": "1020", "ltq": "20", "ft": "1700000002"})
+    assert ticks_received[-1]["last_traded_quantity"] == 20
+    assert mdp._last_vol["26000"] == 1020
+
+    # 3. Next tick with ltq=0, v=1050 -> must compute ltq = 1050 - 1020 = 30 (NOT 1050 - 1000 = 50!)
+    subscribe_cb({"t": "tk", "e": "NSE", "tk": "26000", "lp": "24002.0", "v": "1050", "ltq": "0", "ft": "1700000003"})
+    assert ticks_received[-1]["last_traded_quantity"] == 30
+    assert mdp._last_vol["26000"] == 1050
+
+    # 4. Out-of-order packet with smaller v=1040 -> must NOT corrupt _last_vol
+    subscribe_cb({"t": "tk", "e": "NSE", "tk": "26000", "lp": "24001.5", "v": "1040", "ltq": "0", "ft": "1700000002"})
+    assert mdp._last_vol["26000"] == 1050
+    assert ticks_received[-1].get("last_traded_quantity", 0) == 0
+
+    # 5. Depth packet with zero-valued levels (e.g. ask level clears to 0) -> MUST NOT be stripped!
+    subscribe_cb({
+        "t": "df", "e": "NFO", "tk": "45000", "lp": "120.0", "v": "5000", "ltq": "50",
+        "bp1": "119.5", "bq1": "100", "sp1": "0.0", "sq1": "0",
+        "bp2": "0.0", "bq2": "0",
+    })
+    last_tick = ticks_received[-1]
+    assert "sp1" in last_tick and last_tick["sp1"] == 0.0
+    assert "sq1" in last_tick and last_tick["sq1"] == 0
+    assert "bp2" in last_tick and last_tick["bp2"] == 0.0
+    assert "bq2" in last_tick and last_tick["bq2"] == 0
+
+
+def test_tick_compiler_monotonic_exchange_ts_guard_and_zero_depth():
+    """Verify TickCompiler drops out-of-order ticks and properly handles zero-depth wipes."""
+    from unittest.mock import MagicMock
+    from market.tick_compiler import TickCompiler
+
+    broker = MagicMock()
+    tc = TickCompiler(broker)
+    mock_engine = MagicMock()
+    tc.set_engine(mock_engine)
+    tc.set_symbol_map({"26000": "NIFTY"})
+
+    # 1. Tick at exchange_ts = 100.0 -> accepted
+    tc.on_message({"token": "26000", "last_traded_price": "24000.0", "exchange_ts": 100.0, "bp1": "23999.0", "sp1": "24001.0"})
+    assert mock_engine.on_tick_parsed.call_count == 1
+    assert tc._book_state["26000"]["last_exch_ts"] == 100.0
+    assert tc.market_depth["26000"]["bp1"] == 23999.0
+
+    # 2. Out-of-order tick at exchange_ts = 95.0 -> DROPPED (no dispatch, no book state change)
+    tc.on_message({"token": "26000", "last_traded_price": "23950.0", "exchange_ts": 95.0, "bp1": "23940.0", "sp1": "23960.0"})
+    assert mock_engine.on_tick_parsed.call_count == 1  # Still 1!
+    assert tc._book_state["26000"]["last_exch_ts"] == 100.0
+    assert tc._book_state["26000"]["lp"] == 24000.0
+
+    # 3. Newer tick at exchange_ts = 105.0 with zero bid -> accepted and depth updated to 0.0
+    tc.on_message({"token": "26000", "last_traded_price": "24002.0", "exchange_ts": 105.0, "bid": 0.0, "bp1": 0.0})
+    assert mock_engine.on_tick_parsed.call_count == 2
+    assert tc._book_state["26000"]["last_exch_ts"] == 105.0
+    assert tc.market_depth["26000"]["bp1"] == 0.0
+    assert tc._book_state["26000"]["bp"][0] == 0.0
+
+    # 4. reset_session clears _book_state, market_depth, and _last_exch_ts
+    tc.reset_session()
+    assert len(tc._book_state) == 0
+    assert len(tc.market_depth) == 0
+    assert len(tc._last_exch_ts) == 0
+

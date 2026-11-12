@@ -86,13 +86,13 @@ def test_budget_cluster_uses_otm_rank_and_waterfall_priority_for_both_sides():
     put_cluster = engine._get_budget_strike_cluster("DOWN")
     assert [(item["priority"], item["strike"]) for item in call_cluster] == [
         ("target", 24100.0),
-        ("minus_one", 24150.0),
         ("plus_one", 24050.0),
+        ("minus_one", 24150.0),
     ]
     assert [(item["priority"], item["strike"]) for item in put_cluster] == [
         ("target", 23900.0),
-        ("minus_one", 23850.0),
         ("plus_one", 23950.0),
+        ("minus_one", 23850.0),
     ]
 
     eligible = [

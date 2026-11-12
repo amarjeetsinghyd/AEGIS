@@ -376,7 +376,9 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
 
     def __init__(self, api: NorenApiPy):
         self._api = api
+        self._state_lock = threading.Lock()
         self._live_quotes = {}
+        self._last_vol = {}
         self._subscribed_tokens = set()
         self._subscribed_pairs = set()
         self._ws_started = False
@@ -480,19 +482,22 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                     ltq = int(float(message.get("ltq", 0) or 0))
                 except (ValueError, TypeError):
                     ltq = 0
-                if ltq == 0 and v_total > 0:
-                    if not hasattr(self, "_last_vol"):
-                        self._last_vol = {}
-                    prev_v = self._last_vol.get(str(token), 0)
-                    if prev_v > 0 and v_total > prev_v:
-                        ltq = v_total - prev_v
-                    elif prev_v == 0:
-                        # First observation: cannot infer incremental LTQ; seed only.
-                        ltq = 0
-                    self._last_vol[str(token)] = v_total
+                if v_total > 0:
+                    with self._state_lock:
+                        if not hasattr(self, "_last_vol"):
+                            self._last_vol = {}
+                        prev_v = self._last_vol.get(str(token), 0)
+                        if ltq == 0:
+                            if prev_v > 0 and v_total > prev_v:
+                                ltq = v_total - prev_v
+                            else:
+                                ltq = 0
+                        if prev_v == 0 or v_total >= prev_v:
+                            self._last_vol[str(token)] = v_total
 
                 if str(token) in self._constituent_tokens and ltq > 0:
-                    self._accumulated_synthetic_vol += ltq
+                    with self._state_lock:
+                        self._accumulated_synthetic_vol += ltq
 
                 if hasattr(self, "footprint_compiler_manager"):
                     self.footprint_compiler_manager.process_tick(
@@ -537,7 +542,24 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                     if f"sp{i}" in message: std_msg[f"sp{i}"] = float(message[f"sp{i}"])
                     if f"sq{i}" in message: std_msg[f"sq{i}"] = int(message[f"sq{i}"])
 
-                std_msg = {k: v for k, v in std_msg.items() if v != 0 or k in ["last_traded_price", "oi"]}
+                # Forward Exchange Timestamp
+                exch_ts_raw = message.get("ft") or message.get("t")
+                if exch_ts_raw is not None:
+                    try:
+                        exch_ts_val = float(exch_ts_raw)
+                        if exch_ts_val > 0:
+                            std_msg["exchange_ts"] = exch_ts_val
+                    except (ValueError, TypeError):
+                        pass
+
+                _PRESERVE_ZERO_KEYS = {
+                    "last_traded_price", "oi", "bid", "ask", "exchange_ts",
+                    "bp1", "bp2", "bp3", "bp4", "bp5",
+                    "bq1", "bq2", "bq3", "bq4", "bq5",
+                    "sp1", "sp2", "sp3", "sp4", "sp5",
+                    "sq1", "sq2", "sq3", "sq4", "sq5",
+                }
+                std_msg = {k: v for k, v in std_msg.items() if v != 0 or k in _PRESERVE_ZERO_KEYS}
                 on_tick_callback(std_msg)
                 for listener in list(getattr(self, "_tick_listeners", []) or []):
                     try:
@@ -553,11 +575,12 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
         self._ws_connected = False
 
         def open_callback():
-            self._ws_connected = True
-            # Cancel any pending close debounce since we're connected
-            if self._close_debounce_timer is not None:
-                self._close_debounce_timer.cancel()
-                self._close_debounce_timer = None
+            with self._state_lock:
+                self._ws_connected = True
+                # Cancel any pending close debounce since we're connected
+                if self._close_debounce_timer is not None:
+                    self._close_debounce_timer.cancel()
+                    self._close_debounce_timer = None
             # Auto re-subscribe all registered tokens on connect / reconnect
             if hasattr(self, "_subscribed_pairs") and self._subscribed_pairs:
                 by_exch = {}
@@ -592,8 +615,6 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
             # WS dropped (mid-session). Debounce to prevent storm from NorenApi's
             # internal tight reconnect loop (100ms sleep in __ws_run_forever).
             # Only fire close listeners after a quiet period.
-            self._ws_connected = False
-            
             def _fire_close_listeners():
                 logger.warning("Shoonya WebSocket CLOSED — notifying close listeners (reconnect is listener-owned).")
                 for cb in list(getattr(self, "_close_listeners", []) or []):
@@ -601,16 +622,19 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                         cb()
                     except Exception as exc:
                         logger.debug(f"close listener error: {exc}")
-                self._close_debounce_timer = None
-            
-            # Cancel any existing debounce timer
-            if self._close_debounce_timer is not None:
-                self._close_debounce_timer.cancel()
-            
-            # Fire after 2 seconds of no reconnection (debounce)
-            self._close_debounce_timer = threading.Timer(2.0, _fire_close_listeners)
-            self._close_debounce_timer.daemon = True
-            self._close_debounce_timer.start()
+                with self._state_lock:
+                    self._close_debounce_timer = None
+
+            with self._state_lock:
+                self._ws_connected = False
+                # Cancel any existing debounce timer
+                if self._close_debounce_timer is not None:
+                    self._close_debounce_timer.cancel()
+                
+                # Fire after 2 seconds of no reconnection (debounce)
+                self._close_debounce_timer = threading.Timer(2.0, _fire_close_listeners)
+                self._close_debounce_timer.daemon = True
+                self._close_debounce_timer.start()
 
         self._api.start_websocket(
             order_update_callback=event_handler_order_update,
@@ -623,12 +647,13 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
     def stop_websocket(self) -> None:
         """Cleanly close WebSocket and clear listeners to prevent post-market reconnects."""
         try:
-            self._ws_connected = False
-            self._ws_started = False
-            self._close_listeners = []
-            if hasattr(self, "_close_debounce_timer") and self._close_debounce_timer is not None:
-                self._close_debounce_timer.cancel()
-                self._close_debounce_timer = None
+            with self._state_lock:
+                self._ws_connected = False
+                self._ws_started = False
+                self._close_listeners = []
+                if hasattr(self, "_close_debounce_timer") and self._close_debounce_timer is not None:
+                    self._close_debounce_timer.cancel()
+                    self._close_debounce_timer = None
 
             # Force stop_event in NorenApi to break its internal __ws_run_forever loop
             api_stop_evt = getattr(self._api, "_NorenApi__stop_event", None)
@@ -643,8 +668,9 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
 
     def register_constituent_tokens(self, tokens: list):
         """Replace constituent set (do not merge) so NIFTY/SENSEX rotation cannot mix volumes."""
-        self._constituent_tokens = {str(tok) for tok in tokens if str(tok).strip()}
-        self._accumulated_synthetic_vol = 0
+        with self._state_lock:
+            self._constituent_tokens = {str(tok) for tok in tokens if str(tok).strip()}
+            self._accumulated_synthetic_vol = 0
         logger.info(
             f"Registered {len(self._constituent_tokens)} constituent tokens "
             f"for synthetic volume accumulator (accumulator reset)."
@@ -710,9 +736,10 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
         return float(pe_delta - ce_delta)
 
     def get_and_reset_synthetic_volume(self) -> int:
-        vol = self._accumulated_synthetic_vol
-        self._accumulated_synthetic_vol = 0
-        return vol
+        with self._state_lock:
+            vol = self._accumulated_synthetic_vol
+            self._accumulated_synthetic_vol = 0
+            return vol
 
     def get_current_option_net_delta_oi(self) -> tuple[float, float, float]:
         if not hasattr(self, "_option_ce_tokens"):
@@ -876,19 +903,6 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
         token = raw_token.split("|")[-1].strip() if "|" in raw_token else raw_token
         if not token:
             return
-        q_dict = self._live_quotes.setdefault(
-            token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0, "pc": 0.0}
-        )
-        if not isinstance(q_dict, dict):
-            q_dict = {
-                "ltp": float(q_dict) if isinstance(q_dict, (int, float)) else 0.0,
-                "bid": 0.0,
-                "ask": 0.0,
-                "oi": 0.0,
-                "volume": 0.0,
-                "pc": 0.0,
-            }
-            self._live_quotes[token] = q_dict
 
         def _f(*keys, default=None):
             for k in keys:
@@ -900,31 +914,49 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
             return default
 
         ltp = _f("last_traded_price", "lp")
-        if ltp is not None and ltp > 0:
-            q_dict["ltp"] = ltp
         bid = _f("bid", "bp1", "b")
-        if bid is not None:
-            q_dict["bid"] = bid
         ask = _f("ask", "sp1", "a")
-        if ask is not None:
-            q_dict["ask"] = ask
         oi = _f("oi", "poi", "oiv")
-        if oi is not None:
-            q_dict["oi"] = oi
         vol = _f("volume_trade_for_the_day", "v", "volume")
-        if vol is not None:
-            q_dict["volume"] = vol
         pc = _f("percent_change", "pc")
-        if pc is not None:
-            q_dict["pc"] = pc
+
+        with self._state_lock:
+            q_dict = self._live_quotes.setdefault(
+                token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0, "pc": 0.0}
+            )
+            if not isinstance(q_dict, dict):
+                q_dict = {
+                    "ltp": float(q_dict) if isinstance(q_dict, (int, float)) else 0.0,
+                    "bid": 0.0,
+                    "ask": 0.0,
+                    "oi": 0.0,
+                    "volume": 0.0,
+                    "pc": 0.0,
+                }
+                self._live_quotes[token] = q_dict
+
+            if ltp is not None and ltp > 0:
+                q_dict["ltp"] = ltp
+            if bid is not None:
+                q_dict["bid"] = bid
+            if ask is not None:
+                q_dict["ask"] = ask
+            if oi is not None:
+                q_dict["oi"] = oi
+            if vol is not None:
+                q_dict["volume"] = vol
+            if pc is not None:
+                q_dict["pc"] = pc
 
     def get_live_quote_fast(self, token: str) -> dict:
         """Zero-overhead in-memory RAM lookup from _live_quotes (< 0.001ms).
         Never triggers synchronous REST calls.
         """
-        return self._live_quotes.get(
-            str(token), {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0, "pc": 0.0}
-        )
+        with self._state_lock:
+            q = self._live_quotes.get(str(token))
+            if q is not None and isinstance(q, dict):
+                return dict(q)
+            return {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0, "pc": 0.0}
 
     def get_quote(self, exchange: str, token: str) -> dict:
         self._ensure_ws_started()

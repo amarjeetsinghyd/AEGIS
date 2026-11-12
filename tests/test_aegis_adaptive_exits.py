@@ -240,31 +240,46 @@ def test_realized_delta_calculation():
 
 def test_spot_invalidation_sl_prevents_trade1_noise_stopout():
     """
-    V4.0 (2026-09-23 update): Entry @ ₹19.30. The tick-cadence Premium Hard SL
-    is relaxed to -12.0% disaster floor. Shallow noise dips inside the floor
-    (e.g. 18.70 [-3.1%], 18.20 [-5.7%]) must still stay OPEN to breathe.
-    Catastrophic drops beyond -12.0% (e.g. 16.80 [-12.9%]) fire immediately.
+    V4.2 (Nov 12, 2026 mandate): The tick-cadence Option Premium Hard SL is PERMANENTLY
+    DECOMMISSIONED (AEGIS_ENABLE_PREMIUM_DISASTER_FLOOR defaults to "0"). AEGIS now exits
+    strictly on Universal Spot Invalidation (Entry Candle High/Low + normalized cushion).
+
+    - Premium noise dip (-3.1%): stays OPEN.
+    - Premium spread dip (-5.7%): stays OPEN.
+    - Catastrophic premium crash (-12.9%) with spot 100% intact: STILL OPEN (option bid wiggles
+      on 0-DTE must never shake out a trade whose underlying is safe).
+    - Only a genuine spot breach of the entry candle high (PUT invalidation) exits.
     """
     em, context, leg = create_test_manager(entry_price=19.30, spot_entry=23700.0, signal_type="PUT")
+    context.pillar = 2
+    context.pa_setup_name = "micro_sweep_reclaim"
+    context.candle_high = 23710.0
 
-    # Shallow dip inside the floor: spot intact, premium -3.1% -> stays OPEN
+    # Shallow dip: spot intact, premium -3.1% -> stays OPEN
     em.data_fetcher._spot = 23702.0
     em.broker.market_data_provider._quote = {"ltp": 18.70, "bp1": 18.70, "sp1": 18.85}
     em._manage_open_trade()
     assert len(em.exit_reasons) == 0, f"Premature exit occurred: {em.exit_reasons}"
     assert leg.status == "OPEN"
 
-    # Spread/noise dip at -5.7% (18.20): stays OPEN under 12% disaster floor
+    # Spread/noise dip at -5.7% (18.20): stays OPEN
     em.broker.market_data_provider._quote = {"ltp": 18.20, "bp1": 18.20, "sp1": 18.35}
     em._manage_open_trade()
     assert len(em.exit_reasons) == 0, f"Premature exit occurred: {em.exit_reasons}"
     assert leg.status == "OPEN"
 
-    # Deep crash through the 12% disaster floor: premium -12.95% (16.80) -> Premium Hard SL fires
+    # Catastrophic premium crash (-12.95%) with spot intact -> premium floor is decommissioned, stays OPEN
+    em.broker.market_data_provider._quote = {"ltp": 16.80, "bp1": 16.80, "sp1": 16.90}
+    em._manage_open_trade()
+    assert len(em.exit_reasons) == 0, f"Premium bid wiggle must not exit: {em.exit_reasons}"
+    assert leg.status == "OPEN"
+
+    # Pure spot invalidation: spot rallies through the entry candle high + cushion -> PUT exits
+    em.data_fetcher._spot = 23770.0
     em.broker.market_data_provider._quote = {"ltp": 16.80, "bp1": 16.80, "sp1": 16.90}
     em._manage_open_trade()
     assert len(em.exit_reasons) == 1
-    assert "Premium Hard SL" in em.exit_reasons[0]
+    assert "Candle High" in em.exit_reasons[0]
 
 
 def test_breakeven_guard_two_key_prevents_trade3_premature_cut():
@@ -885,19 +900,27 @@ def test_point2_0dte_stagnation_trap_exit():
     assert "0DTE_STAGNATION_TRAP_EXIT" in em.exit_reasons[0]
 
 
-def test_pillar3_12pct_disaster_sl_allows_small_noise():
-    """Verify that a -3.5% noise dip does NOT trigger SL, but >= -12% disaster drop does."""
+def test_pillar3_premium_disaster_floor_decommissioned_and_flag_gated(monkeypatch):
+    """
+    Production truth (Nov 12, 2026 mandate): the option premium disaster floor is DECOMMISSIONED
+    by default (AEGIS_ENABLE_PREMIUM_DISASTER_FLOOR = "0"), so a -12.7% premium bid drop with the
+    underlying 100% safe must NOT exit. The legacy floor is retained strictly as an optional,
+    env-flag-gated emergency breaker and must still fire correctly when explicitly enabled.
+    """
+    import execution.execution_manager as _em_mod
+
     em, ctx, leg = create_test_manager(entry_price=25.20, spot_entry=74884.0, signal_type="CALL")
     ctx.entry_time = datetime.now() - timedelta(seconds=20)
-    
-    # Tick 1: Dip by 88 paise to 24.32 (-3.49% to -3.57%) - normal spread noise
-    em.broker.market_data_provider._quote = {"ltp": 24.30, "bp1": 24.30, "sp1": 24.50, "sq1": 500, "bq1": 500}
+
+    # 1. Default (flag OFF): premium crash -12.7% with spot intact -> stays OPEN
+    assert _em_mod.ENABLE_PREMIUM_DISASTER_FLOOR is False, "Premium disaster floor must be OFF in production default"
+    em.broker.market_data_provider._quote = {"ltp": 22.00, "bp1": 22.00, "sp1": 22.10, "sq1": 500, "bq1": 500}
     em._manage_open_trade()
-    # Trade MUST remain OPEN under the -12% disaster floor
-    assert len(em.exit_reasons) == 0
+    assert len(em.exit_reasons) == 0, f"Decommissioned premium floor fired: {em.exit_reasons}"
     assert leg.status == "OPEN"
 
-    # Tick 2: Severe drop to 22.00 (-12.7%) -> MUST trigger disaster circuit breaker!
+    # 2. Flag explicitly enabled: the same -12.7% crash must trip the disaster breaker
+    monkeypatch.setattr(_em_mod, "ENABLE_PREMIUM_DISASTER_FLOOR", True)
     em.broker.market_data_provider._quote = {"ltp": 22.00, "bp1": 22.00, "sp1": 22.10, "sq1": 500, "bq1": 500}
     em._manage_open_trade()
     assert len(em.exit_reasons) == 1

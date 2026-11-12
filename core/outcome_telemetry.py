@@ -15,6 +15,7 @@ Architecture:
 from __future__ import annotations
 import json
 import os
+import threading
 import time
 import logging
 from typing import Dict, List, Optional, Tuple, Any
@@ -324,6 +325,7 @@ class PostTradeMilestoneTracker:
             else float(os.getenv("AEGIS_POST_TRADE_TRACK_SEC", "300.0"))
         )
         self.active_records: Dict[str, PostTradeMilestoneRecord] = {}
+        self._lock = threading.Lock()
 
     def register_executed_trade(
         self,
@@ -353,7 +355,8 @@ class PostTradeMilestoneTracker:
             mode=mode,
             tracking_window_sec=self.tracking_window_sec,
         )
-        self.active_records[trade_id] = record
+        with self._lock:
+            self.active_records[trade_id] = record
         logger.info(
             f"[PostTradeTracker] Registered executed trade {trade_id} ({symbol} {direction} @ ₹{entry_price:.2f}) "
             f"for {self.tracking_window_sec:.0f}s milestone & recovery tracking"
@@ -368,7 +371,9 @@ class PostTradeMilestoneTracker:
         exit_reason: str,
     ) -> None:
         """Notifies the tracker of a broker-side trade exit without interrupting the 5-minute observation window."""
-        for rec in self.active_records.values():
+        with self._lock:
+            records = list(self.active_records.values())
+        for rec in records:
             if rec.symbol == symbol and not rec.is_closed_in_broker:
                 rec.exit_price = exit_price
                 rec.exit_ts = exit_ts
@@ -391,11 +396,16 @@ class PostTradeMilestoneTracker:
     ) -> List[PostTradeMilestoneRecord]:
         """Updates active milestone records on every option tick. Returns records completed on this tick."""
         completed: List[PostTradeMilestoneRecord] = []
-        if current_opt_price <= 0 or not self.active_records:
+        if current_opt_price <= 0:
             return completed
 
+        with self._lock:
+            if not self.active_records:
+                return completed
+            items = list(self.active_records.items())
+
         to_remove = []
-        for trade_id, rec in self.active_records.items():
+        for trade_id, rec in items:
             if rec.symbol != symbol or rec.is_complete:
                 continue
 
@@ -526,8 +536,10 @@ class PostTradeMilestoneTracker:
                 completed.append(rec)
                 to_remove.append(trade_id)
 
-        for tid in to_remove:
-            del self.active_records[tid]
+        if to_remove:
+            with self._lock:
+                for tid in to_remove:
+                    self.active_records.pop(tid, None)
 
         return completed
 

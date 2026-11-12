@@ -1798,11 +1798,8 @@ def test_argon_sr_registry_4_bug_fixes():
 
 
 
-    # Dynamic post-excursion: price reached high of 74,300, so prominence of 74,100 must have grown!
-
-    # (74300 - 74100) / ATR(60.0) = 3.33x ATR!
-
-    assert s_100.prominence >= 3.0
+    # Dynamic post-excursion mutation removed (Task 4): prominence remains pure at birth/touch value (1.67)
+    assert s_100.prominence == 1.67
 
 
 

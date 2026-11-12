@@ -215,11 +215,13 @@ def test_live_enforce_gate_blocking_simulation():
     assert should_block is True
 
 
-def test_interior_cluster_unlocked_for_sweep_and_banned_for_breakout():
+def test_interior_cluster_banned_for_breakout_and_banned_for_sweeps():
     """
-    Verifies that an INTERIOR_CLUSTER level (tagged B_SWEEP_ONLY):
-      1. Is ACCEPTED for Pillar 2 (Micro-Sweep Reclaim via _find_inflight_swept_sr_level)
-      2. Is BANNED for Pillar 4 (Breakout via is_tradeable_breakout == False)
+    Verifies that an INTERIOR_CLUSTER level (tagged B_SWEEP_ONLY) is now STRICTLY excluded:
+      1. Is BANNED for Pillar 4 (Breakout via is_tradeable_breakout == False)
+      2. Is BANNED for Pillar 2 (Micro-Sweep Reclaim via _find_inflight_swept_sr_level) — Task 5 (Nov 2026).
+    Interior chop raids are not institutional liquidity sweeps; allowing them produced midday
+    fake Turtle Soup entries. Only OUTERMOST_FLOOR / OUTERMOST_ROOF / PDH / PDL / premium MAJOR_SWING qualify.
     """
     engine = PriceActionEngine(strike_step=50.0)
 
@@ -242,7 +244,7 @@ def test_interior_cluster_unlocked_for_sweep_and_banned_for_breakout():
     assert inner_lvl.is_tradeable_breakout is False
     assert inner_lvl.breakout_tier == "B_SWEEP_ONLY"
 
-    # 2. Check Pillar 2 In-flight Sweep eligibility -> must qualify and NOT be vetoed!
+    # 2. Check Pillar 2 In-flight Sweep eligibility -> must be STRICTLY VETOED!
     from core.price_action_engine import OHLCBar
     prior_bar = OHLCBar(ts_start=1000.0, ts_end=1060.0, open=24060.0, high=24065.0, low=24040.0, close=24055.0)
     curr_bar = OHLCBar(ts_start=1060.0, ts_end=1120.0, open=24055.0, high=24070.0, low=24048.0, close=24068.0)
@@ -255,9 +257,6 @@ def test_interior_cluster_unlocked_for_sweep_and_banned_for_breakout():
         min_sweep_depth=2.0,
         atr=15.0,
     )
-    assert swept is not None
-    assert swept.price == 24050.0
-    assert swept.level_role == "INTERIOR_CLUSTER"
-    assert swept.breakout_tier == "B_SWEEP_ONLY"
+    assert swept is None
 
 

@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.0.4] - 2026-11-13 (Group 2 Hardening: Unified Sweep Tolerance, Mode B P1 Wyckoff Parity, Same-or-Prior-Candle Sweep Window, P3 Flow Veto, Direction-Scoped Lockout, Prominence Purity & Interior-Cluster Sweep Ban)
+
+### Sweep / Stop-Run Microstructure
+- **Unified Scale-Invariant Level Matching** (`AEGIS/core/sweep_stop_run_detector.py`):
+  - Single `_match_tolerance()` helper (~1 bps of spot, floor 1.5 pts) now used by `register_level`, `sync_levels`, `evaluate_sweep`, `get_breach_start_ts`, and `evaluate_live_stop_burst_and_absorption`.
+  - `sync_levels` updates the tracked price IN-PLACE, so a Writer VWAP shifting by a few paise no longer retires the slot and wipes `in_breach`, `breach_start_ts`, `breach_extreme`, and `breach_panic_vol` mid-sweep.
+- **Zero Reclaim-Flow Loophole Closed**: while a live option stream is present (`total_recent_opt_flow > 0`), a confirmed stop hunt now requires strictly positive directional reclaim flow (`> 0.0`) instead of the previous `>= 0.0` free pass. Synthetic tests with zero option volume still bypass gracefully.
+
+### Macro Price Action Pillars
+- **Mode B Pillar 1 Wyckoff Parity** (`AEGIS/core/price_action_engine.py`):
+  - `check_n1_wyckoff_gate` is now invoked inside Mode B ahead of the in-flight pierce (`mode_b_p1_<reason>` on veto), so unabsorbed N-1 volume dumps can never bypass the absorption mandate.
+  - Opposing delta swamp floor is lot-scaled: `max(150, 5 x lot_size)` (NIFTY 65 → 325, SENSEX 20 → 150) instead of a hardcoded 500 shares.
+- **Pillar 2 Accepts a Prior-Candle (N-1) Sweep**: the sweep-confirmation window is now `min(prior_bar.ts_start, curr_bar.ts_start)` with a 90s freshness cap, so a genuine N-1 sweep reclaiming on N is tradeable instead of being rejected by a forming-candle-only gate.
+- **Pillar 3 Breakout Guards**: opposing-sweep veto at the box boundary plus an in-flight option-flow harmony veto (bull/bear dominance and counter-side `<= 2x` aggression cap) once flow reaches `3 x lot_size`.
+- **Direction-Scoped Same-Candle Lockout**: P1–P5 lockout payloads now carry `direction`, and `commit_setup` sets both the pillar key and `DIR_UP` / `DIR_DOWN`, converting the previously dead direction lockout into a real same-candle debounce.
+
+### Dynamic S/R Registry
+- **Prominence Purity (Task 4)**: the dynamic post-excursion prominence mutation loop is decommissioned. Prominence is a pure birth/touch attribute (+0.35 multi-touch boost, 5m/15m confirmation only), so strong trends can no longer inflate ancient levels.
+- **Interior Cluster Sweep Ban (Task 5)**: `_find_swept_sr_level` / `_find_inflight_swept_sr_level` now strictly exclude `INTERIOR_CLUSTER` levels and require `MAJOR_SWING` prominence `>= 1.50` (was 1.25). Only `OUTERMOST_FLOOR`, `OUTERMOST_ROOF`, `PDH`, `PDL`, and premium major swings are sweepable.
+
+### Execution & Test Hygiene
+- **Option Premium Disaster Floor Confirmed Decommissioned** (`AEGIS/execution/execution_manager.py`): default OFF (`AEGIS_ENABLE_PREMIUM_DISASTER_FLOOR = "0"`); exits remain strictly Universal Spot Invalidation. The two stale premium-floor tests were rewritten to assert the decommissioned default and the optional flag-gated path.
+- **Stale Dow Ladder Fixtures Rebuilt**: Pillar 1 Mode B fixtures now carry the mandated 3-bar orderly pullback, matching the hardened `3 <= pullback_bars <= 10` Dow rule.
+
 ## [1.0.3] - 2026-11-07 (5-Pillars Microstructure Upgrade: Strict Approach & Rejection Ladders, Delta Flip Velocity, Confirmed Sweep Activation, Shadow 20 EMA Removal & Zero-Entropy Mode A Purge)
 
 ### Macro Price Action & In-Flight Execution

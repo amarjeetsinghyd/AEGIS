@@ -97,6 +97,7 @@ class AegisL2Archiver:
         # so dynamic ATM±10 re-subscriptions are captured automatically once
         # `update_token_maps()` is called by aegis_main on ATM shifts.
         self.target_tokens = set(self.tok_to_sym.keys()) | UNDERLYING_TOKENS
+        self._map_lock = threading.Lock()
         logger.info(
             f"AegisL2Archiver: tracking {len(self.target_tokens)} tokens "
             f"({sum(1 for t in self.target_tokens if t in UNDERLYING_TOKENS)} index, "
@@ -145,12 +146,14 @@ class AegisL2Archiver:
         Called by aegis_main when the dynamic subscription set changes.
         Safe to call mid-session; does not flush or block.
         """
-        self.tok_to_sym = {str(k): str(v) for k, v in token_to_symbol.items()}
-        if token_map:
-            self.token_meta = {str(k): v for k, v in token_map.items()}
-        self.target_tokens = set(self.tok_to_sym.keys()) | UNDERLYING_TOKENS
+        with self._map_lock:
+            self.tok_to_sym = {str(k): str(v) for k, v in token_to_symbol.items()}
+            if token_map:
+                self.token_meta = {str(k): v for k, v in token_map.items()}
+            self.target_tokens = set(self.tok_to_sym.keys()) | UNDERLYING_TOKENS
+            count = len(self.target_tokens)
         logger.info(
-            f"AegisL2Archiver: token maps refreshed — now tracking {len(self.target_tokens)} tokens"
+            f"AegisL2Archiver: token maps refreshed — now tracking {count} tokens"
         )
 
     def _get_index_subfolder(self, date_str: str | None = None) -> str:
@@ -287,10 +290,15 @@ class AegisL2Archiver:
             return
         try:
             tok = str(msg.get("token") or msg.get("tk") or "")
-            if not tok or tok not in self.target_tokens:
+            if not tok:
                 return
 
-            sym = self.tok_to_sym.get(tok) or ("NIFTY" if tok == "26000" else "SENSEX" if tok == "1" else "NIFTY29SEP26F" if tok == "68407" else "SENSEX26SEPFUT" if tok == "844615" else "")
+            with self._map_lock:
+                if tok not in self.target_tokens:
+                    return
+                sym = self.tok_to_sym.get(tok) or ("NIFTY" if tok == "26000" else "SENSEX" if tok == "1" else "NIFTY29SEP26F" if tok == "68407" else "SENSEX26SEPFUT" if tok == "844615" else "")
+                meta = self.token_meta.get(tok, {})
+
             if not sym:
                 return
 
@@ -304,7 +312,6 @@ class AegisL2Archiver:
             ts_time = now.time()
 
             # Resolve kind + strike from token metadata
-            meta = self.token_meta.get(tok, {})
             is_underlying = tok in UNDERLYING_TOKENS
             is_futures = (isinstance(meta, dict) and meta.get("is_futures", False)) or (sym and ("FUT" in sym.upper()))
 

@@ -51,6 +51,7 @@ class TickCompiler:
         self._tick_pool = {}  # sym -> ParsedTick (reused)
         self.engine = None  # Set via set_engine()
         self._book_state = {}  # token -> dict holding stateful merged L1-L5 order book and last good lp/vol
+        self._last_exch_ts = {}
         # ─── MN-4: WebSocket reconnection bookkeeping ───
         # Reconnect is listener-owned (see ShoonyaMarketDataProvider.add_close_listener).
         # The backoff thread is OFF the hot path — on_message is never blocked.
@@ -106,11 +107,33 @@ class TickCompiler:
             new_vol = self._as_float(message, "volume_trade_for_the_day", "v", default=0.0)
             bp1 = self._as_float(message, "bid", "bp1", default=0.0)
             sp1 = self._as_float(message, "ask", "sp1", default=0.0)
+            exch_ts = self._as_float(message, "exchange_ts", "ft", default=0.0)
 
             now_sec = time.time()
 
-            # ── 1. IN-PLACE MARKET DEPTH UPDATE (ZERO PER-TICK DICT ALLOCATION) ──
+            tick = None
+            engine = self.engine
+
             with self.lock:
+                st = self._book_state.get(token)
+                if st is None:
+                    st = {
+                        "lp": 0.0, "vol": 0.0,
+                        "bp": [0.0] * 5, "bq": [0] * 5,
+                        "sp": [0.0] * 5, "sq": [0] * 5,
+                        "last_exch_ts": 0.0,
+                    }
+                    self._book_state[token] = st
+
+                # ── MONOTONIC EXCHANGE TIMESTAMP GUARD ──
+                if exch_ts > 0.0:
+                    last_ts = st.get("last_exch_ts", 0.0)
+                    if last_ts > 0.0 and exch_ts < last_ts:
+                        # Drop stale out-of-order tick immediately before mutating depth, book or engine
+                        return
+                    st["last_exch_ts"] = exch_ts
+
+                # ── 1. IN-PLACE MARKET DEPTH UPDATE (ZERO PER-TICK DICT ALLOCATION) ──
                 depth = self.market_depth.get(token)
                 if depth is None:
                     depth = {"lp": 0.0, "v": 0.0, "bp1": 0.0, "sp1": 0.0, "ts": now_sec}
@@ -120,79 +143,80 @@ class TickCompiler:
                     depth["lp"] = lp
                 if new_vol >= old_vol:
                     depth["v"] = new_vol
-                if bp1 > 0.0:
+                if "bid" in message or "bp1" in message:
                     depth["bp1"] = bp1
-                if sp1 > 0.0:
+                elif bp1 > 0.0:
+                    depth["bp1"] = bp1
+                if "ask" in message or "sp1" in message:
+                    depth["sp1"] = sp1
+                elif sp1 > 0.0:
                     depth["sp1"] = sp1
                 depth["ts"] = now_sec
 
-            # ── 2. STATEFUL MERGED BOOK UPDATE (ZERO STRING FORMATTING) ──
-            st = self._book_state.get(token)
-            if st is None:
-                st = {
-                    "lp": 0.0, "vol": 0.0,
-                    "bp": [0.0] * 5, "bq": [0] * 5,
-                    "sp": [0.0] * 5, "sq": [0] * 5,
-                }
-                self._book_state[token] = st
+                # ── 2. STATEFUL MERGED BOOK UPDATE (ZERO STRING FORMATTING) ──
+                if lp > 0.0:
+                    st["lp"] = lp
+                if new_vol > 0.0 and new_vol >= st["vol"]:
+                    st["vol"] = new_vol
 
-            if lp > 0.0:
-                st["lp"] = lp
-            if new_vol > 0.0 and new_vol >= st["vol"]:
-                st["vol"] = new_vol
+                # Iteration using precomputed tuple keys (Zero string allocations/formatting)
+                for idx, (k_bp, k_bq, k_sp, k_sq) in enumerate(_LEVEL_KEYS):
+                    raw_bp = message.get(k_bp)
+                    if raw_bp not in (None, ""):
+                        try:
+                            v_bp = float(raw_bp)
+                            if v_bp >= 0.0: st["bp"][idx] = v_bp
+                        except (ValueError, TypeError):
+                            pass
+                    raw_bq = message.get(k_bq)
+                    if raw_bq not in (None, ""):
+                        try:
+                            v_bq = int(float(raw_bq))
+                            if v_bq >= 0: st["bq"][idx] = v_bq
+                        except (ValueError, TypeError):
+                            pass
+                    raw_sp = message.get(k_sp)
+                    if raw_sp not in (None, ""):
+                        try:
+                            v_sp = float(raw_sp)
+                            if v_sp >= 0.0: st["sp"][idx] = v_sp
+                        except (ValueError, TypeError):
+                            pass
+                    raw_sq = message.get(k_sq)
+                    if raw_sq not in (None, ""):
+                        try:
+                            v_sq = int(float(raw_sq))
+                            if v_sq >= 0: st["sq"][idx] = v_sq
+                        except (ValueError, TypeError):
+                            pass
 
-            # Iteration using precomputed tuple keys (Zero string allocations/formatting)
-            for idx, (k_bp, k_bq, k_sp, k_sq) in enumerate(_LEVEL_KEYS):
-                raw_bp = message.get(k_bp)
-                if raw_bp not in (None, ""):
-                    try:
-                        v_bp = float(raw_bp)
-                        if v_bp >= 0.0: st["bp"][idx] = v_bp
-                    except (ValueError, TypeError):
-                        pass
-                raw_bq = message.get(k_bq)
-                if raw_bq not in (None, ""):
-                    try:
-                        v_bq = int(float(raw_bq))
-                        if v_bq >= 0: st["bq"][idx] = v_bq
-                    except (ValueError, TypeError):
-                        pass
-                raw_sp = message.get(k_sp)
-                if raw_sp not in (None, ""):
-                    try:
-                        v_sp = float(raw_sp)
-                        if v_sp >= 0.0: st["sp"][idx] = v_sp
-                    except (ValueError, TypeError):
-                        pass
-                raw_sq = message.get(k_sq)
-                if raw_sq not in (None, ""):
-                    try:
-                        v_sq = int(float(raw_sq))
-                        if v_sq >= 0: st["sq"][idx] = v_sq
-                    except (ValueError, TypeError):
-                        pass
+                if "bid" in message or "bp1" in message:
+                    st["bp"][0] = bp1
+                elif bp1 > 0.0:
+                    st["bp"][0] = bp1
+                if "ask" in message or "sp1" in message:
+                    st["sp"][0] = sp1
+                elif sp1 > 0.0:
+                    st["sp"][0] = sp1
 
-            if bp1 > 0.0:
-                st["bp"][0] = bp1
-            if sp1 > 0.0:
-                st["sp"][0] = sp1
+                # ── 3. UNIFIED ZERO-COPY DISPATCH (C-LEVEL SLICE ASSIGNMENT) ──
+                if engine and key in self._tick_pool:
+                    tick = self._tick_pool[key]
+                    tick.tok = token
+                    tick.lp = st["lp"] if st["lp"] > 0.0 else lp
+                    tick.vol = st["vol"] if st["vol"] > 0.0 else new_vol
+                    tick.ts = now_sec
+                    # C-level bulk memory slice copy (3x faster than 20 python indexings)
+                    tick.bp[:] = st["bp"]
+                    tick.bq[:] = st["bq"]
+                    tick.sp[:] = st["sp"]
+                    tick.sq[:] = st["sq"]
 
-            # ── 3. UNIFIED ZERO-COPY DISPATCH (C-LEVEL SLICE ASSIGNMENT) ──
-            if self.engine and key in self._tick_pool:
-                tick = self._tick_pool[key]
-                tick.tok = token
-                tick.lp = st["lp"] if st["lp"] > 0.0 else lp
-                tick.vol = st["vol"] if st["vol"] > 0.0 else new_vol
-                tick.ts = now_sec
-                # C-level bulk memory slice copy (3x faster than 20 python indexings)
-                tick.bp[:] = st["bp"]
-                tick.bq[:] = st["bq"]
-                tick.sp[:] = st["sp"]
-                tick.sq[:] = st["sq"]
-                self.engine.on_tick_parsed(tick)
+            if engine and tick is not None:
+                engine.on_tick_parsed(tick)
 
         except Exception as e:
-            logger.debug(f"on_message error: {e}")
+            logger.warning(f"on_message error: {e}")
 
     def get_market_depth_snapshot(self) -> dict:
         with self.lock:
@@ -340,6 +364,8 @@ class TickCompiler:
         with self.lock:
             self._book_state.clear()
             self.market_depth.clear()
+            if hasattr(self, "_last_exch_ts"):
+                self._last_exch_ts.clear()
             self._stats_window_start = time.time()
         logger.info("[TickCompiler] Session state reset completed (clean slate for day rollover).")
 

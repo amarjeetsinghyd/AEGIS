@@ -38,3 +38,36 @@ def test_tick_listener_queues_rows_and_worker_owns_flush(monkeypatch, tmp_path):
 
     archiver.shutdown()
     assert all(name == "aegis-l2-archiver" for name in flush_threads)
+
+
+def test_l2_options_archiver_concurrent_map_update_and_ticks(monkeypatch, tmp_path):
+    """Verify thread-safety between update_token_maps and on_tick."""
+    monkeypatch.setattr(l2_options_archiver, "RAW_DIR", str(tmp_path / "raw"))
+    monkeypatch.setattr(l2_options_archiver, "LOGS", str(tmp_path / "logs"))
+    archiver = l2_options_archiver.AegisL2Archiver({"100": "NIFTY24000CE"}, {"100": {"side": 0, "strike": 24000.0}})
+    exceptions = []
+
+    def update_loop():
+        try:
+            for i in range(100):
+                archiver.update_token_maps({str(100 + i): f"SYM_{i}"}, {str(100 + i): {"side": 0, "strike": 24000.0}})
+        except Exception as exc:
+            exceptions.append(exc)
+
+    def tick_loop():
+        try:
+            for i in range(200):
+                archiver.on_tick({"token": str(100 + (i % 20)), "last_traded_price": 50.0 + i})
+        except Exception as exc:
+            exceptions.append(exc)
+
+    t1 = threading.Thread(target=update_loop)
+    t2 = threading.Thread(target=tick_loop)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    archiver.shutdown()
+    assert len(exceptions) == 0
+
