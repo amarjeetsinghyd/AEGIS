@@ -258,7 +258,8 @@ EMERGENCY_MAX_SL_PCT = 0.35
 
 # ─── AEGIS V4.1 Stepped Risk Compression + Cost-Shield + Near-Target Engine ───
 # Scale-Invariant Normalized Percentage Model (strictly %, no fixed paise)
-DEFAULT_PREMIUM_HARD_SL_PCT = 0.080  # Calibrated from 0.120 -> 0.080 (-8.0% disaster floor)
+ENABLE_PREMIUM_DISASTER_FLOOR = os.environ.get("AEGIS_ENABLE_PREMIUM_DISASTER_FLOOR", "0").lower() in ("1", "true")
+DEFAULT_PREMIUM_HARD_SL_PCT = 0.080  # Retained for optional env flag override
 PREMIUM_HARD_SL_PCT = float(os.environ.get("AEGIS_PREMIUM_HARD_SL_PCT", str(DEFAULT_PREMIUM_HARD_SL_PCT)))
 FRIDAY_HARD_SL_PCT = float(os.environ.get("AEGIS_FRIDAY_HARD_SL_PCT", "0.065"))     # Friday 4-DTE calibrated disaster floor (-6.5%)
 STEP1_TRIGGER_PCT = float(os.environ.get("AEGIS_STEP1_TRIGGER_PCT", "0.030"))         # +3.0% peak gain arms stepped safety net (wide breathing room; +2% choke removed)
@@ -1824,22 +1825,24 @@ class AegisExecutionManager:
                     )
                     return
 
-        # 0C. Tick-Cadence Option Premium Hard SL (-8.0% disaster floor, calibrated to -6.5% on Friday 4 DTE).
-        # Aborts the millisecond the option bid drops >= hard floor under entry (disaster circuit breaker).
-        for leg in legs:
-            if leg.status != "OPEN" or leg.entry_price <= 0:
-                continue
-            eff_px = live_bid if live_bid > 0 else leg.current_price
-            if eff_px > 0:
-                loss_frac = (eff_px - leg.entry_price) / leg.entry_price
-                init_tp = float(getattr(leg, "initial_tp_pct", RESTING_TP_LIMIT_PCT) or RESTING_TP_LIMIT_PCT)
-                is_reduced_tp = init_tp <= 0.032
-                eff_hard_sl = FRIDAY_HARD_SL_PCT if is_reduced_tp else PREMIUM_HARD_SL_PCT
-                if loss_frac <= -eff_hard_sl:
-                    self._close_all_legs(
-                        f"Premium Hard SL (-{eff_hard_sl*100:.1f}% disaster floor: {loss_frac*100:.1f}% @ {eff_px:.2f})"
-                    )
-                    return
+        # 0C. Option Premium Hard SL: DECOMMISSIONED by Amarjeet bhai's mandate (Nov 12, 2026).
+        # Reason: Option bid wiggles/spreads on 0-DTE cause premature fake shakeouts while Spot is 100% safe.
+        # AEGIS relies strictly on Universal Spot Invalidation (Entry Candle Low/High + Cushion Buffer) below.
+        if ENABLE_PREMIUM_DISASTER_FLOOR:
+            for leg in legs:
+                if leg.status != "OPEN" or leg.entry_price <= 0:
+                    continue
+                eff_px = live_bid if live_bid > 0 else leg.current_price
+                if eff_px > 0:
+                    loss_frac = (eff_px - leg.entry_price) / leg.entry_price
+                    init_tp = float(getattr(leg, "initial_tp_pct", RESTING_TP_LIMIT_PCT) or RESTING_TP_LIMIT_PCT)
+                    is_reduced_tp = init_tp <= 0.032
+                    eff_hard_sl = FRIDAY_HARD_SL_PCT if is_reduced_tp else PREMIUM_HARD_SL_PCT
+                    if loss_frac <= -eff_hard_sl:
+                        self._close_all_legs(
+                            f"Premium Hard SL (-{eff_hard_sl*100:.1f}% disaster floor: {loss_frac*100:.1f}% @ {eff_px:.2f})"
+                        )
+                        return
 
         # 1. Force flatten at session end
         if self.must_force_flatten(now):
@@ -2401,7 +2404,16 @@ class AegisExecutionManager:
 
             is_catastrophic = any(
                 k in r_upper
-                for k in ("PREMIUM HARD SL", "DISASTER", "FORCE FLATTEN", "EMERGENCY")
+                for k in (
+                    "PREMIUM HARD SL",
+                    "DISASTER",
+                    "FORCE FLATTEN",
+                    "EMERGENCY",
+                    "BROKEN SL",
+                    "ENTRY CANDLE",
+                    "SPOT ADVERSE",
+                    "STRUCTURAL",
+                )
             )
 
             def _get_live_quote(ref_px: float) -> tuple:
