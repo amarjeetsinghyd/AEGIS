@@ -1871,7 +1871,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                         "anchor_low": round(lowest_low, 2),
                         "entry_bar_bucket": int(now_sec // 60),
                         "_pending_actions": pending,
-                        "opt_delta_flow": round(cb_flow - pb_flow, 1),
+                        "opt_delta_flow": round(bull_flow - bear_flow, 1),
                         "opt_total_vol": round(bull_flow + bear_flow, 1),
                         "bull_flow": round(bull_flow, 1),
                         "bear_flow": round(bear_flow, 1),
@@ -1914,7 +1914,7 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
                         "anchor_low": round(lowest_low, 2),
                         "entry_bar_bucket": int(now_sec // 60),
                         "_pending_actions": pending,
-                        "opt_delta_flow": round(cb_flow - pb_flow, 1),
+                        "opt_delta_flow": round(bull_flow - bear_flow, 1),
                         "opt_total_vol": round(bull_flow + bear_flow, 1),
                         "bull_flow": round(bull_flow, 1),
                         "bear_flow": round(bear_flow, 1),
@@ -1966,7 +1966,10 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         ps = float(self._opt_flow_1m.get("put_sell_vol", 0.0))
         bull_flow = cb + ps
         bear_flow = pb + cs
-        opt_delta_flow = cb - pb
+        # 4-leg directional delta — must share the SAME convention as bull_flow/bear_flow,
+        # otherwise a bar can pass the 1.5x dominance check while failing the delta veto
+        # (e.g. heavy put-selling + call-buying: bull=300 / bear=100 but cb-pb == 0).
+        opt_delta_flow = bull_flow - bear_flow
         opt_total_vol = cb + cs + pb + ps
 
         def _get_flow_dict() -> Dict[str, Any]:
@@ -2662,15 +2665,19 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
 
         # Mode A pierce and pre-close removed (Priority Mode B Sole Engine)
 
-        # Pillar 1: 20 EMA Pullback Rejection (Double-Touch)
-        ok_20, _, details_20 = self.check_20_ema_rejection(direction, current_vwap=eff_vwap, current_time=current_time)
-        if ok_20:
-            return True, "20_ema_rejection", self._enrich_details(details_20)
+        # ─── Legacy Mode A Bar-Close Fallbacks (Pure Mode B by default) ───
+        # Live trading is 100% Pure Mode B Live Breakout. The bar-close Mode A ladders
+        # stay reachable only for explicit legacy/backtest parity runs.
+        if os.getenv("AEGIS_ENABLE_LEGACY_MODE_A", "0") == "1":
+            # Pillar 1: 20 EMA Pullback Rejection (Double-Touch)
+            ok_20, _, details_20 = self.check_20_ema_rejection(direction, current_vwap=eff_vwap, current_time=current_time)
+            if ok_20:
+                return True, "20_ema_rejection", self._enrich_details(details_20)
 
-        # Pillar 2: Micro-Sweep & Reclaim
-        ok_sw, _, details_sw = self.check_micro_sweep_reclaim(direction, eff_vwap, current_time=current_time)
-        if ok_sw:
-            return True, "micro_sweep_reclaim", self._enrich_details(details_sw)
+            # Pillar 2: Micro-Sweep & Reclaim
+            ok_sw, _, details_sw = self.check_micro_sweep_reclaim(direction, eff_vwap, current_time=current_time)
+            if ok_sw:
+                return True, "micro_sweep_reclaim", self._enrich_details(details_sw)
 
         # Note: Pillar 3 (Volatility Squeeze) & Pillar 4 (Dynamic S/R Registry Breakout)
         # execute exclusively in-flight via check_mode_b_breakthrough().

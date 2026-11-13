@@ -329,7 +329,7 @@ class OptionOrderFlowMixin:
         """
         Accumulates option flow (Buyer vs Seller initiated) and updates
         4-Line Trapped-Buyer Pain Zone VWAPs + composite Option VWAP.
-        Constrained strictly to ATM ± 7 strikes.
+        Constrained strictly to ATM ± 5 strikes (11-strike core corridor).
         Uses Hybrid Touch-First with Lee-Ready Tick Rule fallback.
         """
         if vol <= 0 or lp <= 0:
@@ -362,9 +362,11 @@ class OptionOrderFlowMixin:
             return
         self._opt_last_cum_vol[sym] = vol
 
-        # 2. Window Filter: ATM ± 3 strikes (Tight institutional corridor)
+        # 2. Window Filter: ATM ± 5 strikes (11-strike institutional corridor)
+        # Widened from ± 3 so OTM 4-5 positioning still feeds the Pain Zone VWAPs
+        # (vwap_call_buy/sell, vwap_put_buy/sell) and the 1m option-flow ledger.
         ref_atm = atm_strike or (round(self.last_price / self.strike_step) * self.strike_step)
-        if ref_atm > 0 and abs(strike - ref_atm) > (3.0 * self.strike_step):
+        if ref_atm > 0 and abs(strike - ref_atm) > (5.0 * self.strike_step):
             return
 
         # 3. Hybrid Classification: Touch-first, Tick-Rule fallback
@@ -630,8 +632,12 @@ class CompositeConvictionEngine:
         p0 = float(first_r[1])
         p1 = float(last_r[1])
 
+        # L2 Depth Sourcing (max 2.0s staleness — never pair a 30s-old book with a fresh LTP)
+        last_ts = float(last_r[0])
         depth_r = last_r
         for r in reversed(sl):
+            if (last_ts - float(r[0])) > 2.0:
+                break
             r_b1 = float(r[4]) if len(r) > 4 else 0.0
             r_a1 = float(r[5]) if len(r) > 5 else 0.0
             r_bp = float(r[2]) if len(r) > 2 else 0.0
@@ -693,7 +699,11 @@ class CompositeConvictionEngine:
         deep_pressure = (i3 + i4 + i5) / 3.0
 
         n_ticks = len(sl)
-        effective_dt = max(float(lookback), 1.0)
+        # Effective observation span: a freshly-warmed 3s-5s buffer must never be
+        # divided by the full 30s lookback (that under-counts tick intensity ~6x
+        # and silently starves the Mode B tick-arrival domain).
+        span_sec = float(last_r[0]) - float(first_r[0])
+        effective_dt = max(5.0, min(float(lookback), span_sec))
         tick_intensity = float(n_ticks) / effective_dt
 
         base_metrics = {
@@ -738,26 +748,6 @@ class CompositeConvictionEngine:
         "impulse": 35.0,   # Option Micro-Momentum & Premium Velocity
         "flow": 40.0,      # Touch Aggression I1 & Live OFI Delta
         "contract": 25.0,  # Contract Tradability & Book Depth Support
-    }
-
-    # Setup-specific weight profiles (each sums to 100.0)
-    SETUP_WEIGHT_PROFILES = {
-        setup: {
-            "structure": 0.0,
-            "impulse": 35.0,
-            "flow": 40.0,
-            "contract": 25.0,
-        }
-        for setup in (
-            "20_ema_rejection",
-            "micro_sweep_reclaim",
-            "albrooks_2legged_pullback",
-            "volatility_squeeze_breakout",
-            "hvg_network_phase_shift",
-            "sr_breakout",
-            "topological_prominence_breakout",
-            "break_of_structure",
-        )
     }
 
     def __init__(
@@ -811,81 +801,92 @@ class CompositeConvictionEngine:
         wyckoff_details: Optional[Dict[str, Any]] = None,
         option_delta: Optional[float] = None,
         micro_ret: Optional[float] = None,
+        pillar: int = 0,
     ) -> Tuple[float, Dict[str, float], Dict[str, Any], str]:
         """
         Mode B Conviction Profile: In-Flight Mid-Bar Breakthrough Surge.
         Active from T:02s onwards anytime during the candle (No Upper Limit Cap).
         Focused on instantaneous breakout velocity, ask sweeps, and live tick intensity.
 
-        Domains (100 pts total):
-          1. Touch Aggression & Ask Sweep I1: 40 pts
-          2. Live Tick Arrival Intensity: 35 pts
-          3. Contract Tradability & Spread: 25 pts
-        """
-        # Mode B Hard Momentum Velocity Floor:
-        # Never approve Mode B in-flight breakthrough on a decaying or stagnant option contract!
-        # The option must be expanding (micro_ret >= +0.20% over lookback window).
-        if micro_ret is not None and micro_ret < 0.0020:
-            sub_zero = {
-                "touch_aggression": 0.0, "tick_intensity": 0.0, "contract_tradability": 0.0,
-                "flow": 0.0, "impulse": 0.0, "contract": 0.0, "structure": 0.0,
-            }
-            details_veto = {
-                "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
-                "micro_ret": round(micro_ret, 5),
-                "reason": "stagnant_or_negative_option_velocity",
-            }
-            return 0.0, sub_zero, details_veto, "mode_b_conviction_too_low: option_not_expanding"
+        Pillar-aware profiles:
+          - Pillar 2 (Micro-Sweep Reclaim / Counter-Trap): enters on the reversal reclaim,
+            BEFORE the +0.20% expansion has printed. A flat/reclaiming contract is allowed
+            (micro_ret >= -0.10%); an active dump is still vetoed.
+              Touch Aggression I1: 45 pts | Live Tick Arrival: 30 pts | Tradability: 25 pts
+          - Pillars 1/3/4/5 (Momentum & Breakout): require active upward option impulse
+            (micro_ret >= +0.20%).
+              Touch Aggression I1: 40 pts | Live Tick Arrival: 35 pts | Tradability: 25 pts
 
-        is_up = direction.upper() in ("UP", "CALL")
+        Wyckoff is intentionally NOT scored here. WyckoffVolumeEngine already derives its
+        verdict from the same option order-flow ledger, so granting it extra flow/tick
+        points double-counts one single data source.
+        """
+        pillar_id = int(pillar or 0)
+        is_p2_reclaim = pillar_id == 2
+
+        # ─── Momentum Velocity Floor ───
+        if is_p2_reclaim:
+            # Counter-trap: the spring reclaim prints before expansion, so stagnation
+            # is expected. Only an ACTIVE dump (< -0.10%) invalidates the reclaim.
+            if micro_ret is not None and micro_ret < -0.0010:
+                return 0.0, self._mode_b_zero_subs(), {
+                    "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
+                    "pillar": 2,
+                    "micro_ret": round(micro_ret, 5),
+                    "reason": "mode_b_p2_reclaim_dump_veto",
+                }, "mode_b_p2_reclaim_dump_veto"
+        else:
+            # Breakout pillars: never approve an in-flight breakthrough on a decaying
+            # or stagnant option contract.
+            if micro_ret is not None and micro_ret < 0.0020:
+                return 0.0, self._mode_b_zero_subs(), {
+                    "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
+                    "pillar": pillar_id,
+                    "micro_ret": round(micro_ret, 5),
+                    "reason": "stagnant_or_negative_option_velocity",
+                }, "mode_b_conviction_too_low: option_not_expanding"
+
         # Option Buyer mandate: Whether buying CE (UP) or PE (DOWN), the trader is LONG the option.
         # Strong bid support (touch_i1 > 0) on the option contract is always bullish for that option.
         eff_i1 = touch_i1
-        wyckoff_conf = bool((wyckoff_details or {}).get("wyckoff_confirmed", False))
-        ofi = float(
-            (wyckoff_details or {}).get("opt_delta_flow")
-            or (wyckoff_details or {}).get("ofi_delta")
-            or (wyckoff_details or {}).get("synthetic_net_delta")
-            or 0.0
-        )
 
-        # 1. Touch Aggression & Ask Sweep I1 (40 pts max)
-        if eff_i1 >= 0.20:
-            agg_pts = 40.0
-        elif eff_i1 >= 0.08:
-            agg_pts = 34.0
-        elif eff_i1 >= -0.05:
-            agg_pts = 28.0
-        elif eff_i1 >= -0.20:
-            agg_pts = 16.0
+        # 1. Touch Aggression & Ask Sweep I1 (45 pts P2 / 40 pts others)
+        if is_p2_reclaim:
+            if eff_i1 >= 0.20:
+                agg_pts = 45.0
+            elif eff_i1 >= 0.08:
+                agg_pts = 38.0
+            elif eff_i1 >= -0.05:
+                agg_pts = 31.0
+            elif eff_i1 >= -0.20:
+                agg_pts = 18.0
+            else:
+                agg_pts = 0.0  # Opposing ask wall
         else:
-            agg_pts = 0.0  # Opposing ask wall
+            if eff_i1 >= 0.20:
+                agg_pts = 40.0
+            elif eff_i1 >= 0.08:
+                agg_pts = 34.0
+            elif eff_i1 >= -0.05:
+                agg_pts = 28.0
+            elif eff_i1 >= -0.20:
+                agg_pts = 16.0
+            else:
+                agg_pts = 0.0  # Opposing ask wall
 
-        if wyckoff_conf:
-            ofi_aligned = (ofi > 0) if is_up else (ofi < 0)
-            ofi_opposing = (ofi < 0) if is_up else (ofi > 0)
-            n1_fp = (wyckoff_details or {}).get("n1_footprint") or {}
-            # Only grant Wyckoff floor when flow has real bid support (eff_i1 >= 0.05),
-            # never when book is dominated by opposing ask walls.
-            if eff_i1 >= 0.05:
-                if ofi_aligned:
-                    agg_pts = max(agg_pts, 34.0)
-                elif not ofi_opposing and (n1_fp.get("n1_vol_dryup", False) or n1_fp.get("n1_stopping_vol", False)):
-                    agg_pts = max(agg_pts, 34.0)
-
-        # 2. Live Tick Arrival Intensity (35 pts max)
+        # 2. Live Tick Arrival Intensity (30 pts P2 / 35 pts others)
         if tick_rate is not None:
             if tick_rate >= 1.5:
-                tick_pts = 35.0  # Institutional rapid-fire sweep
+                tick_pts = 35.0 if not is_p2_reclaim else 30.0  # Institutional rapid-fire sweep
             elif tick_rate >= 0.8:
-                tick_pts = 28.0  # Steady active flow
+                tick_pts = 28.0 if not is_p2_reclaim else 24.0  # Steady active flow
             elif tick_rate >= 0.4:
-                tick_pts = 26.0 if wyckoff_conf else 22.0  # Normal liquidity
+                tick_pts = 22.0 if not is_p2_reclaim else 18.0  # Normal liquidity
             else:
-                tick_pts = 16.0 if wyckoff_conf else 12.0  # Thin / sluggish arrival
+                tick_pts = 14.0 if not is_p2_reclaim else 12.0  # Thin / sluggish arrival
         else:
             # Clean baseline for tests or synthetic ticks
-            tick_pts = 30.0 if wyckoff_conf else 26.0
+            tick_pts = 26.0 if not is_p2_reclaim else 24.0
 
         # 3. Contract Tradability & Spread (25 pts max)
         if spread_pct <= 0.0 or spread_pct > 2.50:
@@ -912,17 +913,21 @@ class CompositeConvictionEngine:
         }
         details = {
             "mode": "MODE_B_INFLIGHT_BREAKTHROUGH",
+            "pillar": pillar_id,
+            "pillar_profile": "P2_RECLAIM" if is_p2_reclaim else "BREAKOUT",
             "effective_i1": round(eff_i1, 3),
             "tick_rate": round(tick_rate, 2) if tick_rate is not None else None,
             "spread_pct": round(spread_pct, 3),
-            "wyckoff_confirmed": wyckoff_conf,
+            # Telemetry only — Wyckoff never contributes points in Mode B.
+            "wyckoff_confirmed": bool((wyckoff_details or {}).get("wyckoff_confirmed", False)),
+            "wyckoff_scored": False,
             "contract_domain_neutralized": True,
             "abs_delta": round(abs(option_delta), 3) if option_delta is not None else 0.35,
             "futures_muted": True,
             "fut_divergence_penalty": 0.0,
         }
         drags = []
-        if agg_pts < 25.0:
+        if agg_pts < (25.0 if not is_p2_reclaim else 28.0):
             drags.append("aggression_drag")
         if tick_pts < 20.0:
             drags.append("tick_rate_drag")
@@ -930,6 +935,14 @@ class CompositeConvictionEngine:
             drags.append("tradability_drag")
         reason = f"mode_b_conviction_too_low: {', '.join(drags)}" if drags else "mode_b_inflight_approved"
         return total, sub_scores, details, reason
+
+    @staticmethod
+    def _mode_b_zero_subs() -> Dict[str, float]:
+        """Zeroed Mode B sub-score payload used by every hard veto path."""
+        return {
+            "touch_aggression": 0.0, "tick_intensity": 0.0, "contract_tradability": 0.0,
+            "flow": 0.0, "impulse": 0.0, "contract": 0.0, "structure": 0.0,
+        }
 
     def _evaluate_mode_a_conviction(
         self,
@@ -1001,7 +1014,7 @@ class CompositeConvictionEngine:
             mom_pts = 30.0 if wyckoff_conf else 25.0
 
         # 3. Contract Tradability & Book Depth Support (25 pts max)
-        if spread_pct <= 0.0 or spread_pct > 2.50 or (0.0 < tot_depth < 200.0):
+        if spread_pct <= 0.0 or spread_pct > 2.50 or (tot_depth <= 0.0 or tot_depth < 200.0):
             trad_pts = 0.0  # Invalid, crossed quotes, circuit breaker blowout or ghost book
         elif spread_pct <= 1.00:
             trad_pts = 25.0
@@ -1110,6 +1123,7 @@ class CompositeConvictionEngine:
                 wyckoff_details=wyckoff_details,
                 option_delta=option_delta,
                 micro_ret=m_ret,
+                pillar=int((pa_details or {}).get("pillar", 0) or (pa_details or {}).get("pillar_id", 0) or 0),
             )
             profile_name = "MODE_B_INFLIGHT_PROFILE"
         else:

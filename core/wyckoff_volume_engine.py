@@ -351,6 +351,15 @@ class WyckoffVolumeEngine:
                 pillar=pillar_id,
             )
             if not flow_ok:
+                # SHADOW mode is observability-only: log the veto but never block the entry.
+                if self.mode == "SHADOW":
+                    flow_metrics = dict(flow_metrics or {})
+                    flow_metrics["shadow_veto"] = flow_reason
+                    flow_metrics["wyckoff_confirmed"] = False
+                    logger.info(
+                        f"[WYCKOFF SHADOW] P{pillar_id} ({direction}) in-flight veto bypassed: {flow_reason}"
+                    )
+                    return True, f"shadow_bypass_{flow_reason}", flow_metrics
                 return False, flow_reason, flow_metrics
 
             base_metrics = dict(flow_metrics)

@@ -531,7 +531,6 @@ class AegisPipelineOrchestrator:
                 cluster, cluster_symbols = self._get_budget_strike_cluster_cached(direction)
                 if not cluster or sym not in cluster_symbols:
                     return None
-                cluster_scoring = True
 
                 # ─── Phase 1 (V4.1b): Absolute Pain Zone Band Veto ───
                 # Vetoes entry trade consideration for opposing direction while
@@ -676,24 +675,10 @@ class AegisPipelineOrchestrator:
                         pers_score = 1.0
 
                         # Domain 3 & 4: Option Tradability & Quality
+                        # Enforced ONCE, on the selected cluster candidate (see the cluster
+                        # candidate loop below) — never on the raw triggering symbol.
                         opt_qualified = True
-                        opt_reason = "option_ok"
                         opt_metrics = {}
-                        if self.option_quality_engine and not cluster_scoring:
-                            opt_qualified, opt_reason, opt_metrics = self.option_quality_engine.qualify_option(
-                                sym=sym,
-                                lp=lp,
-                                bp1=bp1,
-                                sp1=sp1,
-                                top5_bid_qty=tot_bid_depth,
-                                top5_ask_qty=tot_ask_depth,
-                            )
-                            if not opt_qualified:
-                                if self.option_quality_mode == "ACTIVE":
-                                    self._throttled_veto_log("option_quality_veto", f"[OPTION QUALITY VETO] {sym} blocked: {opt_reason}")
-                                    return
-                                elif self.option_quality_mode == "SHADOW":
-                                    self._throttled_veto_log("option_quality_shadow", f"[OPTION QUALITY SHADOW] {sym} would block: {opt_reason}")
 
                         # Domain 7: Real-Time Open Interest (OI) Built-up & Wall Defense Gate permanently decommissioned from entry path.
                         # (OI tracking maintained passively for live state telemetry / dashboard walls only; it never blocks scalper entries).
@@ -717,101 +702,17 @@ class AegisPipelineOrchestrator:
                             # Macro structure and candle geometry (Body >= 65%, edge, wicks, ATR expansion)
                             # are verified directly by PriceActionEngine. Legacy 60s tick-counting spot persistence
                             # veto is permanently decommissioned (Zero-Entropy Logic De-bloat).
-                            is_mode_b = is_mode_b_setup
-                            is_preclose = False
                             pers_score = float(pa_details.get("dp_micro", 1.0))
                             pers_confirmed = True
 
                             # 2. MICROSTRUCTURE EXTRACTION & SANITY CIRCUIT BREAKERS
-                            # Zero-Entropy Architecture: Order flow momentum is scored strictly by
-                            # CompositeConvictionEngine (>= 80.0 threshold). The redundant 60-point
-                            # energy gate is fully eliminated. Only hard liquidity circuit breakers
-                            # (spread blowout > 2.5%, ghost book < 200, severe flush < -1.5%) veto early.
+                            # Zero-Entropy Architecture: microstructure is extracted ONCE, inside the
+                            # cluster candidate loop below, for every pre-staged strike. The legacy
+                            # per-trigger extraction path was unreachable (cluster_scoring was always
+                            # True) and has been removed so OptionQualityEngine + conviction are
+                            # enforced in exactly one place on the selected cluster candidate.
                             energy_score = 100.0
                             micro_m = {}
-                            (now_sec - anchor_T) if (anchor_T and anchor_T > 0) else 0.0
-                            if (is_mode_b or is_preclose) and not cluster_scoring:
-                                # Mode B In-Flight: extract live micro metrics from immediate rolling 10s buffer
-                                # to ensure touch_i1, real spread_pct and depth are verified upfront
-                                if not self.conviction_engine or not self.scorer:
-                                    self._throttled_veto_log(
-                                        "v3_circuit_breaker",
-                                        f"[V3 CIRCUIT BREAKER] {sym} ({direction}) {pa_setup_name} P{pillar} blocked in Mode B: "
-                                        "microstructure_validator_unavailable",
-                                    )
-                                    return None
-                                buf = self.scorer.history.get(sym)
-                                if not buf:
-                                    self._throttled_veto_log(
-                                        "v3_circuit_breaker",
-                                        f"[V3 CIRCUIT BREAKER] {sym} ({direction}) {pa_setup_name} P{pillar} blocked in Mode B: no_ticks_in_buffer",
-                                    )
-                                    return None
-                                micro_m = self.conviction_engine.extract_micro_metrics(
-                                    tick_buffer=buf,
-                                    anchor_T=now_sec,
-                                    lookback_sec=10.0 if is_mode_b else 30.0,
-                                )
-                                if not micro_m.get("is_valid", False):
-                                    self._throttled_veto_log(
-                                        "v3_circuit_breaker",
-                                        f"[V3 CIRCUIT BREAKER] {sym} ({direction}) {pa_setup_name} P{pillar} blocked in Mode B: "
-                                        f"{micro_m.get('reason', 'invalid_microstructure')} "
-                                        f"(ret={micro_m.get('micro_ret_30s', 0.0):+.4f}, "
-                                        f"spread={micro_m.get('spread_pct', 0.0):.2f}%, depth={micro_m.get('tot_depth', 0)})"
-                                    )
-                                    return None
-                                tot_bid_depth = micro_m.get("tot_bid_depth", tot_bid_depth)
-                                tot_ask_depth = micro_m.get("tot_ask_depth", tot_ask_depth)
-                                bp1 = micro_m.get("bp1", bp1)
-                                sp1 = micro_m.get("sp1", sp1)
-                            elif not is_mode_b and use_anchor and self.conviction_engine and self.scorer and not cluster_scoring:
-                                buf = self.scorer.history.get(sym, [])
-                                if buf:
-                                    micro_m = self.conviction_engine.extract_micro_metrics(
-                                        tick_buffer=buf,
-                                        anchor_T=anchor_T,
-                                        lookback_sec=30.0,
-                                    )
-                                    # Fallback: check 60s lookback if 30s was invalid
-                                    if not micro_m.get("is_valid", True):
-                                        micro_60_m = self.conviction_engine.extract_micro_metrics(
-                                            tick_buffer=buf,
-                                            anchor_T=anchor_T,
-                                            lookback_sec=60.0,
-                                        )
-                                        if micro_60_m.get("is_valid", True):
-                                            micro_m = micro_60_m
-
-                                    # Hard Circuit Breaker Check (Liquid market sanity floor)
-                                    if not micro_m.get("is_valid", True):
-                                        self._throttled_veto_log(
-                                            "v3_circuit_breaker",
-                                            f"[V3 CIRCUIT BREAKER] {sym} ({direction}) {pa_setup_name} P{pillar} blocked: "
-                                            f"{micro_m.get('reason')} (ret={micro_m.get('micro_ret_30s', 0.0):+.4f}, "
-                                            f"spread={micro_m.get('spread_pct', 0.0):.2f}%, depth={micro_m.get('tot_depth', 0)})"
-                                        )
-                                        return None
-
-                                    # Update depth and quotes from verified slice
-                                    tot_bid_depth = micro_m.get("tot_bid_depth", tot_bid_depth)
-                                    tot_ask_depth = micro_m.get("tot_ask_depth", tot_ask_depth)
-                                    bp1 = micro_m.get("bp1", bp1)
-                                    sp1 = micro_m.get("sp1", sp1)
-                            elif not is_mode_b and not use_anchor and not cluster_scoring:
-                                # Stale-T unit-test fallback: basic depth wall and spread checks
-                                tot_depth = tot_bid_depth + tot_ask_depth
-                                if tot_depth > 0:
-                                    top5_imb = (tot_bid_depth - tot_ask_depth) / float(tot_depth)
-                                    if top5_imb < -0.40:
-                                        self._throttled_veto_log("v3_drop_depth", f"[V3 DROP DEPTH] {sym} {pa_setup_name} P{pillar} blocked: severe opposing book wall (top5_imb={top5_imb:.2f} < -0.40)")
-                                        return None
-
-                                mid_px = (bp1 + sp1) / 2.0 if (bp1 > 0 and sp1 > 0) else lp
-                                spread_pct = ((sp1 - bp1) / mid_px * 100.0) if (mid_px > 0 and bp1 > 0 and sp1 > 0) else 0.5
-                                if spread_pct > 1.0:
-                                    self._throttled_veto_log("v3_drop_spread", f"[V3 DROP SPREAD] {sym} {pa_setup_name} P{pillar} blocked: spread {spread_pct:.2f}% > 1.00%")
-                                    return None
 
                             should_fire = True
                         if should_fire:

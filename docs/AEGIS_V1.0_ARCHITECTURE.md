@@ -46,15 +46,23 @@
      $$\text{CALL SL} = \text{Entry Candle Low} - (0.10 \times \text{ATR}_{1m})$$
      $$\text{PUT SL} = \text{Entry Candle High} + (0.10 \times \text{ATR}_{1m})$$
    - Evaluated strictly against cash index spot price, fully immunizing trades from option spread flutter, IV crush, and spoofing.
-7. **Composite Conviction Continuous Scoring Law ($\ge 80.0$)**:
+7. **Composite Conviction Continuous Scoring Law ($\ge 75.0$ in-flight / $\ge 80.0$ bar-close)**:
    - Continuous 0–100 dual-profile microstructure scoring (`AEGIS/core/option_order_flow.py`).
-   - Zero-Entropy 40-35-25 model (upstream spot structure retired to 0.0 pts as it is 100% verified by PriceActionEngine).
-   - **Mode B Profile** (Touch Aggression $I_1$ 40 pts, Live Tick Arrival Intensity 35 pts, Spread Tradability 25 pts).
-   - **Mode A Profile** (Order Book Support & Deep Pressure 40 pts, 30s Option Return Velocity 35 pts, Contract Tradability & Depth 25 pts).
-   - Hard Circuit Breakers: Spread $> 2.5\%$, Total Depth $< 200$, 30s Dump $< -1.5\%$. Score $< 80.0$ is vetoed with itemized drag audit.
-8. **Scale-Invariance Law**:
+   - Zero-Entropy domain model (upstream spot structure retired to 0.0 pts as it is 100% verified by PriceActionEngine).
+   - **Mode B Profile** — pillar-aware: Pillars 1/3/4/5 (Touch Aggression $I_1$ 40, Live Tick Arrival 35, Spread Tradability 25, impulse $\ge +0.20\%$); Pillar 2 Reclaim (Touch Aggression $I_1$ 45, Live Tick Arrival 30, Spread Tradability 25, impulse $\ge -0.10\%$).
+   - **Wyckoff contributes 0 pts in Mode B** (telemetry only) — it already reads the same option-flow ledger, so scoring it again would double-count one data source.
+   - **Mode A Profile (legacy, `AEGIS_ENABLE_LEGACY_MODE_A=1` only)** — Order Book Support & Deep Pressure 40, 30s Option Return Velocity 35, Contract Tradability & Depth 25.
+   - Hard Circuit Breakers: Spread $> 2.5\%$, Total Depth $< 200$, 30s Dump $< -1.5\%$. Score below the profile floor is vetoed with an itemized drag audit.
+8. **Option Corridor & Book Quality Law**:
+   - Option flow is aggregated strictly inside **ATM ± 5 strikes** ($5.0 \times$ `strike_step`, 11-strike core) so OTM 4-5 institutional positioning still feeds the Pain Zone VWAPs.
+   - L2 depth is only accepted if it is at most **2.0s** older than the latest tick — a stale book is never paired with a fresh LTP.
+   - `OptionQualityEngine` enforces a **two-sided** depth floor: total top-5 depth $\ge \max(\text{configured}, 5 \times \text{lot})$ **and** $\min(\text{bid side}, \text{ask side}) \ge \max(2 \times \text{lot}, 25)$, closing the one-sided book slippage trap.
+9. **Pure Mode B Enforcement Law**:
+   - Live trading fires 100% from **Priority Mode B Live Breakout**. The bar-close Mode A ladders (`20_ema_rejection`, `micro_sweep_reclaim`) inside `evaluate_setup` are gated behind `AEGIS_ENABLE_LEGACY_MODE_A` (default `0`) and remain available only for legacy tests/backtests.
+   - Option-flow delta uses the **4-leg** convention $(call\_buy + put\_sell) - (put\_buy + call\_sell)$ everywhere, so the directional-delta veto can never contradict the 1.5x bull/bear dominance check.
+10. **Scale-Invariance Law**:
    - NEVER hardcode fixed point thresholds across NIFTY (24k) and SENSEX (80k). All spot distances, invalidations, stops, and confirmations MUST be normalized via **Basis Points (bps, where 1 bps = 0.01% of spot)** or localized volatility multiples ($k \times \text{ATR}_{1m}$).
-9. **Session Force-Flatten Law**:
+11. **Session Force-Flatten Law**:
    - All open positions unconditionally liquidated at **15:08:00 IST** (`AEGIS_FORCE_FLATTEN = 15:08`) to eliminate NSE Closing Auction (CAS) volatility and broker auto-square-off penalization.
 
 ---
@@ -260,18 +268,20 @@ A pure-Python 0–100 continuous microstructure engine executing a **40-35-25 Mo
    - Total Book Depth $< 200 \implies$ `circuit_breaker_ghost_book` (instant drop).
    - 30s Option Return $micro\_ret < -1.5\% \implies$ `circuit_breaker_severe_dump` (instant drop).
    - Crossed Quotes ($Ask \le Bid$) $\implies$ instant drop.
-3. **Dual-Profile Scoring Framework**:
+3. **Dual-Profile Scoring Framework** (pillar-aware in Mode B):
    - **Mode B Profile (In-Flight Breakthrough Surge, $T:02s+$ onwards)**:
-     - **Touch Aggression & Ask Sweep $I_1$ (40 pts)**: $I_1 = (b_1 - a_1)/(b_1 + a_1 + 10^{-4})$. $I_1 \ge +0.20 \implies 40\text{ pts}$; $\ge +0.08 \implies 34\text{ pts}$; $\ge -0.05 \implies 28\text{ pts}$; $\ge -0.20 \implies 16\text{ pts}$; $< -0.20 \implies 0\text{ pts}$ (`aggression_drag`). Wyckoff floor guarantees $\ge 34\text{ pts}$ only if $I_1 \ge -0.20$.
-     - **Live Tick Arrival Intensity (35 pts)**: $Rate \ge 1.5\text{ ticks/s} \implies 35\text{ pts}$; $\ge 0.8 \implies 28\text{ pts}$; $\ge 0.4 \implies 22\text{ pts}$; $< 0.4 \implies 12\text{ pts}$ (`tick_rate_drag`).
+     - **Pillar-aware split**: Pillars 1/3/4/5 (breakout) require an active option impulse $micro\_ret \ge +0.20\%$ and score **40 / 35 / 25**. Pillar 2 (Micro-Sweep Reclaim, counter-trap) enters on the reversal reclaim *before* expansion prints: its stagnation veto is relaxed to $micro\_ret \ge -0.10\%$ (an active dump is still vetoed) and it scores **45 / 30 / 25**, because bid-side reclaim support matters more than velocity there.
+     - **Touch Aggression & Ask Sweep $I_1$ (40 pts / 45 pts for P2)**: $I_1 = (b_1 - a_1)/(b_1 + a_1 + 10^{-4})$. Breakout: $I_1 \ge +0.20 \implies 40$; $\ge +0.08 \implies 34$; $\ge -0.05 \implies 28$; $\ge -0.20 \implies 16$; $< -0.20 \implies 0$ (`aggression_drag`). P2 reclaim: $45 / 38 / 31 / 18 / 0$.
+     - **Live Tick Arrival Intensity (35 pts / 30 pts for P2)**: Breakout: $Rate \ge 1.5\text{ ticks/s} \implies 35$; $\ge 0.8 \implies 28$; $\ge 0.4 \implies 22$; $< 0.4 \implies 14$ (`tick_rate_drag`). P2 reclaim: $30 / 24 / 18 / 12$. Rate is measured as $\text{ticks} / \text{clamp(observed span}, 5.0\text{s}, \text{lookback})$, never $\text{ticks}/30\text{s}$ on a cold buffer.
      - **Contract Tradability & Spread (25 pts)**: Spread $\le 0.50\% \implies 25\text{ pts}$; $\le 1.00\% \implies 20\text{ pts}$; $\le 1.50\% \implies 12\text{ pts}$; $\le 2.50\% \implies 5\text{ pts}$.
-   - **Mode A Profile (Structural Rejection & Close)**:
+     - **Wyckoff is telemetry-only in Mode B**: `WyckoffVolumeEngine` already derives its verdict from the same option order-flow ledger, so it contributes **0 pts** here (`wyckoff_scored: false`). Scoring it again would double-count one data source.
+   - **Mode A Profile (Structural Rejection & Close)** — legacy, reachable only via `AEGIS_ENABLE_LEGACY_MODE_A=1`:
      - **Order Book Support & Deep Pressure (40 pts)**: $I_1 \ge 0.15$ and Deep Pressure $\ge -0.10 \implies 40\text{ pts}$.
      - **Option Premium Return Velocity `micro_ret` (35 pts)**: $micro\_ret \ge +0.8\% \implies 35\text{ pts}$; $\ge +0.3\% \implies 30\text{ pts}$; $\ge -0.1\% \implies 25\text{ pts}$; $\ge -0.5\% \implies 14\text{ pts}$; $< -0.5\% \implies 0\text{ pts}$ (`momentum_drag`).
-     - **Contract Tradability & Book Depth (25 pts)**: Spread $\le 1.00\% \implies 25\text{ pts}$; $\le 1.50\% \implies 15\text{ pts}$; $> 1.50\% \implies 5\text{ pts}$.
+     - **Contract Tradability & Book Depth (25 pts)**: Spread $\le 1.00\% \implies 25\text{ pts}$; $\le 1.50\% \implies 15\text{ pts}$; $> 1.50\% \implies 5\text{ pts}$. Total depth $\le 0$ or $< 200$ forces $0\text{ pts}$.
 4. **Conviction Hurdle**:
-   - Total score **$\ge 80.0$** $\implies$ `ADMITTED` (Strict 1 Lot).
-   - Score **$< 80.0$** $\implies$ `BLOCKED` with itemized audit drags.
+   - Mode B In-Flight floor: **$\ge 75.0$**. Mode A: **$\ge 80.0$**.
+   - Score below the floor $\implies$ `BLOCKED` with itemized audit drags.
 
 ---
 

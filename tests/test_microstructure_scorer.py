@@ -44,7 +44,9 @@ class TestMicrostructureScorer:
         assert ok is True
         assert res.get("reason") == "delegated_to_conviction_engine"
 
-    def test_live_tick_intensity_uses_window_not_tick_spacing(self):
+    def test_live_tick_intensity_uses_effective_span_not_tick_spacing(self):
+        """Tick intensity must divide by the observed span (floored at 5s), never by
+        inter-tick spacing and never by the full lookback when the buffer is cold."""
         scorer = MicrostructureScorer()
         sym = "NIFTY26AUG24500CE"
         for ts in (1000.0, 1000.9):
@@ -64,4 +66,6 @@ class TestMicrostructureScorer:
             lookback_sec=10.0,
         )
         assert micro["is_valid"] is True
-        assert micro["tick_intensity"] == pytest.approx(0.2)
+        # 2 ticks over a 0.9s buffer -> span floored to 5.0s -> 2/5.0 == 0.4
+        # (would have been 2/0.9 == 2.22 with tick spacing, or 2/10.0 == 0.2 with a cold buffer)
+        assert micro["tick_intensity"] == pytest.approx(0.4)

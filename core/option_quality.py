@@ -5,7 +5,8 @@ Architecture:
 1. Rejects illiquid, wide-spread option contracts before execution dispatch.
 2. Evaluates:
    - Bid-Ask Spread Percentage: (Ask1 - Bid1) / Mid <= max_spread_pct (default 2.0%)
-   - Depth Liquidity: Minimum Top-5 Bid/Ask volume available for clean fill
+   - Depth Liquidity: Minimum TOTAL top-5 depth AND a two-sided per-side floor
+     (rejects the one-sided ask/bid trap that causes full-lot entry slippage)
    - Premium Velocity: Option price momentum supporting the underlying movement
 """
 
@@ -21,7 +22,7 @@ class OptionQualityEngine:
     def __init__(
         self,
         max_spread_pct: float = 2.5,        # Max 2.5% bid-ask spread
-        min_top5_depth_qty: float = 500.0,  # At least 500 units in L2 depth
+        min_top5_depth_qty: float = 500.0,  # Minimum TOTAL top-5 L2 depth (both sides summed)
         min_premium: float = 4.0,           # Testing phase: allow Rs 4+ (was 5.0)
         max_premium: float = 400.0,         # Cap ultra-deep ITM options
     ):
@@ -104,10 +105,24 @@ class OptionQualityEngine:
         if spread_pct > self.max_spread_pct:
             return False, f"spread_too_wide ({spread_pct:.2f}% > {self.max_spread_pct}%)", metrics
 
-        # 3. Depth liquidity check (Fail-closed: zero depth rejects immediately, scale-invariant)
+        # 3. Depth liquidity check (Fail-closed, scale-invariant)
+        # Two-sided book mandate: a 5000-bid / 1-ask book is NOT tradable liquidity for a
+        # BUY order — it guarantees a full-lot sweep through the ask wall (entry slippage trap).
         total_depth = top5_bid_qty + top5_ask_qty
-        eff_min_depth = max(50.0, 5.0 * lot_size)  # Scale-invariant (5 lots minimum depth)
-        if total_depth < eff_min_depth:
-            return False, f"insufficient_depth ({total_depth:.0f} < {eff_min_depth:.0f})", metrics
+        min_side_depth = min(top5_bid_qty, top5_ask_qty)
+        eff_lot = float(lot_size or 0.0)
+        eff_min_total = max(float(self.min_top5_depth_qty or 0.0), 5.0 * eff_lot, 50.0)
+        eff_min_side = max(2.0 * eff_lot, 25.0)
+        metrics["total_depth"] = round(total_depth, 1)
+        metrics["min_side_depth"] = round(min_side_depth, 1)
+        metrics["min_required_total_depth"] = round(eff_min_total, 1)
+        metrics["min_required_side_depth"] = round(eff_min_side, 1)
+        if total_depth < eff_min_total:
+            return False, f"insufficient_depth ({total_depth:.0f} < {eff_min_total:.0f})", metrics
+        if min_side_depth < eff_min_side:
+            return False, (
+                f"one_sided_book_trap (bid={top5_bid_qty:.0f}, ask={top5_ask_qty:.0f} "
+                f"-> min side {min_side_depth:.0f} < {eff_min_side:.0f})"
+            ), metrics
 
         return True, "option_qualified", metrics

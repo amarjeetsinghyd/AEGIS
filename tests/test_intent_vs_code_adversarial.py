@@ -528,7 +528,9 @@ class TestScenario5InFlightOptionFlowEnrichment:
         assert enriched["opt_total_vol"] == pytest.approx(cb + cs + pb + ps, abs=1.0)
         assert enriched["bull_flow"] == pytest.approx(cb + ps, abs=1.0)
         assert enriched["bear_flow"] == pytest.approx(pb + cs, abs=1.0)
-        assert enriched["opt_delta_flow"] == pytest.approx(cb - pb, abs=1.0)
+        # 4-leg delta must share the SAME unit as bull/bear flow:
+        # (call_buy + put_sell) - (put_buy + call_sell) — never the 2-leg cb - pb subset.
+        assert enriched["opt_delta_flow"] == pytest.approx((cb + ps) - (pb + cs), abs=1.0)
         assert enriched["call_buy_vol"] == pytest.approx(cb, abs=1.0)
 
     @pytest.mark.skip(reason="DECOMMISSIONED: Mode A purged for Zero-Entropy; Priority Mode B is sole engine")

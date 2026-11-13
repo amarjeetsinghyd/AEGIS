@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.0.5] - 2026-11-13 (Group 3: ATM ± 5 Corridor, Stale-L2 & Tick-Intensity Fixes, Pillar-Aware Mode B Conviction, Two-Sided Option Depth Trap & Pure Mode B Enforcement)
+
+### Option Order Flow (`AEGIS/core/option_order_flow.py`)
+- **11-Strike ATM ± 5 Corridor**: `update_option_tick` now keeps strikes within `5.0 x strike_step` of ATM (was `3.0`), so OTM 4-5 institutional positioning reaches the Pain Zone VWAPs (`vwap_call_buy/sell`, `vwap_put_buy/sell`), the 1m option-flow ledger, and `SweepStopRunDetector`.
+- **Stale L2 Depth Mixing Eliminated**: `extract_micro_metrics` only accepts an L2 book at most **2.0s** older than the latest tick. A 30s-old `bp1/sp1/b1..a5` can no longer be paired with a fresh LTP (which silently produced phantom spread/depth metrics).
+- **Tick Intensity Under-Count Fixed**: the divisor is now the **observed buffer span** clamped to `[5.0s, lookback]` instead of the full lookback. A freshly warmed 3s-5s buffer was previously divided by 30s, under-reporting arrival intensity ~6x and starving the Mode B tick domain.
+- **Ghost-Book Guard Widened**: Mode A tradability now rejects `tot_depth <= 0` and `tot_depth < 200` (previously `0 < tot_depth < 200` left the zero case unguarded).
+
+### Conviction Scoring (`AEGIS/core/option_order_flow.py`)
+- **Wyckoff Double-Counting Removed**: `_evaluate_mode_b_conviction` no longer grants a `34.0` flow floor or a `+4` tick bonus from `wyckoff_confirmed`. `WyckoffVolumeEngine` already derives its verdict from the same option order-flow ledger, so scoring it again counted one data source twice. Wyckoff stays in the payload as **telemetry only** (`wyckoff_scored: False`).
+- **Pillar-Aware Mode B Profile**: `_evaluate_mode_b_conviction` now receives `pillar` from `pa_details`.
+  - **Pillar 2 (Micro-Sweep Reclaim / Counter-Trap)** enters on the reversal reclaim before expansion prints: stagnation veto relaxed from `micro_ret >= +0.20%` to `>= -0.10%` (an active dump is still vetoed as `mode_b_p2_reclaim_dump_veto`), with weights **45 (I1) / 30 (tick) / 25 (spread)**.
+  - **Pillars 1/3/4/5** keep the strict `micro_ret >= +0.20%` impulse mandate with weights **40 / 35 / 25**.
+- **Dead Code Purged**: unused `SETUP_WEIGHT_PROFILES` block removed (its test now validates `DEFAULT_WEIGHTS`).
+
+### Wyckoff Volume Engine (`AEGIS/core/wyckoff_volume_engine.py`)
+- **`SHADOW` Mode Bypass Restored**: the in-flight `if not flow_ok: return False` path returned *before* the `SHADOW` check, so shadow mode still blocked live Mode B setups. Vetoes now log (`shadow_bypass_<reason>`) and never block. `ACTIVE` behaviour is unchanged.
+
+### Price Action (`AEGIS/core/price_action_engine.py`)
+- **4-Leg / 2-Leg Flow Unit Parity**: `_get_flow_dict` and both Pillar 5 payloads now report `opt_delta_flow = (call_buy + put_sell) - (put_buy + call_sell)`, matching the 4-leg `bull_flow` / `bear_flow` / `opt_total_vol` in the same dict. Previously a bar could pass the `1.5x` bull/bear dominance check while failing the `delta_flow <= 0` veto (e.g. heavy put-selling + call-buying).
+- **Pure Mode B Enforcement**: the bar-close Mode A ladders (`check_20_ema_rejection`, `check_micro_sweep_reclaim`) inside `evaluate_setup` are now gated behind `AEGIS_ENABLE_LEGACY_MODE_A` (**default `0`**). Live trading is 100% Pure Mode B Live Breakout; the legacy methods remain callable directly for tests/backtests.
+
+### Option Quality (`AEGIS/core/option_quality.py`)
+- **One-Sided Book Trap Closed**: `qualify_option` now enforces a **two-sided** depth floor — `min(top5_bid_qty, top5_ask_qty) >= max(2 x lot_size, 25)` on top of the total-depth floor. A `5000`-bid / `1`-ask book used to pass and guarantee a full-lot slippage sweep on entry (`one_sided_book_trap`).
+- `min_top5_depth_qty` was dead config; it is now wired as the configured total-depth floor (NIFTY 150 / SENSEX 50, still raised to `5 x lot_size`).
+
+### Pipeline Orchestrator (`AEGIS/core/pipeline_orchestrator.py`)
+- **Unreachable `cluster_scoring` Branches Removed**: `cluster_scoring` was hard-coded `True`, making the per-trigger `OptionQualityEngine` call and the two duplicated microstructure-extraction ladders permanently dead. Both are deleted, so quality + conviction are enforced in exactly one place — the selected cluster candidate.
+
 ## [1.0.4] - 2026-11-13 (Group 2 Hardening: Unified Sweep Tolerance, Mode B P1 Wyckoff Parity, Same-or-Prior-Candle Sweep Window, P3 Flow Veto, Direction-Scoped Lockout, Prominence Purity & Interior-Cluster Sweep Ban)
 
 ### Sweep / Stop-Run Microstructure

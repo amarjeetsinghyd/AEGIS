@@ -362,15 +362,14 @@ class TestCompositeConvictionEngine:
         assert "vol_ratio" in metrics
         assert metrics["vol_sma10"] == 195.0
 
-    def test_setup_weight_profiles(self, engine):
-        """Verifies that all setup weight profiles sum to exactly 100.0."""
-        for setup, weights in engine.SETUP_WEIGHT_PROFILES.items():
-            total_w = sum(weights.values())
-            assert total_w == pytest.approx(100.0, abs=1e-5), f"{setup} weights do not sum to 100"
-            assert "structure" in weights
-            assert "impulse" in weights
-            assert "flow" in weights
-            assert "contract" in weights
+    def test_default_weight_domains_sum_to_100(self, engine):
+        """Verifies the canonical conviction weight domains sum to exactly 100.0."""
+        weights = engine.DEFAULT_WEIGHTS
+        assert sum(weights.values()) == pytest.approx(100.0, abs=1e-5)
+        assert weights["structure"] == 0.0  # Retired — verified upstream by PriceActionEngine
+        assert "impulse" in weights
+        assert "flow" in weights
+        assert "contract" in weights
 
     def test_pillar_2_wyckoff_spring_reclaim_scores_above_80(self, engine):
         """

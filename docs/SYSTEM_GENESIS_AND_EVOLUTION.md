@@ -264,7 +264,7 @@ On **September 24, 2026 (SENSEX Weekly Expiry Day)**, AEGIS achieved an unpreced
 flowchart TD
     subgraph DataIngestion ["Tick & 1-Minute Aggregation Pipeline"]
         WS["Shoonya WebSocket Feed (L1 + Top-5 L2 Depth)"] --> PA["PriceActionEngine (1m OHLCV + ATR14 + 20/50 EMA)"]
-        WS --> OF["1-Min Option Volume Flow Accumulator (ATM ± 7 Strikes)"]
+        WS --> OF["1-Min Option Volume Flow Accumulator (ATM ± 5 Strikes)"]
     end
 
     subgraph CatBoostDualTrack ["Dual-Track CatBoost Flow Architecture"]
