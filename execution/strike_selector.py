@@ -208,10 +208,9 @@ class StrikeSelector:
 
         valid_opts = []
         for target_strike in otm_strikes:
-            strike_angel = int(target_strike * 100)
             strike_shoonya = int(target_strike)
             opts_strike_int = opts['strike'].astype(float).astype(int)
-            match = opts[(opts_strike_int == strike_angel) | (opts_strike_int == strike_shoonya)]
+            match = opts[opts_strike_int == strike_shoonya]
             
             if match.empty:
                 drops["no_chain_match"] += 1

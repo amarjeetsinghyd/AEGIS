@@ -66,13 +66,34 @@ class DumpDetector:
         self.p = self.theta = self.pnl = 0.0
         self.x1 = self.x2 = self.x3 = self.x4 = self.x5 = 0.0
 
-    def arm(self, entry_price: float, tp_pct: float = 0.04, sl_pct: float = -0.08) -> None:
-        """Call at fill time. Book/flow baselines should already be warm
-        (feed on_tick() from the moment the strike is selected, not at fill)."""
+    def arm(self, entry_price: float, tp_pct: float = 0.04, sl_pct: float = -0.08,
+            lot: int = 0) -> None:
+        """Call at fill time.
+
+        ``lot`` re-derives the shrinkage volume ``v0 = 2 * lot`` for the ACTIVE
+        instrument (NIFTY 65 / SENSEX 20). Without it a SENSEX leg inherits the
+        NIFTY v0=130 and the aggression ratio becomes 3x too insensitive.
+
+        Cross-trade reset: every tape/book accumulator is zeroed because a new
+        strike never inherits the previous trade's cumulative-volume baseline.
+        Without this, trade 2's cumulative volume can stay < trade 1's
+        ``last_vol`` and ``dv`` freezes at 0.0 for the whole trade.
+        """
+        if lot > 0:
+            self.v0 = 2.0 * float(lot)
         self.entry, self.peak_bid = entry_price, 0.0
         self.tp, self.sl = tp_pct, sl_pct
         self.zone = False
         self.n_fire = 0
+        self.t_fire = 0.0
+        # Reset cross-trade tape & book state (no inheritance across strikes)
+        self.last_ts = self.last_vol = self.last_lp = 0.0
+        self.last_sign = 1
+        self.pb1 = self.pa1 = 0.0
+        self.sv = self.bv = self.di = self.bw = self.aw = 0.0
+        self.bw_base = self.aw_base = 0.0
+        self.p = self.theta = self.pnl = 0.0
+        self.x1 = self.x2 = self.x3 = self.x4 = self.x5 = 0.0
         self.armed = True
 
     def disarm(self) -> None:

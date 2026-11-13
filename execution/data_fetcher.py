@@ -86,7 +86,7 @@ class DataFetcher:
             token = "26000"
             return token, "NIFTY", "NSE"
         else:
-            token = "1" if ACTIVE_BROKER == "SHOONYA" else "99919000"
+            token = "1"
             return token, "SENSEX", "BSE"
 
     def get_historical_candles(self, exchange, token, interval, days_back=5, minutes_back=None):

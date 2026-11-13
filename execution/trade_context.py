@@ -120,17 +120,6 @@ class TradeContext:
         self.hwm_profit_pct = 0.0
         self.active_phase = "PHASE_1_CONSERVATIVE"
 
-        # Entry Microstructure State for Flow-Exit Engine
-        d_payload = decision_payload or {}
-        self.entry_velocity = float(d_payload.get("velocity", 0.0))
-        self.entry_acceleration = float(d_payload.get("acceleration", 0.0))
-        self.entry_flowdurationsec = int(d_payload.get("flowdurationsec", d_payload.get("flow_duration_sec", 0)))
-        self.entry_tradesigner = str(d_payload.get("tradesigner", d_payload.get("trade_signer", "NEUTRAL")))
-        self.entry_zscore = float(d_payload.get("zscore", d_payload.get("z_score", 0.0)))
-        self.adverse_flow_checks = 0
-        self.recovery_checks = 0
-        self.flow_exit_armed = False
-
         # Spot Excursion Tracking (Spot MFE / MAE in points and timestamps)
         self.spot_peak_mfe_pts: float = 0.0
         self.spot_peak_mae_pts: float = 0.0

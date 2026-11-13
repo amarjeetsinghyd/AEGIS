@@ -23,6 +23,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 import re
 import polars as pl
+import pandas as pd
 
 # Ensure repo root is on sys.path
 repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -31,6 +32,8 @@ if repo_root not in sys.path:
 
 from core.pipeline_orchestrator import AegisPipelineOrchestrator, create_aegis_engine
 from execution.realistic_paper_broker import calculate_nse_option_charges
+from execution.strike_selector import StrikeSelector
+from config.settings import NIFTY_PREMIUM_MIN, NIFTY_PREMIUM_MAX, SENSEX_PREMIUM_MIN, SENSEX_PREMIUM_MAX
 
 
 @dataclass
@@ -101,7 +104,10 @@ class SimulatedPositionManager:
     - Two-Key Breakeven Guard (peak >= 2.5x noise floor AND (60s OR 3.5bps spot confirm))
     - Dynamic Runner Trailing (arm >= 3.0x noise floor or +15%, trail 20% of peak)
     - Adaptive time ceiling (5m baseline -> 6m extension for running winners)
-    - Post-trade cooldown (60s)
+    - Post-trade cooldown (60s), strict 3 trades/day, 2-loss circuit breaker,
+      Rs 2000 daily loss cap (live QualitySlotPolicy parity)
+    - Spread-aware fills: entry on best ASK (sp1), exit on best BID (bp1),
+      except a resting TP maker order which fills at the TP limit itself
     - Real Indian statutory charges (STT/exchange/SEBI/stamp/GST + ₹10 brokerage)
     """
 
@@ -119,7 +125,10 @@ class SimulatedPositionManager:
         runner_trail_pct: float = 2.0,
         max_hold_sec: float = 300.0,
         cooldown_sec: float = 60.0,
-        max_trades_per_day: int = 8,
+        max_trades_per_day: int = 3,
+        consec_loss_stop: int = 2,
+        daily_loss_cap_rs: float = 2000.0,
+        near_target_tolerance: float = 0.6,
         use_statutory_charges: bool = True,
     ):
         self.start_capital = start_capital
@@ -138,6 +147,9 @@ class SimulatedPositionManager:
         self.max_hold_sec = max_hold_sec
         self.cooldown_sec = cooldown_sec
         self.max_trades_per_day = max_trades_per_day
+        self.consec_loss_stop = int(consec_loss_stop)
+        self.daily_loss_cap_rs = float(daily_loss_cap_rs)
+        self.near_target_tolerance = float(near_target_tolerance)
         self.entry_cutoff_hour = 15
         self.entry_cutoff_min = 0
 
@@ -148,20 +160,35 @@ class SimulatedPositionManager:
         self.consecutive_route_cooldown_sec: float = 180.0
         self.trade_counter: int = 0
         self.last_spot: float = 0.0
+        self.consec_losses: int = 0
+        self.daily_net_pnl: float = 0.0
 
     def update_spot(self, spot: float) -> None:
         """Tracks latest underlying spot price for live parity and spot invalidation."""
         if spot > 0:
             self.last_spot = spot
 
-    def on_signal(self, sig: Dict[str, Any], current_ts_sec: float) -> bool:
-        """Handles new entry signals from AegisPipelineOrchestrator."""
+    def on_signal(self, sig: Dict[str, Any], current_ts_sec: float, live_ask: float = 0.0) -> bool:
+        """Handles new entry signals from AegisPipelineOrchestrator.
+
+        ``live_ask`` is the best offer (sp1) at signal time. Live execution always
+        buys into the offer, so the simulated entry must fill at the ask — never at
+        the last traded price. Falls back to the signal LTP when no book is present.
+        """
         # 1. Check production time cutoff (No new entries after 15:00)
         tm = time.localtime(current_ts_sec)
         if tm.tm_hour > self.entry_cutoff_hour or (tm.tm_hour == self.entry_cutoff_hour and tm.tm_min >= self.entry_cutoff_min):
             return False
 
         if len(self.completed_trades) >= self.max_trades_per_day:
+            return False
+
+        # Live QualitySlotPolicy parity: consecutive-loss circuit breaker
+        if self.consec_loss_stop > 0 and self.consec_losses >= self.consec_loss_stop:
+            return False
+
+        # Live QualitySlotPolicy parity: hard daily net-loss cap
+        if self.daily_loss_cap_rs > 0.0 and self.daily_net_pnl <= -self.daily_loss_cap_rs:
             return False
 
         if self.active_trade is not None:
@@ -191,19 +218,22 @@ class SimulatedPositionManager:
         if lp <= 0 or not sym:
             return False
 
+        # Live fill parity: buy into the offer (sp1); fall back to LTP if no book.
+        entry_px = live_ask if live_ask > 0.0 else lp
+
         # Premium filter (live OptionQualityEngine parity: Rs 5 - Rs 400 tradable band)
-        if lp < 5.0 or lp > 400.0:
+        if entry_px < 5.0 or entry_px > 400.0:
             return False
 
         pa_name = str(sig.get("metrics", {}).get("pa_setup_name") or "")
 
         self.trade_counter += 1
         time_str = time.strftime("%H:%M:%S", time.localtime(current_ts_sec))
-        trade_val = lp * self.lot_size
+        trade_val = entry_px * self.lot_size
 
         spot_val = float(sig.get("spot") or sig.get("metrics", {}).get("spot_price") or self.last_spot or 0.0)
         ref_spot = spot_val if spot_val > 0 else 24000.0
-        noise_flr = max(1.50, 0.05 * lp)
+        noise_flr = max(1.50, 0.05 * entry_px)
         spot_sl_pts = ref_spot * (6.5 / 10000.0)  # 6.5 basis points
 
         # Dynamic Moneyness / Strike Delta derivation (Parity with Live Execution Manager)
@@ -231,22 +261,22 @@ class SimulatedPositionManager:
             else:
                 est_delta = 0.25
         else:
-            if lp >= 80.0:
+            if entry_px >= 80.0:
                 est_delta = 0.55
-            elif lp >= 40.0:
+            elif entry_px >= 40.0:
                 est_delta = 0.45
-            elif lp >= 20.0:
+            elif entry_px >= 20.0:
                 est_delta = 0.35
             else:
                 est_delta = 0.25
 
         opt_sl_dist = max(noise_flr, est_delta * spot_sl_pts)
-        max_sl_dist = lp * 0.35
+        max_sl_dist = entry_px * 0.35
         eff_sl_dist = min(opt_sl_dist, max_sl_dist)
-        eff_sl_pct = (eff_sl_dist / lp) * 100.0
+        eff_sl_pct = (eff_sl_dist / entry_px) * 100.0
 
         be_lock_buf = max(0.50, 0.5 * noise_flr)
-        be_exit_pct = (be_lock_buf / lp) * 100.0
+        be_exit_pct = (be_lock_buf / entry_px) * 100.0
         spot_confirm_pts = ref_spot * (3.5 / 10000.0)  # 3.5 basis points
 
         self.active_trade = ExecutedTrade(
@@ -255,7 +285,7 @@ class SimulatedPositionManager:
             direction=direction,
             entry_ts_sec=current_ts_sec,
             entry_time_str=time_str,
-            entry_price=lp,
+            entry_price=entry_px,
             qty=self.lot_size,
             trade_value=trade_val,
             eqs_score=eqs,
@@ -272,8 +302,13 @@ class SimulatedPositionManager:
         )
         return True
 
-    def on_tick(self, sym: str, lp: float, current_ts_sec: float) -> None:
-        """Updates active open position with real-time price ticks."""
+    def on_tick(self, sym: str, lp: float, current_ts_sec: float, live_bid: float = 0.0) -> None:
+        """Updates active open position with real-time price ticks.
+
+        ``live_bid`` is the best bid (bp1) at this tick. Exit evaluation always
+        fills at the bid (live parity); the resting TP maker order still fills at
+        ``trade.target_pct`` when ``live_bid >= tp_price`` (i.e. bid crossed TP).
+        """
         trade = self.active_trade
         if trade is None or trade.symbol != sym or lp <= 0:
             return
@@ -289,22 +324,31 @@ class SimulatedPositionManager:
 
         peak_gain_rs = (trade.peak_pnl_pct / 100.0) * entry_price
 
+        tp_price = entry_price * (1.0 + trade.target_pct / 100.0)
+
+        # Exit fill parity: rest at bid (live BID); resting TP maker fills at TP limit
+        # only when bid crossed it. Otherwise fall back to LTP.
+        if live_bid > 0.0:
+            exit_px = tp_price if pnl_pct >= trade.target_pct and live_bid >= tp_price else live_bid
+        else:
+            exit_px = lp
+
         # 1. Target Profit Hit (Fast +4.0% Scalp Take-Profit, live parity)
         if pnl_pct >= trade.target_pct:
-            self._close_position(lp, trade.target_pct, f"TARGET_HIT (+{trade.target_pct:.1f}%)", current_ts_sec)
+            self._close_position(exit_px, trade.target_pct, f"TARGET_HIT (+{trade.target_pct:.1f}%)", current_ts_sec)
             return
 
         # 1A. Premium Hard SL (-12.0% disaster floor, V4 live parity: overrides
         # all lagging spot-level checks, evaluated every tick).
         if pnl_pct <= -12.0:
-            self._close_position(lp, pnl_pct, f"PREMIUM_HARD_SL (-12.0% disaster floor: {pnl_pct:.1f}%)", current_ts_sec)
+            self._close_position(exit_px, pnl_pct, f"PREMIUM_HARD_SL (-12.0% disaster floor: {pnl_pct:.1f}%)", current_ts_sec)
             return
 
         # ─── Stepped Risk Compression + Cost-Shield + Near-Target Engine (Parity with Live V4.1) ───
-        # 1. Near-Target Profit Lock (Peak >= +3.5%, exits on >= 0.5% drop from peak)
+        # 1. Near-Target Profit Lock (Peak >= +3.5%, exits on >= near_target_tolerance drop from peak)
         if trade.peak_pnl_pct >= 3.5:
-            if (trade.peak_pnl_pct - pnl_pct) >= 0.5:
-                self._close_position(lp, pnl_pct, f"NEAR_TARGET_LOCK (+{pnl_pct:.1f}%)", current_ts_sec)
+            if (trade.peak_pnl_pct - pnl_pct) >= self.near_target_tolerance:
+                self._close_position(exit_px, pnl_pct, f"NEAR_TARGET_LOCK (+{pnl_pct:.1f}%)", current_ts_sec)
                 return
 
         # Two-Key Breakeven Guard Spot Confirmation Hook
@@ -322,26 +366,26 @@ class SimulatedPositionManager:
         if trade.peak_pnl_pct >= 3.0 or getattr(trade, "breakeven_locked", False):
             trade.breakeven_locked = True
             if pnl_pct <= 0.0:
-                self._close_position(lp, pnl_pct, "COST_SHIELD_SCRATCH (0.0%)", current_ts_sec)
+                self._close_position(exit_px, pnl_pct, "COST_SHIELD_SCRATCH (0.0%)", current_ts_sec)
                 return
         elif trade.peak_pnl_pct >= 2.0:
             if pnl_pct <= -3.0:
-                self._close_position(lp, pnl_pct, "STEPPED_SAFETY_SL (-3.0%)", current_ts_sec)
+                self._close_position(exit_px, pnl_pct, "STEPPED_SAFETY_SL (-3.0%)", current_ts_sec)
                 return
 
         # 4. Spot-Driven Invalidation Stop-Loss (Normalized 6.5 bps of spot entry)
         if pnl_pct <= -trade.eff_sl_pct:
-            self._close_position(lp, -trade.eff_sl_pct, f"STOP_LOSS (-{trade.eff_sl_pct:.1f}%)", current_ts_sec)
+            self._close_position(exit_px, -trade.eff_sl_pct, f"STOP_LOSS (-{trade.eff_sl_pct:.1f}%)", current_ts_sec)
             return
 
         # 5. Adaptive Time Ceiling (5m baseline -> 6m extension for running winners, live parity)
         if hold_time >= 360.0:
-            self._close_position(lp, pnl_pct, "TIME_EXPIRED (6m)", current_ts_sec)
+            self._close_position(exit_px, pnl_pct, "TIME_EXPIRED (6m)", current_ts_sec)
             return
         if hold_time >= self.max_hold_sec:
             extended = (trade.peak_pnl_pct >= 2.0 or trade.breakeven_locked or trade.runner_locked)
             if not extended:
-                self._close_position(lp, pnl_pct, "TIME_EXPIRED (5m)", current_ts_sec)
+                self._close_position(exit_px, pnl_pct, "TIME_EXPIRED (5m)", current_ts_sec)
                 return
 
     def _close_position(self, exit_price: float, exit_pct: float, reason: str, current_ts_sec: float) -> None:
@@ -384,6 +428,13 @@ class SimulatedPositionManager:
         self.last_exited_route = getattr(trade, "pa_setup_name", "") or ""
         self.active_trade = None
 
+        # Live risk-parity bookkeeping (consec-loss circuit breaker + daily cap)
+        if net_pnl < 0:
+            self.consec_losses += 1
+        else:
+            self.consec_losses = 0
+        self.daily_net_pnl += net_pnl
+
     def force_close_at_eod(self, last_prices: Dict[str, float], last_ts_sec: float) -> None:
         """Force-closes any open position at session end."""
         if self.active_trade is not None:
@@ -404,14 +455,16 @@ class AegisParquetBacktester:
         date_str: Optional[str] = None,
         strike_step: float = 50.0,
         high_conviction_threshold: float = 75.0,
-        eqs_dispatch_threshold: float = 70.0,
         min_tick_rate_gate: float = 1.0,
         start_capital: float = 2000.0,
         charges_per_trade: float = 16.50,
-        target_pct: float = 6.5,
+        target_pct: float = 4.0,   # Fast +4.0% Scalp Take-Profit (live RESTING_TP_LIMIT_PCT parity)
         stop_loss_pct: float = 8.0,  # V4 premium floor parity (live PREMIUM_HARD_SL_PCT calibrated to -8.0%)
-        cooldown_sec: float = 120.0,
-        max_trades_per_day: int = 8,
+        cooldown_sec: float = 60.0,
+        max_trades_per_day: int = 3,
+        consec_loss_stop: int = 2,
+        daily_loss_cap_rs: float = 2000.0,
+        near_target_tolerance: float = 0.6,
         use_statutory_charges: bool = True,
         telemetry_dir: Optional[str] = None,
     ):
@@ -419,7 +472,6 @@ class AegisParquetBacktester:
         self.date_str = date_str
         self.strike_step = strike_step
         self.high_conviction_threshold = high_conviction_threshold
-        self.eqs_dispatch_threshold = eqs_dispatch_threshold
         self.min_tick_rate_gate = min_tick_rate_gate
         self.start_capital = start_capital
         self.charges_per_trade = charges_per_trade
@@ -427,6 +479,9 @@ class AegisParquetBacktester:
         self.stop_loss_pct = stop_loss_pct
         self.cooldown_sec = cooldown_sec
         self.max_trades_per_day = max_trades_per_day
+        self.consec_loss_stop = int(consec_loss_stop)
+        self.daily_loss_cap_rs = float(daily_loss_cap_rs)
+        self.near_target_tolerance = float(near_target_tolerance)
         self.use_statutory_charges = use_statutory_charges
         self.telemetry_dir = telemetry_dir or os.path.join(data_dir, "telemetry_eval")
         os.makedirs(self.telemetry_dir, exist_ok=True)
@@ -437,6 +492,10 @@ class AegisParquetBacktester:
         self.token_map: Dict[str, Dict[str, Any]] = {}
         self.engine: Optional[AegisPipelineOrchestrator] = None
         self.position_manager: Optional[SimulatedPositionManager] = None
+
+        # Budget-strike target staging (live `_refresh_budget_strike_targets` parity)
+        self._last_budget_refresh_ts: float = 0.0
+        self._budget_refresh_interval_sec: float = 10.0
 
     def discover_files(self) -> List[str]:
         """Discovers valid, non-stub L2 parquet files for the given date or directory."""
@@ -515,8 +574,6 @@ class AegisParquetBacktester:
         )
         self.engine.high_conviction_threshold = self.high_conviction_threshold
         self.engine.min_tick_rate_gate = self.min_tick_rate_gate
-        if getattr(self.engine, "eqs_engine", None):
-            self.engine.eqs_engine.dispatch_threshold = self.eqs_dispatch_threshold
         if self.engine.outcome_telemetry:
             self.engine.outcome_telemetry.log_dir = self.telemetry_dir
 
@@ -537,10 +594,96 @@ class AegisParquetBacktester:
             max_hold_sec=300.0,
             cooldown_sec=self.cooldown_sec,
             max_trades_per_day=self.max_trades_per_day,
+            consec_loss_stop=self.consec_loss_stop,
+            daily_loss_cap_rs=self.daily_loss_cap_rs,
+            near_target_tolerance=self.near_target_tolerance,
             use_statutory_charges=self.use_statutory_charges,
         )
 
         return self.engine
+
+    def _refresh_backtest_budget_targets(self, ts_sec: float) -> None:
+        """Stage affordable CALL/PUT budget anchors every ~10s of simulated ts_sec.
+
+        Mirrors `execution_manager._refresh_budget_strike_targets` so the backtest
+        pre-stages targets exactly like live and `on_tick_parsed()` no longer drops
+        every option tick because `budget_strike_targets == {}`.
+        """
+        engine = self.engine
+        pm = self.position_manager
+        if engine is None or pm is None:
+            return
+
+        # Throttle to 10s of simulated time (monotonic within the replay loop)
+        if ts_sec - self._last_budget_refresh_ts < self._budget_refresh_interval_sec:
+            return
+        self._last_budget_refresh_ts = ts_sec
+
+        spot = float(getattr(engine, "last_spot", 0.0) or 0.0)
+        funds = float(getattr(pm, "current_capital", 0.0) or 0.0)
+        if funds <= 0.0 or spot <= 0.0:
+            engine.set_budget_strike_targets({})
+            return
+
+        token_map = getattr(engine, "token_map", {})
+        token_to_symbol = getattr(engine, "t2s", {})
+        option_rows = [
+            {
+                "token": str(token),
+                "symbol": str(token_to_symbol.get(str(token), "")),
+                "strike": float(info.get("strike", 0.0) or 0.0),
+                "expiry": info.get("expiry"),
+                "side": int(info.get("side", -1)),
+            }
+            for token, info in token_map.items()
+            if int(info.get("side", -1)) in (0, 1)
+            and float(info.get("strike", 0.0) or 0.0) > 0.0
+            and token_to_symbol.get(str(token))
+        ]
+        if not option_rows:
+            return
+
+        weekly_opts = pd.DataFrame(option_rows)
+        option_cache = getattr(engine, "option_cache", {})
+        targets: Dict[str, Dict[str, Any]] = {}
+        index_name = "NIFTY" if self.strike_step <= 50 else "SENSEX"
+        premium_min = NIFTY_PREMIUM_MIN if index_name == "NIFTY" else SENSEX_PREMIUM_MIN
+        premium_max = NIFTY_PREMIUM_MAX if index_name == "NIFTY" else SENSEX_PREMIUM_MAX
+        lot_size = 65 if self.strike_step <= 50 else 20
+
+        for signal_type, direction, expected_side in (
+            ("CALL", "UP", 0),
+            ("PUT", "DOWN", 1),
+        ):
+            side_universe = weekly_opts[weekly_opts["side"] == expected_side]
+            allocation = StrikeSelector.select_strikes(
+                signal_type=signal_type,
+                index_price=spot,
+                index_name=index_name,
+                weekly_opts=side_universe,
+                option_cache=option_cache,
+                available_funds=funds,
+                lot_size=lot_size,
+                premium_min=premium_min,
+                premium_max=premium_max,
+                suppress_funds_warning=True,
+                atm_strike=float(getattr(engine, "current_atm_strike", 0.0) or 0.0),
+            )
+            if not allocation:
+                continue
+            row, _quantity, ltp = allocation[0]
+            targets[direction] = {
+                "token": str(row["token"]),
+                "symbol": str(row["symbol"]),
+                "strike": float(row["strike"]),
+                "ltp": float(ltp),
+                "available_funds": funds,
+                "lot_size": lot_size,
+                "effective_premium_min": float(premium_min),
+                "premium_max": float(premium_max),
+            }
+
+        engine.set_budget_strike_targets(targets)
 
     def run(self) -> Dict[str, Any]:
         """Executes full chronological replay of all parquet ticks."""
@@ -624,13 +767,18 @@ class AegisParquetBacktester:
                     while not self.signal_queue.empty():
                         sig = self.signal_queue.get_nowait()
                         emitted_signals.append(sig)
-                        self.position_manager.on_signal(sig, ts_sec)
+                        # Live fill parity: entry fills at best ASK (sp1)
+                        self.position_manager.on_signal(sig, ts_sec, live_ask=sp1)
+
+                    # Refresh budget-strike anchors on spot seed / every 10s of sim time
+                    if sym_str and lp > 0 and self.token_map.get(tok_str, {}).get("is_index"):
+                        self.position_manager.update_spot(lp)
+                        self._refresh_backtest_budget_targets(ts_sec)
 
                     # Update active position with current tick
                     if sym_str and lp > 0:
-                        if self.token_map.get(tok_str, {}).get("is_index"):
-                            self.position_manager.update_spot(lp)
-                        self.position_manager.on_tick(sym_str, lp, ts_sec)
+                        # Live fill parity: exit fills at best BID (bp1)
+                        self.position_manager.on_tick(sym_str, lp, ts_sec, live_bid=bp1)
 
         finally:
             gamma_logger.setLevel(prev_level)
@@ -713,10 +861,9 @@ def main():
     parser.add_argument("--date", type=str, default="2026-08-28", help="Date string YYYY-MM-DD to evaluate")
     parser.add_argument("--capital", type=float, default=2000.0, help="Starting capital in Rupees")
     parser.add_argument("--charges", type=float, default=16.50, help="Brokerage charges per trade in Rupees")
-    parser.add_argument("--target", type=float, default=6.5, help="Profit target percentage")
+    parser.add_argument("--target", type=float, default=4.0, help="Profit target percentage")
     parser.add_argument("--stop-loss", type=float, default=5.0, help="Stop loss percentage")
     parser.add_argument("--threshold", type=float, default=75.0, help="High conviction threshold")
-    parser.add_argument("--eqs-threshold", type=float, default=70.0, help="EQS dispatch threshold")
     parser.add_argument("--min-tick-rate", type=float, default=1.0, help="Min live tick rate gate")
     args = parser.parse_args()
 
@@ -728,7 +875,6 @@ def main():
         target_pct=args.target,
         stop_loss_pct=args.stop_loss,
         high_conviction_threshold=args.threshold,
-        eqs_dispatch_threshold=args.eqs_threshold,
         min_tick_rate_gate=args.min_tick_rate,
     )
     results = backtester.run()

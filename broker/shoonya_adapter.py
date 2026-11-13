@@ -391,8 +391,6 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
         self._index_exchange = ""
         self._option_ce_tokens = set()
         self._option_pe_tokens = set()
-        self._option_oi_start = {}
-        self._option_oi_latest = {}
         self._tick_listeners = []  # extra consumers (e.g. Stock Order Flow) — do not start a 2nd WS
         self._close_listeners = []  # WS close consumers (e.g. TickCompiler reconnect) — do not start a 2nd WS
         self._order_listeners = []
@@ -508,9 +506,6 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                     )
 
                 s_token = str(token)
-                oi_val = message.get("oi") or message.get("poi") or message.get("oiv")
-                if oi_val is not None:
-                    self._ingest_option_oi(s_token, oi_val)
 
                 std_msg = {
                     "token": str(token),
@@ -525,11 +520,6 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                     "close": float(message.get("c", 0) or 0),
                     "percent_change": float(message.get("pc", 0) or 0),
                 }
-                if oi_val is not None:
-                    try:
-                        std_msg["oi"] = float(oi_val)
-                    except (ValueError, TypeError):
-                        pass
                 if "bp1" in message:
                     std_msg["bid"] = float(message["bp1"])
                 if "sp1" in message:
@@ -553,7 +543,7 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                         pass
 
                 _PRESERVE_ZERO_KEYS = {
-                    "last_traded_price", "oi", "bid", "ask", "exchange_ts",
+                    "last_traded_price", "bid", "ask", "exchange_ts",
                     "bp1", "bp2", "bp3", "bp4", "bp5",
                     "bq1", "bq2", "bq3", "bq4", "bq5",
                     "sp1", "sp2", "sp3", "sp4", "sp5",
@@ -676,22 +666,6 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
             f"for synthetic volume accumulator (accumulator reset)."
         )
 
-    def register_option_tokens(self, ce_tokens: list, pe_tokens: list):
-        if not hasattr(self, "_option_ce_tokens"):
-            self._option_ce_tokens = set()
-            self._option_pe_tokens = set()
-            self._option_oi_start = {}
-            self._option_oi_latest = {}
-            self._strike_to_ce_token = {}
-            self._strike_to_pe_token = {}
-            self._token_to_strike = {}
-            
-        for tok in ce_tokens:
-            self._option_ce_tokens.add(str(tok))
-        for tok in pe_tokens:
-            self._option_pe_tokens.add(str(tok))
-        logger.info(f"Registered {len(ce_tokens)} CE and {len(pe_tokens)} PE option tokens for Net Option Delta OI tracking.")
-
     def register_option_token_metadata(self, option_df):
         if not hasattr(self, "_strike_to_ce_token"):
             self._strike_to_ce_token = {}
@@ -711,79 +685,11 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                     elif 'PE' in symbol or symbol.endswith('P'):
                         self._strike_to_pe_token[strike] = tok
 
-    def get_strike_net_delta_oi(self, strike_price: float) -> float:
-        if not hasattr(self, "_option_oi_latest"):
-            return 0.0
-            
-        strike = float(strike_price)
-        pe_tok = getattr(self, "_strike_to_pe_token", {}).get(strike)
-        ce_tok = getattr(self, "_strike_to_ce_token", {}).get(strike)
-        
-        pe_delta = 0
-        if pe_tok:
-            start = self._option_oi_start.get(pe_tok, self._option_oi_latest.get(pe_tok, 0))
-            latest = self._option_oi_latest.get(pe_tok, start)
-            if start > 0 and latest > 0:
-                pe_delta = latest - start
-                
-        ce_delta = 0
-        if ce_tok:
-            start = self._option_oi_start.get(ce_tok, self._option_oi_latest.get(ce_tok, 0))
-            latest = self._option_oi_latest.get(ce_tok, start)
-            if start > 0 and latest > 0:
-                ce_delta = latest - start
-                
-        return float(pe_delta - ce_delta)
-
     def get_and_reset_synthetic_volume(self) -> int:
         with self._state_lock:
             vol = self._accumulated_synthetic_vol
             self._accumulated_synthetic_vol = 0
             return vol
-
-    def get_current_option_net_delta_oi(self) -> tuple[float, float, float]:
-        if not hasattr(self, "_option_ce_tokens"):
-            return 0.0, 0.0, 0.0
-
-        pe_delta = 0
-        for tok in self._option_pe_tokens:
-            start = self._option_oi_start.get(tok, self._option_oi_latest.get(tok, 0))
-            latest = self._option_oi_latest.get(tok, start)
-            if start > 0 and latest > 0:
-                pe_delta += (latest - start)
-
-        ce_delta = 0
-        for tok in self._option_ce_tokens:
-            start = self._option_oi_start.get(tok, self._option_oi_latest.get(tok, 0))
-            latest = self._option_oi_latest.get(tok, start)
-            if start > 0 and latest > 0:
-                ce_delta += (latest - start)
-
-        net_delta_oi = float(pe_delta - ce_delta)
-        return net_delta_oi, float(pe_delta), float(ce_delta)
-
-    def get_and_reset_option_net_delta_oi(self) -> tuple[float, float, float]:
-        if not hasattr(self, "_option_ce_tokens"):
-            return 0.0, 0.0, 0.0
-
-        pe_delta = 0
-        for tok in self._option_pe_tokens:
-            start = self._option_oi_start.get(tok, self._option_oi_latest.get(tok, 0))
-            latest = self._option_oi_latest.get(tok, start)
-            if start > 0 and latest > 0:
-                pe_delta += (latest - start)
-
-        ce_delta = 0
-        for tok in self._option_ce_tokens:
-            start = self._option_oi_start.get(tok, self._option_oi_latest.get(tok, 0))
-            latest = self._option_oi_latest.get(tok, start)
-            if start > 0 and latest > 0:
-                ce_delta += (latest - start)
-
-        net_delta_oi = float(pe_delta - ce_delta)
-        self._option_oi_start = {tok: self._option_oi_latest[tok] for tok in self._option_oi_latest}
-
-        return net_delta_oi, float(pe_delta), float(ce_delta)
 
     def subscribe(self, tokens: list, exchange: str, feed_type: str = "t") -> None:
         """Subscribe tokens. Default feed_type='t' (touchline) so lp/ltq/v arrive for cash volume."""
@@ -916,20 +822,18 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
         ltp = _f("last_traded_price", "lp")
         bid = _f("bid", "bp1", "b")
         ask = _f("ask", "sp1", "a")
-        oi = _f("oi", "poi", "oiv")
         vol = _f("volume_trade_for_the_day", "v", "volume")
         pc = _f("percent_change", "pc")
 
         with self._state_lock:
             q_dict = self._live_quotes.setdefault(
-                token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0, "pc": 0.0}
+                token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "volume": 0.0, "pc": 0.0}
             )
             if not isinstance(q_dict, dict):
                 q_dict = {
                     "ltp": float(q_dict) if isinstance(q_dict, (int, float)) else 0.0,
                     "bid": 0.0,
                     "ask": 0.0,
-                    "oi": 0.0,
                     "volume": 0.0,
                     "pc": 0.0,
                 }
@@ -941,8 +845,6 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                 q_dict["bid"] = bid
             if ask is not None:
                 q_dict["ask"] = ask
-            if oi is not None:
-                q_dict["oi"] = oi
             if vol is not None:
                 q_dict["volume"] = vol
             if pc is not None:
@@ -956,7 +858,7 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
             q = self._live_quotes.get(str(token))
             if q is not None and isinstance(q, dict):
                 return dict(q)
-            return {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0, "pc": 0.0}
+            return {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "volume": 0.0, "pc": 0.0}
 
     def get_quote(self, exchange: str, token: str) -> dict:
         self._ensure_ws_started()
@@ -983,7 +885,7 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                 res = self._api.get_quotes(exchange=exchange, token=token)
                 if isinstance(res, dict) and res.get("lp") is not None:
                     q_dict = self._live_quotes.setdefault(
-                        token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0, "pc": 0.0}
+                        token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "volume": 0.0, "pc": 0.0}
                     )
                     q_dict["ltp"] = float(res.get("lp", 0.0) or 0.0)
                     q_dict["bid"] = float(res.get("bp1", 0.0) or 0.0)
@@ -992,35 +894,11 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                         q_dict["pc"] = float(res.get("pc", 0.0) or 0.0)
                     if res.get("v") is not None:
                         q_dict["volume"] = float(res.get("v") or 0.0)
-                    if res.get("oi") is not None:
-                        try:
-                            oi_f = float(res.get("oi") or 0.0)
-                            q_dict["oi"] = oi_f
-                            self._ingest_option_oi(token, oi_f)
-                        except (ValueError, TypeError):
-                            pass
             except Exception:
                 pass
         return self._live_quotes.get(
-            token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0, "pc": 0.0}
+            token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "volume": 0.0, "pc": 0.0}
         )
-
-    def _ingest_option_oi(self, token: str, oi_val: float) -> None:
-        """Update CE/PE OI trackers when a positive OI reading arrives (WS or REST)."""
-        s_token = str(token)
-        if s_token not in getattr(self, "_option_ce_tokens", set()) and s_token not in getattr(
-            self, "_option_pe_tokens", set()
-        ):
-            return
-        try:
-            oi_int = int(float(oi_val))
-        except (ValueError, TypeError):
-            return
-        if oi_int <= 0:
-            return
-        if s_token not in self._option_oi_start:
-            self._option_oi_start[s_token] = oi_int
-        self._option_oi_latest[s_token] = oi_int
 
     def force_rest_quote(self, exchange: str, token: str) -> dict:
         """Always REST-refresh one quote into the WS cache (unstick stale LTP)."""
@@ -1029,7 +907,7 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
             res = self._api.get_quotes(exchange=exchange, token=token)
             if isinstance(res, dict) and res.get("lp") is not None:
                 q_dict = self._live_quotes.setdefault(
-                    token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0, "pc": 0.0}
+                    token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "volume": 0.0, "pc": 0.0}
                 )
                 q_dict["ltp"] = float(res.get("lp", 0.0) or 0.0)
                 q_dict["bid"] = float(res.get("bp1", 0.0) or 0.0)
@@ -1038,18 +916,11 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                     q_dict["pc"] = float(res.get("pc", 0.0) or 0.0)
                 if res.get("v") is not None:
                     q_dict["volume"] = float(res.get("v") or 0.0)
-                if res.get("oi") is not None:
-                    try:
-                        oi_f = float(res.get("oi") or 0.0)
-                        q_dict["oi"] = oi_f
-                        self._ingest_option_oi(token, oi_f)
-                    except (ValueError, TypeError):
-                        pass
                 return dict(q_dict)
         except Exception as e:
             logger.debug(f"force_rest_quote {exchange}|{token} failed: {e}")
         return self._live_quotes.get(
-            token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "oi": 0.0, "volume": 0.0, "pc": 0.0}
+            token, {"ltp": 0.0, "bid": 0.0, "ask": 0.0, "volume": 0.0, "pc": 0.0}
         )
 
 class ShoonyaPortfolioProvider(IPortfolioProvider):
@@ -1094,41 +965,55 @@ class ShoonyaExecutionProvider(IExecutionProvider):
             tsym = order.get("tradingsymbol") or order.get("tsym") or order.get("symbol")
             qty = order.get("quantity") or order.get("qty")
             prctyp = order.get("price_type") or order.get("prctyp") or order.get("ordertype") or "LMT"
-            prc = order.get("price") or order.get("prc")
+            # price=0.0 is a VALID value (SL-M / marketable) — never coerce it to None
+            prc = order.get("price")
+            if prc is None:
+                prc = order.get("prc")
             dscqty = order.get("discloseqty") or order.get("dscqty") or 0
             ret = order.get("retention") or order.get("ret") or "DAY"
-            trgprc = order.get("trigger_price") or order.get("trgprc")
+            trgprc = order.get("trigger_price")
+            if trgprc is None:
+                trgprc = order.get("trgprc")
+
+            # Primary call: trigger_price MUST travel here too — the old code only
+            # forwarded it in the TypeError fallback, silently dropping every SL
+            # trigger price on the normal path.
+            primary_kwargs = {
+                "buy_or_sell": action,
+                "product_type": prd,
+                "exchange": exch,
+                "tradingsymbol": tsym,
+                "quantity": qty,
+                "discloseqty": dscqty,
+                "price_type": prctyp,
+                "price": prc,
+                "retention": ret,
+            }
+            if trgprc is not None:
+                primary_kwargs["trigger_price"] = trgprc
 
             # Try calling NorenApiPy with standard signature variants using try-except
             res = None
             try:
-                res = self._api.place_order(
-                    buy_or_sell=action,
-                    product_type=prd,
-                    exchange=exch,
-                    tradingsymbol=tsym,
-                    quantity=qty,
-                    discloseqty=dscqty,
-                    price_type=prctyp,
-                    price=prc,
-                    retention=ret
-                )
+                res = self._api.place_order(**primary_kwargs)
             except TypeError:
                 try:
                     # Fallback to positional or alternative keys if SDK signature differs
-                    res = self._api.place_order(
-                        trantype=action,
-                        prd=prd,
-                        exch=exch,
-                        tsym=tsym,
-                        qty=qty,
-                        dscqty=dscqty,
-                        prctyp=prctyp,
-                        prc=prc,
-                        ret=ret,
-                        trigger_price=trgprc
-                    )
-                except Exception as ex:
+                    fallback_kwargs = {
+                        "trantype": action,
+                        "prd": prd,
+                        "exch": exch,
+                        "tsym": tsym,
+                        "qty": qty,
+                        "dscqty": dscqty,
+                        "prctyp": prctyp,
+                        "prc": prc,
+                        "ret": ret,
+                    }
+                    if trgprc is not None:
+                        fallback_kwargs["trigger_price"] = trgprc
+                    res = self._api.place_order(**fallback_kwargs)
+                except Exception:
                     # Final fallback using generic dict unpacking if accepted
                     res = self._api.place_order(**order)
             
@@ -1251,13 +1136,10 @@ class ShoonyaAdapter(IBrokerGateway):
     def manifest(self) -> BrokerManifest: return self._manifest
     
     def get_order_lifecycle(self) -> OrderLifecycle: return self.order_lifecycle
-    def register_option_tokens(self, ce: list, pe: list): self._market_data_provider.register_option_tokens(ce, pe)
     def register_option_token_metadata(self, df): self._market_data_provider.register_option_token_metadata(df)
     def register_constituent_tokens(self, tokens: list): self._market_data_provider.register_constituent_tokens(tokens)
     def get_and_reset_synthetic_volume(self) -> int: return self._market_data_provider.get_and_reset_synthetic_volume()
     def peek_synthetic_volume(self) -> int: return int(getattr(self._market_data_provider, "_accumulated_synthetic_vol", 0) or 0)
-    def compile_5min_option_net_delta_oi(self): return self._market_data_provider.get_and_reset_option_net_delta_oi()
-    def get_strike_net_delta_oi(self, strike: float): return self._market_data_provider.get_strike_net_delta_oi(strike)
     def get_available_funds(self) -> float: return float(self._portfolio_provider.get_available_funds())
     def stop_websocket(self) -> None:
         if hasattr(self, "_market_data_provider") and self._market_data_provider is not None:

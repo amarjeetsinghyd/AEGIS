@@ -232,6 +232,8 @@ def call_with_retry(func, *args, limiter: TokenBucketLimiter = None,
         )
     """
     last_exc = None
+    # `functools.partial` / callable objects have no __name__ -> never AttributeError
+    func_name = getattr(func, "__name__", None) or repr(func)
     for attempt in range(max_retries):
         try:
             if limiter:
@@ -239,42 +241,44 @@ def call_with_retry(func, *args, limiter: TokenBucketLimiter = None,
                 if not acquired:
                     limiter_name = getattr(limiter, 'name', 'unknown')
                     raise RuntimeError(
-                        f"[call_with_retry] Could not acquire slot for {func.__name__} "
+                        f"[call_with_retry] Could not acquire slot for {func_name} "
                         f"within timeout (limiter: {limiter_name})"
                     )
             result = func(*args, **kwargs)
-            # AngelOne SDK returns dict with 'status': False on error
-            if isinstance(result, dict) and result.get('status') is False:
-                msg = result.get('message', 'Unknown API error')
-                error_code = result.get('errorcode', '')
-                normalized_msg = msg.lower()
+            # Shoonya returns {"stat": "Not_Ok", "emsg": "..."} instead of raising.
+            # Without this branch every Shoonya rejection (and rate limit) looked
+            # like a SUCCESS to the retry wrapper and was never retried.
+            if isinstance(result, dict) and str(result.get("stat", "")).lower() == "not_ok":
+                msg = str(result.get("emsg", "Unknown Shoonya API error"))
+                norm_msg = msg.lower()
                 rate_limit_error = (
-                    'rate' in normalized_msg
-                    or 'too many requests' in normalized_msg
-                    or 'exceeding access rate' in normalized_msg
-                    or error_code in ('AG8001', 'AG8002', 'AB1021', '403')
+                    "rate" in norm_msg
+                    or "too many" in norm_msg
+                    or "limit" in norm_msg
+                    or "429" in norm_msg
                 )
                 if rate_limit_error:
                     wait = base_delay * (2 ** attempt)
                     logger.warning(
-                        f"[call_with_retry] Rate limit hit calling {func.__name__}, "
-                        f"attempt {attempt+1}/{max_retries}, sleeping {wait:.1f}s"
+                        f"[call_with_retry] Shoonya rate limit hit calling {func_name} "
+                        f"({msg}), attempt {attempt+1}/{max_retries}, sleeping {wait:.1f}s"
                     )
                     time.sleep(wait)
-                    last_exc = RuntimeError(f"Rate limit: {msg}")
+                    last_exc = RuntimeError(f"Shoonya rate limit: {msg}")
                     continue
-                # Other API error — don't retry (bad params, invalid token, etc.)
-                logger.error(f"[call_with_retry] API error from {func.__name__}: {msg} (code: {error_code})")
+                # Other Shoonya rejection (bad token, RMS block, invalid qty) —
+                # never retry, hand the raw dict back to the caller.
+                logger.error(f"[call_with_retry] Shoonya API error from {func_name}: {msg}")
                 return result
             return result
         except Exception as e:
             wait = base_delay * (2 ** attempt)
             logger.warning(
-                f"[call_with_retry] Exception in {func.__name__} attempt {attempt+1}/{max_retries}: "
+                f"[call_with_retry] Exception in {func_name} attempt {attempt+1}/{max_retries}: "
                 f"{type(e).__name__}: {e}, retrying in {wait:.1f}s"
             )
             time.sleep(wait)
             last_exc = e
 
-    logger.error(f"[call_with_retry] All {max_retries} retries exhausted for {func.__name__}")
+    logger.error(f"[call_with_retry] All {max_retries} retries exhausted for {func_name}")
     raise last_exc

@@ -27,7 +27,7 @@ _LEVEL_KEYS: tuple[tuple[str, str, str, str], ...] = (
 
 class ParsedTick:
     """Zero-allocation parsed tick for hot path. Reused per symbol."""
-    __slots__ = ('tok', 'lp', 'vol', 'bp', 'bq', 'sp', 'sq', 'ts', 'oi', '_iceberg_processed')
+    __slots__ = ('tok', 'lp', 'vol', 'bp', 'bq', 'sp', 'sq', 'ts', '_iceberg_processed')
     def __init__(self):
         self.tok = ""
         self.lp = 0.0
@@ -37,7 +37,6 @@ class ParsedTick:
         self.sp = [0.0]*5
         self.sq = [0]*5
         self.ts = 0.0
-        self.oi = 0.0
         self._iceberg_processed = False
 
 

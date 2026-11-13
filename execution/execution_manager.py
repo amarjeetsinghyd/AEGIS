@@ -33,6 +33,7 @@ from execution.capital_engine import CapitalEngine
 from execution.order_lifecycle import (
     PaperOrderLifecycle,
     ShoonyaOrderLifecycle,
+    get_marketable_entry_limit_price,
     get_marketable_exit_limit_price,
     get_smart_maker_tp_price,
 )
@@ -326,10 +327,12 @@ class AegisExecutionManager:
         self._trade_quote_history = deque(maxlen=60)
         
         # Sub-Millisecond Institutional Dump Detector at +2.0% Profit Zone (Pure O(1))
-        lot_size = SENSEX_LOT_SIZE if getattr(self, "is_sensex", False) else NIFTY_LOT_SIZE
+        # LOT-AWARE: NIFTY 65 / SENSEX 20 must come from the ACTIVE instrument —
+        # the legacy `getattr(self, "is_sensex", False)` flag was never set, so
+        # SENSEX ran with v0=130 instead of 40 (3x too insensitive on Wed/Thu).
         self.dump_detector = DumpDetector(
             tick=OPTION_TICK_SIZE,
-            lot=int(lot_size),
+            lot=int(self._active_lot_size()),
             tp_pct=0.04,
             sl_pct=-0.08,
             arm_pct=0.02,
@@ -616,6 +619,33 @@ class AegisExecutionManager:
             "index_name": "NIFTY",
             "exchange": "NFO",
         }
+
+    def _active_lot_size(self, symbol: str = "") -> int:
+        """Lot size for the ACTIVE instrument (NIFTY 65 / SENSEX 20).
+
+        Single source: `get_instrument_params()`. Falls back to symbol-name
+        sniffing and finally to the NIFTY lot, so a hot-path call can never
+        raise. Never hardcode 65/20 at call sites.
+        """
+        try:
+            if symbol:
+                return SENSEX_LOT_SIZE if "SENSEX" in str(symbol).upper() else NIFTY_LOT_SIZE
+            return int(self.get_instrument_params()["lot_size"])
+        except Exception:
+            return SENSEX_LOT_SIZE if "SENSEX" in str(symbol).upper() else NIFTY_LOT_SIZE
+
+    def _order_api(self) -> Any:
+        """Order-placement seam: prefer the rate-limited ShoonyaExecutionProvider.
+
+        Production (`ShoonyaAdapter`) exposes `execution_provider`, whose
+        place/modify/cancel all funnel through `call_with_retry(limiter=
+        _order_limiter)`. Raw `broker._api` keeps working as a fallback for
+        mock/unit-test gateways that only expose `_api`.
+        """
+        provider = getattr(self.broker, "execution_provider", None)
+        if provider is not None:
+            return provider
+        return getattr(self.broker, "_api", None)
 
     def _latest_option_book(self, symbol: str) -> Tuple[float, float, float, float]:
         """Latest in-memory L1 book snapshot for an option symbol, read O(1) from
@@ -934,6 +964,8 @@ class AegisExecutionManager:
         max_daily_trades = MAX_TRADES_PER_DAY
         if self.trades_today >= max_daily_trades:
             logger.warning(f"[AegisEM] Daily trade limit ({max_daily_trades}) reached")
+            self._rollback_slot()
+            self._drain_signal_queue(reason="daily_trade_limit_reached")
             return
 
         # Quality Stack: consecutive-loss stop (blocks entries after N straight losses)
@@ -943,6 +975,8 @@ class AegisExecutionManager:
             logger.warning(
                 f"[AegisEM] Entry blocked — consecutive-loss stop ({consec_losses} >= {consec_stop})"
             )
+            self._rollback_slot()
+            self._drain_signal_queue(reason="consecutive_loss_stop")
             return
 
         # Quality Stack: daily loss cap (blocks entries once day's PnL crosses -cap)
@@ -952,6 +986,8 @@ class AegisExecutionManager:
             logger.warning(
                 f"[AegisEM] Entry blocked — daily loss cap hit (PnL ₹{daily_pnl:.2f} <= -₹{daily_cap:.0f})"
             )
+            self._rollback_slot()
+            self._drain_signal_queue(reason="daily_loss_cap_hit")
             return
 
         now_epoch = time.time()
@@ -1031,7 +1067,6 @@ class AegisExecutionManager:
 
             direction = signal.get("signal")  # "UP" or "DOWN"
             conviction = signal.get("conviction", 0.0)
-            signal.get("lp", 0.0)
             sym = signal.get("sym", "")
             metrics = signal.get("metrics", {})
 
@@ -1176,17 +1211,22 @@ class AegisExecutionManager:
             }
             book_ts, book_ltp, book_bid, book_ask = self._latest_option_book(contract_symbol)
             quote_age = now_epoch - book_ts
+            # PARITY with core/pipeline_orchestrator.py: Mode B (in-flight
+            # breakthrough) legitimately reads a snapshot up to 2.5s old; only
+            # Mode A (closed-bar rejection) demands the tight 1.5s freshness.
+            is_mode_b_sig = str(metrics.get("mode", "") or "").startswith("MODE_B")
+            max_quote_age = 2.5 if is_mode_b_sig else 1.5
             if (
                 book_ts <= 0.0
                 or quote_age < 0.0
-                or quote_age > 1.5
+                or quote_age > max_quote_age
                 or book_ltp <= 0.0
                 or book_bid <= 0.0
                 or book_ask <= book_bid
             ):
                 logger.warning(
                     f"[AegisEM] Entry blocked — scored contract quote is missing, invalid, or stale "
-                    f"({contract_symbol}, age={quote_age:.2f}s)"
+                    f"({contract_symbol}, age={quote_age:.2f}s > {max_quote_age:.1f}s)"
                 )
                 self._rollback_slot()
                 self._drain_signal_queue(reason="stale_scored_contract_quote")
@@ -1243,6 +1283,23 @@ class AegisExecutionManager:
                 )
                 self._rollback_slot()
                 self._drain_signal_queue(reason="selected_contract_ask_unaffordable")
+                return
+
+            # ─── Buffered-Limit Margin Parity ───
+            # The check above compares the RAW ask to available funds, but the order
+            # actually dispatched is the marketable limit = ask + up to 1.5% buffer.
+            # At 99.5% fund utilisation that buffer crossed the margin ceiling and
+            # Shoonya rejected the entry ("insufficient margin"). Gate on the price
+            # that is really sent.
+            buffered_entry_px = get_marketable_entry_limit_price(live_ask)
+            if available_funds > 0.0 and (buffered_entry_px * int(params["lot_size"])) > available_funds:
+                logger.warning(
+                    f"[AegisEM] Entry blocked — buffered limit price exceeds available funds "
+                    f"(limit={buffered_entry_px:.2f}, "
+                    f"cost={buffered_entry_px * int(params['lot_size']):.2f} > funds={available_funds:.2f})"
+                )
+                self._rollback_slot()
+                self._drain_signal_queue(reason="buffered_limit_exceeds_funds")
                 return
 
             # Last-Mile Pre-Trade Spot & In-Flight Continuation Gate
@@ -1404,10 +1461,16 @@ class AegisExecutionManager:
                         is_fri = datetime.now().weekday() == 4
                         tp_p = 0.03 if is_fri else 0.04
                         sl_p = -0.065 if is_fri else -0.08
-                        self.dump_detector.arm(leg.entry_price, tp_pct=tp_p, sl_pct=sl_p)
+                        self.dump_detector.arm(
+                            leg.entry_price,
+                            tp_pct=tp_p,
+                            sl_pct=sl_p,
+                            lot=int(params.get("lot_size", 65)),
+                        )
                         logger.info(
                             f"[AegisEM] 🎯 DumpDetector ARMED at entry {leg.entry_price:.2f} "
-                            f"(TP: {tp_p*100:+.1f}%, SL: {sl_p*100:+.1f}%, arm_pct: +2.0%)"
+                            f"(TP: {tp_p*100:+.1f}%, SL: {sl_p*100:+.1f}%, arm_pct: +2.0%, "
+                            f"lot: {int(params.get('lot_size', 65))}, v0: {self.dump_detector.v0:.0f})"
                         )
 
                     # Enrich decision_payload with exact execution timestamps & microstructure context
@@ -1562,8 +1625,10 @@ class AegisExecutionManager:
             qty = str(resolve_leg_net_qty(leg, int(params["lot_size"])))
             if hasattr(self.order_lifecycle, "_build_kwargs"):
                 kwargs = self.order_lifecycle._build_kwargs("S", exch, leg.symbol, qty, f"{tp_price:.2f}")
-                api = self.broker if hasattr(self.broker, "place_order") else getattr(self.broker, "_api", None)
-                place = getattr(self.broker, "place_order", None) or getattr(api, "place_order", None)
+                # Route TP placement through the rate-limited execution provider when
+                # available; raw `_api` stays as a mock/unit-test fallback only.
+                place_api = self._order_api()
+                place = getattr(place_api, "place_order", None) or getattr(self.broker, "place_order", None)
                 if place:
                     resp = place(**kwargs)
                     if isinstance(resp, dict) and resp.get("stat") == "Ok" and resp.get("norenordno"):
@@ -1605,8 +1670,10 @@ class AegisExecutionManager:
                     logger.info(f"[AegisEM] Resting TP order {ordno} already FILLED at broker @ {fill_px:.2f}! Skipping cancel.")
                     self.tp_order_id = None
                     return
-            if api and hasattr(api, "cancel_order"):
-                resp = api.cancel_order(orderno=ordno)
+            # Cancel through the rate-limited execution provider when available.
+            cancel_api = self._order_api() or api
+            if cancel_api and hasattr(cancel_api, "cancel_order"):
+                resp = cancel_api.cancel_order(orderno=ordno)
                 logger.info(f"[AegisEM] Cancelled TP order {ordno} (resp: {resp})")
         except Exception as e:
             logger.warning(f"[AegisEM] TP cancel warning: {e}")
@@ -2315,10 +2382,11 @@ class AegisExecutionManager:
             legs = list(self.trade_context.legs)
             context = self.trade_context
         
-        api = getattr(self.broker, "_api", None)
+        # Rate-limited execution seam (ShoonyaExecutionProvider in production,
+        # raw `_api` only for mock/unit-test gateways without a provider).
+        api = self._order_api()
         total_pnl = 0.0
-        datetime.now()
-        
+
         for leg in legs:
             if leg.status != "OPEN":
                 continue
@@ -2433,8 +2501,11 @@ class AegisExecutionManager:
 
             if not filled:
                 # Pre-chase safety check: Did the resting TP order already fill at broker?
+                # Order history lives on the RAW NorenApi (`_api`), not on the
+                # rate-limited provider — check history capability separately.
                 check_ordno = self.tp_order_id or self.last_tp_order_id
-                if check_ordno and not str(check_ordno).startswith("PAPER_") and api and hasattr(api, "single_order_history"):
+                _hist_api = getattr(self.broker, "_api", None)
+                if check_ordno and not str(check_ordno).startswith("PAPER_") and _hist_api and hasattr(_hist_api, "single_order_history"):
                     try:
                         hist_filled, hist_fill_px = self._order_fill(check_ordno, allow_rest=True)
                         if hist_filled:
@@ -2698,53 +2769,53 @@ class AegisExecutionManager:
                 else:
                     # Fallback: marketable exit order
                     exit_ok = self.order_lifecycle.execute_exit(leg, reason)
-                if exit_ok:
-                    filled = True
-                    # 🛡️ REAL-FILL RESOLUTION: a placed LMT is NOT a filled exit.
-                    # Resolve the actual broker fill price before PnL bookkeeping —
-                    # booking px=0.00 records a fake -100% loss and corrupts capital
-                    # (incident 2026-11-05: SENSEX 58000CE booked -₹572 vs real -₹77,
-                    # freezing internal funds ~₹170 vs broker ₹647 and making the
-                    # next trade select a 10x cheaper ₹6.75 strike).
-                    _exit_ordno = getattr(self.order_lifecycle, "_last_exit_order_id", None)
-                    if _exit_ordno:
-                        try:
-                            _rf_ok, _rf_px = self._order_fill(_exit_ordno, allow_rest=True)
-                            if _rf_ok and _rf_px > 0:
-                                fill_price = _rf_px
-                                fill_ts = time.time()
-                                logger.info(
-                                    f"[AegisEM] Fallback exit order {_exit_ordno} confirmed FILLED @ ₹{fill_price:.2f}"
-                                )
-                            elif leg.exit_price and leg.exit_price > 0:
-                                fill_price = float(leg.exit_price)
-                                fill_ts = time.time()
-                                logger.warning(
-                                    f"[AegisEM] Fallback exit order {_exit_ordno} fill unconfirmed at broker; "
-                                    f"provisional price ₹{fill_price:.2f} used — deferred capital re-sync will reconcile."
-                                )
-                        except Exception as e_rf:
-                            logger.error(f"[AegisEM] Fallback fill resolution failed (non-fatal): {e_rf}")
-                    # Never trust the PnL below if no positive price exists anywhere:
-                    # the deferred broker re-sync is mandatory to reconcile real funds.
-                    if hasattr(self, "capital_engine") and self.capital_engine and fill_price <= 0:
-                        self.capital_engine._needs_broker_sync = True
-                else:
-                    logger.critical(
-                        f"[AegisEM] 🚨 CRITICAL: Exit order unconfirmed/rejected by broker for {leg.symbol}! "
-                        f"Position may remain open at broker. Flagging urgent broker sync!"
-                    )
-                    if hasattr(self, "capital_engine") and self.capital_engine:
-                        self.capital_engine._needs_broker_sync = True
-                    # 🛡️ ORDER-REJECT FAIL-SAFE: verify the LIVE net position at the broker
-                    # (never trust local state after a rejection) and dispatch an
-                    # EXACT-verified-net-qty emergency flatten. A REJECTED exit must never
-                    # orphan an unhedged position (incident 2026-11: SENSEX 578800CE).
-                    recon_flat, recon_px = self._reconcile_leg_position(leg, reason=reason)
-                    if recon_flat:
+                    if exit_ok:
                         filled = True
-                        fill_price = recon_px if recon_px > 0 else leg.current_price
-                        fill_ts = time.time()
+                        # 🛡️ REAL-FILL RESOLUTION: a placed LMT is NOT a filled exit.
+                        # Resolve the actual broker fill price before PnL bookkeeping —
+                        # booking px=0.00 records a fake -100% loss and corrupts capital
+                        # (incident 2026-11-05: SENSEX 58000CE booked -₹572 vs real -₹77,
+                        # freezing internal funds ~₹170 vs broker ₹647 and making the
+                        # next trade select a 10x cheaper ₹6.75 strike).
+                        _exit_ordno = getattr(self.order_lifecycle, "_last_exit_order_id", None)
+                        if _exit_ordno:
+                            try:
+                                _rf_ok, _rf_px = self._order_fill(_exit_ordno, allow_rest=True)
+                                if _rf_ok and _rf_px > 0:
+                                    fill_price = _rf_px
+                                    fill_ts = time.time()
+                                    logger.info(
+                                        f"[AegisEM] Fallback exit order {_exit_ordno} confirmed FILLED @ ₹{fill_price:.2f}"
+                                    )
+                                elif leg.exit_price and leg.exit_price > 0:
+                                    fill_price = float(leg.exit_price)
+                                    fill_ts = time.time()
+                                    logger.warning(
+                                        f"[AegisEM] Fallback exit order {_exit_ordno} fill unconfirmed at broker; "
+                                        f"provisional price ₹{fill_price:.2f} used — deferred capital re-sync will reconcile."
+                                    )
+                            except Exception as e_rf:
+                                logger.error(f"[AegisEM] Fallback fill resolution failed (non-fatal): {e_rf}")
+                        # Never trust the PnL below if no positive price exists anywhere:
+                        # the deferred broker re-sync is mandatory to reconcile real funds.
+                        if hasattr(self, "capital_engine") and self.capital_engine and fill_price <= 0:
+                            self.capital_engine._needs_broker_sync = True
+                    else:
+                        logger.critical(
+                            f"[AegisEM] 🚨 CRITICAL: Exit order unconfirmed/rejected by broker for {leg.symbol}! "
+                            f"Position may remain open at broker. Flagging urgent broker sync!"
+                        )
+                        if hasattr(self, "capital_engine") and self.capital_engine:
+                            self.capital_engine._needs_broker_sync = True
+                        # 🛡️ ORDER-REJECT FAIL-SAFE: verify the LIVE net position at the broker
+                        # (never trust local state after a rejection) and dispatch an
+                        # EXACT-verified-net-qty emergency flatten. A REJECTED exit must never
+                        # orphan an unhedged position (incident 2026-11: SENSEX 578800CE).
+                        recon_flat, recon_px = self._reconcile_leg_position(leg, reason=reason)
+                        if recon_flat:
+                            filled = True
+                            fill_price = recon_px if recon_px > 0 else leg.current_price
+                            fill_ts = time.time()
                 if not filled:
                     fill_price = leg.exit_price if leg.exit_price and leg.exit_price > 0 else leg.current_price
                     fill_ts = time.time()
@@ -2793,7 +2864,14 @@ class AegisExecutionManager:
                 leg_units = resolve_leg_net_qty(leg, lot_sz)
                 leg.pnl = (fill_price - leg.entry_price) * leg_units
                 total_pnl += leg.pnl
-                self.capital_engine.add_funds(fill_price * leg_units)
+                # Deferred broker sync: the exit SELL is not settled at the broker
+                # yet, so book proceeds locally and let _schedule_post_close_capital_resync
+                # (t+30s / t+90s) reconcile real funds. Mock capital engines in tests
+                # only accept the single positional arg — fall back for them.
+                try:
+                    self.capital_engine.add_funds(fill_price * leg_units, defer_broker_sync=True)
+                except TypeError:
+                    self.capital_engine.add_funds(fill_price * leg_units)
                 self.strike_cooldowns[leg.symbol] = datetime.now() + timedelta(minutes=3)
 
                 # Compute SEBI & brokerage charges
@@ -2996,7 +3074,7 @@ class AegisExecutionManager:
         )
         self._sound_critical_alarm()
 
-        api = getattr(self.broker, "_api", None)
+        api = self._order_api()
         if not api or not hasattr(api, "place_order"):
             logger.critical("[AegisEM] 🚨 EMERGENCY flatten abort: broker place_order unavailable!")
             return False, 0.0

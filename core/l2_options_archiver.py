@@ -63,7 +63,6 @@ SCHEMA_DTYPES = {
     "strike": "float32",  # Strike price (0 for index)
     "lp": "float32",      # Last Price (premium for options)
     "vol": "float32",     # Day Volume
-    "oi": "float32",       # Open Interest (options only)
     "bp1": "float32", "bq1": "int32",
     "bp2": "float32", "bq2": "int32",
     "bp3": "float32", "bq3": "int32",
@@ -111,7 +110,6 @@ class AegisL2Archiver:
         self.current_date = datetime.now().strftime("%Y-%m-%d")
         self.partition_seq = self._find_next_partition_seq()
         self._last_auction_ts = 0.0
-        self._last_known_oi: dict[str, float] = {}
         self._prune_old_files()
         self._tick_queue = queue.Queue(maxsize=ARCHIVE_QUEUE_MAXSIZE)
         self._stop_worker = threading.Event()
@@ -339,17 +337,6 @@ class AegisL2Archiver:
                     sa = sum(float(msg.get(f"sq{i}") or 0) for i in range(1, 6))
                     auction_row = {"ts": ts_sec, "sym": sym, "lp": lp, "imb": (sb - sa) / max(sb + sa, 1.0)}
 
-            # Open interest (options only; forward-fill last known non-zero OI)
-            raw_oi = msg.get("oi") or msg.get("poi") or msg.get("oiv")
-            if raw_oi is not None:
-                try:
-                    oi_f = float(raw_oi)
-                    if oi_f > 0:
-                        self._last_known_oi[tok] = oi_f
-                except (ValueError, TypeError):
-                    pass
-            oi = np.float32(self._last_known_oi.get(tok, 0.0))
-
             # Raw Row Construction (Unrolled for Speed)
             row = {
                 "ts": ts_ms,
@@ -359,7 +346,6 @@ class AegisL2Archiver:
                 "strike": strike,
                 "lp": np.float32(lp),
                 "vol": np.float32(msg.get("volume_trade_for_the_day") or msg.get("v") or 0),
-                "oi": oi,
             }
 
             for i in range(1, 6):

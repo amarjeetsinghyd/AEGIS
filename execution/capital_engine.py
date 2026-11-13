@@ -116,9 +116,17 @@ class CapitalEngine:
         logger.info(f"[CapitalEngine] Deducted {amount}. New balance: {self._capital}")
         self._save_state()
 
-    def add_funds(self, amount: float):
-        # Event-driven: post-trade close refresh directly from broker
-        if self.portfolio_provider:
+    def add_funds(self, amount: float, defer_broker_sync: bool = False):
+        """Credit proceeds back to the internal balance after an exit.
+
+        ``defer_broker_sync=True`` is the LIVE exit path: the exit SELL has not
+        settled at the broker yet, so an immediate `sync_funds_from_broker()`
+        reads *pre-release* margin and freezes stale low funds until the next
+        manual sync. Instead we book the proceeds locally and let the deferred
+        resync passes (t+30s / t+90s, `_schedule_post_close_capital_resync`)
+        reconcile the real broker balance.
+        """
+        if self.portfolio_provider and not defer_broker_sync:
             self.sync_funds_from_broker()
         else:
             self._capital += amount
