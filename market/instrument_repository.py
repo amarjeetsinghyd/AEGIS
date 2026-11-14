@@ -168,7 +168,7 @@ class InstrumentRepository:
             future_contracts = []
             for r in rows:
                 try:
-                    # Try both Angel (28JUL2026) and Shoonya (28-JUL-2026) expiry formats
+                    # Try both Shoonya (28-JUL-2026) and alternate expiry formats
                     try:
                         expiry_dt = datetime.strptime(r['expiry'], '%d-%b-%Y')
                     except ValueError:

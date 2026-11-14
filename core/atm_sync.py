@@ -298,7 +298,7 @@ class BandSubscriptionManager:
         self.corridor = int(corridor)
         self.recenter_at = int(recenter_at)
         self.max_tokens = int(max_tokens)
-        self.strike_scale = float(strike_scale)      # 100.0 for Angel-style strike*100 chains
+        self.strike_scale = float(strike_scale)
         self.center: Optional[float] = None
         self.subscribed: set = set()
         self._token_strike: Dict[str, float] = {}

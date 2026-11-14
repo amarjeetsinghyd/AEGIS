@@ -66,12 +66,6 @@ def get_logger(name: str) -> logging.Logger:
         logs_dir = get_logs_dir()
         runtime = os.environ.get("BOT_RUNTIME", "app")
         log_name = f"{runtime}_bot.log" if not runtime.endswith("_bot") else f"{runtime}.log"
-        if runtime in ("astra", "kronos"):
-            log_name = f"{runtime}_bot.log"
-        elif runtime == "hub":
-            log_name = "shoonya_data_hub.log"
-        else:
-            log_name = f"{runtime}.log"
     except Exception:
         logs_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
         log_name = "app.log"

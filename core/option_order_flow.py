@@ -10,7 +10,6 @@ Tracks real-time order flow across ATM +/- 25 option strikes:
 
 from __future__ import annotations
 import os
-import math
 from collections import deque
 import logging
 from dataclasses import dataclass, field
@@ -461,29 +460,6 @@ class OptionOrderFlowMixin:
                 return False
         return True
 
-    def _delta_harmony_ok(self, direction: str) -> bool:
-        """In-flight OFI delta harmony gate (2026-10-26).
-
-        Single source of truth for the institutional flow-harmony requirement
-        (spec §3), shared by the T:50s pre-close path and the Mode A T+0s
-        pierce path. Mode B ladders keep their inline 1.30x variant.
-        Gracefully bypasses when no option flow is classified (synthetic tests,
-        warmup) per the pre-flight audit rule: bull+bear <= 0 => True.
-        """
-        cb = float(self._opt_flow_1m.get("call_buy_vol", 0.0) or 0.0)
-        cs = float(self._opt_flow_1m.get("call_sell_vol", 0.0) or 0.0)
-        pb = float(self._opt_flow_1m.get("put_buy_vol", 0.0) or 0.0)
-        ps = float(self._opt_flow_1m.get("put_sell_vol", 0.0) or 0.0)
-        bull_flow = cb + ps
-        bear_flow = pb + cs
-        if bull_flow + bear_flow <= 0:
-            return True
-        if direction == "UP":
-            return bull_flow >= 1.25 * bear_flow and cb >= cs
-        if direction == "DOWN":
-            return bear_flow >= 1.25 * bull_flow and pb >= ps
-        return True
-
 
 class MicrostructureScorer:
     """
@@ -502,8 +478,6 @@ class MicrostructureScorer:
                 
         self.history: Dict[str, deque] = {}
         self.max_window_sec = 90.0  # C1 fix: expanded from 30s → 90s to capture T:50–58s Mode A pre-close window
-        self._running_ofi: Dict[str, float] = {}
-        self._running_tot_q: Dict[str, float] = {}
 
     def update_tick(
         self,
@@ -543,8 +517,6 @@ class MicrostructureScorer:
 
         if sym not in self.history:
             self.history[sym] = deque(maxlen=1000)  # C1 fix: expanded from 200 → 1000 to match 90s window @ ~10 ticks/s
-            self._running_ofi[sym] = 0.0
-            self._running_tot_q[sym] = 0.0
             
         buf = self.history[sym]
         if buf:
@@ -558,15 +530,11 @@ class MicrostructureScorer:
             d_ofi = 0.0
             d_q = 0.0
 
-        self._running_ofi[sym] += d_ofi
-        self._running_tot_q[sym] += d_q
         buf.append((ts_sec, lp, bp1, sp1, b1, a1, b2, a2, b3, a3, b4, a4, b5, a5, d_ofi, d_q, vol))
         
         cutoff = ts_sec - self.max_window_sec
         while buf and buf[0][0] < cutoff:
-            popped = buf.popleft()
-            self._running_ofi[sym] -= popped[14]
-            self._running_tot_q[sym] -= popped[15]
+            buf.popleft()
 
     def compute_score(self, *args, **kwargs) -> Tuple[float, bool, Dict[str, float]]:
         """DEPRECATED: Empirical logit scorer retired; scoring fully handled by CompositeConvictionEngine."""
@@ -780,35 +748,6 @@ class CompositeConvictionEngine:
         self.high_conviction_score = float(high_conviction_score)
         self.standard_tp_pct = float(standard_tp_pct)
         self.high_conviction_tp_pct = float(high_conviction_tp_pct)
-
-    @staticmethod
-    def estimate_black_scholes_delta(
-        spot: float,
-        strike: float,
-        side: str,
-        iv: float = 0.15,
-        dte_days: float = 1.0,
-    ) -> float:
-        """
-        Pure Python Black-Scholes Delta approximation. O(1), zero imports.
-        """
-        if spot <= 0 or strike <= 0:
-            return 0.35  # Safe default sweet-spot assumption if missing
-        t = max(dte_days / 365.0, 0.001)  # At least ~8 hours
-        sigma = max(iv, 0.05)
-        sqrt_t = math.sqrt(t)
-        try:
-            d1 = (math.log(spot / strike) + 0.5 * sigma * sigma * t) / (sigma * sqrt_t)
-            # Normal CDF using math.erf
-            norm_cdf = 0.5 * (1.0 + math.erf(d1 / math.sqrt(2.0)))
-            if side.upper() in ("CE", "CALL", "UP"):
-                return max(0.01, min(0.99, norm_cdf))
-            else:
-                return max(0.01, min(0.99, 1.0 - norm_cdf))
-        except Exception:
-            # Fallback to linear moneyness
-            moneyness = (spot - strike) / spot if side.upper() in ("CE", "CALL", "UP") else (strike - spot) / spot
-            return max(0.01, min(0.99, 0.50 + moneyness * 10.0))
 
     def _evaluate_mode_b_conviction(
         self,
@@ -1069,5 +1008,3 @@ class CompositeConvictionEngine:
         )
 
 
-# Legacy backward-compatibility alias: AdaptiveMicroValidator is fully merged into CompositeConvictionEngine
-AdaptiveMicroValidator = CompositeConvictionEngine

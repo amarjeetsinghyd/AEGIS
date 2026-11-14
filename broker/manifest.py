@@ -69,7 +69,6 @@ class WebSocketCapability:
 class MarketDataCapability:
     live_quotes: bool
     ohlc: bool
-    open_interest: bool = False
     market_depth: bool = False
     greeks: bool = False
     streaming_supported: bool = True

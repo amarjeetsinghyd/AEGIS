@@ -50,7 +50,6 @@ class TickCompiler:
         self._tick_pool = {}  # sym -> ParsedTick (reused)
         self.engine = None  # Set via set_engine()
         self._book_state = {}  # token -> dict holding stateful merged L1-L5 order book and last good lp/vol
-        self._last_exch_ts = {}
         # ─── MN-4: WebSocket reconnection bookkeeping ───
         # Reconnect is listener-owned (see ShoonyaMarketDataProvider.add_close_listener).
         # The backoff thread is OFF the hot path — on_message is never blocked.
@@ -263,7 +262,7 @@ class TickCompiler:
 
     @staticmethod
     def _subscribe_feeds(mdp, tokens, exchange) -> None:
-        """Broker-tolerant subscribe: Shoonya (feed_type) and Angel (tokens, exchange)."""
+        """Broker-tolerant subscribe: Shoonya (feed_type)."""
         try:
             mdp.subscribe(tokens, exchange, feed_type="t")
         except TypeError:
@@ -373,8 +372,6 @@ class TickCompiler:
         with self.lock:
             self._book_state.clear()
             self.market_depth.clear()
-            if hasattr(self, "_last_exch_ts"):
-                self._last_exch_ts.clear()
             self._stats_window_start = time.time()
         logger.info("[TickCompiler] Session state reset completed (clean slate for day rollover).")
 

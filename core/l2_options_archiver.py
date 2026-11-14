@@ -6,9 +6,8 @@ the underlying cash index. Writes raw L2 ticks to partitioned Snappy Parquet
 
 ZERO Greeks math. Pure Passive Recorder. Mirrors ARGUS/l2_archiver.py
 discipline (no heavy imports in hot path, partitioned writes, no in-memory
-accumulation) but is enriched with the options-specific OI column and a
-`kind` discriminator (index/CE/PE) so post-market forensics can reconstruct
-the full gamma surface.
+accumulation) but is enriched with the options-specific `kind` discriminator (index/CE/PE)
+so post-market forensics can reconstruct the full gamma surface.
 
 Hardware Target: Oracle 1GB RAM / 1 OCPU (Zero-Allocation Hot Paths Enforced).
 """
@@ -54,7 +53,7 @@ UNDERLYING_TOKENS = {"26000", "1", "99919000"}
 # expired contracts (NIFTY29SEP26F etc.) and were silently dead weight.
 
 # ─── Schema Definition (Options-Enriched) ───
-# Adds `oi` (open interest) and `kind` (0=index, 1=CE, 2=PE, 3=FUT) vs the equity archiver.
+# Adds `kind` (0=index, 1=CE, 2=PE, 3=FUT) vs the equity archiver.
 SCHEMA_DTYPES = {
     "ts": "int64",        # Unix ms
     "tok": "int64",       # Token (options tokens can exceed int32 range)

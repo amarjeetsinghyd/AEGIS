@@ -131,8 +131,6 @@ def _load_shoonya_env() -> None:
     candidates = [
         os.path.join(_PROJECT_ROOT, ".env"),
         os.path.join(_PROJECT_ROOT, "AEGIS", ".env"),
-        os.path.join(_PROJECT_ROOT, "kronos_bot", ".env"),
-        os.path.join(_PROJECT_ROOT, "shoonya_data_hub", ".env"),
     ]
     for path in candidates:
         if os.path.exists(path):
@@ -383,11 +381,7 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
         self._subscribed_tokens = set()
         self._subscribed_pairs = set()
         self._ws_started = False
-        self._constituent_tokens = set()
-        self._accumulated_synthetic_vol = 0
-        
-        from broker.footprint_compiler import FootprintCompiler
-        self.footprint_compiler_manager = FootprintCompiler()
+        self._latest_spot_price: float = 0.0
         self._index_token = ""
         self._index_exchange = ""
         self._option_ce_tokens = set()
@@ -501,17 +495,14 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                         if prev_v == 0 or v_total >= prev_v:
                             self._last_vol[str(token)] = v_total
 
-                if str(token) in self._constituent_tokens and ltq > 0:
-                    with self._state_lock:
-                        self._accumulated_synthetic_vol += ltq
-
-                if hasattr(self, "footprint_compiler_manager"):
-                    self.footprint_compiler_manager.process_tick(
-                        message,
-                        getattr(self, "_index_token", ""),
-                        getattr(self, "_option_ce_tokens", set()),
-                        getattr(self, "_option_pe_tokens", set())
-                    )
+                # Track latest spot price from index ticks for data_fetcher hot path
+                if str(token) == getattr(self, "_index_token", ""):
+                    try:
+                        _lp = float(message.get("lp", 0) or 0)
+                        if _lp > 0:
+                            self._latest_spot_price = _lp
+                    except (ValueError, TypeError):
+                        pass
 
                 s_token = str(token)
 
@@ -663,41 +654,6 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
             logger.info("[ShoonyaAdapter] WebSocket disconnected cleanly for post-market sleep.")
         except Exception as e:
             logger.warning(f"[ShoonyaAdapter] Error closing WebSocket: {e}")
-
-    def register_constituent_tokens(self, tokens: list):
-        """Replace constituent set (do not merge) so NIFTY/SENSEX rotation cannot mix volumes."""
-        with self._state_lock:
-            self._constituent_tokens = {str(tok) for tok in tokens if str(tok).strip()}
-            self._accumulated_synthetic_vol = 0
-        logger.info(
-            f"Registered {len(self._constituent_tokens)} constituent tokens "
-            f"for synthetic volume accumulator (accumulator reset)."
-        )
-
-    def register_option_token_metadata(self, option_df):
-        if not hasattr(self, "_strike_to_ce_token"):
-            self._strike_to_ce_token = {}
-            self._strike_to_pe_token = {}
-            self._token_to_strike = {}
-            
-        if option_df is not None and not option_df.empty:
-            for _, row in option_df.iterrows():
-                tok = str(row['token'])
-                strike = float(row.get('strike', 0.0))
-                symbol = str(row.get('symbol', ''))
-                
-                if strike > 0:
-                    self._token_to_strike[tok] = strike
-                    if 'CE' in symbol or symbol.endswith('C'):
-                        self._strike_to_ce_token[strike] = tok
-                    elif 'PE' in symbol or symbol.endswith('P'):
-                        self._strike_to_pe_token[strike] = tok
-
-    def get_and_reset_synthetic_volume(self) -> int:
-        with self._state_lock:
-            vol = self._accumulated_synthetic_vol
-            self._accumulated_synthetic_vol = 0
-            return vol
 
     def subscribe(self, tokens: list, exchange: str, feed_type: str = "t") -> None:
         """Subscribe tokens. Default feed_type='t' (touchline) so lp/ltq/v arrive for cash volume."""
@@ -1121,7 +1077,7 @@ class ShoonyaAdapter(IBrokerGateway):
             authentication=AuthenticationCapability(mechanism="oauth", token_endpoint="/QuickAuth", token_refresh_supported=True),
             rate_limits=RateLimitCapability(rest_requests_per_sec=5.0, order_requests_per_sec=2.0, historical_requests_per_sec=1.0),
             websocket=WebSocketCapability(max_subscriptions=200, tick_format="json", depth_supported=False, heartbeat_interval_seconds=30, auto_reconnect=True),
-            market_data=MarketDataCapability(live_quotes=True, ohlc=True, open_interest=False, market_depth=False, greeks=False, streaming_supported=True),
+            market_data=MarketDataCapability(live_quotes=True, ohlc=True, market_depth=False, greeks=False, streaming_supported=True),
             historical=HistoricalDataCapability(max_lookback_days=1000, max_candles_per_request=1000, supports_adjusted_close=False, supports_tick_history=True),
             order_management=OrderManagementCapability(modify_order=True, cancel_order=True, basket_orders=True, bracket_orders=False, cover_orders=True, gtt_orders=False, supported_order_variants=()),
             product_support=ProductSupportCapability(equities=True, futures=True, options=True, commodities=True, currencies=True, derivatives=True),
@@ -1144,10 +1100,6 @@ class ShoonyaAdapter(IBrokerGateway):
     def manifest(self) -> BrokerManifest: return self._manifest
     
     def get_order_lifecycle(self) -> OrderLifecycle: return self.order_lifecycle
-    def register_option_token_metadata(self, df): self._market_data_provider.register_option_token_metadata(df)
-    def register_constituent_tokens(self, tokens: list): self._market_data_provider.register_constituent_tokens(tokens)
-    def get_and_reset_synthetic_volume(self) -> int: return self._market_data_provider.get_and_reset_synthetic_volume()
-    def peek_synthetic_volume(self) -> int: return int(getattr(self._market_data_provider, "_accumulated_synthetic_vol", 0) or 0)
     def get_available_funds(self) -> float: return float(self._portfolio_provider.get_available_funds())
     def stop_websocket(self) -> None:
         if hasattr(self, "_market_data_provider") and self._market_data_provider is not None:

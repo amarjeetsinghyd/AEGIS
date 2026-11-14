@@ -55,7 +55,6 @@ class ParquetTickAdapter:
     sq4: float
     bq5: float
     sq5: float
-    oi: float = 0.0
 
 
 @dataclass
@@ -729,11 +728,10 @@ class AegisParquetBacktester:
                 sq4_col = [float(x or 0.0) for x in df["sq4"].to_list()] if "sq4" in cols else [0.0] * len(df)
                 bq5_col = [float(x or 0.0) for x in df["bq5"].to_list()] if "bq5" in cols else [0.0] * len(df)
                 sq5_col = [float(x or 0.0) for x in df["sq5"].to_list()] if "sq5" in cols else [0.0] * len(df)
-                oi_col = [float(x or 0.0) for x in df["oi"].to_list()] if "oi" in cols else [0.0] * len(df)
 
-                for tok_str, lp, ts, vol, bp1, sp1, bq1, sq1, bq2, sq2, bq3, sq3, bq4, sq4, bq5, sq5, oi_val in zip(
+                for tok_str, lp, ts, vol, bp1, sp1, bq1, sq1, bq2, sq2, bq3, sq3, bq4, sq4, bq5, sq5 in zip(
                     tok_col, lp_col, ts_col, vol_col, bp1_col, sp1_col, bq1_col, sq1_col,
-                    bq2_col, sq2_col, bq3_col, sq3_col, bq4_col, sq4_col, bq5_col, sq5_col, oi_col
+                    bq2_col, sq2_col, bq3_col, sq3_col, bq4_col, sq4_col, bq5_col, sq5_col
                 ):
                     ts_sec = ts / 1000.0 if ts > 1e11 else float(ts)
                     last_ts_sec = ts_sec
@@ -759,7 +757,6 @@ class AegisParquetBacktester:
                         sq4=sq4,
                         bq5=bq5,
                         sq5=sq5,
-                        oi=oi_val,
                     )
                     self.engine.on_tick_parsed(tick)
 

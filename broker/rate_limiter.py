@@ -1,55 +1,10 @@
 # rate_limiter.py
-# Centralized AngelOne SmartAPI Rate Limiter
-# QuantOS Runtime — src/core/rate_limiter.py
-#
-# AngelOne SmartAPI Confirmed Rate Limits (source: smartapi.angelbroking.com/docs/RateLimit)
-# ============================================================================
-# getCandleData (historical):  3 req/sec | 180 req/min | 5000 req/hour
-# getLtpData:                 10 req/sec | 500 req/min | 5000 req/hour
-# market/v1/quote:            10 req/sec | 500 req/min | 5000 req/hour  (NOTE: 1 req can fetch 50 symbols)
-# placeOrder:                  9 req/sec | 500 req/min | 1000 req/hour  (cumulative with modify+cancel)
-# loginByPassword:             1 req/sec
-# generateTokens:              1 req/sec
-# getOrderBook:                1 req/sec
-# getPosition:                 1 req/sec
-# getTradeBook:                1 req/sec
-#
-# WebSocket 2.0 Limits:
-# - Max 1000 token_mode subscriptions per session
-# - Max 3 concurrent WebSocket connections per client_code
-# - Subscribing same token+mode again is gracefully ignored (not counted)
-# - Modes: 1=LTP, 2=Quote, 3=SnapQuote, 4=Depth
-# - RECOMMENDATION: Subscribe ONE mode per token (use SnapQuote=3 for OHLCV+depth)
-#
-# JWT Token Lifecycle:
-# - Token expires daily at 00:00 IST (midnight) — NOT at a fixed interval
-# - Feed token used only for WebSocket
-# - Use generateTokens (refreshToken) to get new JWT without full re-login
-# - generateTokens: 1 req/sec, 1000 req/hour
-#
-# getCandleData Constraints:
-# - ONE_MINUTE:   max 30 days per request, response capped at 500 rows
-# - THREE_MINUTE: max 60 days
-# - FIVE_MINUTE:  max 100 days
-# - TEN_MINUTE:   max 100 days
-# - FIFTEEN_MINUTE: max 200 days
-# - ONE_HOUR:     max 400 days
-# - ONE_DAY:      max 2000 days
-# - Format: fromdate/todate = "YYYY-MM-DD HH:MM"
-# - IMPORTANT: For ONE_MINUTE, only fetch <= 30 candles at a time during live
-#   to stay within the 500-row cap. Use fromdate = now-30min for live refresh.
-#
-# Design Principles:
-# - Single WebSocket pipeline feeds both trading AND research — NO duplicate REST polling
-# - getCandleData called max every 10s in brain_service = ~6/min = well within 180/min
-# - Never call REST APIs from research_collector (it taps ZMQ from brain, no direct API)
-# - All REST calls go through this rate limiter before executing
-# ============================================================================
+# Centralized rate limiter for Shoonya broker REST calls.
+# Token-bucket sliding-window limiter shared across the AEGIS codebase.
 
 import time
 import threading
 from collections import deque
-from functools import wraps
 
 try:
     from logger import get_logger
@@ -139,80 +94,8 @@ class TokenBucketLimiter:
 
 
 # ============================================================================
-# SINGLETON LIMITERS — one per API endpoint type
-# Import and use these in data_fetcher.py / any code that calls REST APIs
-# ============================================================================
-
-# getCandleData: 3/sec, 180/min, 5000/hr
-CANDLE_LIMITER = TokenBucketLimiter(
-    per_second=3, per_minute=180, per_hour=5000,
-    name="getCandleData"
-)
-
-# getLtpData: 10/sec, 500/min, 5000/hr
-LTP_LIMITER = TokenBucketLimiter(
-    per_second=10, per_minute=500, per_hour=5000,
-    name="getLtpData"
-)
-
-# market/v1/quote: 10/sec, 500/min, 5000/hr
-QUOTE_LIMITER = TokenBucketLimiter(
-    per_second=10, per_minute=500, per_hour=5000,
-    name="marketQuote"
-)
-
-# placeOrder + modifyOrder + cancelOrder: CUMULATIVE 9/sec, 500/min, 1000/hr
-ORDER_LIMITER = TokenBucketLimiter(
-    per_second=9, per_minute=500, per_hour=1000,
-    name="order_cumulative"
-)
-
-# getOrderBook / getPosition / getTradeBook: 1/sec
-ONE_PER_SEC_LIMITER = TokenBucketLimiter(
-    per_second=1, per_minute=None, per_hour=None,
-    name="one_per_sec"
-)
-
-# login: 1/sec
-LOGIN_LIMITER = TokenBucketLimiter(
-    per_second=1, per_minute=None, per_hour=None,
-    name="login"
-)
-
-# generateTokens (refresh JWT): 1/sec, 1000/hr
-TOKEN_REFRESH_LIMITER = TokenBucketLimiter(
-    per_second=1, per_minute=None, per_hour=1000,
-    name="generateTokens"
-)
-
-
-# ============================================================================
-# Convenience decorator: wraps any API call with the right limiter
-# Usage:
-#   @rate_limited(CANDLE_LIMITER)
-#   def get_candle_data(...):
-#       ...
-# ============================================================================
-
-def rate_limited(limiter: TokenBucketLimiter, timeout: float = 30.0):
-    """Decorator that acquires a rate limit slot before calling the function."""
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            acquired = limiter.acquire(timeout=timeout)
-            if not acquired:
-                raise RuntimeError(
-                    f"[rate_limited] Could not acquire slot for {func.__name__} "
-                    f"within {timeout}s (limiter: {limiter.name})"
-                )
-            return func(*args, **kwargs)
-        return wrapper
-    return decorator
-
-
-# ============================================================================
 # Rate-limit-aware retry wrapper with exponential backoff
-# Handles 403 (rate limit hit) and transient 5xx errors from AngelOne
+# Handles 403 (rate limit hit) and transient 5xx errors
 # ============================================================================
 
 def call_with_retry(func, *args, limiter: TokenBucketLimiter = None,
@@ -225,10 +108,10 @@ def call_with_retry(func, *args, limiter: TokenBucketLimiter = None,
 
     Returns the function result or raises the last exception after max_retries.
 
-    Usage example in data_fetcher.py:
+    Usage example:
         result = call_with_retry(
-            self.api.getCandleData, payload,
-            limiter=CANDLE_LIMITER
+            some_api_call, payload,
+            limiter=some_limiter
         )
     """
     last_exc = None

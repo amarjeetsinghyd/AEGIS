@@ -51,16 +51,13 @@ class DataFetcher:
         self._last_atm_cached = 0.0
 
     def get_index_ltp(self) -> float:
-        # WS-driven spot: prefer footprint manager (live provider attribute),
-        # fall back to legacy singular name for backward compatibility.
+        # WS-driven spot: prefer _latest_spot_price on the live market data provider,
+        # fall back to legacy REST quote.
         mdp = getattr(self.broker, "market_data_provider", None)
         if mdp is not None:
-            for attr in ("footprint_compiler_manager", "footprint_compiler"):
-                fc = getattr(mdp, attr, None)
-                if fc is not None:
-                    spot = float(getattr(fc, "current_spot", 0.0) or 0.0)
-                    if spot > 0:
-                        return spot
+            spot = float(getattr(mdp, "_latest_spot_price", 0.0) or 0.0)
+            if spot > 0:
+                return spot
                 
         token, name, exchange = self.get_cash_index_token()
         quote = self.broker.market_data_provider.get_quote(exchange, token)
