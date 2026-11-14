@@ -108,25 +108,28 @@ Before writing or modifying ANY strategy, gatekeeper, or execution code, every A
 > **Git is the SINGLE CANONICAL version control system for both local development and VPS production.**
 > Jujutsu (`jj`) has been permanently ditched in favor of standard, universal Git workflows.
 
-### 1. Local Development Workflow (Standard Git)
-- Stage and commit changes cleanly with conventional commit messages:
+### 1. Mandatory Local Git Push (छोटे से छोटे बदलाव के बाद भी अनिवार्य)
+- **Every AI agent MUST stage, commit, and push immediately** after finishing any change (even a tiny 1-line doc or code fix):
   ```powershell
   git add .
-  git commit -m "feat/fix/refactor(AEGIS): <concise summary>"
-  ```
-- Push verified changes directly to GitHub remote `origin/main`:
-  ```powershell
+  git commit -m "<type>(AEGIS): <concise summary of changes>"
   git push origin main
   ```
+- **Never leave uncommitted or unpushed work locally**: A clean working copy (`working tree clean`) on `main` is required before concluding any turn.
 
-### 2. VPS Production Sync Workflow (Instant 1-Click Pull & Reload)
-- To synchronize the VPS with latest remote code and reload PM2 services:
+### 2. Mandatory User Confirmation Before VPS Sync (यूज़र से पूछना अनिवार्य)
+- **DO NOT auto-deploy to VPS without asking**: Once local changes are pushed to `origin/main`, the AI agent **MUST ALWAYS ask Amarjeet bhai**:
+  > *"अमरजीत भाई, सभी बदलाव GitHub (origin/main) पर पुश हो चुके हैं। क्या अब इसे VPS पर `git pull` करके PM2 रीस्टार्ट कर दिया जाए?"*
+
+### 3. VPS 1-Click Production Sync (यूज़र की हरी झंडी मिलने के बाद)
+- Only when Amarjeet bhai approves, execute the 1-click sync & reload command from local terminal:
   ```powershell
   ssh -i "Oracle SSH keys/ssh-key-2026-07-11.key" opc@137.23.41.38 "cd /home/opc/aegis && git pull && pm2 restart ecosystem.config.js"
   ```
-- VPS operates in `git sparse-checkout` mode (runtime code only; `tests/` and `scratch/` are excluded).
+- **Sparse Checkout Architecture**: VPS runs in `git sparse-checkout` mode. Only runtime code (`core/`, `execution/`, `broker/`, `market/`, `dashboard/`, `config/`, `ipc/`, `docs/`, `main.py`, `backtest.py`, `logger.py`, `symbols.py`, `ecosystem.config.js`) is synced. Non-runtime folders (`tests/`, `scratch/`, archives) are completely excluded.
+- **Runtime State Protection**: `.env` (symlinked) and `data/` (`capital_state.json`, `instruments.db`, `shoonya_session.json`) are protected via `assume-unchanged` and are never overwritten by git.
 
-### 3. Instant Rollback & History Audit
+### 4. Instant Rollback & History Audit
 - **Discard Uncommitted Working Tree Edits**:
   ```powershell
   git restore <file>        # Single file discard
