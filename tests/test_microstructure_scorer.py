@@ -56,7 +56,7 @@ class TestMicrostructureScorer:
                 lp=100.0,
                 bp1=99.9,
                 sp1=100.1,
-                b1=100,
+                b1=200,
                 a1=100,
             )
 

@@ -207,10 +207,12 @@ class WyckoffVolumeEngine:
                         "wyckoff_confirmed": False,
                     }
 
-            # Spring Reclaim Confirmation: absorption wick or positive reclaim flow confirms
+            # Spring Reclaim Confirmation: absorption wick or positive reclaim flow confirms.
+            # reclaim_flow > 0.0 required; falling back to directional delta gate only when reclaim is non-positive.
             sweep_shadow = flow_dict.get("sweep_shadow") or {}
             reclaim_flow = float(sweep_shadow.get("metrics", {}).get("reclaim_flow", 0.0))
-            is_confirmed = bool(reclaim_flow >= 0.0 or (is_up and delta_flow >= 0) or ((not is_up) and delta_flow <= 0))
+            delta_aligned = (is_up and delta_flow > 0) or ((not is_up) and delta_flow < 0)
+            is_confirmed = bool(reclaim_flow > 0.0 or delta_aligned)
             return True, "wyckoff_intrabar_inflight_confirmed" if is_confirmed else "wyckoff_intrabar_neutral_flow", {
                 **base_metrics,
                 "wyckoff_confirmed": is_confirmed,
@@ -239,7 +241,47 @@ class WyckoffVolumeEngine:
                         "wyckoff_confirmed": False,
                     }
 
-            is_confirmed = (is_up and delta_flow >= 0) or ((not is_up) and delta_flow <= 0)
+            # Minimum active volume gate (3 lots) + 1.50x directional dominance + directional delta
+            if tot_flow < min_active_volume:
+                return False, "wyckoff_p5_insufficient_volume", {
+                    **base_metrics,
+                    "min_required": min_active_volume,
+                    "verdict": "VETO_DRY_ORDER_FLOW",
+                    "wyckoff_confirmed": False,
+                    "flow_state": "insufficient_volume",
+                }
+            if is_up:
+                if delta_flow <= 0.0:
+                    return False, "wyckoff_p5_opposing_flow_veto", {
+                        **base_metrics,
+                        "verdict": "VETO_NEGATIVE_DELTA",
+                        "wyckoff_confirmed": False,
+                        "flow_state": "opposing",
+                    }
+                if bull_flow < (1.50 * max(bear_flow, 1.0)):
+                    return False, "wyckoff_p5_call_dominance_failed", {
+                        **base_metrics,
+                        "verdict": "VETO_INSUFFICIENT_DOMINANCE",
+                        "wyckoff_confirmed": False,
+                        "flow_state": "opposing",
+                    }
+            else:
+                if delta_flow >= 0.0:
+                    return False, "wyckoff_p5_opposing_flow_veto", {
+                        **base_metrics,
+                        "verdict": "VETO_POSITIVE_DELTA",
+                        "wyckoff_confirmed": False,
+                        "flow_state": "opposing",
+                    }
+                if bear_flow < (1.50 * max(bull_flow, 1.0)):
+                    return False, "wyckoff_p5_put_dominance_failed", {
+                        **base_metrics,
+                        "verdict": "VETO_INSUFFICIENT_DOMINANCE",
+                        "wyckoff_confirmed": False,
+                        "flow_state": "opposing",
+                    }
+
+            is_confirmed = (is_up and delta_flow > 0) or ((not is_up) and delta_flow < 0)
             return True, "wyckoff_intrabar_inflight_confirmed" if is_confirmed else "wyckoff_intrabar_neutral_flow", {
                 **base_metrics,
                 "wyckoff_confirmed": is_confirmed,

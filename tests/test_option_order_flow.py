@@ -5,10 +5,11 @@ import pytest
 from core.price_action_engine import PriceActionEngine
 
 
-def test_classify_buy_fraction_book_stepping_ask_sweep():
+def test_classify_buy_fraction_current_quote_first():
     """
-    Task 1: When aggressive buyer sweeps the ask at 100.0, advancing the book to
-    bp1=100.0, sp1=100.5, the trade at lp=100.0 must be classified as a pure buy (1.0).
+    Task 1: Current live quote checked BEFORE book-stepping. lp == bp1 classifies as sell (0.0),
+    even when lp >= prev_sp1 (operator bid-dump after upward quote drift cannot be misclassified
+    as a 100% aggressive buy).
     """
     pae = PriceActionEngine(strike_step=50.0)
     sym = "NIFTY26OCT24000CE"
@@ -17,26 +18,26 @@ def test_classify_buy_fraction_book_stepping_ask_sweep():
     frac1 = pae._classify_buy_fraction(sym, lp=99.50, bp1=99.50, sp1=100.00)
     assert frac1 == 0.0
 
-    # Ask swept! Post-sweep quote moves to bp1=100.00, sp1=100.50, lp=100.00
+    # Upward quote drift: bp1=100.00, sp1=100.50, lp=100.00 (lp == bp1 >= prev_sp1=100.00)
+    # Must classify as 0.0 (sell), NOT 1.0 (buy) — operator bid-dump defense.
     frac2 = pae._classify_buy_fraction(sym, lp=100.00, bp1=100.00, sp1=100.50)
-    assert frac2 == 1.0  # Must be 1.0 (pure buy), NOT 0.0!
+    assert frac2 == 0.0  # lp == bp1 -> hit current bid -> pure sell
 
 
-def test_classify_buy_fraction_book_stepping_bid_sweep():
+def test_classify_buy_fraction_bid_hit_after_upward_drift():
     """
-    Task 1: When aggressive seller sweeps the bid at 99.50, depressing the book to
-    bp1=99.00, sp1=99.50, the trade at lp=99.50 must be classified as a pure sell (0.0).
+    Task 1: lp == bp1 >= prev_sp1 classifies as 0.0 (sell), not 1.0 (buy).
+    This is the operator trap defense: bid-dump after upward quote drift.
     """
     pae = PriceActionEngine(strike_step=50.0)
     sym = "NIFTY26OCT24000CE"
 
-    # Pre-trade quote: bp1=99.50, sp1=100.00, trade at 100.00 (lift ask -> 1.0)
-    frac1 = pae._classify_buy_fraction(sym, lp=100.00, bp1=99.50, sp1=100.00)
-    assert frac1 == 1.0
+    # Seed prev quote: bp1=99.50, sp1=100.00
+    pae._classify_buy_fraction(sym, lp=99.50, bp1=99.50, sp1=100.00)
 
-    # Bid swept! Post-sweep quote moves to bp1=99.00, sp1=99.50, lp=99.50
-    frac2 = pae._classify_buy_fraction(sym, lp=99.50, bp1=99.00, sp1=99.50)
-    assert frac2 == 0.0  # Must be 0.0 (pure sell), NOT 1.0!
+    # Now: bp1=100.00, sp1=100.50, lp=100.00 (lp == bp1 >= prev_sp1)
+    frac = pae._classify_buy_fraction(sym, lp=100.00, bp1=100.00, sp1=100.50)
+    assert frac == 0.0  # Sell, not buy — operator trap blocked
 
 
 def test_classify_buy_fraction_direct_touch_and_tick_rule():

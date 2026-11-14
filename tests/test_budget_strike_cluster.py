@@ -173,7 +173,7 @@ def test_budget_cluster_pure_individual_candidate_evaluation_prevents_leakage():
         engine.scorer.update_tick(sym, now - 0.1, px, px - 0.1, px + 0.1, 100, 100, 0, 0, 0, 0, 0, 0, 0, 0, vol=1000)
 
     # Micro metrics: Target has -0.15 (selling pressure), OTM has +0.25 (buying pressure)
-    def mock_extract(tick_buffer, anchor_T=None, lookback_sec=30.0):
+    def mock_extract(tick_buffer, anchor_T=None, lookback_sec=30.0, lot_size=None):
         first_lp = tick_buffer[0][1]
         if first_lp == 50.0:
             return {"is_valid": True, "touch_i1": -0.15, "spread_pct": 0.4, "tot_bid_depth": 400, "tot_ask_depth": 400, "bp1": 49.9, "sp1": 50.1}

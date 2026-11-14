@@ -169,16 +169,16 @@ class OptionOrderFlowMixin:
         prev_sp1 = self._opt_last_sp1.get(sym)
 
         if valid_quote:
-            # 1. Book-stepping sweep detection (comparing trade price to pre-trade quotes)
-            if prev_sp1 is not None and prev_sp1 > 0 and lp >= prev_sp1 and (prev_bp1 is None or lp > prev_bp1):
-                frac = 1.0  # Aggressive buyer swept ask, advancing the book!
-            elif prev_bp1 is not None and prev_bp1 > 0 and lp <= prev_bp1 and (prev_sp1 is None or lp < prev_sp1):
-                frac = 0.0  # Aggressive seller swept bid, depressing the book!
-            # 2. Direct touch on current book
-            elif lp >= sp1:
+            # 1. Direct touch on current book (checked FIRST to prevent stale-quote misclassification)
+            if lp >= sp1:
                 frac = 1.0  # Lifted current ask -> pure buy
             elif lp <= bp1:
                 frac = 0.0  # Hit current bid -> pure sell
+            # 2. Book-stepping sweep detection (comparing trade price to pre-trade quotes)
+            elif prev_sp1 is not None and prev_sp1 > 0 and lp >= prev_sp1 and (prev_bp1 is None or lp > prev_bp1):
+                frac = 1.0  # Aggressive buyer swept ask, advancing the book!
+            elif prev_bp1 is not None and prev_bp1 > 0 and lp <= prev_bp1 and (prev_sp1 is None or lp < prev_sp1):
+                frac = 0.0  # Aggressive seller swept bid, depressing the book!
             else:
                 # 3. Inside spread -> Lee-Ready Tick Rule fallback
                 if prev_lp is None or prev_lp <= 0:
@@ -353,12 +353,24 @@ class OptionOrderFlowMixin:
         if prev_vol is None:
             self._opt_last_cum_vol[sym] = vol
             self._opt_last_lp[sym] = lp
+            if bp1 > 0:
+                self._opt_last_bp1[sym] = bp1
+            if sp1 > 0:
+                self._opt_last_sp1[sym] = sp1
             return  # Baseline seed tick
 
         delta_vol = vol - prev_vol
-        if delta_vol <= 0:
-            # Out-of-order stale tick or zero-volume quote update: discard safely.
-            # Never overwrite _opt_last_cum_vol with a smaller stale volume or create phantom volume.
+        if delta_vol == 0:
+            # Depth-only quote update with zero volume delta: always refresh the cached
+            # L1 quotes so stale bp1/sp1 are not carried across quote drifts, then bail.
+            if bp1 > 0:
+                self._opt_last_bp1[sym] = bp1
+            if sp1 > 0:
+                self._opt_last_sp1[sym] = sp1
+            return
+        if delta_vol < 0:
+            # Out-of-order stale tick: discard safely. Never overwrite _opt_last_cum_vol
+            # with a smaller stale volume or create phantom volume.
             return
         self._opt_last_cum_vol[sym] = vol
 
@@ -594,6 +606,7 @@ class CompositeConvictionEngine:
         tick_buffer: Sequence[Any],
         anchor_T: Optional[float] = None,
         lookback_sec: float = 30.0,
+        lot_size: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Extracts real-time option contract metrics directly from the raw tick buffer.
@@ -736,6 +749,12 @@ class CompositeConvictionEngine:
             return {**base_metrics, "is_valid": False, "reason": "circuit_breaker_spread_blowout"}
         if tot_depth < 200:
             return {**base_metrics, "is_valid": False, "reason": "circuit_breaker_ghost_book"}
+        # One-sided hollow-bid ask-wall guard: bid side must have meaningful depth
+        # scaled by active lot size so operator walls (e.g. 500-ask / 10-bid) fail-closed.
+        eff_lot = float(lot_size) if lot_size and lot_size > 0 else 65.0
+        min_bid_depth = max(2.0 * eff_lot, 25.0)
+        if tot_bid_depth < min_bid_depth:
+            return {**base_metrics, "is_valid": False, "reason": "circuit_breaker_hollow_bid_book"}
         if micro_ret < -0.015:
             return {**base_metrics, "is_valid": False, "reason": "circuit_breaker_severe_dump"}
 

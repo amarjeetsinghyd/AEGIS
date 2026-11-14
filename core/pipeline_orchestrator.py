@@ -790,6 +790,7 @@ class AegisPipelineOrchestrator:
                                                     tick_buffer=c_hist,
                                                     anchor_T=micro_anchor,
                                                     lookback_sec=micro_lookback,
+                                                    lot_size=20.0 if self.is_sensex else 65.0,
                                                 )
                                                 if c_m.get("is_valid", False):
                                                     cluster_micro_map[c_sym] = c_m
@@ -813,6 +814,7 @@ class AegisPipelineOrchestrator:
                                                 tick_buffer=candidate_history,
                                                 anchor_T=micro_anchor,
                                                 lookback_sec=micro_lookback,
+                                                lot_size=20.0 if self.is_sensex else 65.0,
                                             )
                                         if not candidate_micro.get("is_valid", False):
                                             rejection_reasons.append(
@@ -951,7 +953,7 @@ class AegisPipelineOrchestrator:
                                         opp_sym = opp_cluster[0]["symbol"]
                                         opp_hist = self.scorer.history.get(opp_sym)
                                         if opp_hist and len(opp_hist) >= 6 and self.conviction_engine:
-                                            opp_m = self.conviction_engine.extract_micro_metrics(opp_hist, now_sec, lookback_sec=10.0)
+                                            opp_m = self.conviction_engine.extract_micro_metrics(opp_hist, now_sec, lookback_sec=10.0, lot_size=20.0 if self.is_sensex else 65.0)
                                             opp_ret = float(opp_m.get("micro_ret", 0.0) or 0.0)
                                             opp_i1 = float(opp_m.get("touch_i1", 0.0) or 0.0)
                                             # If opposing option is ALSO surging (+0.45% and Bid-heavy), it's a volatility/straddle trap
