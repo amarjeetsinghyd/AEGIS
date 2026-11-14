@@ -1,9 +1,9 @@
 # AEGIS — Autonomous Execution & Gamma Imbalance System (Version 1.0 Production Locked)
 
 **Architecture Authority — Code-Grounded Definitive Specification**  
-**Version:** Production 1.0 (v1.0 Production Locked — Priority Mode B In-Flight Mid-Bar Breakthrough Surge [T:02s onwards / No Upper Cap] + 5 Macro Price Action Pillars + Absolute Pain Zone 4-Line VWAP Envelope + Wyckoff Volume & OFI Delta Gate + Single-Shot Clean Entry Mandate [0.75s / No Chasing] + Universal Entry Candle Low/High Invalidation + Friday 4-DTE +3.0% TP Calibration — Live)  
-**Status:** ACTIVE · PM2 `aegis-bot` · `AEGIS/aegis_main.py:87`  
-**Host:** Oracle Cloud `opc@137.23.41.38` · `ecosystem.config.js:3` · `cwd=/home/opc`  
+**Version:** Production 1.0 (v1.0 Production Locked — Priority Mode B In-Flight Mid-Bar Breakthrough Surge [T:02s onwards / No Upper Cap] + 5 Macro Price Action Pillars + Absolute Pain Zone 4-Line VWAP Envelope + Wyckoff Volume & OFI Delta Gate + Single-Shot Clean Entry Mandate [0.75s / No Chasing] + Universal Entry Candle Low/High Invalidation + Friday 4-DTE +3.0% TP Calibration + Zero-Regression 5-Mixin Execution Architecture — Live)  
+**Status:** ACTIVE · PM2 `aegis-bot` · `main.py`  
+**Host:** Oracle Cloud `opc@137.23.41.38` · `ecosystem.config.js` · `cwd=/home/opc/aegis`  
 **Instruments:** NIFTY (Mon [1 DTE], Tue [0 DTE], Fri [4 DTE], NFO, strike step 50, lot 65) · SENSEX (Wed [1 DTE], Thu [0 DTE], BFO, strike step 100, lot 20)  
 **Supersedes:** All prior V3.x specifications, draft architecture proposals, and legacy experimental code.
 
@@ -27,7 +27,7 @@
      - Spot **BELOW** Lower Band $\implies$ **ONLY PUT** trades allowed.
      - Spot **INSIDE** Band $\implies$ Neutral chop zone (strictly discarded, no trade).
 3. **Wyckoff Volume & Order Flow Delta Parallel Law**:
-   - Immediately following a Price Action setup trigger, the trade MUST pass `WyckoffVolumeEngine` (`AEGIS/core/wyckoff_volume_engine.py`):
+   - Immediately following a Price Action setup trigger, the trade MUST pass `WyckoffVolumeEngine` (`core/wyckoff_volume_engine.py`):
      - **Effort vs Result**: High volume spent with zero price displacement at S/R confirms institutional absorption.
      - **Volume Dry-Up Ratio (VDR)**: For Pillar 1 pullbacks, approach candles must show supply drying up ($VDR \le 0.85$, decaying slope). Counter-trend expanding volume ($VDR \ge 1.25$ rising) is classified as an **Institutional Liquidation Dump** and vetoed immediately.
      - **Delta Harmony**: On breakouts (P3/P4/P5/Mode B), directional option aggressors must dominate. Opposing delta swamping ($> 2.2\times$ opposing flow, $> 500$ vol) is classified as a **Bull/Bear Trap** and vetoed.
@@ -47,23 +47,25 @@
      $$\text{PUT SL} = \text{Entry Candle High} + (0.10 \times \text{ATR}_{1m})$$
    - Evaluated strictly against cash index spot price, fully immunizing trades from option spread flutter, IV crush, and spoofing.
 7. **Composite Conviction Continuous Scoring Law ($\ge 75.0$ in-flight / $\ge 80.0$ bar-close)**:
-   - Continuous 0–100 dual-profile microstructure scoring (`AEGIS/core/option_order_flow.py`).
+   - Continuous 0–100 dual-profile microstructure scoring (`core/option_order_flow.py`).
    - Zero-Entropy domain model (upstream spot structure retired to 0.0 pts as it is 100% verified by PriceActionEngine).
    - **Mode B Profile** — pillar-aware: Pillars 1/3/4/5 (Touch Aggression $I_1$ 40, Live Tick Arrival 35, Spread Tradability 25, impulse $\ge +0.20\%$); Pillar 2 Reclaim (Touch Aggression $I_1$ 45, Live Tick Arrival 30, Spread Tradability 25, impulse $\ge -0.10\%$).
    - **Wyckoff contributes 0 pts in Mode B** (telemetry only) — it already reads the same option-flow ledger, so scoring it again would double-count one data source.
-   - **Mode A Profile (legacy, `AEGIS_ENABLE_LEGACY_MODE_A=1` only)** — Order Book Support & Deep Pressure 40, 30s Option Return Velocity 35, Contract Tradability & Depth 25.
    - Hard Circuit Breakers: Spread $> 2.5\%$, Total Depth $< 200$, 30s Dump $< -1.5\%$. Score below the profile floor is vetoed with an itemized drag audit.
 8. **Option Corridor & Book Quality Law**:
    - Option flow is aggregated strictly inside **ATM ± 5 strikes** ($5.0 \times$ `strike_step`, 11-strike core) so OTM 4-5 institutional positioning still feeds the Pain Zone VWAPs.
    - L2 depth is only accepted if it is at most **2.0s** older than the latest tick — a stale book is never paired with a fresh LTP.
    - `OptionQualityEngine` enforces a **two-sided** depth floor: total top-5 depth $\ge \max(\text{configured}, 5 \times \text{lot})$ **and** $\min(\text{bid side}, \text{ask side}) \ge \max(2 \times \text{lot}, 25)$, closing the one-sided book slippage trap.
-9. **Pure Mode B Enforcement Law**:
-   - Live trading fires 100% from **Priority Mode B Live Breakout**. The bar-close Mode A ladders (`20_ema_rejection`, `micro_sweep_reclaim`) inside `evaluate_setup` are gated behind `AEGIS_ENABLE_LEGACY_MODE_A` (default `0`) and remain available only for legacy tests/backtests.
-   - Option-flow delta uses the **4-leg** convention $(call\_buy + put\_sell) - (put\_buy + call\_sell)$ everywhere, so the directional-delta veto can never contradict the 1.5x bull/bear dominance check.
+9. **Pure Mode B Enforcement & Complete Mode A Decommission Law**:
+   - Live trading fires 100% from **Priority Mode B Live Breakout**. Legacy Mode A has been permanently decommissioned (Nov 14, 2026 audit), removing ~1,500 lines of dead ladders and dual-state cruft.
+   - Option-flow delta uses the **4-leg** convention $(call\_buy + put\_sell) - (put\_buy + call\_sell)$ everywhere.
 10. **Scale-Invariance Law**:
    - NEVER hardcode fixed point thresholds across NIFTY (24k) and SENSEX (80k). All spot distances, invalidations, stops, and confirmations MUST be normalized via **Basis Points (bps, where 1 bps = 0.01% of spot)** or localized volatility multiples ($k \times \text{ATR}_{1m}$).
 11. **Session Force-Flatten Law**:
    - All open positions unconditionally liquidated at **15:08:00 IST** (`AEGIS_FORCE_FLATTEN = 15:08`) to eliminate NSE Closing Auction (CAS) volatility and broker auto-square-off penalization.
+12. **Zero-Regression Mixin Execution Architecture Law**:
+   - `execution/execution_manager.py` is decomposed into 5 cohesive modules using the **Mixin pattern** (`EntryEngineMixin`, `TradeMonitorMixin`, `ExitChaserMixin`, `TradePersistenceMixin`, `QualitySlotPolicy` / risk constants).
+   - The central orchestrator retains exact class identity, lock semantics, monkeypatch compliance, and 100% backward compatibility.
 
 ---
 
@@ -119,175 +121,57 @@ flowchart TD
         CCE_SCORE -->|≥ 80.0 Score| SIZING["🛡️ Locked 1-Lot Allocation<br/>(3 Quality Slots / Day)"]:::convictionBox
     end
 
-    subgraph EXECUTION_EXIT ["⚡ 6. Single-Shot Execution & Universal Adaptive Exits"]
-        SIZING --> ATOMIC_FIRE["🚀 Single-Shot 0.75s Atomic Entry<br/>(Zero Chasing / Pre-Staged Strikes / Slot Rollback)"]:::execBox
+    subgraph EXECUTION_EXIT ["⚡ 6. Single-Shot Execution & Universal Adaptive Exits (5-Mixin Architecture)"]
+        SIZING --> ATOMIC_FIRE["🚀 EntryEngineMixin: Single-Shot 0.75s Atomic Entry<br/>(Zero Chasing / Pre-Staged Strikes / Slot Rollback)"]:::execBox
         ATOMIC_FIRE --> RESTING_TP["🎯 Exchange Resting Maker Limit TP<br/>(+4.0% Mon-Thu / +3.0% Friday 4-DTE)"]:::execBox
         
-        RESTING_TP --> EXITS{"🛡️ Adaptive Exit Monitor (2 Hz Poller)"}:::exitBox
+        RESTING_TP --> EXITS{"🛡️ TradeMonitorMixin: Adaptive Exit Monitor (2 Hz Poller)"}:::exitBox
         EXITS -->|Bid ≥ TP Price| EXIT_TP["🟢 Passive Maker TP Fill (+4.0% / +3.0%)"]:::execBox
         EXITS -->|Peak ≥ +3.5% & Pullback ≥ 0.8%| EXIT_NEAR["🟢 Near-Target Profit Lock"]:::execBox
         EXITS -->|Peak ≥ +3.5% & Bid ≤ Entry| EXIT_COST["🟢 Cost-Shield Scratch (0.0% Breakeven)"]:::execBox
         EXITS -->|Peak ≥ +3.0% & Bid ≤ Entry - 3.0%| EXIT_STEP["🟡 Stepped Safety Net (-3.0% SL)"]:::exitBox
         EXITS -->|Spot Breaches Entry Candle Low/High ± 0.10x ATR| EXIT_WICK["🔴 Universal Spot Invalidation Exit"]:::exitBox
-        EXITS -->|Option Bid Drops ≤ Entry - 8.0%| EXIT_DISASTER["🔴 Disaster Floor Breaker (-8.0% / -6.5% Fri)"]:::exitBox
+        EXITS -->|Option Bid Drops ≤ Entry - 8.0%| EXIT_DISASTER["🔴 Optional Disaster Floor Breaker (-8.0% / -6.5% Fri)"]:::exitBox
         EXITS -->|Post-12:30 PM & 90s Stagnant & 50-EMA Opposed| EXIT_STAG["🟡 0DTE Stagnation Trap Exit"]:::exitBox
         EXITS -->|Time ≥ 300s| EXIT_TIME["🟡 Time Runway Ceiling (300s Max)"]:::exitBox
         EXITS -->|Clock ≥ 15:08:00 IST| EXIT_CAS["🛡️ CAS Square-Off Force Flatten"]:::exitBox
+        EXITS -->|Order Update / Cancel / Flatten| EXIT_CHASE["⚡ ExitChaserMixin: 4-Step Limit Chase & Reconciliation"]:::execBox
+        EXITS -->|Trade Closed / Crash Recover| PERSIST["💾 TradePersistenceMixin: PnL & History Sync"]:::execBox
     end
 ```
 
 ---
 
-## Directory & Subsystem Inventory (Audited)
+## Directory & Subsystem Inventory (Audited 14 November 2026)
 
 | Module Path | LOC | Semantic Responsibility |
 |---|:---:|---|
-| `AEGIS/core/price_action_engine.py` | **2,749** | **Primary Macro Trigger**: 1m/5m/15m OHLC bar aggregation, 5 active pillars (P1 20 EMA, P2 Micro-Sweep Reclaim, P3 Vol Squeeze, P4 S/R Breakout, P5 Gamma Trap Trapped Writer Squeeze), and Priority Mode B In-Flight Breakthrough (`check_mode_b_breakthrough`). |
-| `AEGIS/core/aegis_pipeline_orchestrator.py` | **1,926** | **Central Pipeline Brain**: Master L2 tick router, 6-gate synchronization, 3-strike budget cluster pre-staging, and signal queue dispatch. |
-| `AEGIS/core/option_order_flow.py` | **1,300** | **Option Microstructure & Conviction Gatekeeper**: ATM $\pm 25$ strikes tape reading, OFI delta flow, Absolute Pain Zone VWAP envelope, and continuous 0–100 dual-profile conviction scoring (`CompositeConvictionEngine`, 40-35-25 model, $\ge 80.0$). |
-| `AEGIS/core/structural_registry.py` | **982** | **Dynamic S/R Level Registry**: Monotonic `seq_idx` tracking, 5m candle clustering, role classification (`OUTERMOST_ROOF`, `OUTERMOST_FLOOR`, `INTERIOR_CLUSTER`), and multi-touch prominence boost. Prominence is a PURE birth/touch attribute — dynamic post-excursion inflation is decommissioned (Task 4). |
-| `AEGIS/core/shadow_boundary_observer.py` | **897** | **Shadow Telemetry**: Zero-capital empirical paper-trader tracking Pain Zone and 200 EMA breakout/rejection analytics. |
-| `AEGIS/core/wyckoff_volume_engine.py` | **730** | **Wyckoff Volume & Delta Gate**: Effort vs Result, Volume Dry-Up Ratio (VDR), Absorption pin wick, Delta Harmony (Call Buy vs Put Buy), and Candle N-1 smart protection. |
-| `AEGIS/core/dow_macro_shields.py` | **583** | **Dow Theory & Macro Obstacle Shields**: 4-point HL2/LH2 sequence, 20 EMA High/Low bands, and scale-invariant Day Extreme Runway Shield (`min_runway_pts = max(1.25 * ATR_1m, 0.0008 * Spot)`). |
-| `AEGIS/execution/aegis_execution_manager.py` | **2,896** | **Live Execution Lifecycle**: Single-shot 0.75s clean entry, +4.0% Maker TP (+3.0% Friday), Universal Spot Invalidation, Cost-Shield Scratch, and 15:08:00 CAS force flatten. |
-| `AEGIS/aegis_main.py` | **911** | **Process Orchestrator**: PM2 entry point, 09:14 AM seeding, ATM shift, and WebSocket reconnect management. |
+| `core/price_action_engine.py` | **1,972** | **Primary Macro Trigger**: 1m/5m/15m OHLC bar aggregation, 5 active pillars (P1 20 EMA, P2 Micro-Sweep Reclaim, P3 Vol Squeeze, P4 S/R Breakout, P5 Gamma Trap Writer Squeeze), and Priority Mode B In-Flight Breakthrough (`check_mode_b_breakthrough`). |
+| `core/pipeline_orchestrator.py` | **1,888** | **Central Pipeline Brain**: Master L2 tick router, 6-gate synchronization, 3-strike budget cluster pre-staging, and signal queue dispatch. |
+| `core/structural_registry.py` | **1,042** | **Dynamic S/R Level Registry**: Monotonic `seq_idx` tracking, 5m candle clustering, role classification (`OUTERMOST_ROOF`, `OUTERMOST_FLOOR`, `INTERIOR_CLUSTER`), and multi-touch prominence boost. |
+| `core/option_order_flow.py` | **1,010** | **Option Microstructure & Conviction Gatekeeper**: ATM $\pm 5$ strikes tape reading, OFI delta flow, Absolute Pain Zone VWAP envelope, and continuous 0–100 dual-profile conviction scoring (`CompositeConvictionEngine`, 40-35-25 model, $\ge 80.0$). |
+| `core/shadow_boundary_observer.py` | **927** | **Shadow Telemetry**: Zero-capital empirical paper-trader tracking Pain Zone and 200 EMA breakout/rejection analytics. |
+| `core/sweep_stop_run_detector.py` | **697** | **Sweep & Stop-Run Detector**: Live microstructure stop-loss burst ($\ge 2.2\times$) and absorption formula. |
+| `core/outcome_telemetry.py` | **691** | **Trade Telemetry**: Signal logging, slippage, latency, and JSONL outcome recording. |
+| `core/dow_macro_shields.py` | **633** | **Dow Theory & Macro Obstacle Shields**: 4-point HL2/LH2 sequence, 20 EMA High/Low bands, and scale-invariant Day Extreme Runway Shield (`min_runway_pts = max(1.25 * ATR_1m, 0.0008 * Spot)`). |
+| `core/gex_engine.py` | **593** | **Gamma Exposure Engine**: Net market maker gamma positioning, zero gamma levels, and proximity. |
+| `core/wyckoff_volume_engine.py` | **442** | **Wyckoff Volume & Delta Gate**: Effort vs Result, Volume Dry-Up Ratio (VDR), Absorption pin wick, Delta Harmony (Call Buy vs Put Buy), and Candle N-1 smart protection. |
+| `execution/entry_engine.py` | **959** | **Signal Intake & Entry Execution (`EntryEngineMixin`)**: `_process_aegis_signal`, strike budget targets refresh, admission gates, maker TP placement, and slot rollback. |
+| `execution/exit_chaser.py` | **923** | **Exit Chaser & Reconciliation (`ExitChaserMixin`)**: 4-step limit exit chasing, order updates, fill polling, TP cancellation, broker net position reconciliation, and emergency flatten. |
+| `execution/trade_monitor.py` | **817** | **Trade Lifecycle Monitor (`TradeMonitorMixin`)**: Live tick management, dynamic noise floor, realized delta, 0DTE time stop, and Universal Spot Invalidation SL. |
+| `execution/trade_persistence.py` | **567** | **State & Context Persistence (`TradePersistenceMixin`)**: Daily state, PnL tallying, NSE charges, trade history JSON, and crash-recovery active context saving/loading. |
+| `execution/execution_manager.py` | **409** | **Slim Orchestrator (`AegisExecutionManager`)**: Composes the 4 Mixins, manages `__init__`, main loop thread (`_run_loop`), L1 book query (`_latest_option_book`), and re-exports risk constants. |
+| `execution/slot_and_risk_constants.py` | **239** | **Slot Policy & Quantitative Risk Constants**: `QualitySlotPolicy`, `PostTriggerStabilityTracker`, and scale-invariant normalized risk parameters. |
+| `broker/shoonya_adapter.py` | **1,106** | **Broker Seam**: Shoonya API adapter, WebSocket tick stream, order execution, and account sync. |
+| `market/tick_compiler.py` | **382** | **Tick Compiler**: Zero-copy tick parsing into 1m/5m OHLC bars. |
+| `main.py` | **822** | **Process Orchestrator**: PM2 entry point, 09:14 AM seeding, ATM shift, and WebSocket reconnect management. |
+| `backtest.py` | **882** | **Backtest Simulator**: Replays recorded tick and OHLC bars against the full 5-pillar pipeline. |
 
 ---
 
-## Deep-Dive: The 5 Macro Price Action Scalper Pillars
+## Universal Execution & Adaptive Exit Discipline (`execution/execution_manager.py`)
 
-### 1. Pillar 1: Classical Dow Theory 20 EMA Retracement Engine (`20_ema_rejection`)
-- **Dow Theory Sequence ($HH_1 \to HL_1 \to HH_2 \to HL_2$)**:
-  - $HL_1$ (1st Touch): Strictly skipped (`first_touch_hl1_not_found_no_entry_on_hl1`).
-  - $HH_2$ (BOS): Confirmed higher high ($HH_2 > HH_1 + \min(1.5, 0.15 \times \text{ATR})$).
-  - Orderly Retracement: 3 to 10 candles orderly cooling off ($Descent \ge 60\%$) down to 20 EMA Band with volume dry-up ($VDR \le 1.15$).
-  - $HL_2$ (2nd Touch): Retests 20 EMA High-Low Band with $HL_2 > HL_1$.
-- **Rejection Approach Ladder (Closed Bars $N-1$ & $N-2$)**:
-  - **CALL**: $High_{N-1} < High_{N-2} \land Low_{N-1} < Low_{N-2}$ (sharp fall into 20 EMA).
-  - **PUT**: $High_{N-1} > High_{N-2} \land Low_{N-1} > Low_{N-2}$ (sharp rise into 20 EMA).
-- **Open-Side Anti-Breakout Veto**:
-  - Candle must open at/above lower band edge for CALL (`breakout_from_below_open_veto`) or at/below upper band edge for PUT (`breakdown_from_above_open_veto`).
-- **Candlestick Geometry & Trap Shields**:
-  - Rejection wick $\ge 33\%$ ($min\_wick\_ratio = 0.33$), close edge $\ge 0.60$, opposite wick $\le 15\%$, lower wick $\ge 1.5\times$ upper wick; or bullish expansion body $\ge 40\%$.
-  - Inside-bar trap protection: If lower wick $< 45\%$, must clear prior pullback bar's open, body, and high.
-- **Wyckoff N-1 Smart Safe Gate (`check_n1_wyckoff_gate`)**:
-  - Spiking volume ($\ge 1.25\times$ baseline) on $N-1$ MUST be stopping volume (absorption wick $\ge 40\%$); unabsorbed spikes trigger immediate dump veto.
-  - Opposing synthetic delta swamp veto ($Bears > 1.5\times Bulls$ on CALL) armed only once the N-1 footprint crosses the lot-scaled floor $\max(150, 5 \times \text{lot size})$ shares (NIFTY 65 → 325, SENSEX 20 → 150) — never a hardcoded 500.
-- **Priority Mode B In-Flight Reversal Pierce**:
-  - Active mid-bar at $T:02s+$: Triggers immediately when forming bar bounces from 20 EMA Band and pierces prior pullback bar extreme ($Spot \ge High_{N-1}$ for CALL, $Spot \le Low_{N-1}$ for PUT).
-  - The same `check_n1_wyckoff_gate` (unabsorbed volume dump + delta swamp) is enforced inside Mode B, so an in-flight pierce can never bypass the N-1 absorption mandate.
-
-### 2. Pillar 2: Liquidity Sweep & Reclaim (`micro_sweep_reclaim`)
-- **Dynamic S/R Registry & Day Extreme Mapping**:
-  - Sweeps active registered `StructuralLevel` (Support/PDL for CALL, Resistance/PDH for PUT). Eliminates random 5-bar wiggles in no-man's land.
-  - **Qualification (Task 5, Nov 2026)**: only `OUTERMOST_FLOOR`, `OUTERMOST_ROOF`, `PDH`, `PDL`, and high-prominence `MAJOR_SWING` ($Prominence \ge 1.50$) qualify. `INTERIOR_CLUSTER` (interior chop) and `C_UNQUALIFIED` are strictly vetoed — raiding an interior cluster is not an institutional liquidity sweep.
-- **Scale-Invariant Minimum Sweep Depth**:
-  $$\text{min\_sweep\_depth} = \max\left(1.5, \frac{\text{Spot}}{24000} \times 1.5, 0.08 \times \text{ATR}_{1m}\right)$$
-- **Lunch Chop Shield**:
-  - 11:15 AM to 13:00 PM IST sweep entries are strictly blocked (`lunch_chop_sweep_veto`).
-- **Reclaim Absorption Geometry**:
-  - Candle sweeps below level but closes firmly back inside with lower wick $\ge 35\%$, upper wick $\le 15\%$, close edge $\ge 0.55$, and lower wick $\ge 1.25\times$ upper wick.
-- **Confirmed Sweep Gate & Live Wick Controls (User-Locked 2026-11-05)**:
-  - `SweepStopRunDetector`: Tick burst ratio $\ge 2.20\times$ (panic retail stops hit) + Reclaim Flow $\ge 0.0$ (institutional absorption).
-  - **Same-or-Prior Candle Sweep-Flow Confirm**: Breach start timestamp must fall inside the active forming candle or the immediately prior candle ($N-1$) with $\le 90\text{s}$ freshness — a valid $N-1$ sweep that reclaims on $N$ is tradeable instead of being killed by a forming-candle-only window.
-  - **$\ge 40\%$ Live Wick Gate**: Forming candle must have established at least $40\%$ live wick (`MODE_B_P2_WICK_MIN_PCT = 0.40`, range $\ge 0.30\times \text{ATR}$).
-
-### 3. Pillar 3: Volatility Squeeze Breakout (`volatility_squeeze_breakout`)
-- **5 to 7 Bar Box Compression (`_is_valid_squeeze_box`)**:
-  - Gross Box Range $\le 1.15 \times \text{ATR}_{1m}$.
-  - Per-bar compression: Every individual bar range $\le 0.85 \times \text{ATR}_{1m}$.
-  - Net directional drift cap: $|Close_{last} - Open_{first}| \le 0.50 \times \text{BoxRange}$.
-- **Pre-Established Boundary & Anti-Staircase Shield**:
-  - CALL: Highest high must be pre-established (not created by last bar); no 3 consecutive higher highs and higher closes at the tail.
-  - PUT: Lowest low must be pre-established; no 3 consecutive lower lows and lower closes (waterfall veto).
-- **Median Oscillation / Core Overlap**:
-  - At least $50\%$ of bars must cross or touch the center-line $((High_{box} + Low_{box})/2)$.
-- **Anti-Climax Cap**:
-  - Breakout candle range must NOT exceed $1.35 \times \text{ATR}_{1m}$ to prevent entering at exhaustion peaks.
-- **Mode B In-Flight Breakthrough**:
-  - Candle opens inside/at box, spot pierces $High_{box}$ (CALL) or $Low_{box}$ (PUT) at $T:02s+$ with a direction-scoped same-candle lockout (`DIR_UP` / `DIR_DOWN`).
-  - **Opposing Sweep Veto**: an opposing-side sweep verdict at the box boundary blocks the breakout (`p3_sweep_veto_*`).
-  - **Option-Flow Harmony Veto**: once in-flight option flow $\ge 3 \times$ lot size, bull flow must dominate bear flow for CALL (mirror for PUT) and counter-side aggression must not exceed $2\times$ the aligned side, else `p3_option_flow_divergence_veto`.
-
-### 4. Pillar 4: Dynamic S/R Breakout (`sr_breakout` / `topological_prominence_breakout`)
-- **Dynamic S/R Registry & Role Classification**:
-  - Level prominence $Prominence \ge 1.25$, age $\ge 3$ bars or $180\text{s}$.
-  - Outermost classification: Trades only outermost structural boundaries (`OUTERMOST_ROOF`, `OUTERMOST_FLOOR`); interior cluster levels are skipped.
-- **Strict 2-Candle Approach Ladder (`_check_p4_approach_ladder`)**:
-  - **CALL**: $High_{N-1} > High_{N-2} \land Low_{N-1} > Low_{N-2} \land Close_{N-1} > Open_{N-1}$ (green ladder into resistance).
-  - **PUT**: $Low_{N-1} < Low_{N-2} \land High_{N-1} < High_{N-2} \land Close_{N-1} < Open_{N-1}$ (red ladder into support).
-- **5-Minute Trend Alignment**:
-  - Active 5m candle must be aligned with direction ($Close_{5m} \ge Open_{5m}$ for CALL, $Close_{5m} \le Open_{5m}$ for PUT).
-- **Day Extreme Runway Shield**:
-  $$\text{min\_runway\_pts} = \max(1.25 \times \text{ATR}_{1m}, 0.0008 \times \text{Spot})$$
-  Blocks breakouts firing within `min_runway_pts` of Day High / PDH (CALL) or Day Low / PDL (PUT).
-
-### 5. Pillar 5: Trapped Option Writer Short-Squeeze Engine (`gamma_trap_squeeze`)
-- **Decoupled Writer VWAP Breach**:
-  - **CALL Squeeze**: Spot crosses above Call Sell VWAP ($Spot > VWAP_{CallSell}$), trapping option writers in short-covering panic.
-  - **PUT Squeeze**: Spot crosses below Put Sell VWAP ($Spot < VWAP_{PutSell}$), trapping put writers in long-liquidation panic.
-- **3-Bar Debounce Lockout**: $(bar\_idx - last\_trig) \ge 3$.
-- **3-Candle Dow Thrust Ladder**:
-  - Consecutive Higher Highs and Higher Closes (CALL) or Lower Lows and Lower Closes (PUT) to ensure real institutional impulse.
-- **Counter-Liquidation Shield**:
-  - Active flow floor $15 \times LotSize$. Opposing liquidation volume must not swamp trade direction ($Vol_{PE} \le 2.5\times Vol_{CE}$ for CALL, $Vol_{CE} \le 2.5\times Vol_{PE}$ for PUT).
-- **Stop-Loss Anchor**:
-  $$\text{CALL SL} = \min(Low_{N-1}, Low_N) - (0.10 \times \text{ATR}_{1m})$$
-  $$\text{PUT SL} = \max(High_{N-1}, High_N) + (0.10 \times \text{ATR}_{1m})$$
-
----
-
-## Deep-Dive: Wyckoff Volume & Order Flow Delta Engine (`wyckoff_volume_engine.py`)
-
-1. **Effort vs Result (Absorption Index)**:
-   $$\text{Absorption Index} = \frac{\text{Volume}_T}{\text{Spread}_T / \text{ATR}_{14}}$$
-2. **Pillar 1 Retracement Laws**:
-   - Supply Dry-Up ($VDR \le 0.85$ or $VR \le 0.70$) confirms lack of selling into 20 EMA.
-   - Counter-trend volume expansion ($VDR \ge 1.25$ rising) $\implies$ `INSTITUTIONAL_DUMP` veto.
-   - Counter-flow dominance ($Flow_{counter} > 1.25 \times Flow_{impulse}$) $\implies$ veto.
-   - Opposing delta surge ($PB > 2.2\times CB$ on CALL touch) $\implies$ veto.
-   - Delta Flip Velocity ($\Delta_{N-1} \le 0 \to \Delta_N \ge 0$) confirms institutional reversal.
-3. **Pillars 3, 4, 5 Breakout Laws**:
-   - Volume expansion ratio on squeeze breakout: $Rate_{curr} \ge 1.50\times \overline{Rate}_{box}$.
-   - Demand ignition on S/R breakout: $VER_{N-1} \ge 1.10\times$ with directional close.
-   - Hard participation floor: $VDR < 0.40 \implies$ `PHANTOM_DRIFT` veto.
-   - Delta imbalance: Directional volume $\ge 2.0\times$ opposing volume on active bars.
-   - Opposing delta divergence ($> 2.2\times$ opposing flow, $> 500$ volume) $\implies$ Bull/Bear Trap veto.
-   - Synthetic net delta trap veto: $(CB + PS) - (PB + CS) < 0$ on CALL $\implies$ veto.
-
----
-
-## Deep-Dive: Composite Conviction Engine (`option_order_flow.py`)
-
-A pure-Python 0–100 continuous microstructure engine executing a **40-35-25 Model**:
-
-1. **Domain 1 (Spot Structure) Retired to 0.0 pts**:
-   - Upstream price action verification is 100% complete in `PriceActionEngine`. Zero redundant scoring loops.
-2. **Hard Micro Circuit Breakers**:
-   - Bid-Ask Spread $> 2.5\% \implies$ `circuit_breaker_spread_blowout` (instant drop).
-   - Total Book Depth $< 200 \implies$ `circuit_breaker_ghost_book` (instant drop).
-   - 30s Option Return $micro\_ret < -1.5\% \implies$ `circuit_breaker_severe_dump` (instant drop).
-   - Crossed Quotes ($Ask \le Bid$) $\implies$ instant drop.
-3. **Dual-Profile Scoring Framework** (pillar-aware in Mode B):
-   - **Mode B Profile (In-Flight Breakthrough Surge, $T:02s+$ onwards)**:
-     - **Pillar-aware split**: Pillars 1/3/4/5 (breakout) require an active option impulse $micro\_ret \ge +0.20\%$ and score **40 / 35 / 25**. Pillar 2 (Micro-Sweep Reclaim, counter-trap) enters on the reversal reclaim *before* expansion prints: its stagnation veto is relaxed to $micro\_ret \ge -0.10\%$ (an active dump is still vetoed) and it scores **45 / 30 / 25**, because bid-side reclaim support matters more than velocity there.
-     - **Touch Aggression & Ask Sweep $I_1$ (40 pts / 45 pts for P2)**: $I_1 = (b_1 - a_1)/(b_1 + a_1 + 10^{-4})$. Breakout: $I_1 \ge +0.20 \implies 40$; $\ge +0.08 \implies 34$; $\ge -0.05 \implies 28$; $\ge -0.20 \implies 16$; $< -0.20 \implies 0$ (`aggression_drag`). P2 reclaim: $45 / 38 / 31 / 18 / 0$.
-     - **Live Tick Arrival Intensity (35 pts / 30 pts for P2)**: Breakout: $Rate \ge 1.5\text{ ticks/s} \implies 35$; $\ge 0.8 \implies 28$; $\ge 0.4 \implies 22$; $< 0.4 \implies 14$ (`tick_rate_drag`). P2 reclaim: $30 / 24 / 18 / 12$. Rate is measured as $\text{ticks} / \text{clamp(observed span}, 5.0\text{s}, \text{lookback})$, never $\text{ticks}/30\text{s}$ on a cold buffer.
-     - **Contract Tradability & Spread (25 pts)**: Spread $\le 0.50\% \implies 25\text{ pts}$; $\le 1.00\% \implies 20\text{ pts}$; $\le 1.50\% \implies 12\text{ pts}$; $\le 2.50\% \implies 5\text{ pts}$.
-     - **Wyckoff is telemetry-only in Mode B**: `WyckoffVolumeEngine` already derives its verdict from the same option order-flow ledger, so it contributes **0 pts** here (`wyckoff_scored: false`). Scoring it again would double-count one data source.
-   - **Mode A Profile (Structural Rejection & Close)** — legacy, reachable only via `AEGIS_ENABLE_LEGACY_MODE_A=1`:
-     - **Order Book Support & Deep Pressure (40 pts)**: $I_1 \ge 0.15$ and Deep Pressure $\ge -0.10 \implies 40\text{ pts}$.
-     - **Option Premium Return Velocity `micro_ret` (35 pts)**: $micro\_ret \ge +0.8\% \implies 35\text{ pts}$; $\ge +0.3\% \implies 30\text{ pts}$; $\ge -0.1\% \implies 25\text{ pts}$; $\ge -0.5\% \implies 14\text{ pts}$; $< -0.5\% \implies 0\text{ pts}$ (`momentum_drag`).
-     - **Contract Tradability & Book Depth (25 pts)**: Spread $\le 1.00\% \implies 25\text{ pts}$; $\le 1.50\% \implies 15\text{ pts}$; $> 1.50\% \implies 5\text{ pts}$. Total depth $\le 0$ or $< 200$ forces $0\text{ pts}$.
-4. **Conviction Hurdle**:
-   - Mode B In-Flight floor: **$\ge 75.0$**. Mode A: **$\ge 80.0$**.
-   - Score below the floor $\implies$ `BLOCKED` with itemized audit drags.
-
----
-
-## Universal Execution & Adaptive Exit Discipline (`aegis_execution_manager.py`)
-
-Monitored at 2 Hz by `_manage_open_trade()`:
+Monitored at 2 Hz by `_manage_open_trade()` in `execution/trade_monitor.py`:
 
 1. **Strict 1-Lot Fixed Allocation**: Every admitted trade executes strictly with **1 Lot**.
 2. **Passive Resting Maker TP Exit**:

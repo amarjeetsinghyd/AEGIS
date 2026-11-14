@@ -1,23 +1,24 @@
 # SYSTEM STATE (Active Production Anchor)
 
+> **Last Updated:** 14 November 2026 | **Active Production Engine:** AEGIS (v1.0 Locked) | **Status:** 100% De-bloated & Modularized
+
+---
+
 ### Core Entry Points
-- **ARGUS (Equities Scalper):** `ARGUS/main.py` (NSE Cash, zero-copy `TickCompiler`, PM2: `argus`).
-- **AEGIS (Options Gamma Engine):** `AEGIS/aegis_main.py` (NIFTY/SENSEX 0DTE options, PM2: `aegis-bot`).
-- **Dashboard UI:** `unified_dashboard/dashboard.py` (Flask telemetry port 5000, PM2: `unified-dashboard`).
-- **EOD Calibration:** `ARGUS/eod_calibrator.py` (Daily 16:00 IST cron, PM2: `eod-calibrator`).
+- **AEGIS (Options Gamma Engine):** `main.py` (NIFTY/SENSEX 0DTE/1DTE options, PM2: `aegis-bot`, cwd: `/home/opc/aegis`).
+- **Dashboard UI:** `dashboard/dashboard.py` (aiohttp telemetry port 8080, PM2: `aegis-dashboard`).
+- **Backtest Simulator:** `backtest.py` (Full 5-pillar historical replay with tick/OHLC cache).
 
-### Active Data Flow
-- **Market Data Ingress:** Single Shoonya WebSocket feed demuxed via `TickCompiler` (L1 + top-5 L2 depth).
-- **IPC & Runtime State:** Shared state written via `common/ipc/live_state.py` to `/dev/shm/*.json` and `data/ipc/`.
-- **Persistent Storage:** Passive Snappy Parquet partitioners (`ARGUS/l2_archiver.py`, `AEGIS/l2_options_archiver.py`) flushing every 15 min.
-- **Session Cache:** Single daily token in `data/shoonya_session.json` (lockfile protected; weekly `tokens_cache.json` refresh).
+### Active Data Flow & IPC
+- **Market Data Ingress:** Single Shoonya WebSocket feed demuxed via `market/tick_compiler.py` (L1 + top-5 L2 depth).
+- **IPC & Runtime State:** Shared state written via `ipc/live_state.py` to `data/ipc/aegis_live_state.json`.
+- **Persistent Storage:** Snappy Parquet partitioners (`core/l2_options_archiver.py`) flushing every 15 min.
+- **Session Cache:** Single daily token in root `data/shoonya_session.json` (lockfile protected; weekly `tokens_cache.json` refresh).
 
-### Ground Truth Rules
-- **Locked AEGIS Production v1.0 Parameters:** Strict 1-Lot Maker TP at constant **+4.0%** (resting limit order at entry + 4.0%), Hard Disaster SL Floor at **-12.0%**, Step 1 Safety Net (peak >= +3.0% compresses SL to -3.0%), Step 2 Cost-Shield Scratch (peak >= +3.5% compresses SL to 0.0% breakeven), Near-Target Profit Lock (peak >= +3.5% exits on >= 0.8% pullback from peak bid), 300s max hold, 60s inter-trade cooldown / 120s post-loss cooloff, 15:08:00 IST CAS force-flatten.
-- **Human-Eye Geometry across 4 Pillars:**
-  - Pillar 1 (20 EMA Rejection): Two-bar confirmation path added, upper wick <= 15% (two-bar <= 18%), close edge >= 0.60.
-  - Pillar 2 (Liquidity Sweep & Reclaim): min_sweep_depth normalized, upper wick <= 15%, close edge >= 0.55, lower wick >= 1.25x upper wick.
-  - Pillar 3 (Volatility Squeeze Breakout): min_box_clearance normalized, opposing wick <= 18%, close edge >= 0.55, body >= 0.35x range.
-  - Pillar 4 (0-D Prominence Hub Breakout): min_hub_clearance normalized, directional expansion body >= 0.35x range, close edge >= 0.55, opposing wick <= 20%.
-- **Wyckoff Volume & OFI Gate:** Dual-regime P1 (Supply Dry Test VDR <= 0.80 vs Stopping Absorption with rejection wick >= 60%), Breakout volume thrust (VDR >= 1.0) on P3/P4.
-- **Decommissioned Invariants:** `kronos_bot` is permanently decommissioned. CatBoost ML Gatekeeper is permanently disabled / shadow-only. Gemini 3.8 / `ai_shadow_reviewer.py` is deleted. 3-Minute Time Harvest is permanently removed. `_archive/` is strictly read-only history.
+### Ground Truth Invariants (AEGIS v1.0 Production Locked)
+- **Strategy Architecture:** 5 Macro Price Action Pillars + Priority Mode B In-Flight Mid-Bar Breakthrough ($T:02s+$ onwards).
+- **Execution Architecture:** Zero-Regression 5-Mixin Architecture (`execution/execution_manager.py` composing `EntryEngineMixin`, `TradeMonitorMixin`, `ExitChaserMixin`, `TradePersistenceMixin`, and `QualitySlotPolicy` / risk constants).
+- **Order Execution:** Strict 1-Lot Maker TP at constant **+4.0%** Mon–Thu (**+3.0%** Friday 4-DTE), atomic 0.75s fill window, 0 order chasing.
+- **Stop-Loss Invariant:** Universal Pure Price Action Spot Invalidation ($\text{CALL SL} = \text{Entry Candle Low} - 0.10\times\text{ATR}$, $\text{PUT SL} = \text{Entry Candle High} + 0.10\times\text{ATR}$). Option premium disaster floor is decommissioned by default (`AEGIS_ENABLE_PREMIUM_DISASTER_FLOOR = "0"`).
+- **Risk Governance:** Strict 3 trades/day (`MAX_TRADES_PER_DAY = 3`), Near-Target Profit Lock (+3.5% peak, 0.8% pullback), Cost-Shield Scratch (+3.5% peak $\to$ 0.0% breakeven), 300s max hold, and 15:08:00 IST CAS force-flatten.
+- **Decommissioned Invariants:** `kronos_bot` and `ARGUS` are permanently decommissioned. Legacy Mode A ladders are permanently decommissioned. CatBoost ML Gatekeeper is permanently removed. `_archive/` is strictly read-only history.
