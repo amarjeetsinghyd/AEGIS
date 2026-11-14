@@ -75,18 +75,19 @@ def test_dump_detector_on_option_tick_triggers_emergency_exit():
     assert em.dump_detector.zone is True
     assert len(exits_called) == 0
     
-    # Now simulate an aggressive dump: bid collapses (drops 4 ticks to 102.30), heavy selling, ask stacking
-    dump_bp = [102.30, 102.25, 102.20, 102.15, 102.10]
+    # Now simulate an aggressive dump: bid collapses (drops 10 ticks to 101.50 = 1.0% pullback > 0.8% arm floor),
+    # heavy selling, ask stacking — scale-invariant arm threshold is max(2*tick/entry, 0.008) = 0.8%
+    dump_bp = [101.50, 101.45, 101.40, 101.35, 101.30]
     dump_bq = [50, 40, 30, 20, 10]           # collapsed bids (90% drop)
-    dump_sp = [102.35, 102.40, 102.45, 102.50, 102.55]
+    dump_sp = [101.55, 101.60, 101.65, 101.70, 101.75]
     dump_sq = [2500, 2000, 1500, 1000, 800]  # massive ask wall
     
     # Tick 1: heavy sell volume hitting bid
-    tick_dump1 = SimpleNamespace(tok="12345", sym="NIFTY26OCT24000CE", ts=ts + 1.5, lp=102.30, vol=60000.0, bp=dump_bp, bq=dump_bq, sp=dump_sp, sq=dump_sq)
+    tick_dump1 = SimpleNamespace(tok="12345", sym="NIFTY26OCT24000CE", ts=ts + 1.5, lp=101.50, vol=60000.0, bp=dump_bp, bq=dump_bq, sp=dump_sp, sq=dump_sq)
     em.on_option_tick(tick_dump1)
     
     # Tick 2: sustained persistence past 300ms
-    tick_dump2 = SimpleNamespace(tok="12345", sym="NIFTY26OCT24000CE", ts=ts + 2.0, lp=102.25, vol=65000.0, bp=dump_bp, bq=dump_bq, sp=dump_sp, sq=dump_sq)
+    tick_dump2 = SimpleNamespace(tok="12345", sym="NIFTY26OCT24000CE", ts=ts + 2.0, lp=101.45, vol=65000.0, bp=dump_bp, bq=dump_bq, sp=dump_sp, sq=dump_sq)
     em.on_option_tick(tick_dump2)
     
     # Assert exit was triggered with INSTITUTIONAL_DUMP_EXIT

@@ -4,6 +4,7 @@ import time
 import logging
 import threading
 from datetime import datetime, time as dt_time
+from market.market_calendar import is_trading_day
 
 from broker.manifest import BrokerManifest, IdentityCapability, AuthenticationCapability, RateLimitCapability, WebSocketCapability, MarketDataCapability, HistoricalDataCapability, OrderManagementCapability, ProductSupportCapability, ExchangeSupportCapability, FeatureFlagCapability, PerformanceRecommendation
 from broker.rate_limiter import TokenBucketLimiter, call_with_retry
@@ -436,7 +437,14 @@ class ShoonyaMarketDataProvider(IMarketDataProvider):
                 while True:
                     time.sleep(10)
                     now_time = datetime.now().time()
-                    if dt_time(9, 15) <= now_time <= dt_time(15, 30) and getattr(self, "_ws_started", False):
+                    # Holiday / non-trading-day guard: skip watchdog checks entirely
+                    if not is_trading_day():
+                        continue
+                    # Before 09:15, refresh option-tick timestamp so the 08:55 AM boot
+                    # time cannot trigger a false 45s freeze right after market open.
+                    if now_time < dt_time(9, 15):
+                        self._last_opt_tick_time = time.time()
+                    if dt_time(9, 16) <= now_time <= dt_time(15, 17) and getattr(self, "_ws_started", False):
                         now_sec = time.time()
                         startup_grace_passed = (now_sec - getattr(self, "_ws_boot_time", now_sec)) > 90
                         # 1. Global tick freeze (no ticks at all)

@@ -41,7 +41,6 @@ from execution.strike_selector import StrikeSelector, effective_premium_floor
 from execution.trade_context import TradeContext, TradeLeg, resolve_leg_net_qty
 from execution.realistic_paper_broker import calculate_nse_option_charges
 from market.market_calendar import is_trading_day
-from ipc.premarket_bridge import read_premarket_state
 try:
     from execution.dump_detector import DumpDetector
 except ImportError:
@@ -325,6 +324,7 @@ class AegisExecutionManager:
         self._order_history_poll_interval_sec = 2.5
         self.trade_lock = threading.Lock()
         self._trade_quote_history = deque(maxlen=60)
+        self._last_quote_hist_ts = 0.0
         
         # Sub-Millisecond Institutional Dump Detector at +2.0% Profit Zone (Pure O(1))
         # LOT-AWARE: NIFTY 65 / SENSEX 20 must come from the ACTIVE instrument —
@@ -854,6 +854,7 @@ class AegisExecutionManager:
                 # Service live exits before any entry preparation or queue wait.
                 if self.has_open_trade():
                     self._manage_open_trade()
+                    time.sleep(0.02)
                 else:
                     # Check signal queue first (non-blocking) so waiting live signals are never delayed
                     try:
@@ -873,38 +874,9 @@ class AegisExecutionManager:
                 if self.aegis_engine:
                     self.aegis_engine.check_pending_edges(time.time())
 
-                # 4. Check pre-market bridge (09:08 - 09:15:00, ATM alignment only)
-                now_t = datetime.now().time()
-                if dt_time(9, 8, 0) <= now_t < dt_time(9, 15, 0):
-                    self._handle_premarket_bridge()
-
             except Exception as e:
                 logger.error(f"[AegisEM] Main loop error: {e}", exc_info=True)
                 time.sleep(1.0)
-
-    def _handle_premarket_bridge(self):
-        """Uses pre-open indicative spot only to pre-align the ATM strike.
-
-        P1-9: the 09:15 blind gap auto-fire (conviction 5.0, no microstructure
-        confirmation) is permanently disabled. Indicative price is used ONLY
-        to pre-align the ATM strike; orders still require a full
-        microstructure-scored GAMMA_BURST_ENTRY signal.
-        """
-        now_t = datetime.now().time()
-        if not (dt_time(9, 8, 0) <= now_t < dt_time(9, 15, 0)):
-            return
-        pm_state = read_premarket_state()
-        if not pm_state:
-            return
-        ind_spot = pm_state.get("indicative_spot", 0.0)
-        gap_pct = pm_state.get("gap_pct", 0.0)
-
-        if ind_spot > 0 and self.aegis_engine:
-            params = self.get_instrument_params()
-            atm_strike = StrikeSelector.calculate_atm_strike(ind_spot, params["index_name"])
-            if float(getattr(self.aegis_engine, "current_atm_strike", 0.0) or 0.0) != atm_strike:
-                logger.info(f"[AegisEM] Pre-Market Bridge: Pre-aligning ATM to {atm_strike:.2f} from indicative spot {ind_spot:.2f} (Gap: {gap_pct:+.2f}%)")
-                self.aegis_engine.shift_atm(0, new_atm=atm_strike)
 
     def _get_current_spot(self, local_only: bool = False) -> float:
         """Prefer the engine's live spot feed; use the provider only when it is unavailable."""
@@ -1442,6 +1414,9 @@ class AegisExecutionManager:
                         "signal_ts": signal_ts,
                     },
                 )
+                # Reset quote-history gate on fresh trade entry so the 60-sample
+                # noise-floor window starts cleanly for this trade.
+                self._last_quote_hist_ts = 0.0
                 leg = TradeLeg(token_str, symbol, float(opt_row["strike"]), signal_type, quantity, ltp)
                 
                 is_entry_filled = False
@@ -1824,8 +1799,11 @@ class AegisExecutionManager:
             if eff_bid_now > getattr(leg, "highest_bid", 0.0):
                 leg.highest_bid = eff_bid_now
 
-            # Record in rolling trade history
-            self._trade_quote_history.append((now_ts, curr_spot, leg.current_price, live_bid, live_ask))
+            # Record in rolling trade history (0.75s-gated so 60 samples span ~45s,
+            # not ~2ms — keeps _compute_noise_floor() stdev meaningful)
+            if (now_ts - self._last_quote_hist_ts) >= 0.75:
+                self._trade_quote_history.append((now_ts, curr_spot, leg.current_price, live_bid, live_ask))
+                self._last_quote_hist_ts = now_ts
 
         # Update spot excursion metrics (Spot MFE & Spot MAE tracking)
         entry_spot = float(getattr(context, "index_entry", 0.0) or 0.0)
@@ -1997,6 +1975,24 @@ class AegisExecutionManager:
         )
         if is_mode_b:
             b_level = float(getattr(context, "boundary_level", 0.0) or 0.0)
+            # ─── In-flight boundary re-break exit (0.02% safety buffer) ───
+            # Exit immediately when spot retraces back across the boundary by
+            # more than 2 bps, without waiting for the 1-minute bar to close.
+            if b_level > 0 and curr_spot > 0:
+                buffer_pts = b_level * 0.0002
+                if context.signal_type == "CALL" and curr_spot <= (b_level - buffer_pts):
+                    logger.info(
+                        f"[AegisEM] MODE_B_INFLIGHT_BOUNDARY_REBREAK: Spot {curr_spot:.1f} <= {b_level:.1f} - {buffer_pts:.1f}pts -> Immediate Exit"
+                    )
+                    self._close_all_legs(f"MODE_B_INFLIGHT_BOUNDARY_REBREAK (Spot {curr_spot:.1f} <= {b_level:.1f} - {buffer_pts:.1f}pts)")
+                    return
+                elif context.signal_type == "PUT" and curr_spot >= (b_level + buffer_pts):
+                    logger.info(
+                        f"[AegisEM] MODE_B_INFLIGHT_BOUNDARY_REBREAK: Spot {curr_spot:.1f} >= {b_level:.1f} + {buffer_pts:.1f}pts -> Immediate Exit"
+                    )
+                    self._close_all_legs(f"MODE_B_INFLIGHT_BOUNDARY_REBREAK (Spot {curr_spot:.1f} >= {b_level:.1f} + {buffer_pts:.1f}pts)")
+                    return
+
             entry_bucket = getattr(context, "entry_bar_bucket", None)
             pa_eng = self._pa_engine
             if entry_bucket is not None and b_level > 0 and pa_eng and getattr(pa_eng, "bars_1m", None):
@@ -2397,8 +2393,8 @@ class AegisExecutionManager:
             # Anchor to live bid
             try:
                 q = self.broker.market_data_provider.get_quote(exch_seg, leg.token)
-                if q and float(q.get("bp1") or 0) > 0:
-                    leg.current_price = float(q["bp1"])
+                if q and float(q.get("bid") or q.get("bp1") or 0) > 0:
+                    leg.current_price = float(q.get("bid") or q.get("bp1") or 0)
             except Exception:
                 pass
 
@@ -2489,8 +2485,8 @@ class AegisExecutionManager:
                     if hasattr(self.broker, "market_data_provider"):
                         q = self.broker.market_data_provider.get_quote(exch_seg, leg.token)
                         if q:
-                            bp1 = float(q.get("bp1") or 0)
-                            sp1 = float(q.get("sp1") or 0)
+                            bp1 = float(q.get("bid") or q.get("bp1") or 0)
+                            sp1 = float(q.get("ask") or q.get("sp1") or 0)
                             return (bp1 if bp1 > 0 else ref_px, sp1 if sp1 > 0 else (ref_px + OPTION_TICK_SIZE))
                 except Exception:
                     pass
@@ -3081,7 +3077,7 @@ class AegisExecutionManager:
         exch = self.get_instrument_params()["exchange"]
         try:
             qrow = self.broker.market_data_provider.get_quote(exch, leg.token)
-            bid = float(qrow.get("bp1") or 0) if isinstance(qrow, dict) else 0.0
+            bid = float(qrow.get("bid") or qrow.get("bp1") or 0) if isinstance(qrow, dict) else 0.0
         except Exception:
             bid = 0.0
         ref = bid if bid > 0 else (leg.current_price or leg.entry_price)

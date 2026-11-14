@@ -348,6 +348,9 @@ class AegisPipelineOrchestrator:
             if sym not in self.history_30s:
                 self.history_30s[sym] = deque(maxlen=300)
 
+        # Delta inflection veto counter (never uninitialized)
+        self._di_vetoed = 0
+
         logger.info(
             f"AEGIS Empirical Microstructure Engine initialised | "
             f"HighThreshold={self.high_conviction_threshold:.1f} | ModThreshold={self.moderate_conviction_threshold:.1f} | "
@@ -1217,8 +1220,7 @@ class AegisPipelineOrchestrator:
         i1_early = _mean_i1(early_rows)
         i1_late = _mean_i1(late_rows)
         flip_mag = abs(i1_late - i1_early)
-        flipped_against = (direction == "UP" and i1_early > 0 and i1_late < 0) or \
-                          (direction == "DOWN" and i1_early < 0 and i1_late > 0)
+        flipped_against = (i1_early > 0 and i1_late < 0)
         if flipped_against and flip_mag >= 0.15:
             veto_window = min(20.0, float(getattr(self, "_spot_inflection_veto_window_sec", 20.0)))
             _veto_until_map[direction] = max(

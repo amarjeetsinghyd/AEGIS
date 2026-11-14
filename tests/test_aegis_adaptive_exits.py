@@ -89,6 +89,7 @@ def create_test_manager(entry_price=19.30, spot_entry=23700.0, signal_type="PUT"
     em._order_history_poll_ts = {}
     em._order_history_poll_interval_sec = 2.5
     em._trade_quote_history = deque(maxlen=60)
+    em._last_quote_hist_ts = 0.0
     em._option_cache = {}
     em._prestaged_cache = {}
     em.strike_cooldowns = {}
@@ -1724,30 +1725,6 @@ def test_execution_rejects_contract_identity_mismatch():
     em._process_aegis_signal(signal)
 
     assert em.trade_context is None
-
-
-def test_premarket_bridge_only_shifts_atm_and_stops_at_open():
-    from unittest.mock import MagicMock, patch
-    from execution import execution_manager as execution_manager_module
-
-    em, _, _ = create_test_manager()
-    em.aegis_engine.shift_atm = MagicMock()
-    em.aegis_engine._on_underlying_tick = MagicMock()
-    preopen = datetime(2026, 10, 30, 9, 14, 0)
-
-    with patch.object(execution_manager_module, "read_premarket_state", return_value={
-        "indicative_spot": 23726.0,
-        "gap_pct": 0.2,
-    }) as read_state:
-        with patch.object(execution_manager_module, "datetime") as mock_datetime:
-            mock_datetime.now.return_value = preopen
-            em._handle_premarket_bridge()
-            em.aegis_engine.shift_atm.assert_called_once_with(0, new_atm=23750)
-            em.aegis_engine._on_underlying_tick.assert_not_called()
-
-            mock_datetime.now.return_value = datetime(2026, 10, 30, 9, 15, 0)
-            em._handle_premarket_bridge()
-            assert read_state.call_count == 1
 
 
 def test_current_spot_prefers_the_engine_feed_used_for_entry():

@@ -178,8 +178,13 @@ class DumpDetector:
                 self.zone = True
             else:
                 return 0
-        pull = (self.peak_bid - b0) / self.tick
-        if pull < self.pull_ticks:
+        entry = self.entry
+        if entry > 0:
+            pull_pct = (self.peak_bid - b0) / entry
+        else:
+            pull_pct = 0.0
+        arm_pull_pct = max((self.pull_ticks * self.tick) / entry, 0.008) if entry > 0 else 0.008
+        if pull_pct < arm_pull_pct:
             self.n_fire = 0
             return 0
 
@@ -191,8 +196,9 @@ class DumpDetector:
         x3 = 0.0 if x3 < 0.0 else (1.0 if x3 > 1.0 else x3)
         x4 = self.aw / self.aw_base - 1.0 if self.aw_base > 0.0 else 0.0
         x4 = 0.0 if x4 < 0.0 else (1.0 if x4 > 1.0 else x4)
-        x5 = pull / 6.0
-        x5 = 1.0 if x5 > 1.0 else x5
+        full_pull_pct = max((6.0 * self.tick) / entry, 0.020) if entry > 0 else 0.020
+        x5 = pull_pct / full_pull_pct
+        x5 = 0.0 if x5 < 0.0 else (1.0 if x5 > 1.0 else x5)
         z = _B0 + _B1 * x1 + _B2 * x2 + _B3 * x3 + _B4 * x4 + _B5 * x5
         z = 30.0 if z > 30.0 else (-30.0 if z < -30.0 else z)
         p = 1.0 / (1.0 + exp(-z))
