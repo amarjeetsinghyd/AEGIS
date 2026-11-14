@@ -1,11 +1,12 @@
 """
 AEGIS PriceActionEngine — End-to-End Pure Price Action & Microstructure Scalper Engine.
 
-Implements the 4 empirically verified, zero-lag price action scalp pillars:
+Implements the 5 empirically verified, zero-lag price action scalp pillars:
   Pillar 1: 20 EMA + Wick Rejection (User's System — #1 Performer on NIFTY & SENSEX)
   Pillar 2: Al Brooks 2-Legged Pullback / Micro-Sweep Reclaim (H2/L2 Sweep into 50 EMA)
   Pillar 3: Volatility Squeeze to Expansion Breakout (3-Bar Tight Box Expansion)
-  Pillar 4: Break of Structure (BOS Level Breakout above PDH/Pivot or below PDL/Pivot)
+  Pillar 4: Dynamic S/R Level Registry Breakout (Prominence Hub Outermost Roof/Floor)
+  Pillar 5: Trapped Option Writer Short-Squeeze (Decoupled Writer VWAP Breach)
 
 Key Architectural Principles:
   - Scale-Invariant: Buffer points and tolerances dynamically normalize to index spot price.
@@ -971,8 +972,6 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
 
         return False, ""
 
-        return False, ""
-
     def _check_rejection_approach_ladder(self, direction: str) -> bool:
         """
         Pillar 1 Rejection Approach Ladder Validator:
@@ -1907,11 +1906,12 @@ class PriceActionEngine(StructuralRegistryMixin, DowMacroShieldsMixin, OptionOrd
         """
         Master Multi-Pillar Price Action Evaluator (V4.0: strict P1 -> P2 -> P3 -> P4
         single-admission ladder, first hit wins — never an AND cascade).
-        Evaluates the 4 empirically verified Price Action Scalper Engines:
+        Evaluates the 5 empirically verified Price Action Scalper Engines:
           Pillar 1: 20 EMA + Wick Rejection (Double-Touch Confluence)
           Pillar 2: Micro-Sweep & Reclaim (Turtle Soup / 5-Bar Liquidity Grab)
           Pillar 3: Volatility Squeeze to Expansion Breakout (3-Bar Tight Box Expansion)
           Pillar 4: Dynamic Session S/R Registry Breakout (Mode B Breakthrough)
+          Pillar 5: Trapped Option Writer Short-Squeeze (Decoupled Writer VWAP Breach)
         Returns:
             (is_triggered, setup_name, details_dict)
         """

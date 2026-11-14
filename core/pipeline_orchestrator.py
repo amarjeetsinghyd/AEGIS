@@ -20,7 +20,7 @@ import numpy as np
 # ──────────────────────────────────────────────────────────────
 # BOOTSTRAP & LOGGER
 # ──────────────────────────────────────────────────────────────
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
@@ -31,10 +31,7 @@ from config.settings import get_data_dir
 try:
     from core.price_action_engine import PriceActionEngine
 except ImportError:
-    try:
-        from core.price_action_engine import PriceActionEngine
-    except ImportError:
-        PriceActionEngine = None
+    PriceActionEngine = None
 
 try:
     from core.option_order_flow import (
@@ -42,61 +39,42 @@ try:
         CompositeConvictionEngine,
     )
 except ImportError:
-    try:
-        from core.option_order_flow import (
-            MicrostructureScorer,
-            CompositeConvictionEngine,
-        )
-    except ImportError:
-        MicrostructureScorer = None
-        CompositeConvictionEngine = None
+    MicrostructureScorer = None
+    CompositeConvictionEngine = None
 
 try:
     from core.option_quality import OptionQualityEngine
 except ImportError:
-    try:
-        from core.option_quality import OptionQualityEngine
-    except ImportError:
-        OptionQualityEngine = None
+    OptionQualityEngine = None
 
 try:
     from core.atm_sync import AtmSync, cold_corridor_symbols, make_alignment_listeners
 except ImportError:
-    from core.atm_sync import AtmSync, cold_corridor_symbols, make_alignment_listeners
+    AtmSync = None
+    cold_corridor_symbols = None
+    make_alignment_listeners = None
 
 try:
     from core.outcome_telemetry import OutcomeTelemetryEngine, PostTradeMilestoneTracker
 except ImportError:
-    try:
-        from core.outcome_telemetry import OutcomeTelemetryEngine, PostTradeMilestoneTracker
-    except ImportError:
-        OutcomeTelemetryEngine = None
-        PostTradeMilestoneTracker = None
+    OutcomeTelemetryEngine = None
+    PostTradeMilestoneTracker = None
 
 try:
     from execution.execution_manager import QualitySlotPolicy, PostTriggerStabilityTracker
 except ImportError:
-    try:
-        from execution.execution_manager import QualitySlotPolicy, PostTriggerStabilityTracker
-    except ImportError:
-        QualitySlotPolicy = None
-        PostTriggerStabilityTracker = None
+    QualitySlotPolicy = None
+    PostTriggerStabilityTracker = None
 
 try:
     from core.wyckoff_volume_engine import WyckoffVolumeEngine
 except ImportError:
-    try:
-        from core.wyckoff_volume_engine import WyckoffVolumeEngine
-    except ImportError:
-        WyckoffVolumeEngine = None
+    WyckoffVolumeEngine = None
 
 try:
     from core.shadow_boundary_observer import ShadowBoundaryObserver
 except ImportError:
-    try:
-        from core.shadow_boundary_observer import ShadowBoundaryObserver
-    except ImportError:
-        ShadowBoundaryObserver = None
+    ShadowBoundaryObserver = None
 
 # ─── Resilient optional imports (hardening 2026-09-21: each isolated so one
 # missing/stale module on a deploy target can never kill engine init; every

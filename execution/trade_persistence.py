@@ -11,30 +11,18 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime as _real_datetime
 from typing import Optional, Dict, Any, List
 
 from logger import get_logger
-from execution.slot_and_risk_constants import MAX_HOLD_EXTENDED_SEC
+from execution.slot_and_risk_constants import (
+    MAX_HOLD_EXTENDED_SEC,
+    _DateTimeProxy,
+    datetime,
+)
 from execution.trade_context import TradeContext, TradeLeg, resolve_leg_net_qty
 from execution.realistic_paper_broker import calculate_nse_option_charges
 
 logger = get_logger("aegis_execution_manager")
-
-
-class _DateTimeProxy:
-    """Dynamic datetime proxy ensuring test monkeypatches on execution.execution_manager.datetime work."""
-    def __getattr__(self, name: str) -> Any:
-        em = sys.modules.get("execution.execution_manager")
-        target = getattr(em, "datetime", _real_datetime) if em else _real_datetime
-        return getattr(target, name)
-
-    def __call__(self, *args, **kwargs) -> Any:
-        em = sys.modules.get("execution.execution_manager")
-        target = getattr(em, "datetime", _real_datetime) if em else _real_datetime
-        return target(*args, **kwargs)
-
-datetime = _DateTimeProxy()
 
 
 class TradePersistenceMixin:
@@ -77,8 +65,12 @@ class TradePersistenceMixin:
                 "last_trade_exit_time": getattr(self, "last_trade_exit_time", 0.0),
                 "last_exited_route": getattr(self, "last_exited_route", ""),
             }
-            with open(self.state_file, "w") as f:
+            tmp_file = f"{self.state_file}.tmp"
+            with open(tmp_file, "w") as f:
                 json.dump(state, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_file, self.state_file)
         except Exception as e:
             logger.error(f"[AegisEM] Save trades_today failed: {e}")
 

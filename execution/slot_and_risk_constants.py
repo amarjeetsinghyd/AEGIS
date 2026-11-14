@@ -7,10 +7,26 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime, time as dt_time
+from datetime import datetime as _real_datetime, time as dt_time
 from typing import Optional, Dict, Any, List, Tuple
 
 from config.settings import OPTION_TICK_SIZE
+
+
+class _DateTimeProxy:
+    """Dynamic datetime proxy ensuring test monkeypatches on execution.execution_manager.datetime work."""
+    def __getattr__(self, name: str) -> Any:
+        em = sys.modules.get("execution.execution_manager")
+        target = getattr(em, "datetime", _real_datetime) if em else _real_datetime
+        return getattr(target, name)
+
+    def __call__(self, *args, **kwargs) -> Any:
+        em = sys.modules.get("execution.execution_manager")
+        target = getattr(em, "datetime", _real_datetime) if em else _real_datetime
+        return target(*args, **kwargs)
+
+
+datetime = _DateTimeProxy()
 
 class QualitySlotPolicy:
     """Deterministic 3-quality-slots-per-day admission policy."""

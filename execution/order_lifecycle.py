@@ -1,6 +1,6 @@
 import math
 import uuid
-from typing import Optional
+from typing import Optional, List
 
 from logger import get_logger
 from execution.trade_context import TradeLeg, resolve_leg_net_qty
@@ -185,16 +185,30 @@ class ShoonyaOrderLifecycle(OrderLifecycle):
         self.broker = broker_gateway
         self.grace_period_sec = grace_period_sec
         self.product_type = "M"
+        self._cached_place_order_params: Optional[List[str]] = None
+        self._init_cached_signature()
+
+    def _init_cached_signature(self) -> None:
+        """One-time startup inspection of NorenApi.place_order signature."""
+        try:
+            import inspect
+            api_obj = getattr(self.broker, "_api", self.broker) if self.broker else None
+            if api_obj and hasattr(api_obj, "place_order"):
+                sig = inspect.signature(api_obj.place_order)
+                params = [p for p in sig.parameters.keys() if p not in ("self", "args", "kwargs")]
+                if params:
+                    self._cached_place_order_params = params
+        except Exception as e:
+            logger.warning(f"[ShoonyaOrderLifecycle] Startup signature inspect failed: {e}")
+            self._cached_place_order_params = None
 
     def _build_kwargs(self, action: str, exch: str, symbol: str, qty: str, limit_price: str):
-        """Dynamically builds kwargs by reading the installed NorenApi SDK signature."""
-        import inspect
-        kwargs = {}
-        try:
-            api_obj = self.broker._api if hasattr(self.broker, "_api") else self.broker
-            sig = inspect.signature(api_obj.place_order)
-            
-            # Master map of all possible parameter names Shoonya might use
+        """Builds kwargs using one-time cached NorenApi SDK parameter names (O(1) zero-overhead)."""
+        # Lazy fallback in case broker / _api was attached post-init
+        if self._cached_place_order_params is None:
+            self._init_cached_signature()
+
+        if self._cached_place_order_params:
             mapping = {
                 "buy_or_sell": action, "buy_sell": action, "transaction_type": action, "trantype": action, "side": action,
                 "product_type": self.product_type, "prd": self.product_type,
@@ -206,30 +220,24 @@ class ShoonyaOrderLifecycle(OrderLifecycle):
                 "discloseqty": 0, "disclose_qty": 0,
                 "retention": "DAY", "ret": "DAY"
             }
-            
-            for p_name in sig.parameters.keys():
-                if p_name.lower() in mapping:
-                    kwargs[p_name] = mapping[p_name.lower()]
-                    
-            kwargs.pop("self", None)
-            kwargs.pop("args", None)
-            kwargs.pop("kwargs", None)
-            
-            if not kwargs:
-                raise ValueError("Inspection returned empty parameters.")
-                
-        except Exception as e:
-            logger.warning(f"[ShoonyaOrderLifecycle] API Inspect Failed: {e}. Using fallback kwargs.")
-            kwargs = {
-                "buy_or_sell": action,
-                "product_type": self.product_type,
-                "exchange": exch,
-                "tradingsymbol": symbol,
-                "quantity": qty,
-                "price_type": "LMT",
-                "price": limit_price
-            }
-        return kwargs
+            kwargs = {}
+            for p_name in self._cached_place_order_params:
+                p_lower = p_name.lower()
+                if p_lower in mapping:
+                    kwargs[p_name] = mapping[p_lower]
+            if kwargs:
+                return kwargs
+
+        # Safe fallback if inspection was unavailable
+        return {
+            "buy_or_sell": action,
+            "product_type": self.product_type,
+            "exchange": exch,
+            "tradingsymbol": symbol,
+            "quantity": qty,
+            "price_type": "LMT",
+            "price": limit_price
+        }
 
     def execute_entry(self, leg: TradeLeg, live_ask: float = None) -> bool:
         try:

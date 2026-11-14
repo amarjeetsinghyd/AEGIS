@@ -14,7 +14,7 @@ import re
 import sys
 import threading
 import time
-from datetime import datetime as _real_datetime, timedelta, time as dt_time
+from datetime import timedelta, time as dt_time
 from typing import Optional, Dict, Any, List, Tuple
 
 from logger import get_logger
@@ -41,6 +41,8 @@ from execution.slot_and_risk_constants import (
     STRUCTURAL_SL_BUFFER_ATR_MULT,
     _round_tick,
     get_adaptive_target_profit_pct,
+    _DateTimeProxy,
+    datetime,
 )
 from execution.strike_selector import StrikeSelector, effective_premium_floor
 from execution.trade_context import TradeContext, TradeLeg, resolve_leg_net_qty
@@ -52,21 +54,6 @@ from execution.order_lifecycle import (
 from market.market_calendar import is_trading_day
 
 logger = get_logger("aegis_execution_manager")
-
-
-class _DateTimeProxy:
-    """Dynamic datetime proxy ensuring test monkeypatches on execution.execution_manager.datetime work."""
-    def __getattr__(self, name: str) -> Any:
-        em = sys.modules.get("execution.execution_manager")
-        target = getattr(em, "datetime", _real_datetime) if em else _real_datetime
-        return getattr(target, name)
-
-    def __call__(self, *args, **kwargs) -> Any:
-        em = sys.modules.get("execution.execution_manager")
-        target = getattr(em, "datetime", _real_datetime) if em else _real_datetime
-        return target(*args, **kwargs)
-
-datetime = _DateTimeProxy()
 
 
 class EntryEngineMixin:

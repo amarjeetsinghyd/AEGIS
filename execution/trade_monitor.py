@@ -11,7 +11,7 @@ import os
 import sys
 import time
 from collections import deque
-from datetime import datetime as _real_datetime, timedelta, time as dt_time
+from datetime import timedelta, time as dt_time
 from typing import Optional, Dict, Any, List, Tuple
 
 import numpy as np
@@ -46,25 +46,12 @@ from execution.slot_and_risk_constants import (
     NEAR_TARGET_PULLBACK_TOLERANCE,
     OPTION_TICK_SIZE,
     _round_tick,
+    _DateTimeProxy,
+    datetime,
 )
 from execution.trade_context import TradeContext, TradeLeg
 
 logger = get_logger("aegis_execution_manager")
-
-
-class _DateTimeProxy:
-    """Dynamic datetime proxy ensuring test monkeypatches on execution.execution_manager.datetime work."""
-    def __getattr__(self, name: str) -> Any:
-        em = sys.modules.get("execution.execution_manager")
-        target = getattr(em, "datetime", _real_datetime) if em else _real_datetime
-        return getattr(target, name)
-
-    def __call__(self, *args, **kwargs) -> Any:
-        em = sys.modules.get("execution.execution_manager")
-        target = getattr(em, "datetime", _real_datetime) if em else _real_datetime
-        return target(*args, **kwargs)
-
-datetime = _DateTimeProxy()
 
 
 class TradeMonitorMixin:
