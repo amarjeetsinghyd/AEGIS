@@ -11,9 +11,9 @@
 | 🧠 **1. Core Pipeline (`core/`)** | 5 मैक्रो पिलर्स, Priority Mode B ब्रेकथ्रू, Wyckoff वॉल्यूम गेट, कनविक्शन स्कोरिंग, L2 टिक प्रोसेसिंग | 15 | **11,282** | 🟢 **De-bloated & Mode A Purged** |
 | ⚡ **2. Execution & Lifecycle (`execution/`)** | Zero-Regression 5-Mixin आर्किटेक्चर, 0.75s सिंगल-शॉट एंट्री, +4% मेकर TP, यूनिवर्सल स्टॉप, CAS फ्लैटन | 14 | **5,520** | 🚀 **Modularized into 5 Mixins** |
 | 🌐 **3. Broker & Market Seam (`broker/`, `market/`)** | Finvasia Shoonya एडेप्टर, 2FA, थ्रॉटलिंग, 1-min टिक-टू-कैंडल कंपाइलर, स्क्रिप रिपॉजिटरी | 11 | **2,595** | 🛡️ **Footprint & Bloat Purged** |
-| 📊 **4. Unified Dashboard (`dashboard/`)** | रियल-टाइम कॉकपिट UI, रिसर्च विज़ुअलाइज़ेशन, टेलीमेट्री लोडर, aiohttp सर्वर | 7 | **5,065** | 🟢 **Active Telemetry & UI** |
+| 📊 **4. Unified Dashboard (`dashboard/`)** | रियल-टाइम कॉकपिट UI, रिसर्च विज़ुअलाइज़ेशन, टेलीमेट्री लोडर, Flask सर्वर | 5 | **4,176** | 🟢 **Active Telemetry & UI (De-bloated)** |
 | 🚀 **5. Top-level Core & Config** | `main.py`, `backtest.py`, `symbols.py`, `logger.py`, `config/`, `ipc/` | 9 | **2,005** | 🛡️ **Single Root Configuration** |
-| 🎯 **ग्रैंड टोटल (Clean Production Total)** | **पूर्ण प्रोडक्शन आर्किटेक्चर (Strict Production Only)** | **56** | **26,467** | 🟢 **100% Test Green (237/237 Passed)** |
+| 🎯 **ग्रैंड टोटल (Clean Production Total)** | **पूर्ण प्रोडक्शन आर्किटेक्चर (Strict Production Only)** | **54** | **25,578** | 🟢 **100% Test Green (237/237 Passed)** |
 
 ---
 
@@ -95,9 +95,7 @@
 | `dashboard/cockpit_html.py` | **1,425** | **कॉकपिट UI**: लाइव PnL, एक्टिव पिलर, स्पॉट चार्ट्स, L2 ऑर्डर बुक और कनविक्शन मीटर का मुख्य HTML/JS लेआउट। |
 | `dashboard/research_html.py` | **1,370** | **रिसर्च UI**: पोस्ट-ट्रेड एनालिसिस, शैडो ऑब्जर्वर स्टेट्स और कैंडल चार्ट विज़ुअलाइज़ेशन। |
 | `dashboard/telemetry_loader.py` | **1,015** | **डेटा लोडर**: इंजन द्वारा लिखे गए JSONL और लाइव स्टेट को पार्स करके UI एंडपॉइंट्स को डेटा फीड करना। |
-| `dashboard/quantum_cockpit_html.py` | **884** | **क्वांटम थीम्ड कॉकपिट**: अल्ट्रा-फास्ट और मिनिमल UI कॉम्पैक्ट व्यू। |
-| `dashboard/dashboard.py` | **366** | **वेब सर्वर**: aiohttp लाइटवेट बैकएंड जो पोर्ट 8080 पर डैशबोर्ड सर्व करता है। |
-| `dashboard/run_dashboard.py` | **4** | **स्टार्टर स्क्रिप्ट**: डैशबोर्ड सर्वर को बैकग्राउंड में लॉन्च करने का एंट्री पॉइंट। |
+| `dashboard/dashboard.py` | **365** | **वेब सर्वर**: Flask बैकएंड जो पोर्ट 8080 पर डैशबोर्ड सर्व करता है। |
 | `dashboard/__init__.py` | **1** | **पैकेज इनिशियलाइज़र**। |
 
 ---

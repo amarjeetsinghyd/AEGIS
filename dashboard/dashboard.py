@@ -42,7 +42,6 @@ from config.paths import get_runtime_paths
 # ─── MODULAR HTML TEMPLATES ───
 from dashboard.cockpit_html import COCKPIT_HTML as CONSOLE_HTML
 from dashboard.research_html import RESEARCH_HTML
-from dashboard.quantum_cockpit_html import QUANTUM_COCKPIT_HTML
 from dashboard.telemetry_loader import (
     get_journal_data,
     get_trade_detail,

@@ -103,32 +103,38 @@ Before writing or modifying ANY strategy, gatekeeper, or execution code, every A
 
 ---
 
-## ⚡ VERSION CONTROL & CHANGE TRACKING (JUJUTSU / JJ PROTOCOL MANDATORY)
+## ⚡ VERSION CONTROL & CHANGE TRACKING (PURE GIT PROTOCOL — UNIFIED LOCAL & VPS)
 
-> **Jujutsu (`jj`) is the STRICT and ONLY version control CLI for all AI agents and contributors in this repo.**
-> Never use `git add` or `git commit`. All operations must use `jj`.
+> **Git is the SINGLE CANONICAL version control system for both local development and VPS production.**
+> Jujutsu (`jj`) has been permanently ditched in favor of standard, universal Git workflows.
 
-### 1. Pure Automatic Snapshots (No Manual Commits During Work)
-- **Continuous Background Auto-Snapshotting**: Jujutsu automatically snapshots every single file modification directly into the current working copy (`@`).
-- **Never Run Commit Commands While Working**: Do NOT run `jj commit` or any commit command after editing files. Work freely—Jujutsu captures all edits automatically without any ceremony.
-- **No Staging / No Staging Area**: Concept of staging (`git add`) does not exist in Jujutsu. Your workspace is always clean and tracked.
-
-### 2. Pushing Completed Work to GitHub Remote (`jj git push`)
-- Only when a feature or task is completely finished, tested, and ready to send to GitHub remote:
+### 1. Local Development Workflow (Standard Git)
+- Stage and commit changes cleanly with conventional commit messages:
   ```powershell
-  jj describe -m "feat(AEGIS): <concise summary>"
-  jj bookmark set main -r '@'
-  jj git push
+  git add .
+  git commit -m "feat/fix/refactor(AEGIS): <concise summary>"
+  ```
+- Push verified changes directly to GitHub remote `origin/main`:
+  ```powershell
+  git push origin main
   ```
 
-### 3. Instant Rollback & History Audit (`jj undo`)
-- **Instant Rollback**: If an operation creates unintended changes or breaks a test, execute:
+### 2. VPS Production Sync Workflow (Instant 1-Click Pull & Reload)
+- To synchronize the VPS with latest remote code and reload PM2 services:
   ```powershell
-  jj undo
+  ssh -i "Oracle SSH keys/ssh-key-2026-07-11.key" opc@137.23.41.38 "cd /home/opc/aegis && git pull && pm2 restart ecosystem.config.js"
   ```
-- **Operation History**: Inspect operational timeline with:
+- VPS operates in `git sparse-checkout` mode (runtime code only; `tests/` and `scratch/` are excluded).
+
+### 3. Instant Rollback & History Audit
+- **Discard Uncommitted Working Tree Edits**:
   ```powershell
-  jj op log
+  git restore <file>        # Single file discard
+  git reset --hard HEAD     # Full working tree clean reset
+  ```
+- **Inspect Commit History**:
+  ```powershell
+  git log --oneline -n 10
   ```
 
 ---
