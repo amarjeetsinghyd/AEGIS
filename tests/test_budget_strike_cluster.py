@@ -163,7 +163,7 @@ def test_budget_cluster_pure_individual_candidate_evaluation_prevents_leakage():
     })
 
     # Mock PA and Wyckoff engines to pass
-    engine.price_action_engine.peek_setup = Mock(return_value=(True, "P1_WICK_REJECTION", {"pillar": 1, "mode": "MODE_A"}))
+    engine.price_action_engine.peek_setup = Mock(return_value=(True, "P1_WICK_REJECTION", {"pillar": 1, "mode": "MODE_B"}))
     engine.price_action_engine.band_veto_blocks = Mock(return_value=(False, 0.0, 0.0, 0.0))
     engine.wyckoff_volume_engine.evaluate = Mock(return_value=(True, "passed", {"wyckoff_confirmed": True}))
 

@@ -944,119 +944,6 @@ class CompositeConvictionEngine:
             "flow": 0.0, "impulse": 0.0, "contract": 0.0, "structure": 0.0,
         }
 
-    def _evaluate_mode_a_conviction(
-        self,
-        direction: str,
-        setup_name: str,
-        touch_i1: float,
-        spread_pct: float,
-        deep_pressure: float = 0.0,
-        micro_ret: Optional[float] = None,
-        tot_depth: float = 1000.0,
-        wyckoff_details: Optional[Dict[str, Any]] = None,
-        option_delta: Optional[float] = None,
-    ) -> Tuple[float, Dict[str, float], Dict[str, Any], str]:
-        """
-        Mode A Conviction Profile: Structural Rejection & Close (Pillar 1 & Pillar 2).
-        Triggers at T:50s Pre-Close or T:00s Bar Close upon confirmed liquidity sweep/rejection.
-        Focused on sustained order flow support, Wyckoff absorption, and full-candle velocity.
-
-        Domains (100 pts total):
-          1. Order Book Support & OFI Delta (I1 + L3-L5 Deep Pressure): 40 pts
-          2. Option Premium Return Velocity: 35 pts
-          3. Contract Tradability & Book Depth Support: 25 pts
-        """
-        is_up = direction.upper() in ("UP", "CALL")
-        # Option Buyer mandate: Strong bid support on the option book is always positive for both CE and PE:
-        eff_i1 = touch_i1
-        eff_deep = deep_pressure
-        wyckoff_conf = bool((wyckoff_details or {}).get("wyckoff_confirmed", False))
-        ofi = float(
-            (wyckoff_details or {}).get("opt_delta_flow")
-            or (wyckoff_details or {}).get("ofi_delta")
-            or (wyckoff_details or {}).get("synthetic_net_delta")
-            or 0.0
-        )
-
-        # 1. Order Book Support & OFI Delta (40 pts max)
-        if eff_i1 >= 0.15 and eff_deep >= -0.10:
-            flow_pts = 40.0
-        elif eff_i1 >= 0.05:
-            flow_pts = 34.0
-        elif eff_i1 >= -0.10:
-            flow_pts = 26.0
-        elif eff_i1 >= -0.20:
-            flow_pts = 16.0
-        else:
-            flow_pts = 0.0
-
-        if wyckoff_conf:
-            ofi_aligned = (ofi > 0) if is_up else (ofi < 0)
-            ofi_opposing = (ofi < 0) if is_up else (ofi > 0)
-            if ofi_aligned:
-                flow_pts = max(flow_pts, 34.0)
-            elif not ofi_opposing:
-                flow_pts = max(flow_pts, 28.0)
-
-        # 2. Option Premium Return Velocity (35 pts max)
-        if micro_ret is not None:
-            if micro_ret >= 0.008:
-                mom_pts = 35.0
-            elif micro_ret >= 0.003:
-                mom_pts = 30.0
-            elif micro_ret >= -0.001:
-                mom_pts = 25.0
-            elif micro_ret >= -0.005:
-                mom_pts = 14.0
-            else:
-                mom_pts = 0.0  # Option dumping despite setup
-        else:
-            mom_pts = 30.0 if wyckoff_conf else 25.0
-
-        # 3. Contract Tradability & Book Depth Support (25 pts max)
-        if spread_pct <= 0.0 or spread_pct > 2.50 or (tot_depth <= 0.0 or tot_depth < 200.0):
-            trad_pts = 0.0  # Invalid, crossed quotes, circuit breaker blowout or ghost book
-        elif spread_pct <= 1.00:
-            trad_pts = 25.0
-        elif spread_pct <= 1.50:
-            trad_pts = 15.0
-        else:
-            trad_pts = 5.0
-
-        total = round(max(0.0, min(100.0, flow_pts + mom_pts + trad_pts)), 1)
-        sub_scores = {
-            "order_book_support": round(flow_pts, 1),
-            "micro_momentum": round(mom_pts, 1),
-            "contract_tradability": round(trad_pts, 1),
-            # Aliases for telemetry and logging parity
-            "flow": round(flow_pts, 1),
-            "impulse": round(mom_pts, 1),
-            "contract": round(trad_pts, 1),
-            "structure": 0.0,
-        }
-        details = {
-            "mode": "MODE_A_REJECTION_CLOSE",
-            "effective_i1": round(eff_i1, 3),
-            "effective_deep": round(eff_deep, 3),
-            "micro_ret": round(micro_ret, 4) if micro_ret is not None else None,
-            "tot_depth": round(tot_depth, 1),
-            "spread_pct": round(spread_pct, 3),
-            "wyckoff_confirmed": wyckoff_conf,
-            "contract_domain_neutralized": True,
-            "abs_delta": round(abs(option_delta), 3) if option_delta is not None else 0.35,
-            "futures_muted": True,
-            "fut_divergence_penalty": 0.0,
-        }
-        drags = []
-        if flow_pts < 25.0:
-            drags.append("aggression_drag")
-        if mom_pts < 20.0:
-            drags.append("momentum_drag")
-        if trad_pts < 15.0:
-            drags.append("tradability_drag")
-        reason = f"mode_a_conviction_too_low: {', '.join(drags)}" if drags else "mode_a_rejection_approved"
-        return total, sub_scores, details, reason
-
     def compute_conviction_score(
         self,
         direction: str,
@@ -1112,36 +999,22 @@ class CompositeConvictionEngine:
                 sec_in_min = max(int(now_sec % 60), 2)
             tick_intensity = float(current_bar.tick_count) / float(sec_in_min)
 
-        # ─── Dual-Profile Selection ───
-        if is_mode_b:
-            total_score, sub_scores, profile_details, reason_str = self._evaluate_mode_b_conviction(
-                direction=direction,
-                setup_name=setup_name,
-                touch_i1=eff_i1,
-                spread_pct=eff_spread,
-                tick_rate=tick_intensity,
-                wyckoff_details=wyckoff_details,
-                option_delta=option_delta,
-                micro_ret=m_ret,
-                pillar=int((pa_details or {}).get("pillar", 0) or (pa_details or {}).get("pillar_id", 0) or 0),
-            )
-            profile_name = "MODE_B_INFLIGHT_PROFILE"
-        else:
-            total_score, sub_scores, profile_details, reason_str = self._evaluate_mode_a_conviction(
-                direction=direction,
-                setup_name=setup_name,
-                touch_i1=eff_i1,
-                spread_pct=eff_spread,
-                deep_pressure=deep_press,
-                micro_ret=m_ret,
-                tot_depth=tot_depth,
-                wyckoff_details=wyckoff_details,
-                option_delta=option_delta,
-            )
-            profile_name = "MODE_A_REJECTION_PROFILE"
+        # ─── Mode B Conviction (In-Flight) ───
+        total_score, sub_scores, profile_details, reason_str = self._evaluate_mode_b_conviction(
+            direction=direction,
+            setup_name=setup_name,
+            touch_i1=eff_i1,
+            spread_pct=eff_spread,
+            tick_rate=tick_intensity,
+            wyckoff_details=wyckoff_details,
+            option_delta=option_delta,
+            micro_ret=m_ret,
+            pillar=int((pa_details or {}).get("pillar", 0) or (pa_details or {}).get("pillar_id", 0) or 0),
+        )
+        profile_name = "MODE_B_INFLIGHT_PROFILE"
 
         # Sizing Tier & Approval Gate (Mode B in-flight surge has dedicated 75.0 floor)
-        eff_approval_floor = 75.0 if is_mode_b else self.min_approval_score
+        eff_approval_floor = 75.0
         is_approved = total_score >= eff_approval_floor
         if total_score >= self.high_conviction_score:
             sizing_tier = "FULL_SIZE"
