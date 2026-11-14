@@ -350,10 +350,10 @@ class ShoonyaOrderLifecycle(OrderLifecycle):
                 ordno = resp["norenordno"]
                 logger.info(f"[ShoonyaOrderLifecycle] ✅ Marketable LMT Exit Order Placed! Order ID: {ordno}")
                 # 🛡️ REAL-FILL TELEMETRY: stash the exit order id so the execution
-                # manager can later resolve the ACTUAL broker fill price (a placed
-                # LMT is not a filled exit — booking px=0.00 books a fake -100% loss).
+                # manager can later resolve the ACTUAL broker fill price. Do NOT mark
+                # the leg CLOSED here — that happens only after the live fill is confirmed
+                # (verified fill path finalises leg.close_leg with actual fill price + lot_size).
                 self._last_exit_order_id = ordno
-                leg.close_leg(exit_price or limit_price, reason)
                 return True
             else:
                 err_msg = resp.get("emsg", "Unknown Broker Error") if isinstance(resp, dict) else str(resp)

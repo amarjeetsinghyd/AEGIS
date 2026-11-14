@@ -296,7 +296,14 @@ class TickCompiler:
 
     def _reconnect_loop(self):
         """Exponential-backoff re-subscribe after a mid-session WS drop.
-        Trading-day-gated (weekend/holiday closes are skipped). Stdlib-only."""
+        Trading-day-gated (weekend/holiday closes are skipped). Stdlib-only.
+        
+        Waits/retry with bounded backoff during active market hours until
+        `_ws_connected` is True (ShoonyaMarketDataProvider.open_callback already
+        auto-re-subscribes all _subscribed_pairs on connect/reconnect). Skips
+        redundant subscribe() calls if open_callback has already restored the
+        active subscriptions.
+        """
         try:
             backoff = 1.0
             while True:
@@ -309,13 +316,16 @@ class TickCompiler:
                         logger.info("WS closed outside active market hours (08:55-15:17) — skipping reconnect.")
                         return
                 except Exception:
-                    # If the calendar import fails we err on the side of NOT
-                    # hammering the broker on a weekend; bail out.
                     logger.warning("is_exchange_trading_day / is_bot_active_hours unavailable — skipping WS reconnect re-issue.")
                     return
                 mdp = self._resolve_mdp()
                 if mdp is None:
                     logger.warning("Reconnect cannot re-issue subscribe: no MDP resolved.")
+                    return
+                # If the WS is already connected, open_callback already re-subscribed
+                # all _subscribed_pairs — skip redundant subscribe to avoid duplicates.
+                if getattr(mdp, "_ws_connected", False):
+                    logger.info("WS already reconnected; open_callback already restored subscriptions — skipping redundant subscribe.")
                     return
                 # Group by exchange so BSE spot and BFO options keep their segment.
                 # Snapshot tokens under list() to eliminate RuntimeError on concurrent subscribe()
@@ -339,10 +349,10 @@ class TickCompiler:
                                 logger.warning(f"Reconnect subscribe deferred ({exch}): {e_sub}")
                     total = sum(len(v) for v in grouped.values())
                     logger.info(f"WS reconnect re-subscribed {total} tokens across {len(grouped)} exchanges after {backoff:.1f}s backoff.")
-                    return  # re-issue succeeded — close listener will fire again on the next drop
+                    return
                 except Exception as exc:
                     logger.warning(f"WS reconnect re-subscribe failed ({exc}); backing off {min(backoff*2, 30.0):.1f}s.")
-                    backoff = min(backoff * 2, 30.0)  # cap: 1, 2, 4, 8, 16, 30s ...
+                    backoff = min(backoff * 2, 30.0)
         finally:
             with self._reconnect_lock:
                 self._reconnecting = False

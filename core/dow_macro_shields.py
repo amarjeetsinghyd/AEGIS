@@ -443,7 +443,7 @@ class DowMacroShieldsMixin:
             if idx == 0 and len(intraday_prior_bars) > 1:
                 next_b = intraday_prior_bars[1]
                 is_freak = (
-                    (b.high - b.low <= 5.0)
+                    (b.high - b.low <= max(2.0, current_price * 0.0002))
                     and (abs(b.high - next_b.high) > (1.5 * ref_atr) or abs(b.low - next_b.low) > (1.5 * ref_atr))
                 )
                 if is_freak:

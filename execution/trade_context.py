@@ -68,12 +68,13 @@ class TradeLeg:
     def realized_pnl(self):
         return self.pnl
 
-    def close_leg(self, exit_price: float, reason: str):
+    def close_leg(self, exit_price: float, reason: str, lot_size: int = 1):
         self.status = "CLOSED"
         self.exit_time = datetime.now()
         self.exit_price = exit_price
         self.exit_reason = reason
-        self.pnl = (self.exit_price - self.entry_price) * self.quantity
+        net_qty = resolve_leg_net_qty(self, lot_size)
+        self.pnl = (self.exit_price - self.entry_price) * net_qty
 
     def to_dict(self) -> Dict[str, Any]:
         return {

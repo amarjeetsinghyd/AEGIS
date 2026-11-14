@@ -44,12 +44,15 @@ class OptionQualityEngine:
             import os as _os
             funds = float(available_funds or 0)
             lot = int(lot_size or 0)
-            tiny = float(_os.getenv("AEGIS_TESTING_TINY_FUNDS", "2000.0"))
-            if funds <= 0 or lot <= 0 or funds >= tiny:
+            tiny = float(_os.getenv("AEGIS_TESTING_TINY_FUNDS", "5000.0"))
+            if funds <= 0 or lot <= 0:
+                return float(self.min_premium)
+            if funds >= tiny:
                 return float(self.min_premium)
             env_floor = float(_os.getenv("AEGIS_MIN_PREMIUM", "4.0"))
             buf = float(_os.getenv("AEGIS_PREMIUM_SAFETY_BUFFER", "0.50"))
-            dyn = min(env_floor, funds / lot - buf)
+            effective_budget = funds * (1.0 - 0.10)  # 10% charges reserve (mirrors strike_selector)
+            dyn = min(env_floor, effective_budget / lot - buf)
             if dyn < float(self.min_premium):
                 return max(0.0, dyn)
             return float(self.min_premium)

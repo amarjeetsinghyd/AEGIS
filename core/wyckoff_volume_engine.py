@@ -189,9 +189,9 @@ class WyckoffVolumeEngine:
         # PILLAR 2: Micro-Sweep Reclaim (Wyckoff Spring & Upthrust Absorption)
         # ══════════════════════════════════════════════════════════════════
         elif pillar == 2:
-            # Veto: Severe Opposing Delta Swamp (> 2.2x opposing flow on non-trivial volume >= 500)
+            # Veto: Severe Opposing Delta Swamp (> 2.2x opposing flow on non-trivial volume >= 8 lots)
             active_sweep_vol = bull_flow + bear_flow
-            if active_sweep_vol >= 500.0:
+            if active_sweep_vol >= 8.0 * eff_lot:
                 if is_up and bear_flow > (self.max_opposing_delta_ratio * max(bull_flow, 1.0)):
                     return False, "wyckoff_p2_opposing_put_dominance", {
                         **base_metrics,
@@ -353,92 +353,90 @@ class WyckoffVolumeEngine:
         """
         Main entry point for Wyckoff Volume & Delta evaluation.
 
+        Pure Live In-Flight Mode B is the sole entry mode — `evaluate()` routes
+        unconditionally to `evaluate_inflight_flow(...)` and can never return None.
+
         Returns:
             (passed: bool, reason: str, metrics: Dict[str, Any])
         """
         if self.mode == "DISABLED":
             return True, "wyckoff_disabled", {}
 
-        base_metrics: Dict[str, Any] = {}
-        pa_name = str((pa_details or {}).get("pa_setup_name", ""))
-        mode_val = str((pa_details or {}).get("mode", "")).upper()
-        is_inflight = pa_name.startswith("mode_b_") or mode_val.startswith("MODE_B")
         is_up = direction.upper() in ("UP", "CALL")
 
-        if is_inflight:
-            pillar_id = int((pa_details or {}).get("pillar", 0) or (pa_details or {}).get("pillar_id", 0) or 0)
-            if pillar_id <= 0 and pillar in (1, 2, 3, 4, 5):
-                pillar_id = pillar
-            if pillar_id <= 0:
-                if "20_ema" in pa_name:
-                    pillar_id = 1
-                elif "sweep" in pa_name:
-                    pillar_id = 2
-                elif "squeeze" in pa_name:
-                    pillar_id = 3
-                elif "sr_breakout" in pa_name or "prominence" in pa_name:
-                    pillar_id = 4
-                elif "gamma" in pa_name or "trap" in pa_name:
-                    pillar_id = 5
-                else:
-                    pillar_id = 1
+        # Resolve pillar id (fall back to the `pillar` argument, then name-based inference)
+        pa_name = str((pa_details or {}).get("pa_setup_name", ""))
+        pillar_id = int((pa_details or {}).get("pillar", 0) or (pa_details or {}).get("pillar_id", 0) or pillar or 0)
+        if pillar_id <= 0:
+            if "20_ema" in pa_name:
+                pillar_id = 1
+            elif "sweep" in pa_name:
+                pillar_id = 2
+            elif "squeeze" in pa_name:
+                pillar_id = 3
+            elif "sr_breakout" in pa_name or "prominence" in pa_name:
+                pillar_id = 4
+            elif "gamma" in pa_name or "trap" in pa_name:
+                pillar_id = 5
+            else:
+                pillar_id = 1
 
-            is_p1 = (pillar_id == 1) or ("20_ema" in pa_name)
-            lot_sz = float((pa_details or {}).get("lot_size", 0.0) or getattr(self, "lot_size", 65.0) or 65.0)
+        is_p1 = (pillar_id == 1) or ("20_ema" in pa_name)
+        lot_sz = float((pa_details or {}).get("lot_size", 0.0) or getattr(self, "lot_size", 65.0) or 65.0)
 
-            flow_ok, flow_reason, flow_metrics = self.evaluate_inflight_flow(
-                direction=direction,
-                flow_dict=pa_details or {},
-                lot_size=lot_sz,
-                pillar=pillar_id,
-            )
-            if not flow_ok:
-                # SHADOW mode is observability-only: log the veto but never block the entry.
-                if self.mode == "SHADOW":
-                    flow_metrics = dict(flow_metrics or {})
-                    flow_metrics["shadow_veto"] = flow_reason
-                    flow_metrics["wyckoff_confirmed"] = False
-                    logger.info(
-                        f"[WYCKOFF SHADOW] P{pillar_id} ({direction}) in-flight veto bypassed: {flow_reason}"
-                    )
-                    return True, f"shadow_bypass_{flow_reason}", flow_metrics
-                return False, flow_reason, flow_metrics
+        flow_ok, flow_reason, flow_metrics = self.evaluate_inflight_flow(
+            direction=direction,
+            flow_dict=pa_details or {},
+            lot_size=lot_sz,
+            pillar=pillar_id,
+        )
+        if not flow_ok:
+            # SHADOW mode is observability-only: log the veto but never block the entry.
+            if self.mode == "SHADOW":
+                flow_metrics = dict(flow_metrics or {})
+                flow_metrics["shadow_veto"] = flow_reason
+                flow_metrics["wyckoff_confirmed"] = False
+                logger.info(
+                    f"[WYCKOFF SHADOW] P{pillar_id} ({direction}) in-flight veto bypassed: {flow_reason}"
+                )
+                return True, f"shadow_bypass_{flow_reason}", flow_metrics
+            return False, flow_reason, flow_metrics
 
-            base_metrics = dict(flow_metrics)
-            base_metrics.update({
-                "in_flight_validated": True,
-                "setup_name": pa_name or mode_val,
-                "atr": round(max(float(atr or 10.0), 1.0), 2),
-            })
-            if is_p1:
-                n1_fp = (pa_details or {}).get("n1_footprint", {})
-                vdr_val = 0.50 if n1_fp.get("n1_vol_dryup", False) else 1.0
-                absorption = 2.0 if n1_fp.get("n1_stopping_vol", False) else 1.0
-                base_metrics["vdr"] = round(vdr_val, 2)
-                base_metrics["absorption_score"] = round(absorption, 1)
-                base_metrics["n1_footprint"] = n1_fp
+        base_metrics = dict(flow_metrics)
+        base_metrics.update({
+            "in_flight_validated": True,
+            "setup_name": pa_name or str((pa_details or {}).get("mode", "")),
+            "atr": round(max(float(atr or 10.0), 1.0), 2),
+        })
+        if is_p1:
+            n1_fp = (pa_details or {}).get("n1_footprint", {})
+            vdr_val = 0.50 if n1_fp.get("n1_vol_dryup", False) else 1.0
+            absorption = 2.0 if n1_fp.get("n1_stopping_vol", False) else 1.0
+            base_metrics["vdr"] = round(vdr_val, 2)
+            base_metrics["absorption_score"] = round(absorption, 1)
+            base_metrics["n1_footprint"] = n1_fp
 
-            if bars and len(bars) >= 4:
-                n1_bar = bars[-1]
-                vol_n1 = float(getattr(n1_bar, "volume", 0.0) or 0.0)
-                v_base = self._compute_baseline_volume(bars, exclude_last=1)
-                vdr_n1 = vol_n1 / v_base if v_base > 0 else 1.0
-                is_n1_directional = (n1_bar.close > n1_bar.open) if is_up else (n1_bar.close < n1_bar.open)
-                n1_demand_ignition = bool(vdr_n1 >= 1.10 and is_n1_directional)
-                base_metrics["n1_ver"] = round(vdr_n1, 2)
-                base_metrics["n1_demand_ignition"] = n1_demand_ignition
-                if n1_demand_ignition:
-                    base_metrics["wyckoff_confirmed"] = True
+        if bars and len(bars) >= 4:
+            n1_bar = bars[-1]
+            vol_n1 = float(getattr(n1_bar, "volume", 0.0) or 0.0)
+            v_base = self._compute_baseline_volume(bars, exclude_last=1)
+            vdr_n1 = vol_n1 / v_base if v_base > 0 else 1.0
+            is_n1_directional = (n1_bar.close > n1_bar.open) if is_up else (n1_bar.close < n1_bar.open)
+            n1_demand_ignition = bool(vdr_n1 >= 1.10 and is_n1_directional)
+            base_metrics["n1_ver"] = round(vdr_n1, 2)
+            base_metrics["n1_demand_ignition"] = n1_demand_ignition
+            if n1_demand_ignition:
+                base_metrics["wyckoff_confirmed"] = True
 
-            # ─── P0 FIX: In-Flight Mode B Breakthrough Terminal Verdict ───
-            # The breakthrough candle is the ACTIVE FORMING candle, NOT closed bar N-1!
-            # Do NOT fall through to closed-bar breakout checks where bars[-1] (bar N-1
-            # inside the squeeze box) is erroneously evaluated as the breakout bar
-            # (which causes false phantom drift vetoes on valid squeeze breakouts).
-            verdict_reason = (
-                "wyckoff_intrabar_inflight_confirmed"
-                if base_metrics.get("wyckoff_confirmed")
-                else "wyckoff_intrabar_neutral_flow"
-            )
-            return True, verdict_reason, base_metrics
+        # ─── P0 FIX: In-Flight Mode B Breakthrough Terminal Verdict ───
+        # The breakthrough candle is the ACTIVE FORMING candle, NOT closed bar N-1!
+        # Do NOT fall through to closed-bar breakout checks where bars[-1] (bar N-1
+        # inside the squeeze box) is erroneously evaluated as the breakout bar
+        # (which causes false phantom drift vetoes on valid squeeze breakouts).
+        verdict_reason = (
+            "wyckoff_intrabar_inflight_confirmed"
+            if base_metrics.get("wyckoff_confirmed")
+            else "wyckoff_intrabar_neutral_flow"
+        )
+        return True, verdict_reason, base_metrics
 
