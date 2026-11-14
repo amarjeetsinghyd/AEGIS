@@ -260,3 +260,56 @@ def test_interior_cluster_banned_for_breakout_and_banned_for_sweeps():
     assert swept is None
 
 
+def test_rolling_60s_baseline_rate_divides_by_60_not_active_seconds():
+    """
+    Fix 2: get_rolling_60s_baseline_rate must divide active_sum by the true 60-second
+    window (60.0), not by active_seconds (only seconds that had a trade).
+    With 6 active seconds of 60 vol each (360 total): correct = 6.0 vol/s,
+    inflated (old) = 60.0 vol/s — up to 7.5x inflation in quiet markets.
+    """
+    detector = SweepStopRunDetector(num_levels=32)
+    for sec in range(100, 106):  # 6 active seconds out of 60
+        detector.on_option_tick(
+            sym="NIFTY24000CE", strike=24000.0, side=0, buy_vol=60.0, sell_vol=0.0, ts=float(sec), atm_strike=24000.0
+        )
+
+    # Query at t=150.0: all 6 buckets (100..105) are within the 60s window
+    rate = detector.get_rolling_60s_baseline_rate(150.0)
+    assert rate == pytest.approx(360.0 / 60.0)  # 6.0 vol/s
+    assert rate != 360.0 / 6.0  # 60.0 vol/s would be the buggy inflated value
+
+
+def test_single_lot_print_does_not_lock_artificial_breach_peak():
+    """
+    Fix 3: A single 1-lot print (65 vol) at t = 0.05s into a breach must NOT lock
+    breach_peak_rate at 65 / 0.25 = 260.0. Peak rate updates only once
+    (ts - breach_start_ts) >= 0.50s into the breach.
+    """
+    detector = SweepStopRunDetector(num_levels=32)
+    detector.default_baseline_rate = 10.0
+    levels = [StructuralLevel(level_type="SUPPORT", price=24000.0, ts_created=100.0, prominence=2.0, bar_idx=1)]
+    detector.sync_levels(levels)
+    slot = detector._price_to_slot[24000.0]
+
+    # Spot breaches support at t = 100.0s (elapsed clamped to MIN_BREACH_WINDOW_SEC = 0.25)
+    detector.on_spot_tick(spot=24010.0, ts=100.0)
+    detector.on_spot_tick(spot=23992.0, ts=100.0)
+    assert detector.in_breach[slot] == 1
+    assert detector.breach_peak_rate[slot] == 0.0
+
+    # Single 1-lot (65) print at t = 0.05s into the breach
+    detector.on_option_tick(
+        sym="NIFTY24000CE", strike=24000.0, side=0, buy_vol=0.0, sell_vol=65.0, ts=100.05, atm_strike=24000.0
+    )
+    # 0.05s < 0.50s -> peak rate must NOT be updated to 65 / 0.25 = 260.0
+    assert detector.breach_peak_rate[slot] == 0.0, f"Expected 0.0, got {detector.breach_peak_rate[slot]}"
+
+    # After 0.50s into the breach, prints DO update the peak rate
+    detector.on_option_tick(
+        sym="NIFTY24000CE", strike=24000.0, side=0, buy_vol=0.0, sell_vol=65.0, ts=100.60, atm_strike=24000.0
+    )
+    # panic_vol = 130, elapsed = 0.60 -> rate = 216.67, now gated on
+    assert detector.breach_peak_rate[slot] == pytest.approx(130.0 / 0.60)
+    assert detector.breach_peak_rate[slot] > 0.0
+
+

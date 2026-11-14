@@ -241,7 +241,9 @@ class SweepStopRunDetector:
 
                     elapsed = max(ts - self.breach_start_ts[slot], MIN_BREACH_WINDOW_SEC)
                     curr_rate = self.breach_panic_vol[slot] / elapsed
-                    if curr_rate > self.breach_peak_rate[slot]:
+                    # Only lock a sustained peak rate once 0.50s have elapsed into the breach,
+                    # so a single 1-lot print at t=0.05s cannot fake a 65/0.25 = 260 vol/s spike.
+                    if (ts - self.breach_start_ts[slot]) >= 0.50 and curr_rate > self.breach_peak_rate[slot]:
                         self.breach_peak_rate[slot] = curr_rate
 
             else:
@@ -353,7 +355,9 @@ class SweepStopRunDetector:
                     self.breach_panic_vol[slot] += panic_dv
                     elapsed = max(ts - self.breach_start_ts[slot], MIN_BREACH_WINDOW_SEC)
                     curr_rate = self.breach_panic_vol[slot] / elapsed
-                    if curr_rate > self.breach_peak_rate[slot]:
+                    # Only lock a sustained peak rate once 0.50s have elapsed into the breach,
+                    # so a single 1-lot print at t=0.05s cannot fake a 65/0.25 = 260 vol/s spike.
+                    if (ts - self.breach_start_ts[slot]) >= 0.50 and curr_rate > self.breach_peak_rate[slot]:
                         self.breach_peak_rate[slot] = curr_rate
 
     def get_rolling_60s_baseline_rate(self, current_ts: float) -> float:
@@ -369,7 +373,7 @@ class SweepStopRunDetector:
                 active_seconds += 1
 
         if active_seconds >= 5 and active_sum > 0.0:
-            return active_sum / max(float(active_seconds), 1.0)
+            return active_sum / 60.0
         return self.default_baseline_rate
 
     def get_recent_reclaim_flow(self, level_type: int, current_ts: float) -> float:

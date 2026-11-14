@@ -132,14 +132,17 @@ class StructuralRegistryMixin:
         # Any level formed before cand_hist that cand_hist broke through is marked is_broken = True
         if len(self.bars_1m) >= 2:
             cand_hist = self.bars_1m[-2]
+            broken_any = False
             for lvl in self.session_levels:
                 if not lvl.is_broken and lvl.ts_created < cand_hist.ts_start:
                     if lvl.level_type == "SUPPORT" and cand_hist.close < (lvl.price - 0.20 * atr):
                         lvl.is_broken = True
                         lvl.ts_broken = cand_hist.ts_end
+                        broken_any = True
                     elif lvl.level_type == "RESISTANCE" and cand_hist.close > (lvl.price + 0.20 * atr):
                         lvl.is_broken = True
                         lvl.ts_broken = cand_hist.ts_end
+                        broken_any = True
 
         # 2. Dynamic Post-Excursion Prominence Mutation: PERMANENTLY DECOMMISSIONED (Task 4, Nov 2026).
         # Rationale: Prominence is a PURE birth/touch structural attribute. Inflating it merely because
@@ -158,6 +161,23 @@ class StructuralRegistryMixin:
         if len(self.bars_5m) >= 3:
             # Only discover/update 5m structural swings when a 5m bar has just closed
             if not new_5m_bar:
+                # Immediate 1-minute S/R role re-classification + sweep_detector sync when a
+                # level broke on this 1m bar (between 5m bar closes), so broken outermost
+                # levels are retired and newly promoted outermost levels are tracked by
+                # sweep_detector right away instead of waiting up to 4 minutes.
+                if broken_any:
+                    self._classify_level_roles()
+                    if hasattr(self, "sweep_detector") and self.sweep_detector is not None:
+                        pz = self.get_pain_zone_vwaps() if hasattr(self, "get_pain_zone_vwaps") else {}
+                        cs_vwap = float(pz.get("vwap_call_sell", 0.0) or 0.0)
+                        ps_vwap = float(pz.get("vwap_put_sell", 0.0) or 0.0)
+                        self.sweep_detector.sync_levels(
+                            self.session_levels,
+                            pdh=getattr(self, "pdh", 0.0),
+                            pdl=getattr(self, "pdl", 0.0),
+                            cs_vwap=cs_vwap,
+                            ps_vwap=ps_vwap,
+                        )
                 return
             cand = self.bars_5m[-2]
             prev = self.bars_5m[-3]

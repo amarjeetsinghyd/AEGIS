@@ -107,3 +107,79 @@ def test_task_5_interior_cluster_excluded_from_sweeps():
     pae.session_levels = [strong_swing]
     assert pae._find_inflight_swept_sr_level("CALL", prior_bar, curr_bar, spot=24010.0, min_sweep_depth=1.5, atr=10.0) == strong_swing
     assert pae._find_swept_sr_level("CALL", prior_bar, min_sweep_depth=1.5, atr=10.0) == strong_swing
+
+
+def test_level_break_on_1m_bar_immediately_reclassifies_and_syncs_sweep_detector():
+    """
+    Fix 1: When a level breaks on a 1m bar BETWEEN 5m bar closes
+    (len(bars_5m) >= 3 and new_5m_bar == False), _update_structural_levels used to
+    return early and wait up to 4 minutes for the next 5m bar close.
+
+    Now: broken outermost levels are retired immediately and newly promoted
+    outermost levels are synced into sweep_detector on the same 1m bar close.
+    """
+    pa = PriceActionEngine(strike_step=50.0)
+    pa.current_atr_1m = 10.0
+    pa.last_price = 24000.0
+    pa.pdc = 24000.0
+    now = 1792730040.0
+    pa._levels_day = int(now // 86400)  # avoid day-reset clearing session_levels on first call
+
+    # Outermost roof at 24100 (formed earlier) + inner resistance at 24050
+    # formed ON the current bar (ts_created >= cand_hist.ts_start), so the prior
+    # bar's close cannot invalidate it per the ts_created guard in the break loop.
+    res_outer = StructuralLevel(
+        level_type="RESISTANCE",
+        price=24100.0,
+        ts_created=now - 600,
+        prominence=2.5,
+        bar_idx=0,
+        seq_idx=0,
+        touch_count=2,
+        timeframe="5m",
+    )
+    res_inner = StructuralLevel(
+        level_type="RESISTANCE",
+        price=24050.0,
+        ts_created=now,  # formed on the current bar -> exempt from this bar's break check
+        prominence=1.8,
+        bar_idx=0,
+        seq_idx=0,
+        touch_count=1,
+        timeframe="5m",
+    )
+    pa.session_levels = [res_outer, res_inner]
+    pa._classify_level_roles()
+    assert res_outer.level_role == "OUTERMOST_ROOF"
+    assert 24100.0 in pa.sweep_detector._price_to_slot
+    assert 24050.0 in pa.sweep_detector._price_to_slot
+
+    # Seed 3 completed 5m bars -> the 5m fast-path is active
+    base = now - 900
+    pa.bars_5m.append(OHLCBar(ts_start=base, ts_end=base + 300, open=24000.0, high=24040.0, low=23990.0, close=24030.0, volume=1000.0))
+    pa.bars_5m.append(OHLCBar(ts_start=base + 300, ts_end=base + 600, open=24030.0, high=24060.0, low=24020.0, close=24050.0, volume=1000.0))
+    pa.bars_5m.append(OHLCBar(ts_start=base + 600, ts_end=base + 900, open=24050.0, high=24055.0, low=24040.0, close=24045.0, volume=1000.0))
+
+    # 3 completed 1m bars; the MIDDLE bar (bars_1m[-2]) closes above 24100 + 0.20*ATR = 24102,
+    # so it breaks the outermost resistance on this 1m bar close (not a 5m bar close).
+    pa.bars_1m.append(OHLCBar(ts_start=now - 120, ts_end=now - 60, open=24090.0, high=24095.0, low=24088.0, close=24095.0, volume=1000.0))
+    bar_breaker = OHLCBar(ts_start=now - 60, ts_end=now, open=24095.0, high=24110.0, low=24094.0, close=24105.0, volume=1000.0)
+    pa.bars_1m.append(bar_breaker)
+    bar_now = OHLCBar(ts_start=now, ts_end=now + 60, open=24105.0, high=24112.0, low=24104.0, close=24110.0, volume=1000.0)
+    pa.bars_1m.append(bar_now)
+
+    # 1m bar close between 5m bar closes (new_5m_bar = False)
+    pa._update_structural_levels(bar_now, new_5m_bar=False)
+
+    # 1. Outermost roof broken immediately on the 1m bar close
+    assert res_outer.is_broken is True
+    assert res_outer.ts_broken > 0.0
+
+    # 2. Inner level (formed on this bar) survives the break check and is promoted
+    #    to OUTERMOST_ROOF immediately by the same 1m bar close.
+    assert res_inner.is_broken is False
+    assert res_inner.level_role == "OUTERMOST_ROOF"
+
+    # 3. sweep_detector synced immediately: broken roof retired, promoted inner roof tracked
+    assert 24100.0 not in pa.sweep_detector._price_to_slot
+    assert 24050.0 in pa.sweep_detector._price_to_slot
